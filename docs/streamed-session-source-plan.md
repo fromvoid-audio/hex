@@ -146,3 +146,13 @@ Closing Service signals the worker; its adapter close runs there without a UI
 join. This source checkpoint provides the connection seam and headless controls;
 the desktop adapter, mode selectors and live publication integration remain
 outstanding. It is not final repository CI or native listening acceptance.
+
+The Resident compatibility adapter has one constructor-reserved request/result
+cell, not an owning candidate queue. Nonblocking Client submission preserves the
+original Playback on synchronous refusal. Worker publication reports its real
+submitted revision separately from both the request token and callback applied
+revision; no mutex spans publication or reclamation. The cell's actual inline
+payload and two shared handles are added to native constructor accounting.
+Verified configuration requires a virgin cell and refuses owning Playback
+admission for its entire exposed lifetime. Desktop/UI use of this cell is still
+being connected; the native headless controls establish only this boundary.

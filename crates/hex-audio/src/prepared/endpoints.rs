@@ -11,13 +11,14 @@ pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
-    sample_preview: crate::sample_preview::Control,
+    pub(super) sample_preview: crate::sample_preview::Control,
+    pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     commands: Producer<QueuedCommand>,
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
     gain_recording: crate::gain_recording::Control,
-    status: Arc<Status>,
+    pub(super) status: Arc<Status>,
     command_ticket: u64,
     #[cfg(all(test, feature = "allocation-probe"))]
     probe: Option<crate::native_callback_owner::DropProbe>,
@@ -38,12 +39,15 @@ impl Control {
             processor_audition,
             gain_recording,
             command_ticket,
-            publication,
+            mut publication,
         } = self;
         publication.status.split_endpoints.store(true, Release);
         let status = Arc::clone(&publication.status);
+        let resident_forwarding = resident_forwarding::ResidentForwarding::new();
+        publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (endpoints, client) = reserve(ClientEndpoints {
             sample_preview,
+            resident_forwarding,
             spectrum_reader,
             commands,
             spectrum_target,

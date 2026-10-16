@@ -238,3 +238,13 @@ pending Play. Both normal and observed renders share protected-page transactions
 Mutable native runtime metadata reduces the existing 32 MiB runtime allowance as
 well as caller DATA budgets. Seek/launch and actual UI composition remain deferred.
 See [native streamed readiness](../../docs/streamed-native-readiness.md).
+
+The four-terminal output also reserves one Resident compatibility forwarding
+cell. Client submission is nonblocking and returns a request token; the Session
+worker publishes after taking the payload outside the cell mutex, and returns
+either the actual submitted revision or the unchanged owning refusal. The
+callback applied revision remains a third, separate observation. The cell holds
+at most one request/result and is charged as its actual payload plus a paired
+opaque Arc/Mutex resource. Verified constructor configuration requires its
+virgin state and seals owning Playback admission before Client exposure. It
+never becomes a fallback for a Verified generation.

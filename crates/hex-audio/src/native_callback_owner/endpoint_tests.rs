@@ -113,6 +113,18 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
             .ok()
             .unwrap();
         assert!(client.preview_request().is_err());
+        let root_identity = Arc::new(hex_engine::Project::new(48000, vec![]).unwrap());
+        let rejected = client
+            .forward_resident_publication(
+                hex_engine::playback::Playback::from_shared(Arc::clone(&root_identity)),
+                PublicationPolicy::InheritRuntime,
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(rejected.reason, "resident publication unavailable");
+        assert_eq!(Arc::strong_count(&root_identity), 2);
+        drop(rejected);
+        assert_eq!(Arc::strong_count(&root_identity), 1);
         client.command(hex_engine::PlaybackCommand::Play).unwrap();
         let measured = allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|callback, _| {

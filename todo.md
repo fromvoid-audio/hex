@@ -3677,3 +3677,9 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   canonical startup, polls through event backpressure, and closes on worker exit.
   Focused negotiated-rate/offline/editing/backpressure/close controls and existing
   Session suites pass; desktop/native publication and mode UI remain open.
+
+- PR #239 Resident forwarding checkpoint: one nonblocking constructor-owned
+  request/result cell preserves owning refusal and separates request/submitted/
+  applied identities. Verified sealing refuses that owning compatibility path.
+  Headless real queue/ACK, contention, refusal identity and zero-allocation
+  controls pass; desktop/UI integration remains outstanding.

@@ -55,6 +55,7 @@ impl PublicationControl {
         if !self.native_custody
             || self.revision != 0
             || !self.status.preview_unused()
+            || !self.resident_forwarding_virgin()
             || self.status.client_exposed.load(Acquire)
             || self.status.closing.load(Acquire)
             || self.status.publication_pending.load(Acquire)

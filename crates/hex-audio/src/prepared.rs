@@ -27,8 +27,10 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
+mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
+pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod runtime_view;
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
@@ -800,6 +802,7 @@ pub struct PublicationControl {
     rate: u32,
     revision: u64,
     command_storage_bytes: usize,
+    resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
@@ -909,6 +912,7 @@ pub fn channel_with_spectrum(
                 rate,
                 revision: 0,
                 command_storage_bytes,
+                resident_forwarding: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 endpoint_probe: None,
                 latest_fresh_runtime_cancellation: None,

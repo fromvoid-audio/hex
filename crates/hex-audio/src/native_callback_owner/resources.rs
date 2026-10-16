@@ -115,6 +115,9 @@ impl NativeCandidateBoundary {
         {
             return None;
         }
+        let forwarding = client.owner_ref()?.resident_forwarding_storage(control)?;
+        self.channels = self.channels.plus(forwarding)?;
+        self.data_bytes = self.data_bytes.checked_add(forwarding.data_bytes)?;
         self.spectrum_reader_bound = true;
         let client_cell = client.guard().shared_cell()?;
         let publication_cell = publication.guard().shared_cell()?;
