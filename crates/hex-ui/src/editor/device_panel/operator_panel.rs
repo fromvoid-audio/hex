@@ -556,7 +556,7 @@ fn oscillator_detail(
             Some("multi"),
         )
     });
-    let graph = harmonics::graph(view, cx, device, operator);
+    let (graph, waveform_preview) = harmonics::graph(view, cx, device, operator, parameters);
     let harmonic_tools = harmonics::tools(view, cx, device, operator);
     let harmonic_range_control = compact_control(
         view,
@@ -587,7 +587,6 @@ fn oscillator_detail(
         .h(px(160.0))
         .flex()
         .flex_col()
-        .gap(px(2.0))
         .child(
             div()
                 .id("operator-waveform-cycle")
@@ -597,51 +596,71 @@ fn oscillator_detail(
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
-                .child(div().w_full().flex_1().min_h_0().child(graph))
+                .child(div().w_full().h(px(70.0)).flex_shrink_0().child(graph))
                 .child(
                     div()
                         .id("operator-harmonic-tools")
                         .debug_selector(|| "operator-harmonic-tools".into())
+                        .w_full()
                         .h(px(16.0))
                         .flex_shrink_0()
                         .flex()
                         .items_center()
+                        .justify_between()
                         .gap(px(3.0))
-                        .child(harmonic_range_control)
-                        .child(harmonic_repeat_control)
-                        .child(harmonic_tools),
+                        .child(harmonic_tools)
+                        .child(harmonic_range_control),
                 ),
         )
+        // Keep every detail page's tabs in the same fixed 86 px slot.
         .child(div().h(px(16.0)).flex_shrink_0())
         .child(
             div()
                 .w_full()
+                .h(px(14.0))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .gap(px(3.0))
+                .child(section_title("wave"))
                 .child(waveform)
-                .child(section_title("phase"))
-                .child(phase),
-        )
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(section_title("velocity"))
-                .child(velocity)
-                .child(section_title("feedback"))
-                .child(feedback),
-        )
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
+                .child(
+                    div()
+                        .id("operator-waveform-preview")
+                        .debug_selector(|| "operator-waveform-preview".into())
+                        .w(px(64.0))
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(waveform_preview),
+                )
                 .children(fixed.then(|| section_title("multi")))
                 .children(multiplier),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(16.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .child(section_title("feedback"))
+                .child(feedback)
+                .child(section_title("repeat"))
+                .child(harmonic_repeat_control),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(16.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(3.0))
+                .child(section_title("phase"))
+                .child(phase)
+                .child(section_title("velocity"))
+                .child(velocity),
         )
 }
 

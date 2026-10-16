@@ -24,6 +24,13 @@ struct Stroke {
     key: hex_session::device_gesture::GestureKey,
 }
 #[derive(Clone, Copy)]
+struct CanonicalOverviewInput {
+    amplitudes: [ParameterValue; 64],
+    count: ParameterValue,
+    repeat: ParameterValue,
+    waveform: ParameterValue,
+}
+#[derive(Clone, Copy)]
 struct OverviewInput {
     amplitudes: [f32; 64],
     count: usize,
@@ -104,44 +111,60 @@ fn snapshot(
         (partial(operator, i), ParameterValue::Float(values[i]))
     }))
 }
+fn read_overview_input(
+    parameters: &[NativeDeviceParameterView],
+    operator: usize,
+) -> Option<CanonicalOverviewInput> {
+    let partial_base = 93 + operator as u32 * 64;
+    let count_id = 349 + operator as u32;
+    let repeat_id = 353 + operator as u32;
+    let waveform_id = 57 + operator as u32;
+    let mut amplitudes = [None; 64];
+    let mut count = None;
+    let mut repeat = None;
+    let mut waveform = None;
+    for parameter in parameters {
+        let parameter_id = parameter.descriptor.id.value();
+        if (partial_base..partial_base + 64).contains(&parameter_id) {
+            amplitudes[(parameter_id - partial_base) as usize] = Some(parameter.value);
+        } else if parameter_id == count_id {
+            count = Some(parameter.value);
+        } else if parameter_id == repeat_id {
+            repeat = Some(parameter.value);
+        } else if parameter_id == waveform_id {
+            waveform = Some(parameter.value);
+        }
+    }
+    let mut complete_amplitudes = [ParameterValue::Float(0.0); 64];
+    for (index, value) in amplitudes.into_iter().enumerate() {
+        complete_amplitudes[index] = value?;
+    }
+    Some(CanonicalOverviewInput {
+        amplitudes: complete_amplitudes,
+        count: count?,
+        repeat: repeat?,
+        waveform: waveform?,
+    })
+}
 fn overview_input(view: &mut EditorView, key: Key) -> Option<OverviewInput> {
-    let (raw_amplitudes, raw_count, raw_repeat, raw_waveform) = {
-        let parameters = &view
-            .device_panel
-            .views
-            .get(&key.0)?
-            .2
-            .as_ref()
-            .ok()?
-            .parameters;
-        let partial_base = 93 + key.1 as u32 * 64;
-        let count_id = 349 + key.1 as u32;
-        let repeat_id = 353 + key.1 as u32;
-        let waveform_id = 57 + key.1 as u32;
-        let mut amplitudes = [None; 64];
-        let mut count = None;
-        let mut repeat = None;
-        let mut waveform = None;
-        for parameter in parameters {
-            let parameter_id = parameter.descriptor.id.value();
-            if (partial_base..partial_base + 64).contains(&parameter_id) {
-                amplitudes[(parameter_id - partial_base) as usize] = Some(parameter.value);
-            } else if parameter_id == count_id {
-                count = Some(parameter.value);
-            } else if parameter_id == repeat_id {
-                repeat = Some(parameter.value);
-            } else if parameter_id == waveform_id {
-                waveform = Some(parameter.value);
-            }
-        }
-        let mut complete_amplitudes = [ParameterValue::Float(0.0); 64];
-        for (index, value) in amplitudes.into_iter().enumerate() {
-            complete_amplitudes[index] = value?;
-        }
-        (complete_amplitudes, count?, repeat?, waveform?)
-    };
+    let parameters = &view
+        .device_panel
+        .views
+        .get(&key.0)?
+        .2
+        .as_ref()
+        .ok()?
+        .parameters;
+    let input = read_overview_input(parameters, key.1)?;
+    effective_overview_input(view, key, input)
+}
+fn effective_overview_input(
+    view: &mut EditorView,
+    key: Key,
+    input: CanonicalOverviewInput,
+) -> Option<OverviewInput> {
     let mut amplitudes = [0.0; 64];
-    for (index, raw) in raw_amplitudes.into_iter().enumerate() {
+    for (index, raw) in input.amplitudes.into_iter().enumerate() {
         let ParameterValue::Float(value) = super::effective_parameter_value(
             view,
             super::ParameterKey {
@@ -160,7 +183,7 @@ fn overview_input(view: &mut EditorView, key: Key) -> Option<OverviewInput> {
             device: key.0,
             parameter: id(349 + key.1 as u32),
         },
-        raw_count,
+        input.count,
     ) else {
         return None;
     };
@@ -174,7 +197,7 @@ fn overview_input(view: &mut EditorView, key: Key) -> Option<OverviewInput> {
             device: key.0,
             parameter: id(353 + key.1 as u32),
         },
-        raw_repeat,
+        input.repeat,
     ) else {
         return None;
     };
@@ -188,7 +211,7 @@ fn overview_input(view: &mut EditorView, key: Key) -> Option<OverviewInput> {
             device: key.0,
             parameter: id(57 + key.1 as u32),
         },
-        raw_waveform,
+        input.waveform,
     ) {
         ParameterValue::Choice(choice) => Some(choice),
         _ => None,
@@ -254,7 +277,8 @@ pub(super) fn graph(
     cx: &mut Context<EditorView>,
     device: DeviceId,
     operator: usize,
-) -> Div {
+    parameters: &[NativeDeviceParameterView],
+) -> (Div, Div) {
     let key = (device, operator);
     view.device_panel
         .operator_harmonics
@@ -279,7 +303,10 @@ pub(super) fn graph(
                 overview: OverviewCache::default(),
             }
         });
-    let input = overview_input(view, key);
+    // The owning renderer temporarily removes this device from the view cache.
+    // Render from its borrowed parameters; event handling uses the restored cache.
+    let input = read_overview_input(parameters, operator)
+        .and_then(|input| effective_overview_input(view, key, input));
     if let Some(input) = input {
         let entity = view.device_panel.operator_harmonics[&key].entity.clone();
         let values = input.amplitudes;
@@ -287,20 +314,13 @@ pub(super) fn graph(
         let _ = entity.update(cx, |editor, cx| editor.set_values(values, count, cx));
     }
     let overview = input.map_or_else(div, |input| overview(view, key, input));
-    div()
+    let painter = div()
         .w_full()
         .h_full()
-        .flex()
-        .flex_col()
-        .child(div().h(px(22.0)).w_full().flex_shrink_0().child(overview))
-        .child(
-            div()
-                .flex_1()
-                .w_full()
-                .min_h(px(0.0))
-                .child(view.device_panel.operator_harmonics[&key].entity.clone()),
-        )
+        .child(view.device_panel.operator_harmonics[&key].entity.clone());
+    (painter, overview)
 }
+
 fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
     let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
         return div();

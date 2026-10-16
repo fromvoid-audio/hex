@@ -19,7 +19,11 @@ A stroke uses the existing 64-parameter snapshot gesture: preview is transient,
 commit adds one history entry, and save/Undo/navigation use existing gesture
 barriers. Snapshot patching preserves host input/output gain staging through
 metadata migration. The harmonic tool row stays inside the graph area, above
-the shared stationary page tabs; rendered bounds guard against overlap. Cached User values, range and Repeat survive Undo, Redo and save/open.
+the shared stationary page tabs; rendered bounds guard against overlap. The top
+field is reserved for painting; the waveform overview sits beside the wave
+selector below the tabs, with repeat beside feedback. Hex retains its semantic
+colors, controls and bundled typography. Cached User values, range and Repeat
+survive Undo, Redo and save/open.
 Painting a builtin seeds its magnitudes and selects User. Choosing a builtin
 retains the last User bank; choosing User restores it. Painting a builtin again
 starts a fresh bank from that builtin. Sine seeds the fundamental, saw 1/n,
@@ -96,7 +100,14 @@ preserve f64 coefficient precision, voice admission and owned twin bytes.
 
 The waveform overview caches bounded plotted geometry per control, keyed by exact
 custom amplitudes, range, Repeat and preview ownership or builtin choice. Parameter
-values are borrowed in one scan and shared by the bars and overview. Theme style
+values are borrowed in one scan and shared by the bars and overview. During
+rendering, this scan uses the current borrowed device parameters: the generic
+instrument renderer temporarily removes its cache entry while composing the
+view. Event handling can read that cache after composition. Reading the absent
+cache during composition previously left the bars and overview stale even when
+a mouse stroke changed canonical state. The rendered regression now adjusts a
+painted bar by keyboard after a redraw and covers the restored 16-partial range.
+Theme style
 is rebuilt at render time; unchanged input does not recompute the Fourier preview.
 
 ## Verification and limits

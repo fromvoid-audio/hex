@@ -3188,3 +3188,19 @@ passed with clean identical source digestba1bd16caf4c2098f93016214e2799bbe9d988d
 it remains valid for that earlier candidate. The integrated candidate requires
 a fresh exact-source run. Native installation was safely refused while hex
 was running; no force-quit, replacement, reload or native acceptance occurred.
+
+
+## 16 October 2026 — harmonic painter display repair
+
+Native testing of PR158 candidate ce4788f8 found status-bar edits without visible
+harmonic painting. The instrument renderer temporarily removes its cached view
+during composition; the harmonic graph read that absent cache, so it never
+refreshed bars or the waveform preview. The focused repair passes the current
+borrowed parameter view into rendering and retains cached lookup for events.
+A rendered keyboard adjustment after painting/redraw reproduces stale widget
+values before the fix; additional coverage exercises a restored 16-partial bank.
+The oscillator layout reserves the upper field for painting and moves the small
+wave preview beside its selector below the stationary tabs, retaining Hex's theme.
+Targeted/full CI and a fresh optimized stable-path candidate are required; native
+painting, appearance and listening must be retested. No new native acceptance or
+merge is claimed, and the dense high-rate/FM CPU limitation remains open.
