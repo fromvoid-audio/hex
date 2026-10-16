@@ -1,3 +1,27 @@
+## project-wide selection feedback — 17 october 2026
+
+Optimized candidate `17ce787dc7ef892b8d9876f811d70663ca2b4f68` passed all 20
+local CI steps and the unchanged native 360-row 1/100-track protocol, with zero
+failures (320 measured, 40 warmup). The original 100-track selection median was
+32.461–32.746 ms. The fixed candidate measures:
+
+| 100-track case | median ms | p95 ms | maximum ms |
+| --- | ---: | ---: | ---: |
+| copy | 4.742 | 6.208 | 7.153 |
+| cut | 4.789 | 6.991 | 9.232 |
+| replace-paste | 4.723 | 9.466 | 9.847 |
+| ripple-insert | 4.937 | 6.948 | 9.564 |
+
+All 160 measured 100-track selections are below the 16.67 ms paint budget in this
+capture. Cached clip scenes preserve live selection overlays; PR267 removes a
+redundant geometry-key invalidation after prepaint. The cold-frame regression
+fails before the fix and passes afterward without additional settling.
+[All six metrics, 1-track comparison, raw rows, failed intermediate run and provenance](evidence/time-selection-2026-10-17/report.md).
+Same fixtures and native harness; PR263 intentionally corrects the main-lane
+selection endpoint. Synthetic in-process input, offline audio, uncontrolled host
+load and native paint/following-frame bounds do not establish physical display,
+GPU or audio deadlines. No outliers were removed.
+
 ## Project-wide selection — 16 October 2026
 
 The optimized native 1/100-track mixed audio/MIDI capture completed360rows

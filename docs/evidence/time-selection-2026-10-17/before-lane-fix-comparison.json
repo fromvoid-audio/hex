@@ -1,0 +1,786 @@
+{
+  "native_first_paint_p95_target_ms": 16.67,
+  "all_100_track_cases_meet_p95_target": false,
+  "scope": "in-process synthetic dispatch to native paint; excludes physical input/display/GPU/audio deadlines",
+  "comparisons": [
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 7.077,
+        "p95": 9.199,
+        "maximum": 9.525
+      },
+      "after_ms": {
+        "median": 4.224,
+        "p95": 8.203,
+        "maximum": 8.89
+      },
+      "median_speedup": 1.6754261363636365
+    },
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 9.186,
+        "p95": 11.98,
+        "maximum": 12.407
+      },
+      "after_ms": {
+        "median": 10.6795,
+        "p95": 11.885,
+        "maximum": 14.623
+      },
+      "median_speedup": 0.8601526288683927
+    },
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 5.412,
+        "p95": 18.335,
+        "maximum": 19.214
+      },
+      "after_ms": {
+        "median": 6.389,
+        "p95": 20.303,
+        "maximum": 22.169
+      },
+      "median_speedup": 0.8470809203318204
+    },
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 9.048,
+        "p95": 19.866,
+        "maximum": 20.783
+      },
+      "after_ms": {
+        "median": 11.143,
+        "p95": 21.414,
+        "maximum": 23.246
+      },
+      "median_speedup": 0.8119895898770528
+    },
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 35.251,
+        "p95": 42.967,
+        "maximum": 43.568
+      },
+      "after_ms": {
+        "median": 27.96,
+        "p95": 35.318,
+        "maximum": 36.712
+      },
+      "median_speedup": 1.2607653791130187
+    },
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 36.5925,
+        "p95": 44.371,
+        "maximum": 45.038
+      },
+      "after_ms": {
+        "median": 28.948,
+        "p95": 36.366,
+        "maximum": 37.64
+      },
+      "median_speedup": 1.264076965593478
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 6.97,
+        "p95": 8.768,
+        "maximum": 15.013
+      },
+      "after_ms": {
+        "median": 4.1655,
+        "p95": 6.781,
+        "maximum": 7.497
+      },
+      "median_speedup": 1.6732685151842517
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 8.988,
+        "p95": 11.433,
+        "maximum": 16.744
+      },
+      "after_ms": {
+        "median": 10.7115,
+        "p95": 12.465,
+        "maximum": 14.831
+      },
+      "median_speedup": 0.839098165523036
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 5.3405,
+        "p95": 17.319,
+        "maximum": 18.456
+      },
+      "after_ms": {
+        "median": 6.8765,
+        "p95": 18.287,
+        "maximum": 20.293
+      },
+      "median_speedup": 0.776630553333818
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 9.1155,
+        "p95": 18.706,
+        "maximum": 19.777
+      },
+      "after_ms": {
+        "median": 11.213,
+        "p95": 19.358,
+        "maximum": 21.338
+      },
+      "median_speedup": 0.812940337108713
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 32.0985,
+        "p95": 37.483,
+        "maximum": 43.492
+      },
+      "after_ms": {
+        "median": 26.339,
+        "p95": 35.22,
+        "maximum": 35.695
+      },
+      "median_speedup": 1.21866813470519
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 33.1675,
+        "p95": 38.528,
+        "maximum": 44.653
+      },
+      "after_ms": {
+        "median": 27.435,
+        "p95": 36.067,
+        "maximum": 36.484
+      },
+      "median_speedup": 1.2089484235465646
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 7.0615,
+        "p95": 8.848,
+        "maximum": 9.655
+      },
+      "after_ms": {
+        "median": 3.9375,
+        "p95": 8.52,
+        "maximum": 9.303
+      },
+      "median_speedup": 1.7933968253968253
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 8.9665,
+        "p95": 12.471,
+        "maximum": 15.383
+      },
+      "after_ms": {
+        "median": 10.4835,
+        "p95": 13.657,
+        "maximum": 15.323
+      },
+      "median_speedup": 0.855296418180951
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 5.6525,
+        "p95": 9.844,
+        "maximum": 22.428
+      },
+      "after_ms": {
+        "median": 6.186,
+        "p95": 9.394,
+        "maximum": 12.171
+      },
+      "median_speedup": 0.9137568703524087
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 9.305,
+        "p95": 13.081,
+        "maximum": 24.56
+      },
+      "after_ms": {
+        "median": 10.867,
+        "p95": 12.97,
+        "maximum": 16.663
+      },
+      "median_speedup": 0.8562620778503727
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 28.028,
+        "p95": 37.47,
+        "maximum": 39.671
+      },
+      "after_ms": {
+        "median": 24.7555,
+        "p95": 30.849,
+        "maximum": 37.861
+      },
+      "median_speedup": 1.1321928460342146
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 29.773,
+        "p95": 39.065,
+        "maximum": 41.527
+      },
+      "after_ms": {
+        "median": 26.9485,
+        "p95": 31.906,
+        "maximum": 38.836
+      },
+      "median_speedup": 1.1048110284431416
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 7.0705,
+        "p95": 9.256,
+        "maximum": 10.117
+      },
+      "after_ms": {
+        "median": 4.4465,
+        "p95": 7.732,
+        "maximum": 13.484
+      },
+      "median_speedup": 1.5901270662318678
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 9.2605,
+        "p95": 11.103,
+        "maximum": 11.878
+      },
+      "after_ms": {
+        "median": 10.734,
+        "p95": 12.465,
+        "maximum": 15.947
+      },
+      "median_speedup": 0.8627259176448667
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 5.0675,
+        "p95": 6.373,
+        "maximum": 7.537
+      },
+      "after_ms": {
+        "median": 5.2915,
+        "p95": 7.458,
+        "maximum": 11.272
+      },
+      "median_speedup": 0.9576679580459228
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 9.01,
+        "p95": 11.267,
+        "maximum": 12.169
+      },
+      "after_ms": {
+        "median": 10.1665,
+        "p95": 12.203,
+        "maximum": 15.231
+      },
+      "median_speedup": 0.8862440367874883
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 28.348,
+        "p95": 40.031,
+        "maximum": 43.788
+      },
+      "after_ms": {
+        "median": 25.43,
+        "p95": 32.82,
+        "maximum": 38.531
+      },
+      "median_speedup": 1.114746362563901
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 29.883,
+        "p95": 41.799,
+        "maximum": 45.346
+      },
+      "after_ms": {
+        "median": 27.136,
+        "p95": 33.81,
+        "maximum": 39.553
+      },
+      "median_speedup": 1.101230837264151
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 32.4605,
+        "p95": 35.286,
+        "maximum": 40.92
+      },
+      "after_ms": {
+        "median": 4.6755,
+        "p95": 9.429,
+        "maximum": 10.694
+      },
+      "median_speedup": 6.942679927280505
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 38.6725,
+        "p95": 42.877,
+        "maximum": 46.158
+      },
+      "after_ms": {
+        "median": 9.27,
+        "p95": 13.659,
+        "maximum": 14.472
+      },
+      "median_speedup": 4.171790722761597
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 25.8225,
+        "p95": 30.573,
+        "maximum": 49.384
+      },
+      "after_ms": {
+        "median": 21.6555,
+        "p95": 25.251,
+        "maximum": 40.955
+      },
+      "median_speedup": 1.1924222483895546
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 31.49,
+        "p95": 35.837,
+        "maximum": 56.41
+      },
+      "after_ms": {
+        "median": 26.959,
+        "p95": 30.982,
+        "maximum": 47.234
+      },
+      "median_speedup": 1.1680700322712267
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 75.2905,
+        "p95": 82.342,
+        "maximum": 87.539
+      },
+      "after_ms": {
+        "median": 65.322,
+        "p95": 71.962,
+        "maximum": 84.573
+      },
+      "median_speedup": 1.1526055540246778
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 80.7375,
+        "p95": 88.963,
+        "maximum": 94.528
+      },
+      "after_ms": {
+        "median": 70.405,
+        "p95": 77.482,
+        "maximum": 105.228
+      },
+      "median_speedup": 1.1467580427526454
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 32.6495,
+        "p95": 38.573,
+        "maximum": 44.885
+      },
+      "after_ms": {
+        "median": 5.649,
+        "p95": 28.229,
+        "maximum": 30.131
+      },
+      "median_speedup": 5.779695521331209
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 39.1315,
+        "p95": 45.874,
+        "maximum": 52.984
+      },
+      "after_ms": {
+        "median": 10.102,
+        "p95": 34.284,
+        "maximum": 36.151
+      },
+      "median_speedup": 3.873638883389428
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 26.5465,
+        "p95": 30.385,
+        "maximum": 34.224
+      },
+      "after_ms": {
+        "median": 21.819,
+        "p95": 24.929,
+        "maximum": 35.09
+      },
+      "median_speedup": 1.216668958247399
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 31.869,
+        "p95": 36.997,
+        "maximum": 41.082
+      },
+      "after_ms": {
+        "median": 26.91,
+        "p95": 30.783,
+        "maximum": 39.736
+      },
+      "median_speedup": 1.1842809364548494
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 62.311,
+        "p95": 69.755,
+        "maximum": 76.263
+      },
+      "after_ms": {
+        "median": 54.392,
+        "p95": 59.069,
+        "maximum": 74.196
+      },
+      "median_speedup": 1.1455912634210914
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 66.426,
+        "p95": 73.336,
+        "maximum": 81.866
+      },
+      "after_ms": {
+        "median": 58.2255,
+        "p95": 63.925,
+        "maximum": 80.4
+      },
+      "median_speedup": 1.1408403534533837
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 32.7345,
+        "p95": 36.607,
+        "maximum": 38.212
+      },
+      "after_ms": {
+        "median": 5.542,
+        "p95": 9.188,
+        "maximum": 27.574
+      },
+      "median_speedup": 5.90662215806568
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 39.3025,
+        "p95": 43.886,
+        "maximum": 44.629
+      },
+      "after_ms": {
+        "median": 10.117,
+        "p95": 14.053,
+        "maximum": 33.744
+      },
+      "median_speedup": 3.884797864979737
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 24.978,
+        "p95": 27.476,
+        "maximum": 28.456
+      },
+      "after_ms": {
+        "median": 22.097,
+        "p95": 24.927,
+        "maximum": 25.981
+      },
+      "median_speedup": 1.1303796895506177
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 30.374,
+        "p95": 32.957,
+        "maximum": 34.749
+      },
+      "after_ms": {
+        "median": 26.9365,
+        "p95": 30.623,
+        "maximum": 32.141
+      },
+      "median_speedup": 1.1276149462625062
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 75.923,
+        "p95": 83.219,
+        "maximum": 88.247
+      },
+      "after_ms": {
+        "median": 59.8595,
+        "p95": 70.494,
+        "maximum": 70.832
+      },
+      "median_speedup": 1.2683533941980805
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 81.5005,
+        "p95": 88.877,
+        "maximum": 94.778
+      },
+      "after_ms": {
+        "median": 64.705,
+        "p95": 75.749,
+        "maximum": 76.085
+      },
+      "median_speedup": 1.259570357777606
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "metric": "selection_first_paint_us",
+      "before_ms": {
+        "median": 32.746,
+        "p95": 37.582,
+        "maximum": 39.837
+      },
+      "after_ms": {
+        "median": 5.08,
+        "p95": 8.52,
+        "maximum": 27.392
+      },
+      "median_speedup": 6.446062992125984
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "metric": "selection_following_frame_us",
+      "before_ms": {
+        "median": 39.387,
+        "p95": 43.558,
+        "maximum": 51.407
+      },
+      "after_ms": {
+        "median": 9.999,
+        "p95": 13.382,
+        "maximum": 33.191
+      },
+      "median_speedup": 3.939093909390939
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "metric": "operation_first_paint_us",
+      "before_ms": {
+        "median": 24.9905,
+        "p95": 26.908,
+        "maximum": 32.374
+      },
+      "after_ms": {
+        "median": 22.119,
+        "p95": 24.778,
+        "maximum": 25.787
+      },
+      "median_speedup": 1.1298205162982051
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "metric": "operation_first_following_frame_us",
+      "before_ms": {
+        "median": 30.519,
+        "p95": 32.838,
+        "maximum": 41.223
+      },
+      "after_ms": {
+        "median": 27.2565,
+        "p95": 29.742,
+        "maximum": 32.189
+      },
+      "median_speedup": 1.119696219250454
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "metric": "operation_ui_completion_paint_us",
+      "before_ms": {
+        "median": 76.2955,
+        "p95": 82.642,
+        "maximum": 99.777
+      },
+      "after_ms": {
+        "median": 59.3205,
+        "p95": 67.796,
+        "maximum": 67.918
+      },
+      "median_speedup": 1.286157399212751
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "metric": "operation_completion_following_frame_us",
+      "before_ms": {
+        "median": 81.816,
+        "p95": 88.436,
+        "maximum": 106.451
+      },
+      "after_ms": {
+        "median": 64.213,
+        "p95": 73.01,
+        "maximum": 75.072
+      },
+      "median_speedup": 1.27413452104714
+    }
+  ],
+  "selection_range_comparison": {
+    "baseline": [
+      529092,
+      1539570
+    ],
+    "measured": [
+      529092,
+      1537596
+    ],
+    "reason": "Merged PR263 fixes project-scope gesture projection to use the main lane consistently. Physical input coordinates, fixture bytes and native harness are unchanged; validate uniform range within each complete run rather than require the old buggy endpoint."
+  }
+}

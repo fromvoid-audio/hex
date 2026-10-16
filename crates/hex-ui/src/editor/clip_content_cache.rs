@@ -112,6 +112,10 @@ impl Render for ClipContents {
                 else {
                     return div().size_full();
                 };
+                // Lane prepaint runs after key construction. Remember the
+                // geometry consumed by this build so the next selection-only
+                // draw does not invalidate an already-current clip scene.
+                self.key.lane = view.drag_lanes.get(&self.key.track).copied();
                 view.build_clip_contents(
                     &self.snapshot,
                     track,
