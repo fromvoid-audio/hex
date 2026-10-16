@@ -96,6 +96,7 @@ fn real_chain_admission_refuses_actual_proposed_payload_before_any_twin_factory(
         matrix: StereoMatrix::identity(),
         bypassed: false,
         sample_rate: 48000,
+        meter: Default::default(),
         configuration: Some(Arc::new(state)),
         definition: Some(Arc::new(OvercapProbe(calls.clone()))),
     };

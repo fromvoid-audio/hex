@@ -82,4 +82,6 @@ safe latency epoch and path compensation in28/PR184, serial/parallel/Return/bypa
 alignment and refused-handoff rollback, actual registered callback probes,
 release performance and native/reference/listening acceptance. Public/persisted
 oversampling stays absent; no silent off/bypass fallback or zero latency claim.
-Blocked/draft HOLD prohibits evidence registration/readiness/merge/Done/deploy.
+The finite study may merge after full exact-source checks under AGENTS.md.
+Production oversampling remains unimplemented and parent #2252 stays open; source
+merge supplies no feature, native/reference, deadline or latency acceptance.
