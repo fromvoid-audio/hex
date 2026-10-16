@@ -1,3 +1,14 @@
+## knob history shortcut coverage — PR171 / #2374, 16 october 2026
+
+Strengthened the existing rendered Operator shared-control history fixture to use
+actual keyboard shortcuts for drag and typed edits, immediate Undo after typed
+commit/Tab focus movement, one-entry restoration and save/reopen after Redo. The
+current representative paths pass; the original unspecified native report is not
+reproduced, and no production history change or generic bug fix is claimed.
+The user will file a specific recurrence if observed. Full exact-source checks
+are recorded with PR171; native input acceptance remains separate. Pulse requires
+reauthentication here; no ticket completion is claimed.
+
 ## controlled CLAP fixture tooling — PR199 / #20, 16 october 2026
 
 Integrated the isolated format-owned supervisor/native helpers and preserved
