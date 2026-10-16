@@ -605,9 +605,19 @@ mod window_tests {
             assert!(view.acknowledge_device_gesture(&preview_ack))
         });
 
+        let export_control = hex_session::service::ExportControl::default();
         editor.update(cx, |view, _| {
             assert!(view.enqueue_device_barrier(Request::SaveNew(save_path.clone())));
-            assert!(view.enqueue_device_barrier(Request::Export(export_path.clone())));
+            assert!(view.enqueue_device_barrier(Request::ExportRange {
+                path: export_path.clone(),
+                start: 0,
+                frames: Some(256),
+                signal: hex_session::service::ExportSignal::Main,
+                control: export_control.clone(),
+                overwrite: false,
+            }));
+            view.export_control = Some(export_control.clone());
+            view.export_window = Some(handle);
             view.saving_project = true;
             view.export_pending = true;
             assert!(view.pump_device_gesture());
@@ -619,11 +629,14 @@ mod window_tests {
             assert!(view.acknowledge_device_gesture(&commit_ack));
             assert!(!view.saving_project);
             assert!(!view.export_pending);
+            assert!(view.export_control.is_none());
+            assert!(view.export_window.is_none());
             assert!(view.device_gesture_barriers.is_empty());
             assert!(view.pending_requests.is_empty());
             assert!(view.error.is_some());
         });
 
+        assert!(export_control.is_cancelled());
         assert!(
             !save_path.exists(),
             "failed gesture must not save old value"

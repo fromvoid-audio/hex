@@ -1,3 +1,14 @@
+## export finalization refusal — follow-up to PR152, 16 october 2026
+
+The new range/stem request now follows the legacy export refusal contract when a
+device gesture fails to finalize: cancel/discard before service submission and
+clear pending control/window state. Extending the existing queue regression
+reproduced a retained third request before the repair. The actual compile-refusal
+fixture now uses range export and checks cancellation, UI cleanup, no file and no
+export event. Focused feature tests pass; final full CI is recorded with the fix PR.
+Native interaction acceptance remains separate. Pulse is unavailable in this
+workspace because its connector requires reauthentication; no ticket write is claimed.
+
 ## Operator held-note retest preparation — #2372 / PR247, 16 october 2026
 
 The supported retest route is an authored sustained Arrangement MIDI note with
