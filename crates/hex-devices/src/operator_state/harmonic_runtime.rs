@@ -48,7 +48,7 @@ impl Factory {
                 .try_into()
                 .map_err(|_| DeviceContractError::MalformedState)?,
             target: Spectrum::prepare(&settings),
-            filter: FilterTrajectory::new(settings.filter, rate),
+            filter: FilterTrajectory::new(settings.filter, rate)?,
             settings,
             table,
             phase_table: harmonic_phase_table(),

@@ -192,7 +192,7 @@ fn first_filter_activation_uses_prepared_target_coefficients_and_dry_source() {
             ParameterValue::Float(6500.0),
         )
         .unwrap();
-    let target = FilterTrajectory::new(settings, 48000);
+    let target = FilterTrajectory::new(settings, 48000).unwrap();
     let mut actual = FilterTrajectory::inactive(48000);
     actual.retarget(target);
     let mut expected = target.target;
@@ -200,4 +200,11 @@ fn first_filter_activation_uses_prepared_target_coefficients_and_dry_source() {
     assert_eq!(actual.frame(), expected);
     assert_eq!(actual.target, target.target);
     assert!(actual.armed);
+}
+
+#[test]
+fn harmonic_filter_preparation_refuses_unsupported_rates() {
+    for rate in [0, 7999, 192001, u32::MAX] {
+        assert!(FilterTrajectory::new(crate::operator_filter::Settings::default(), rate).is_err());
+    }
 }

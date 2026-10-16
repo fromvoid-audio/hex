@@ -20,18 +20,18 @@ impl Trajectory {
         }
     }
 
-    pub fn new(settings: Settings, rate: u32) -> Self {
-        let frame = settings
-            .prepare(rate)
-            .expect("validated filter settings")
-            .frame;
-        Self {
+    pub fn new(
+        settings: Settings,
+        rate: u32,
+    ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
+        let frame = settings.prepare(rate)?.frame;
+        Ok(Self {
             from: frame,
             target: frame,
             elapsed: 0,
             frames: (rate * 5 + 500) / 1000,
             armed: settings.armed,
-        }
+        })
     }
     pub fn frame(self) -> Frame {
         self.from.interpolate(

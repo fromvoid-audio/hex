@@ -25,11 +25,16 @@ struct Stroke {
 fn partial(operator: usize, index: usize) -> hex_lattice_contract::ParameterId {
     id(93 + operator as u32 * 64 + index as u32)
 }
-fn snapshot(operator: usize, values: [f32; 64]) -> DeviceParameterSnapshot {
+fn snapshot(
+    operator: usize,
+    values: [f32; 64],
+) -> Result<DeviceParameterSnapshot, hex_lattice_contract::DeviceContractError> {
+    if operator >= 4 {
+        return Err(hex_lattice_contract::DeviceContractError::UnknownParameter);
+    }
     DeviceParameterSnapshot::new(&std::array::from_fn::<_, 64, _>(|i| {
         (partial(operator, i), ParameterValue::Float(values[i]))
     }))
-    .expect("64 unique bounded harmonic parameters")
 }
 fn values(view: &mut EditorView, key: Key) -> Option<([f32; 64], usize)> {
     let parameters = view
@@ -223,7 +228,9 @@ fn tool_action(view: &mut EditorView, key: Key, index: usize, cx: &mut Context<E
     for value in &mut values[..count] {
         *value /= peak;
     }
-    let snapshot = snapshot(key.1, values);
+    let Ok(snapshot) = snapshot(key.1, values) else {
+        return;
+    };
     if view
         .device_gesture
         .begin_snapshot(view.project_generation, key.0, snapshot)
@@ -269,18 +276,31 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
         let Some((values, count)) = values(view, key) else {
             return;
         };
-        let Ok(gesture_key) = view.device_gesture.begin_snapshot(
-            view.project_generation,
-            key.0,
-            snapshot(key.1, values),
-        ) else {
+        let Ok(snapshot) = snapshot(key.1, values) else {
             return;
         };
-        let control = view.device_panel.operator_harmonics.get_mut(&key).unwrap();
+        let Some(mask) = view
+            .device_panel
+            .operator_harmonics
+            .get(&key)
+            .map(|c| c.mask)
+        else {
+            return;
+        };
+        let Ok(gesture_key) =
+            view.device_gesture
+                .begin_snapshot(view.project_generation, key.0, snapshot)
+        else {
+            return;
+        };
+        let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
+            let _ = view.cancel_device_gesture();
+            return;
+        };
         control.stroke = Some(Stroke {
             values,
             count,
-            mask: control.mask,
+            mask,
             first: ((event.position[0] * count as f32) as usize).min(count - 1),
             last: event.position,
             single: event.modifiers.shift,
@@ -307,16 +327,19 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
         let _ = view.cancel_device_gesture();
     } else {
         paint(&mut stroke, event.position);
-        let values = snapshot(key.1, stroke.values);
+        let Ok(values) = snapshot(key.1, stroke.values) else {
+            let _ = view.cancel_device_gesture();
+            return;
+        };
         if event.phase == BarEditorPhase::Commit {
             let _ = view.device_gesture.finish_snapshot(values);
         } else {
             let _ = view.device_gesture.change_snapshot(values);
-            view.device_panel
-                .operator_harmonics
-                .get_mut(&key)
-                .unwrap()
-                .stroke = Some(stroke);
+            if let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) {
+                control.stroke = Some(stroke);
+            } else {
+                let _ = view.cancel_device_gesture();
+            }
         }
     }
     cx.notify();
