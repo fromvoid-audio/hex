@@ -23,6 +23,7 @@ struct ViewCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
     text_style: TextStyle,
+    epoch: u64,
 }
 
 impl<V: Render> Element for Entity<V> {
@@ -84,6 +85,7 @@ pub struct AnyView {
     entity: AnyEntity,
     render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
     cached_style: Option<Rc<StyleRefinement>>,
+    cache_epoch: u64,
 }
 
 impl<V: Render> From<Entity<V>> for AnyView {
@@ -92,6 +94,7 @@ impl<V: Render> From<Entity<V>> for AnyView {
             entity: value.into_any(),
             render: any_view::render::<V>,
             cached_style: None,
+            cache_epoch: 0,
         }
     }
 }
@@ -100,8 +103,16 @@ impl AnyView {
     /// Indicate that this view should be cached when using it as an element.
     /// When using this method, the view's previous layout and paint will be recycled from the previous frame if [Context::notify] has not been called since it was rendered.
     /// The one exception is when [Window::refresh] is called, in which case caching is ignored.
-    pub fn cached(mut self, style: StyleRefinement) -> Self {
+    pub fn cached(self, style: StyleRefinement) -> Self {
+        self.cached_with_epoch(style, 0)
+    }
+
+    /// Cache this view, rebuilding in the current draw when the caller's epoch changes.
+    /// The epoch preserves view and element identity, including pending input state.
+    /// Changing it does not schedule a frame; the caller must notify its owner.
+    pub fn cached_with_epoch(mut self, style: StyleRefinement, epoch: u64) -> Self {
         self.cached_style = Some(style.into());
+        self.cache_epoch = epoch;
         self
     }
 
@@ -122,6 +133,7 @@ impl AnyView {
                 entity,
                 render: self.render,
                 cached_style: self.cached_style,
+                cache_epoch: self.cache_epoch,
             }),
         }
     }
@@ -210,6 +222,7 @@ impl Element for AnyView {
                         && element_state.cache_key.content_mask == content_mask
                         && element_state.cache_key.text_style == text_style
                         && !window.rendered_frame.accessibility.invalid
+                        && element_state.cache_key.epoch == self.cache_epoch
                         && !window.dirty_views.contains(&self.entity_id())
                         && !window.refreshing
                     {
@@ -245,6 +258,7 @@ impl Element for AnyView {
                                 bounds,
                                 content_mask,
                                 text_style,
+                                epoch: self.cache_epoch,
                             },
                         },
                     )
@@ -324,6 +338,7 @@ impl AnyWeakView {
             entity,
             render: self.render,
             cached_style: None,
+            cache_epoch: 0,
         })
     }
 }

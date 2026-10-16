@@ -71,13 +71,15 @@ and full final-source local CI remain separate evidence; a compiling harness doe
 not establish any timing result. Record actual numbers without silently expanding
 this measurement PR into optimization work.
 
-An existing free-snap main-cursor projection bug was reproduced during setup:
+A free-snap main-cursor projection bug was reproduced during the original setup:
 the main lane is one pixel wider than regular lanes, so the same mouse-down/up
 position can create a tiny nonempty range (38400–38426 in the focused UI fixture).
 The main down uses main geometry while up reprojects through a regular lane.
 The untimed snapped cursor setup avoids this known defect without changing editing
-behavior. It does not claim free-snap click correctness. Pulse #2647 and its
-separate [draft PR #263](https://github.com/PORTALSURFER/hex/pull/263) track the fix.
+behavior. It does not claim free-snap click correctness. Pulse #2647's
+separate [merged PR #263](https://github.com/PORTALSURFER/hex/pull/263) fixes that
+projection on current main. The original untimed snapped-cursor setup remains
+unchanged so the measurement protocol stays comparable.
 
 ## Recorded native capture
 

@@ -396,7 +396,7 @@ impl EditorView {
                         }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
-                        let started = cursor_down_entity.update(cx, |view, _| {
+                        let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
                             let move_started = view.begin_main_time_range_move_gesture(x, y)
                                 || view.begin_time_range_move_gesture(x, y);
                             let started = if move_started {
@@ -415,13 +415,18 @@ impl EditorView {
                             };
                             if started {
                                 view.focus.focus(window);
+                                if !move_started {
+                                    cx.notify();
+                                }
                             }
-                            started
+                            (started, move_started)
                         });
                         if started {
-                            // Selection handles own the gesture even when a clip is underneath.
+                            // Selection updates invalidate the live owner/overlays only.
                             cx.stop_propagation();
-                            window.refresh();
+                            if moving {
+                                window.refresh();
+                            }
                         }
                     });
                     let cursor_move_entity = measure_entity.clone();
@@ -431,17 +436,25 @@ impl EditorView {
                         }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
-                        let changed = cursor_move_entity.update(cx, |view, _| {
-                            view.update_time_range_move_gesture(x, y, event.modifiers.platform)
-                                || view.update_time_selection_gesture(
-                                    x,
-                                    y,
-                                    event.modifiers.platform,
-                                )
+                        let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                            let moving = view.time_range_move_gesture.is_some();
+                            let changed =
+                                view.update_time_range_move_gesture(x, y, event.modifiers.platform)
+                                    || view.update_time_selection_gesture(
+                                        x,
+                                        y,
+                                        event.modifiers.platform,
+                                    );
+                            if changed && !moving {
+                                cx.notify();
+                            }
+                            (changed, moving)
                         });
                         if changed {
                             cx.stop_propagation();
-                            window.refresh();
+                            if moving {
+                                window.refresh();
+                            }
                         }
                     });
                     let cursor_up_entity = measure_entity.clone();
@@ -449,7 +462,8 @@ impl EditorView {
                         if !phase.capture() || event.button != MouseButton::Left {
                             return;
                         }
-                        let finished = cursor_up_entity.update(cx, |view, _| {
+                        let (finished, moving) = cursor_up_entity.update(cx, |view, cx| {
+                            let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
                             view.refresh_time_gesture_modifiers(
@@ -463,10 +477,14 @@ impl EditorView {
                                         y,
                                         event.modifiers.platform,
                                     );
-                            view.finish_time_range_move_gesture()
-                                || view.finish_time_selection_gesture()
+                            let finished = view.finish_time_range_move_gesture()
+                                || view.finish_time_selection_gesture();
+                            if finished && !moving {
+                                cx.notify();
+                            }
+                            (finished, moving)
                         });
-                        if finished {
+                        if finished && moving {
                             window.refresh();
                         }
                     });

@@ -127,3 +127,15 @@ refuses and the two owners drop exactly once. This fixture does not open a windo
 or exercise actual AppKit close; it remains unrun until the exact Mac gate.
 Parent4308 full Linux CI is historical for the corrected head. Retain the original
 quarantined backend and default-stack failure evidence; do not relabel either.
+
+## cached-view integration — 16 october 2026
+
+PR188 also includes merged dense-selection cache PR264. Cached prepaint reuse
+requires both a matching caller epoch and a valid prior accessibility snapshot;
+neither condition replaces the other. Existing cached-accessibility recovery
+and clip-scene epoch/painter-order regressions exercise both paths. Test-only
+selector insertion history and semantic prepaint ranges remain independent.
+The combined vendor patch is regenerated from the verified original0.2.2 archive
+and checked by applying it to that original source and comparing every declared
+patched/added file hash. These checks do not execute AppKit or satisfy the three
+Mac lifecycle tests, native compilation or AX/VoiceOver acceptance.
