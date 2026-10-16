@@ -15,7 +15,8 @@ ALLOWED = {
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project', 'hex-lattice-contract'},
     'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
-    'hex-engine': {'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
+    'hex-warp': set(),
+    'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
@@ -40,6 +41,9 @@ BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'sha2': {'hex-media'},
               # Advisory journal locks stay on the storage/control boundary.
               'fs2': {'hex-storage'}}
+# Build-only hash checks of observed pinned rtrb constructor files. This does
+# not permit cryptography or a new dependency on the stream runtime path.
+BUILD_BOUNDARIES = {'sha2': {'hex-stream'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
@@ -62,7 +66,9 @@ for name, package in packages.items():
             allowed = allowed | DEV_ALLOWED.get(name, set())
         if target in packages and target not in allowed:
             errors.append(f'{name} -> {target}: violates the dependency policy')
-        if target in BOUNDARIES and name not in BOUNDARIES[target]:
+        if (target in BOUNDARIES and name not in BOUNDARIES[target]
+                and not (dep['kind'] == 'build'
+                         and name in BUILD_BOUNDARIES.get(target, set()))):
             errors.append(f'{name}: {target} belongs in its declared platform/UI boundary')
 if errors:
     print('\n'.join(errors), file=sys.stderr)

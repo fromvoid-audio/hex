@@ -37,6 +37,7 @@ QUICK_STEPS = (
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
     Step("ui-style", ("python3", "scripts/check-ui-style.py")),
+    Step("device-layout", ("python3", "scripts/check-device-layout.py")),
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
 
@@ -45,11 +46,11 @@ FULL_STEPS = (
         "runner-tests",
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
     ),
-    *QUICK_STEPS[:3],
-    QUICK_STEPS[3],
+    *QUICK_STEPS,
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
+    Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
     Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "--features", "allocation-probe", "--locked")),
     Step("stream-allocation-probe", ("cargo", "test", "-p", "hex-stream", "--features", "allocation-probe", "--locked")),
     Step("workspace-clippy", ("cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings")),
