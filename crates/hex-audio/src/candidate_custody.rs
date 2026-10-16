@@ -14,6 +14,7 @@ use std::{
 };
 mod eligible;
 pub(crate) use eligible::publication::{
+    Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate,
 };
 pub use eligible::{
@@ -50,6 +51,7 @@ pub struct AudioCandidateRecovery {
 pub enum AudioCandidateReturnKind {
     NeverInstalled,
     FinalActive,
+    Replaced,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -149,9 +151,12 @@ pub(crate) struct ReturnedCandidate {
 }
 /// Only the actual active-slot extraction with both native authorities can mint
 /// this distinct carrier; queue rejection cannot manufacture it.
-pub(crate) struct FinalActiveReturn {
-    stamp: Stamp,
-    owner: AudioCandidateOwner,
+pub(crate) enum FinalActiveReturn {
+    Unclaimed {
+        stamp: Stamp,
+        owner: AudioCandidateOwner,
+    },
+    Eligible(EligibleFinalReturn),
 }
 pub(crate) struct ActiveCandidate {
     stamp: Stamp,
@@ -160,7 +165,10 @@ pub(crate) struct ActiveCandidate {
 impl FinalActiveReturn {
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn identity(&self) -> AudioCandidateIdentity {
-        self.owner.identity()
+        match self {
+            Self::Unclaimed { owner, .. } => owner.identity(),
+            Self::Eligible(value) => value.identity(),
+        }
     }
 }
 impl ActiveCandidate {
@@ -186,7 +194,7 @@ impl ActiveCandidate {
         if !authority.matches(self.stamp.root) {
             return Err(self);
         }
-        Ok(FinalActiveReturn {
+        Ok(FinalActiveReturn::Unclaimed {
             stamp: self.stamp,
             owner: self.owner,
         })
@@ -507,15 +515,23 @@ impl CandidateRoot {
         &self,
         returned: FinalActiveReturn,
     ) -> Result<(), FinalActiveReturn> {
-        let returned = ReturnedCandidate {
-            stamp: returned.stamp,
-            owner: returned.owner,
-            return_kind: AudioCandidateReturnKind::FinalActive,
-        };
-        self.ingest(returned).map_err(|value| FinalActiveReturn {
-            stamp: value.stamp,
-            owner: value.owner,
-        })
+        match returned {
+            FinalActiveReturn::Eligible(value) => self
+                .ingest_eligible(value.into_returned())
+                .map_err(|value| {
+                    FinalActiveReturn::Eligible(EligibleFinalReturn::from_returned(value))
+                }),
+            FinalActiveReturn::Unclaimed { stamp, owner } => self
+                .ingest(ReturnedCandidate {
+                    stamp,
+                    owner,
+                    return_kind: AudioCandidateReturnKind::FinalActive,
+                })
+                .map_err(|value| FinalActiveReturn::Unclaimed {
+                    stamp: value.stamp,
+                    owner: value.owner,
+                }),
+        }
     }
     pub(crate) fn ingest(&self, returned: ReturnedCandidate) -> Result<(), ReturnedCandidate> {
         let mut bank = lock(&self.0.bank);

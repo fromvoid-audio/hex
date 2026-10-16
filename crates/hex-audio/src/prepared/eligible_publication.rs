@@ -133,3 +133,64 @@ impl Control {
 
 #[cfg(test)]
 mod tests;
+
+impl Callback {
+    pub(super) fn advance_eligible_publication(&mut self) {
+        use crate::candidate_custody::InstallDecision;
+        if self.active.is_some() && self.retired.is_full() {
+            return;
+        }
+        #[cfg(test)]
+        let allowed = self.test_admit_candidate;
+        #[cfg(not(test))]
+        let allowed = false;
+        let decision = if !allowed
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
+        {
+            InstallDecision::Refused
+        } else if let Some(next) = self.deferred_eligible.as_mut() {
+            let previous = match self.active.as_mut() {
+                Some(ActivePublication::Eligible(active)) => Some(active),
+                _ => None,
+            };
+            next.prepare_install(previous, &self.candidate_root)
+        } else {
+            return;
+        };
+        match decision {
+            InstallDecision::Retry => {}
+            InstallDecision::Refused => {
+                if let Some(value) = self.deferred_eligible.take() {
+                    self.return_publication(ReturnedPublication::Eligible(
+                        value.reject_before_install(),
+                    ));
+                    self.publication_pending.store(false, Release);
+                }
+            }
+            InstallDecision::Ready => {
+                // Every fallible operation happened while both State Boxes
+                // remained in their persistent callback slots. Fixed moves only.
+                if let Some(next) = self.deferred_eligible.take() {
+                    let revision = next.revision();
+                    let previous = self
+                        .active
+                        .replace(ActivePublication::Eligible(next.into_active()));
+                    if let Some(ActivePublication::Eligible(previous)) = previous {
+                        self.return_publication(ReturnedPublication::Eligible(
+                            previous.return_replaced(),
+                        ));
+                    }
+                    self.publish_active_routes(true);
+                    self.publish_transport();
+                    self.status.render_fault_record.clear();
+                    self.status.render_fault.store(false, Release);
+                    self.status.applied_revision.store(revision, Release);
+                    self.publication_pending.store(false, Release);
+                }
+            }
+        }
+    }
+}

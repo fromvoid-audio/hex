@@ -7,7 +7,9 @@ use hex_engine::{
     AudioCandidateTransfer, AudioStorageLedgerReservation, ClaimedAudioCandidateRuntime,
 };
 use std::sync::atomic::{AtomicU32, AtomicUsize};
+mod active;
 mod disposal;
+pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidatePublicationReservation {
@@ -123,6 +125,7 @@ struct Claims {
     root: CandidateRoot,
     life: Arc<Life>,
     stamp: Stamp,
+    successor_dependency: bool,
 }
 pub(in crate::candidate_custody) struct Header {
     pub(in crate::candidate_custody) revision: u64,
@@ -135,6 +138,7 @@ struct State {
     context_generation: u64,
     policy: crate::prepared::PublicationPolicy,
     runtime: Option<ClaimedAudioCandidateRuntime>,
+    retired_runtime: Option<ClaimedAudioCandidateRuntime>,
     claims: Option<Claims>,
     spare_successor: Option<Claims>,
     covering_successor: Option<Claims>,
@@ -484,6 +488,7 @@ impl super::Custody {
             context_generation,
             policy,
             runtime: None,
+            retired_runtime: None,
             claims: None,
             spare_successor: None,
             covering_successor: None,
@@ -536,11 +541,13 @@ impl super::Custody {
                 root: root.clone(),
                 life: Arc::clone(&slot.life),
                 stamp,
+                successor_dependency: false,
             });
             state.spare_successor = Some(Claims {
                 root: root.clone(),
                 life: Arc::clone(&slot.life),
                 stamp,
+                successor_dependency: false,
             });
         }
         state.runtime = Some(runtime);

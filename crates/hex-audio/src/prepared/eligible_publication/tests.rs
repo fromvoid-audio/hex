@@ -165,3 +165,144 @@ fn terminal_drain_returns_actual_eligible_owner_after_control_first_drop() {
     finish(&mut retirement);
     assert!(root.test_eligible_complete());
 }
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn actual_eligible_active_slot_installs_then_acks_renders_commands_and_returns_after_real_handle() {
+    let _serial = serial();
+    let Some(mut first) = candidate() else { return };
+    let reservation = reservation(&mut first);
+    let first_id = first.identity();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(reservation)
+        .unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.test_admit_candidate = true);
+    let first_ticket = control
+        .stage_eligible_audio_candidate(first, vec![], PublicationPolicy::InheritRuntime, 71)
+        .ok()
+        .unwrap();
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    let measure = allocation_counter::measure(|| {
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+    });
+    assert_eq!(
+        (
+            measure.count_total,
+            measure.bytes_total,
+            measure.count_current,
+            measure.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert!(!control.publication_pending.load(Acquire));
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    data.owner_mut().unwrap().run(|callback, _| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    });
+    assert_eq!(output, [[0.25; 2]; 4]);
+    assert!(control.status.playing.load(Acquire));
+    let second = candidate().unwrap();
+    let second_id = second.identity();
+    let second_ticket = control
+        .stage_eligible_audio_candidate(second, vec![], PublicationPolicy::InheritRuntime, 72)
+        .ok()
+        .unwrap();
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    let measure = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+    });
+    assert_eq!(
+        (
+            measure.count_total,
+            measure.bytes_total,
+            measure.count_current,
+            measure.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 2);
+    assert_eq!(output, [[0.25; 2]; 4]); // same actual inherited runtime path
+    let previous = recover(&mut control, &first_ticket);
+    assert_eq!(previous.disposed.identity(), first_id);
+    assert_eq!(
+        previous.return_kind,
+        crate::AudioCandidateReturnKind::Replaced
+    );
+    drop(previous);
+    for _ in 0..COMMANDS {
+        control.command(PlaybackCommand::Play).unwrap();
+    }
+    control.stop();
+    let measure = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+    });
+    assert_eq!(
+        (
+            measure.count_total,
+            measure.bytes_total,
+            measure.count_current,
+            measure.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(output, [[0.0; 2]; 4]);
+    // Both guards alone cannot mint the completed native handle frontier.
+    drop(data);
+    drop(errors);
+    assert!(!retirement.advance().unwrap());
+    assert!(control.recover_audio_candidate(&second_ticket).is_none());
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    struct Backend(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Backend {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Relaxed);
+        }
+    }
+    let backend = Some(Backend(drops.clone()));
+    let (mut retirement, thread) = std::thread::spawn(move || {
+        let mut retirement = retirement;
+        let mut backend = backend;
+        let mut pending = false;
+        let mut disposed = false;
+        assert!(
+            !crate::lifecycle::test_dispose_backend(
+                &mut backend,
+                &mut pending,
+                &mut disposed,
+                &mut retirement,
+                |_| Ok(())
+            )
+            .unwrap()
+        );
+        assert!(backend.is_none() && disposed && !pending);
+        (retirement, std::thread::current().id())
+    })
+    .join()
+    .unwrap();
+    assert_ne!(thread, std::thread::current().id());
+    assert_eq!(drops.load(Relaxed), 1);
+    let final_bank = recover(&mut control, &second_ticket);
+    assert_eq!(final_bank.disposed.identity(), second_id);
+    assert_eq!(
+        final_bank.return_kind,
+        crate::AudioCandidateReturnKind::FinalActive
+    );
+    drop(final_bank);
+    drop(control);
+    finish(&mut retirement);
+}

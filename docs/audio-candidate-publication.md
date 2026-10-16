@@ -132,6 +132,24 @@ cleanup. Controls exercise full return pressure and Control-first abandonment.
 Queue acceptance advances the submitted revision; rejection does not publish an
 applied ACK or render the candidate.
 
+## same-owner active-slot checkpoint
+
+A private active enum variant keeps the same runtime/State Box. Deferred custody
+holds the candidate through fallible preflight; the actual engine handoff commits
+owner movement and origin journal together. A paired move-only successor claim
+retains the actual successor anchors until the predecessor's return metadata
+normally drops. Returned runtimes and their source banks can finish independently
+while remaining descendant origins continue holding their original archive.
+
+The private borrowed Legacy/Claimed operation view preserves bounded commands,
+priority Stop, route/transport status, gain, auditions and observed rendering on
+one musical owner. It provides no public Playback or owning handle. A headless
+actual-slot override exercises real queue installation, applied ACK, PCM, full
+command pressure and zero total/net allocation. The final actual owner still
+requires the coupled data/error release and completed stream-handle frontier;
+ordinary preinstall rejection cannot create that terminal fact. This checkpoint
+keeps production admission refused until the remaining native witness controls.
+
 ## admission boundary
 
 This intermediate source checkpoint does not enable native admission. Complete native resource-witness gating and resident installation/handoff

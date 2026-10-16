@@ -38,8 +38,26 @@ impl Custody {
                             .is_none_or(|c| c.matches(root, runtime))
                 })
                 && state.revision == slot.life.revision.load(Ordering::Acquire)
-                && state.manifest.is_none()
-                && state.covering_successor.is_none()
+                && state.retired_runtime.is_none()
+                && match returned.kind {
+                    AudioCandidateReturnKind::NeverInstalled
+                    | AudioCandidateReturnKind::FinalActive => {
+                        state.manifest.is_none() && state.covering_successor.is_none()
+                    }
+                    AudioCandidateReturnKind::Replaced => state
+                        .manifest
+                        .as_ref()
+                        .zip(state.covering_successor.as_ref())
+                        .is_some_and(|(manifest, covering)| {
+                            manifest.predecessor() == stamp.owner
+                                && manifest.successor() == covering.stamp.owner
+                                && covering.root.same_root(root)
+                                && covering.successor_dependency
+                                && covering.life.live.load(Ordering::Acquire)
+                                && covering.life.incarnation.load(Ordering::Acquire)
+                                    == covering.stamp.incarnation
+                        }),
+                }
                 && state
                     .spare_successor
                     .as_ref()
