@@ -54,7 +54,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .opacity(0.88);
     if let Some((lines, start, end)) = grid {
-        ghost = ghost.children([clip_grid_layer(&lines, start, end)]);
+        ghost = ghost.children(clip_grid_layer(&lines, start, end));
     }
     if let Some(waveform) = waveform_visual {
         ghost = ghost.children([waveform]);
@@ -155,49 +155,7 @@ fn midi_trim_note_shapes(
 pub(super) const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
 
-pub(super) fn clip_grid_layer(
-    lines: &[super::musical_time::GridLine],
-    start: u64,
-    end: u64,
-) -> Div {
-    if start >= end {
-        return div().absolute().inset_0();
-    }
-    let width = end - start;
-    let children = lines
-        .iter()
-        .filter_map(|line| {
-            let offset = line.frame.checked_sub(start)?;
-            if offset == 0 || offset >= width {
-                return None;
-            }
-            Some(
-                div()
-                    .debug_selector(|| format!("clip-grid-line-{}", line.frame))
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(relative((offset as f64 / width as f64) as f32))
-                    .w(px(if line.meter_marker { 1.5 } else { 1.0 }))
-                    .bg(rgb(if line.meter_marker {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Grid)
-                    }))
-                    .opacity(if line.meter_marker || line.bar_start {
-                        0.42
-                    } else {
-                        0.24
-                    }),
-            )
-        })
-        .collect::<Vec<_>>();
-    div()
-        .debug_selector(|| "clip-musical-grid".to_owned())
-        .absolute()
-        .inset_0()
-        .children(children)
-}
+pub(super) use super::clip_paint::grid_layer as clip_grid_layer;
 
 pub(super) struct ClipViewTimeline<'a> {
     pub(super) viewport: Viewport,
@@ -423,27 +381,16 @@ impl EditorView {
                     view.set_selected_clip(track_id, midi_clip_id, window, cx);
                     cx.notify();
                 }));
-            midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
+            midi = midi.children(clip_grid_layer(grid, visible_start, visible_end));
             midi = midi.tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: description.clone(),
                 })
                 .into()
             });
-            let mut shown = 0;
-            for (x, w, pitch) in note_shapes {
-                shown += 1;
-                let top = f32::from(127_u8.saturating_sub(pitch)) / 128.0;
-                midi = midi.child(
-                    div()
-                        .absolute()
-                        .left(relative(x))
-                        .top(relative(top))
-                        .w(relative(w))
-                        .h(px(2.0))
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-                );
-            }
+            let note_shapes = note_shapes.collect::<Vec<_>>();
+            let shown = note_shapes.len();
+            midi = midi.children(super::clip_paint::note_layer(note_shapes));
             midi_shape_budget = midi_shape_budget.saturating_sub(shown);
             if preview.occurrence_count > shown {
                 midi = midi.child(
@@ -521,7 +468,7 @@ impl EditorView {
                         .border_1()
                         .border_color(rgb(0x000000))
                         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
-                        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                        .children(clip_grid_layer(grid, visible_start, visible_end));
                     let shapes = midi_trim_note_shapes(
                         &state.project,
                         &clip,
@@ -529,19 +476,7 @@ impl EditorView {
                         visible_start,
                         visible_end,
                     );
-                    for (x, shape_width, pitch) in shapes {
-                        let top = f32::from(127_u8.saturating_sub(pitch)) / 128.0;
-                        overlay = overlay.child(
-                            div()
-                                .debug_selector(|| format!("midi-trim-preview-note-{pitch}"))
-                                .absolute()
-                                .left(relative(x))
-                                .top(relative(top))
-                                .w(relative(shape_width))
-                                .h(px(2.0))
-                                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-                        );
-                    }
+                    overlay = overlay.children(super::clip_paint::note_layer(shapes));
                     clip_area = clip_area.children([overlay]);
                 }
             }
@@ -577,7 +512,7 @@ impl EditorView {
                         .border_1()
                         .border_color(rgb(0x000000))
                         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
-                        .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                        .children(clip_grid_layer(grid, visible_start, visible_end));
                     if let Some(waveform) = state.waveforms.get(&asset) {
                         preview = preview.child(super::waveform::waveform_view_cached(
                             waveform,
@@ -622,7 +557,7 @@ impl EditorView {
                     .border_color(rgb(0x000000))
                     .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
                     .opacity(0.88)
-                    .children([clip_grid_layer(grid, visible_start, visible_end)]);
+                    .children(clip_grid_layer(grid, visible_start, visible_end));
                 if let ClipPosition::Audio { .. } = preview.position
                     && let Some(drag) = self
                         .active_clip_drag
@@ -1151,7 +1086,7 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::ClipHover))));
         content = content.border_1().border_color(rgb(0x000000));
         if !active_trim_preview {
-            content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
+            content = content.children(clip_grid_layer(grid, visible_start, visible_end));
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
                 content = content.child(super::waveform::prepared_waveform_view_cached(
                     prepared,

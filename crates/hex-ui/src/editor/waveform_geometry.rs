@@ -11,7 +11,9 @@ use super::waveform::{
     timeline_source_ranges_at,
 };
 
-const MAX_CACHED_WAVEFORM_ENTRIES: usize = 128;
+// A fitted dense viewport has 350 small audio clips while using only a few
+// thousand columns. Retain that working set without lifting the geometry budget.
+const MAX_CACHED_WAVEFORM_ENTRIES: usize = 512;
 const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
 
 /// UI-owned LRU of ready-to-paint waveform geometry. Entries retain their source
@@ -488,6 +490,19 @@ mod tests {
 
         let resized = Bounds::new(extent.origin, size(px(1201.0), extent.size.height));
         assert!(cache.get(key(0, resized), &source).is_none());
+        let scrolled = Bounds::new(
+            point(extent.origin.x, extent.origin.y + px(44.0)),
+            extent.size,
+        );
+        assert!(cache.get(key(0, scrolled), &source).is_none());
+        let scale_changed = waveform_geometry_key(
+            &WaveformMapping::Source { timeline_origin: 0 },
+            0,
+            96_000,
+            extent,
+            1.0,
+        );
+        assert!(cache.get(scale_changed, &source).is_none());
         assert!(cache.get(key(1, extent), &source).is_none());
         let different_source = waveform();
         assert!(cache.get(cache_key, &different_source).is_none());
@@ -547,6 +562,61 @@ mod tests {
         for index in 0..13_u64 {
             assert!(cache.get(key(index * 96_000, extent), &source).is_some());
         }
+    }
+
+    #[test]
+    fn dense_visible_working_set_survives_repeated_selection_paints() {
+        let source = waveform();
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        // The unchanged native fixture paints seven rows of 50 small audio
+        // clips: 350 entries, far below the existing aggregate column budget.
+        let mut retained = Vec::new();
+        for index in 0..350_u64 {
+            let origin = index * 96_000;
+            let mapping = WaveformMapping::Source {
+                timeline_origin: origin,
+            };
+            let extent = Bounds::new(
+                point(
+                    px((index % 50) as f32 * 14.0),
+                    px((index / 50) as f32 * 44.0),
+                ),
+                size(px(9.3), px(44.0)),
+            );
+            let request = WaveformGeometryRequest {
+                mapping: &mapping,
+                visible_start: origin,
+                visible_end: origin + 96_000,
+                bounds: extent,
+                scale: 2.0,
+                columns: 19,
+            };
+            retained.push((
+                origin,
+                extent,
+                cached_waveform_geometry(&cache, &source, &request).unwrap(),
+            ));
+        }
+        for (origin, extent, original) in retained {
+            let mapping = WaveformMapping::Source {
+                timeline_origin: origin,
+            };
+            let request = WaveformGeometryRequest {
+                mapping: &mapping,
+                visible_start: origin,
+                visible_end: origin + 96_000,
+                bounds: extent,
+                scale: 2.0,
+                columns: 19,
+            };
+            let repeated = cached_waveform_geometry(&cache, &source, &request).unwrap();
+            assert!(
+                Arc::ptr_eq(&original, &repeated),
+                "visible clip geometry was rebuilt at {origin}"
+            );
+        }
+        assert_eq!(cache.borrow().entries.len(), 350);
+        assert_eq!(cache.borrow().columns, 350 * 19);
     }
 
     #[test]

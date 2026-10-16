@@ -125,7 +125,7 @@ pub(super) fn passive_audio_fragment(
         .border_1()
         .border_color(rgb(0x000000))
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
-        .children([clip_grid_layer(grid, start, stop)]);
+        .children(clip_grid_layer(grid, start, stop));
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
             waveform, clip, start, stop, cache,
@@ -178,8 +178,8 @@ pub(super) fn passive_midi_fragment(
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
         .border_1()
         .border_color(rgb(0x000000))
-        .children([clip_grid_layer(grid, visible_start, visible_end)]);
-    let mut shown = 0;
+        .children(clip_grid_layer(grid, visible_start, visible_end));
+    let mut shapes = Vec::new();
     for sample in samples
         .iter()
         .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
@@ -211,18 +211,10 @@ pub(super) fn passive_midi_fragment(
         ) else {
             continue;
         };
-        let top = f32::from(127_u8.saturating_sub(pitch)) / 128.0;
-        content = content.child(
-            div()
-                .absolute()
-                .left(relative(x))
-                .top(relative(top))
-                .w(relative(note_width))
-                .h(px(2.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
-        );
-        shown += 1;
+        shapes.push((x, note_width, pitch));
     }
+    let shown = shapes.len();
+    content = content.children(super::clip_paint::note_layer(shapes));
     (Some(content), shown)
 }
 

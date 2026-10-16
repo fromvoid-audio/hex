@@ -228,13 +228,20 @@ pitch, warp modes, numeric entry and marker dragging remain follow-ups.
 See ../../docs/clip-view.md for contracts and user acceptance checks.
 
 Waveform drawing retains ready-to-paint paths in the editor-owned bounded
-`waveform_geometry` cache (128 entries, 65,536 aggregate device columns). Keys
+`waveform_geometry` cache (512 entries, 65,536 aggregate device columns). Keys
 include retained source identity, clip/source mapping, visible interval, bounds
 and scale. Project replacement clears cached ownership. Arrangement/detail
 redraws reuse unchanged geometry; live trims omit invisible original paint
 children and suppress notifications for identical snapped candidates. Pending
 control colors and compact status slot widths remain stable. See
 ../../docs/clip-edit-performance.md for measurement scope and native checks.
+Passive clip grid stripes and sampled MIDI note rectangles use one canvas batch
+per nonempty layer. Empty layers allocate no layout element. The existing clip
+containers, borders, hover/selection, tooltips, trim handles and drag targets are
+retained; the 128-note row limit and omitted-note count badges are unchanged.
+Paint quads align from rounded clip bounds, with at most one physical pixel of
+decorative edge realignment, and inherit clip masks/opacity.
+See ../../docs/waveform-display.md for the dense selection optimization scope.
 
 ## arrangement time selection — 9 October 2026
 

@@ -83,3 +83,42 @@ architecture/UI-style/GPUI guards passed. Separate review bundle:
 `artifacts/waveform-menu-manifest.json`. User checks: visible waveform while
 zooming/resizing; right-click track/empty space; insert position; Undo/Redo;
 Escape and outside-click dismissal. Running apps and unsaved work preserved.
+
+
+## Dense selection rendering — Pulse #2648 / PR #264
+
+The first scoped native diagnostic on the unchanged dense hybrid fixture observed
+350 waveform cache misses and 350 evictions per 100-track selection repaint, with
+zero hits. Only 2,380 device columns remained resident: the 128-entry limit, rather
+than the existing 65,536-column geometry budget, discarded the visible working
+set. The entry ceiling is now 512; the aggregate column ceiling is unchanged.
+A 350-clip repeated-paint regression reproduces the former rebuild and requires
+retained geometry reuse. Source identity, clip mapping/gain, visible interval,
+scroll position, size and scale remain part of the key; project replacement
+clears ownership.
+
+Passive musical grid stripes and sampled MIDI preview rectangles are painted in
+canvas batches, with no element for an empty layer. Their quads preserve the
+clip border/content geometry, clipping, colors and inherited opacity. A dated
+primary decision permits decorative note/grid edges to realign by at most one
+physical pixel: canvas uses actual rounded clip bounds while Taffy previously
+used private unrounded intermediate widths. A zero-width tiny mark may therefore
+become one physical pixel wide (or the reverse); source note/grid fractions,
+counts and preview budgets are unchanged. Outer hitboxes and musical edits do
+not use these decorative rectangles. Interactive clip containers, trim/drag surfaces,
+labels, missing-media feedback and MIDI omitted-note badges remain. Per-row
+preview shape limits are unchanged. A rendered legacy-layout oracle compares
+all four edge deviations against that one-physical-pixel limit, plus colors and
+clip masks across native-like 9.3px and wider sizes, irregular fractions and
+offsets at the GPUI test platform's fixed 2x scale; numerical edge oracles also
+cover 1x and negative
+fractional offsets. Native 1x display appearance remains unverified. Existing
+trim and persistent time-selection interaction regressions cover those paths.
+
+Temporary diagnostic `cpu_us` labels denote elapsed UI-thread wall spans measured
+with `Instant`, including scheduling/preemption; nested spans overlap and must
+not be summed as thread CPU time. The unchanged full native timing protocol must
+be rerun on the optimized final candidate before claiming the 16.67 ms selection
+paint p95 target. The historical baseline and raw data remain in
+[evidence/time-selection-2026-10-16](evidence/time-selection-2026-10-16/report.md).
+No DSP, project edits, storage or the separate unsnapped-cursor defect is changed.
