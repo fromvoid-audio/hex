@@ -3470,6 +3470,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
         view.state = Some(Arc::new(ViewState {
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
@@ -3782,6 +3783,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
         view.state = Some(Arc::new(ViewState {
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
@@ -3940,6 +3942,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
@@ -4079,6 +4082,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
@@ -4971,6 +4975,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
     let changed_state = Arc::new(ViewState {
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
         timeline_frames: state.timeline_frames,

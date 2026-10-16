@@ -1,6 +1,8 @@
+pub(crate) mod branch_audio;
 pub(crate) mod combined;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
+pub(crate) mod musical_audio;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
@@ -1057,6 +1059,9 @@ impl DocumentV19 {
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
+        Self::into_project(doc)
+    }
+    fn into_project(doc: Self) -> Result<Project, StorageError> {
         if doc.format != "hex-project" || !matches!(doc.version, 17..=19) {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
@@ -1787,6 +1792,7 @@ impl DocumentV12 {
                         SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
                             hex_project::SessionAudioClipSnapshot {
+                                gain: hex_project::ClipGain::UNITY,
                                 id: clip.id,
                                 name: clip.name,
                                 asset: clip.asset,
@@ -2019,6 +2025,21 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 25 {
+            return musical_audio::DocumentV25::decode(bytes);
+        }
+        if matches!(header.version, 20 | 21) {
+            let shape: HistoricalShape = serde_json::from_slice(bytes)?;
+            match (shape.import_provenance.is_some(), shape.routing.is_some()) {
+                (false, false) => return branch_audio::decode(bytes),
+                (true, true) => {}
+                _ => {
+                    return Err(StorageError::Invalid(
+                        "inconsistent historical project envelope",
+                    ));
+                }
+            }
         }
         if header.version == 24 {
             return playable_routing::DocumentV24::decode(bytes);
@@ -2554,6 +2575,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                     SessionContentDtoV12::Audio { clip } => {
                         SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                            gain: hex_project::ClipGain::UNITY,
                             id: clip.id,
                             name: clip.name,
                             asset: clip.asset,
@@ -2631,6 +2653,8 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
         .into_iter()
         .map(|clip| {
             Ok(ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
                 asset: clip.asset,
                 start: clip.start,
@@ -2741,6 +2765,8 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
                         asset: clip.asset,
                         start: clip.start,
@@ -2789,6 +2815,8 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
                         asset: clip.asset,
                         start: clip.start,
@@ -2828,6 +2856,8 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             let fade = ClipFade::neutral(clip.duration.max(1))
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
                 asset: clip.asset,
                 start: clip.start,

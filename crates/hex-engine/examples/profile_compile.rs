@@ -46,6 +46,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         }
                     };
                     Ok(ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip_id,
                         asset: 1,
                         start,

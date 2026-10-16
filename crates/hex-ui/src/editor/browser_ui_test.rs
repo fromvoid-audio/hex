@@ -108,6 +108,7 @@ fn browser_drag_fixture_with_tracks(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
@@ -158,6 +159,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
@@ -215,6 +217,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
@@ -364,6 +367,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
@@ -1641,6 +1645,7 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             label: "loop.wav".into(),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(std::cell::Cell::new(false)),
             copy_modifier: Rc::new(std::cell::Cell::new(false)),
@@ -1699,6 +1704,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
@@ -1718,6 +1724,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             label: "loop.wav".into(),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),
@@ -1758,6 +1765,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             origin_pointer_x: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),

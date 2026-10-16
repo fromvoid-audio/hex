@@ -150,6 +150,7 @@ mod native {
             view.state = Some(Arc::new(ViewState {
                 project: old.project.clone(),
                 waveforms: old.waveforms.clone(),
+                audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: Ok(preview),
                 timeline_frames: old.timeline_frames,
@@ -472,6 +473,7 @@ mod native {
                 project: project.clone(),
                 gain_preview: Ok(Arc::new(preview)),
                 waveforms: old.waveforms.clone(),
+                audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 timeline_frames: content_extent,
                 revision: 2,
@@ -538,6 +540,7 @@ mod native {
                 project,
                 gain_preview: Ok(preview),
                 waveforms: old.waveforms.clone(),
+                audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 timeline_frames: old.timeline_frames,
                 can_undo: old.can_undo,

@@ -1576,9 +1576,13 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         }
                         let source_index = usize::try_from(source_frame)
                             .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                        let sample = *frames
+                        let mut sample = *frames
                             .get(source_index)
                             .ok_or(SessionPlaybackError::UnknownClip)?;
+                        if prepared.gain != 1.0 {
+                            sample[0] *= prepared.gain;
+                            sample[1] *= prepared.gain;
+                        }
                         source_mix.add_frame(frame, sample);
                     }
                 }
@@ -1609,6 +1613,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                                 timeline_frame,
                                 output_offset,
                                 count,
+                                gain: prepared.gain,
                                 fade: None,
                             },
                             output,

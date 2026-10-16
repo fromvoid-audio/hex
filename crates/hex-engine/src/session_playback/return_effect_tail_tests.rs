@@ -402,6 +402,8 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         }];
         snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Hybrid {
             audio_clips: vec![hex_project::ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: 31,
                 asset: 30,
                 start: 0,

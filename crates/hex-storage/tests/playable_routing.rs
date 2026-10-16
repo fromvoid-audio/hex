@@ -63,7 +63,7 @@ fn schema24_roundtrip_preserves_typed_routes_ids_gain_and_midi_bus_selection() {
     let project = fixture();
     let bytes = encode(&project).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 24);
+    assert_eq!(value["version"], 25);
     assert_eq!(value["audio_feeds"][0]["source"]["kind"], "track");
     assert_eq!(value["audio_feeds"][1]["source"]["kind"], "return");
     let loaded = decode(&bytes).unwrap();
@@ -134,6 +134,7 @@ fn schema23_migrates_empty_inputs_and_rejects_playable_field_backports() {
     let project = Project::new(48_000).unwrap();
     let mut old: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
     old["version"] = json!(23);
+    old.as_object_mut().unwrap().remove("audio_clip_state");
     assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());
     old.as_object_mut().unwrap().remove("audio_feeds");
     old.as_object_mut().unwrap().remove("midi_routes");
