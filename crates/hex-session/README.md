@@ -208,3 +208,14 @@ revision-stamped splice batch rechecks generation, revision and lane epoch, then
 commits the complete take as one Undo/Redo edit. Failed/stale/cancelled takes leave
 the original lane intact. Audio owns application and receipt delivery; the UI
 owns only drafts and gestures. See [gain recording](../../docs/gain-touch-spans.md).
+
+## Operator listening fixture
+
+`cargo run -p hex-session --example operator_enable_fixture -- <mode> <new.hex>`
+writes a disposable media-free native project for the held-note enable retest.
+Modes are `analytic`, `serial`, `feedback`, `free` and `sync`; it uses registered
+canonical device state, prepares the project before create-new publication, and
+introduces no live-input or production playback API. See
+[the finite native checklist](../../docs/operator-enable-retest.md). Fixture tests
+run explicitly with `cargo test -p hex-session --example operator_enable_fixture`;
+they do not establish native listening acceptance.
