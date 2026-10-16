@@ -1,0 +1,507 @@
+{
+  "raw_sha256": "cf38afc9a945fd70cdbc59622c59118d25e7d5419f5e47ffc235bc6d670f4f37",
+  "raw_rows": 360,
+  "measured_rows": 320,
+  "warmup_rows": 40,
+  "failures": 0,
+  "median_method": "arithmetic median of middle two ordered samples",
+  "p95_method": "nearest rank ceil(0.95*n), 38th of 40",
+  "p99_method": "nearest rank ceil(0.99*n), 40th of 40, equal to observed maximum",
+  "tail_caveat": "n=40 per case; p99 equals observed maximum and does not establish rare-event tail reliability",
+  "selected_frame_range": [
+    529092,
+    1539570
+  ],
+  "timing_boundary": "native canvas paint; following-frame observation after scene submission",
+  "completion_boundary": "UI-observed completion, including normal 16ms worker polling",
+  "excludes": [
+    "physical pixels",
+    "compositor completion",
+    "GPU completion",
+    "audio deadlines"
+  ],
+  "cases": [
+    {
+      "tracks": 1,
+      "operation": "copy",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 4446.0,
+          "p95": 8028,
+          "p99": 9670,
+          "minimum": 1669,
+          "maximum": 9670,
+          "mean": 4794.85
+        },
+        "selection_following_frame_us": {
+          "median": 10674.5,
+          "p95": 12405,
+          "p99": 13764,
+          "minimum": 4640,
+          "maximum": 13764,
+          "mean": 10617.925
+        },
+        "operation_first_paint_us": {
+          "median": 6619.0,
+          "p95": 19878,
+          "p99": 23604,
+          "minimum": 3754,
+          "maximum": 23604,
+          "mean": 8532.3
+        },
+        "operation_first_following_frame_us": {
+          "median": 11304.5,
+          "p95": 21106,
+          "p99": 24653,
+          "minimum": 4982,
+          "maximum": 24653,
+          "mean": 12663.175
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 28428.5,
+          "p95": 39134,
+          "p99": 41751,
+          "minimum": 18791,
+          "maximum": 41751,
+          "mean": 29491.3
+        },
+        "operation_completion_following_frame_us": {
+          "median": 29393.0,
+          "p95": 40103,
+          "p99": 42859,
+          "minimum": 19856,
+          "maximum": 42859,
+          "mean": 30530
+        }
+      }
+    },
+    {
+      "tracks": 1,
+      "operation": "cut",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 4650.0,
+          "p95": 8376,
+          "p99": 9870,
+          "minimum": 1926,
+          "maximum": 9870,
+          "mean": 5063.25
+        },
+        "selection_following_frame_us": {
+          "median": 10849.5,
+          "p95": 12316,
+          "p99": 12403,
+          "minimum": 4427,
+          "maximum": 12403,
+          "mean": 10474.925
+        },
+        "operation_first_paint_us": {
+          "median": 6617.0,
+          "p95": 17969,
+          "p99": 23956,
+          "minimum": 3788,
+          "maximum": 23956,
+          "mean": 9075.9
+        },
+        "operation_first_following_frame_us": {
+          "median": 11308.0,
+          "p95": 18980,
+          "p99": 25131,
+          "minimum": 8394,
+          "maximum": 25131,
+          "mean": 12957.5
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 27188.5,
+          "p95": 35556,
+          "p99": 40497,
+          "minimum": 16326,
+          "maximum": 40497,
+          "mean": 27349
+        },
+        "operation_completion_following_frame_us": {
+          "median": 27985.5,
+          "p95": 36396,
+          "p99": 41408,
+          "minimum": 17230,
+          "maximum": 41408,
+          "mean": 28252.925
+        }
+      }
+    },
+    {
+      "tracks": 1,
+      "operation": "replace-paste",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 4705.0,
+          "p95": 8067,
+          "p99": 8516,
+          "minimum": 1907,
+          "maximum": 8516,
+          "mean": 5182.275
+        },
+        "selection_following_frame_us": {
+          "median": 10646.0,
+          "p95": 11970,
+          "p99": 13612,
+          "minimum": 5895,
+          "maximum": 13612,
+          "mean": 10490.425
+        },
+        "operation_first_paint_us": {
+          "median": 5848.0,
+          "p95": 8720,
+          "p99": 9692,
+          "minimum": 3965,
+          "maximum": 9692,
+          "mean": 6074.3
+        },
+        "operation_first_following_frame_us": {
+          "median": 10373.5,
+          "p95": 13192,
+          "p99": 14313,
+          "minimum": 5023,
+          "maximum": 14313,
+          "mean": 10383.7
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 25836.5,
+          "p95": 36396,
+          "p99": 37732,
+          "minimum": 14803,
+          "maximum": 37732,
+          "mean": 26277.375
+        },
+        "operation_completion_following_frame_us": {
+          "median": 27805.5,
+          "p95": 37369,
+          "p99": 39004,
+          "minimum": 17489,
+          "maximum": 39004,
+          "mean": 27949.775
+        }
+      }
+    },
+    {
+      "tracks": 1,
+      "operation": "ripple-insert",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 4567.5,
+          "p95": 8646,
+          "p99": 11544,
+          "minimum": 1677,
+          "maximum": 11544,
+          "mean": 4737.6
+        },
+        "selection_following_frame_us": {
+          "median": 10841.5,
+          "p95": 13001,
+          "p99": 15763,
+          "minimum": 4334,
+          "maximum": 15763,
+          "mean": 10380.55
+        },
+        "operation_first_paint_us": {
+          "median": 6017.0,
+          "p95": 11050,
+          "p99": 11817,
+          "minimum": 3748,
+          "maximum": 11817,
+          "mean": 6206.775
+        },
+        "operation_first_following_frame_us": {
+          "median": 10355.5,
+          "p95": 15688,
+          "p99": 16011,
+          "minimum": 4653,
+          "maximum": 16011,
+          "mean": 10365.325
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 24939.5,
+          "p95": 36043,
+          "p99": 37226,
+          "minimum": 6704,
+          "maximum": 37226,
+          "mean": 23933.85
+        },
+        "operation_completion_following_frame_us": {
+          "median": 26528.5,
+          "p95": 37123,
+          "p99": 39231,
+          "minimum": 9262,
+          "maximum": 39231,
+          "mean": 25791.25
+        }
+      }
+    },
+    {
+      "tracks": 100,
+      "operation": "copy",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 4685.0,
+          "p95": 9723,
+          "p99": 28817,
+          "minimum": 3744,
+          "maximum": 28817,
+          "mean": 5755.15
+        },
+        "selection_following_frame_us": {
+          "median": 9942.0,
+          "p95": 14156,
+          "p99": 34401,
+          "minimum": 7117,
+          "maximum": 34401,
+          "mean": 10156.6
+        },
+        "operation_first_paint_us": {
+          "median": 21674.0,
+          "p95": 26158,
+          "p99": 39942,
+          "minimum": 19794,
+          "maximum": 39942,
+          "mean": 22688.15
+        },
+        "operation_first_following_frame_us": {
+          "median": 26900.5,
+          "p95": 32017,
+          "p99": 45393,
+          "minimum": 24875,
+          "maximum": 45393,
+          "mean": 27972.275
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 65202.5,
+          "p95": 74316,
+          "p99": 77634,
+          "minimum": 39942,
+          "maximum": 77634,
+          "mean": 66426.8
+        },
+        "operation_completion_following_frame_us": {
+          "median": 70460.0,
+          "p95": 79482,
+          "p99": 83101,
+          "minimum": 45394,
+          "maximum": 83101,
+          "mean": 71711.825
+        }
+      }
+    },
+    {
+      "tracks": 100,
+      "operation": "cut",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 5260.0,
+          "p95": 10024,
+          "p99": 28849,
+          "minimum": 3731,
+          "maximum": 28849,
+          "mean": 6022.85
+        },
+        "selection_following_frame_us": {
+          "median": 9801.0,
+          "p95": 14279,
+          "p99": 34900,
+          "minimum": 7017,
+          "maximum": 34900,
+          "mean": 10310.575
+        },
+        "operation_first_paint_us": {
+          "median": 22096.5,
+          "p95": 26071,
+          "p99": 33346,
+          "minimum": 19878,
+          "maximum": 33346,
+          "mean": 22697.675
+        },
+        "operation_first_following_frame_us": {
+          "median": 27190.5,
+          "p95": 31094,
+          "p99": 38112,
+          "minimum": 24852,
+          "maximum": 38112,
+          "mean": 27769.625
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 55464.5,
+          "p95": 64270,
+          "p99": 65359,
+          "minimum": 33346,
+          "maximum": 65359,
+          "mean": 55801.525
+        },
+        "operation_completion_following_frame_us": {
+          "median": 58901.0,
+          "p95": 68130,
+          "p99": 69313,
+          "minimum": 38114,
+          "maximum": 69313,
+          "mean": 59487.5
+        }
+      }
+    },
+    {
+      "tracks": 100,
+      "operation": "replace-paste",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 5308.5,
+          "p95": 10548,
+          "p99": 43279,
+          "minimum": 3788,
+          "maximum": 43279,
+          "mean": 6787.425
+        },
+        "selection_following_frame_us": {
+          "median": 10327.0,
+          "p95": 14494,
+          "p99": 55246,
+          "minimum": 7271,
+          "maximum": 55246,
+          "mean": 11545.075
+        },
+        "operation_first_paint_us": {
+          "median": 22752.5,
+          "p95": 25552,
+          "p99": 27106,
+          "minimum": 20266,
+          "maximum": 27106,
+          "mean": 22895.375
+        },
+        "operation_first_following_frame_us": {
+          "median": 27788.0,
+          "p95": 31098,
+          "p99": 32146,
+          "minimum": 25578,
+          "maximum": 32146,
+          "mean": 28054.425
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 60149.5,
+          "p95": 71078,
+          "p99": 76286,
+          "minimum": 57435,
+          "maximum": 76286,
+          "mean": 62537.775
+        },
+        "operation_completion_following_frame_us": {
+          "median": 65304.5,
+          "p95": 75982,
+          "p99": 81377,
+          "minimum": 62266,
+          "maximum": 81377,
+          "mean": 67552.2
+        }
+      }
+    },
+    {
+      "tracks": 100,
+      "operation": "ripple-insert",
+      "measured_samples": 40,
+      "warmup_samples": 5,
+      "metrics_us": {
+        "selection_first_paint_us": {
+          "median": 5513.0,
+          "p95": 10296,
+          "p99": 10416,
+          "minimum": 3753,
+          "maximum": 10416,
+          "mean": 5914.7
+        },
+        "selection_following_frame_us": {
+          "median": 10279.0,
+          "p95": 14416,
+          "p99": 14811,
+          "minimum": 7343,
+          "maximum": 14811,
+          "mean": 10417
+        },
+        "operation_first_paint_us": {
+          "median": 22668.0,
+          "p95": 25439,
+          "p99": 27330,
+          "minimum": 20628,
+          "maximum": 27330,
+          "mean": 22879.325
+        },
+        "operation_first_following_frame_us": {
+          "median": 27664.0,
+          "p95": 30801,
+          "p99": 32994,
+          "minimum": 25604,
+          "maximum": 32994,
+          "mean": 27968.95
+        },
+        "operation_ui_completion_paint_us": {
+          "median": 60734.0,
+          "p95": 69287,
+          "p99": 73460,
+          "minimum": 56287,
+          "maximum": 73460,
+          "mean": 61620.9
+        },
+        "operation_completion_following_frame_us": {
+          "median": 65538.5,
+          "p95": 74427,
+          "p99": 79204,
+          "minimum": 61139,
+          "maximum": 79204,
+          "mean": 66569.925
+        }
+      }
+    }
+  ],
+  "dense_to_small_median_ratio": {
+    "copy": {
+      "selection_first_paint_us": 1.0537561853351327,
+      "selection_following_frame_us": 0.9313785189001826,
+      "operation_first_paint_us": 3.274512766278894,
+      "operation_first_following_frame_us": 2.379627581936397,
+      "operation_ui_completion_paint_us": 2.2935610390980883,
+      "operation_completion_following_frame_us": 2.3971693940734187
+    },
+    "cut": {
+      "selection_first_paint_us": 1.1311827956989247,
+      "selection_following_frame_us": 0.9033596018249689,
+      "operation_first_paint_us": 3.3393531811999395,
+      "operation_first_following_frame_us": 2.4045366112486737,
+      "operation_ui_completion_paint_us": 2.0399985287897455,
+      "operation_completion_following_frame_us": 2.1046970752711225
+    },
+    "replace-paste": {
+      "selection_first_paint_us": 1.12826780021254,
+      "selection_following_frame_us": 0.9700356941574301,
+      "operation_first_paint_us": 3.8906463748290014,
+      "operation_first_following_frame_us": 2.6787487347568324,
+      "operation_ui_completion_paint_us": 2.328082364097304,
+      "operation_completion_following_frame_us": 2.3486180791570015
+    },
+    "ripple-insert": {
+      "selection_first_paint_us": 1.2070060207991242,
+      "selection_following_frame_us": 0.9481160356039293,
+      "operation_first_paint_us": 3.767325909921888,
+      "operation_first_following_frame_us": 2.6714306407223214,
+      "operation_ui_completion_paint_us": 2.4352533130175025,
+      "operation_completion_following_frame_us": 2.4704939970220705
+    }
+  }
+}

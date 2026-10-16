@@ -8,9 +8,12 @@ one afterward, without executor parking/settling frames; current selection paint
 first-frame clip/trim geometry and cached trim capture remain covered. All 522
 enabled UI tests and strict desktop/UI Clippy pass, along with source guards.
 The merged `5607b14c` native run completed 360 samples but 100-track cut selection
-p95 was 28.229 ms (median 5.649 ms), so the 16.67 ms target remains open. This
-source fix does not establish the cause of every outlier. Final exact-source full
-local CI and unchanged optimized native capture belong to the follow-up PR.
+p95 was 28.229 ms (median 5.649 ms). Fixed optimized `17ce787d` passed all 20
+local CI steps and all 360 native samples with zero failures. Its 100-track
+selection median is 4.723–4.937 ms, p95 6.208–9.466 ms, maximum 9.847 ms; all
+160 measured selections are below 16.67 ms. The original protocol is unchanged;
+[full distributions and retained intermediate runs](docs/evidence/time-selection-2026-10-17/report.md)
+document the source, hashes, endpoint correction and measurement limits.
 See [geometry identity and measurement limits](docs/waveform-display.md).
 
 ## dense selection candidate integration — #2648 / PR264, 16 october 2026

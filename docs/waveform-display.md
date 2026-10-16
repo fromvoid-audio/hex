@@ -25,9 +25,14 @@ the budget; all were at 100 tracks. Their cause is not established by wall-time
 samples. Raw output is retained in
 `artifacts/issue2648/smooth-5607b14c-capture1/`. This redundant-invalidation fix
 does not claim to explain every tail.
-Full local CI and a new optimized unchanged-protocol native capture are pending
-for the fixed source. Fixtures, six metrics, 5 warm-ups/40 measured iterations,
-7–17 ms phase delays and the native harness remain unchanged.
+The fixed optimized candidate `17ce787d` passed all 20 local CI steps and the
+unchanged 360-row native protocol: all four 100-track selection p95 values are
+6.208–9.466 ms, with a 9.847 ms maximum across all 160 measured selections.
+Medians are 4.723–4.937 ms. No measured selection exceeds 16.67 ms in this run.
+Fixtures, six metrics, 5 warm-ups/40 measured iterations and 7–17 ms phase delays
+remain unchanged. [Full raw data, intermediate runs and source identity](evidence/time-selection-2026-10-17/report.md)
+retain the failed merged-source run and document PR263's intended endpoint
+correction. These are native paint bounds, not physical display/audio deadlines.
 
 ## dense selection feedback cache experiment — #2648 / PR264
 
@@ -74,8 +79,8 @@ clip drag and worker Undo/Redo regressions run with this cache enabled. See
 
 The first eight-case native child-cache diagnostic at `49e7109` still missed
 the target (100-track selection first paint 18.5–29.2 ms). The merged-source
-360-sample result and open fixed-source rerun are recorded above. A passing
-source regression does not establish the 16.67 ms native p95 target.
+360-sample intermediate miss and passing fixed-source capture are recorded
+above. Source regressions and native paint measurements remain separate evidence.
 
 The optimized headless fixed-fixture run at `cfc07ca` measured zero clip rebuilds
 but explicit draw median 18.353 ms/p95 19.123 ms; cached clip paint median
@@ -105,7 +110,7 @@ Local receipts and raw output are retained under
 `artifacts/issue2648/headless-replay/`. This establishes a framework replay
 speedup under the limits below, not the native 16.67 ms selection-feedback target.
 Subsequent full local CI and native results are recorded with the candidate;
-the fixed-source native rerun described above remains required.
+the passing fixed-source native rerun is recorded above.
 
 The ignored `headless_time_selection_framework_profile` test opens the existing
 100-track fixture through the normal Session worker with isolated settings and
