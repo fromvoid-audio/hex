@@ -14,6 +14,11 @@ pub struct AudioCandidateConstructorSummary {
     pub reserved_split_bytes: usize,
     pub shared_resource_groups: usize,
     pub shared_resource_handles: usize,
+    /// Actual reserved runtime member plus original archive rows. Vacant
+    /// locations count too; their capacity remains through report consumption.
+    pub member_rows: usize,
+    /// Actual journal backing, later moved into the genuine transfer manifest.
+    pub transfer_rows: usize,
 }
 impl AudioCandidateOwner {
     /// Inspect and seal only a fresh, closed constructor. Every DATA declaration
@@ -90,6 +95,13 @@ impl AudioCandidateOwner {
             reserved_split_bytes,
             shared_resource_groups,
             shared_resource_handles,
+            member_rows: self
+                .inner
+                .groups
+                .capacity()
+                .checked_add(self.inner.archive.groups.capacity())
+                .ok_or(AudioStorageError::Overflow)?,
+            transfer_rows: self.inner.journal.capacity(),
         })
     }
 }

@@ -2,6 +2,8 @@
 //! completeness by itself. Hosts must retain exact covering anchors and their
 //! own actual catalog/resource custody until every report is consumed.
 use super::*;
+mod playback;
+pub use playback::AudioCandidateRuntimeStatus;
 
 pub struct AudioCandidateSplitRefusal {
     pub reason: AudioStorageError,
@@ -371,6 +373,11 @@ mod tests {
         let journal_address = owner.inner.journal.as_ptr() as usize;
         let identity = owner.identity();
         let (mut runtime, mut anchor) = owner.split_constructor_on_control().ok().unwrap();
+        assert_eq!(
+            summary.member_rows,
+            runtime.inner.groups.capacity() + anchor.owner.inner.archive.groups.capacity()
+        );
+        assert_eq!(summary.transfer_rows, runtime.inner.journal.capacity());
         assert_eq!(runtime.identity(), identity);
         assert!(anchor.matches_current(&runtime));
         assert_eq!(
@@ -394,7 +401,12 @@ mod tests {
                 crate::PlaybackCommand::Play,
             ))
             .unwrap();
-        runtime.render(&mut [[0.0; 2]; 8]).unwrap();
+        assert!(runtime.status().unwrap().playing);
+        assert!(runtime.set_device_metering(true));
+        let mut output = [[0.0; 2]; 8];
+        runtime
+            .render_with_post_node_observer(&mut output, None)
+            .unwrap();
         assert!(anchor.constructor_claims(&runtime).is_none());
         let (runtime, proof) = std::thread::spawn(move || {
             let proof = runtime.dispose_on_control().unwrap();
@@ -403,6 +415,16 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(runtime.inner.phase, ClaimedPhase::Disposed);
+        let mut runtime = runtime;
+        assert!(runtime.status().is_none());
+        assert!(runtime.session_route_status(0).is_none());
+        assert!(!runtime.set_device_metering(true));
+        assert!(
+            runtime
+                .render_with_post_node_observer(&mut [[0.0; 2]; 1], None)
+                .is_err()
+        );
+        assert!(runtime.set_gain_recording_override(1, 1.0).is_err());
         assert_eq!(proof.identity(), identity);
         let mut anchors = [Some(anchor)];
         proof.record_anchor_cells_on_control(&mut anchors).unwrap();

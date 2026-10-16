@@ -20,7 +20,8 @@ pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateIdentity,
     AudioCandidateOwner, AudioCandidateRefusal, AudioCandidateRuntimeDisposed,
-    AudioCandidateSplitRefusal, AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
+    ClaimedAudioCandidateRuntime,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,

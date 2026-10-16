@@ -2,6 +2,7 @@
 //! tokens are associations with retained pairs, never page/readiness authority.
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
+mod publication;
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateDomainReservation {
@@ -58,6 +59,7 @@ struct NativeBank {
     domains: [DomainSlot; 2],
     metadata_bytes: usize,
     closing: bool,
+    publication: publication::Bank,
 }
 impl Default for NativeBank {
     fn default() -> Self {
@@ -70,6 +72,7 @@ impl Default for NativeBank {
             domains: std::array::from_fn(|_| DomainSlot::vacant()),
             metadata_bytes: 0,
             closing: false,
+            publication: publication::Bank::default(),
         }
     }
 }
@@ -81,6 +84,7 @@ struct DomainExecution {
 #[derive(Default)]
 struct NativeWork {
     domains: [Option<DomainExecution>; 2],
+    publication: publication::Work,
 }
 #[derive(Default)]
 pub(super) struct Custody {
@@ -124,6 +128,7 @@ impl Custody {
             domains: std::array::from_fn(|_| DomainSlot::vacant()),
             metadata_bytes: base_bytes,
             closing: false,
+            publication: publication::Bank::default(),
         };
         self.enabled.store(true, Ordering::Release);
         Ok(())
@@ -154,11 +159,13 @@ impl Custody {
                 .domains
                 .iter()
                 .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
                 .ok_or("domain storage overflow")?;
             let used_peak = bank
                 .domains
                 .iter()
                 .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .ok_or("domain construction overflow")?;
             let remaining = bank
                 .reservation
@@ -268,16 +275,17 @@ impl Custody {
     }
     pub(super) fn has_work(&self, abandoned: bool) -> bool {
         let guard = lock(&self.bank);
-        guard.domains.iter().any(|s| {
-            s.phase == Phase::Failed
-                || s.phase == Phase::Cleaning
-                || (abandoned && s.phase == Phase::Complete)
-                || (s.phase == Phase::Accepted && s.retiring && s.uses == 0)
-        })
+        guard.publication.has_work(abandoned)
+            || guard.domains.iter().any(|s| {
+                s.phase == Phase::Failed
+                    || s.phase == Phase::Cleaning
+                    || (abandoned && s.phase == Phase::Complete)
+                    || (s.phase == Phase::Accepted && s.retiring && s.uses == 0)
+            })
     }
     pub(super) fn complete(&self) -> bool {
         let guard = lock(&self.bank);
-        guard.domains.iter().all(|s| s.phase == Phase::Vacant)
+        guard.domains.iter().all(|s| s.phase == Phase::Vacant) && guard.publication.complete()
     }
     pub(super) fn advance_on_control(&self, abandoned: bool) {
         let Ok(mut work) = self.work.try_lock() else {

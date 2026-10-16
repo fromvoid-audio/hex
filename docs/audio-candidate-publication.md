@@ -107,12 +107,31 @@ Other cells can progress independently. Stale incarnation tokens cannot retire o
 consume a replacement. This domain layer alone does not establish a candidate's
 covering source association or native claims; that wiring remains below.
 
+## reserved runtime return checkpoint
+
+The private Root layer reserves actual runtime, archive, receipt and failure-custody
+backings before accepting an owner. Caller-selected finite DATA limits cover those
+capacities, lifecycle payloads and split overlap; impossible metadata requests
+refuse before per-cell allocation. Actual member/journal capacities, not nominal
+fixture counts, determine pressure. A synchronous refusal preserves the original
+owner and domain-token Vec.
+
+A successful split retains the original anchors and source-bound domain uses in
+Root cells. A returned runtime is physically destroyed on control; its actual
+remaining-origin proof is ingested across every affected archive before anchor
+cleanup. Independent reserved execution cells preserve pending/failed custody and
+the first panic payload. READY follows normal runtime, anchor and return-metadata
+destruction. Original banks and domain uses remain charged until report consumption.
+After Control abandonment, the lifecycle worker also destroys the recovered bank
+and consumes its report without a UI poll. These owning-boundary controls do not
+establish an actual native queue rejection or installation fact.
+
 ## admission boundary
 
-This intermediate source checkpoint does not enable native admission. Complete
-Runtime/anchor reservations, source-bound domain uses, native install-versus-ACK
-wiring and independent archive scheduling are still required within PR236. No opaque OS/std
-byte estimate, RSS total, new global graph cap or readiness receipt is inferred.
+This intermediate source checkpoint does not enable native admission. Production
+queue/return integration, complete native resource-witness gating and
+install-versus-ACK wiring remain within PR236. No opaque OS/std byte estimate,
+RSS total, new global graph cap or readiness receipt is inferred.
 
 Once the complete eligible claim path is connected, resident candidates may use
 it. Streamed construction, accounting and actual catalog leases must be exercised,

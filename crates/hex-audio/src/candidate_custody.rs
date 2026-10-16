@@ -469,6 +469,9 @@ impl CandidateRoot {
     pub(crate) fn advance_on_control(&self) {
         self.0
             .eligible
+            .advance_publications_on_control(self, self.0.abandoned.load(Ordering::Acquire));
+        self.0
+            .eligible
             .advance_on_control(self.0.abandoned.load(Ordering::Acquire));
         if !self.drain_abandoned_on_control() {
             return;
@@ -643,6 +646,10 @@ impl CandidateRoot {
     /// UI poll: only moves the already READY bank/receipt. No cleanup, owner
     /// metadata destruction, provider call, join, or blocking execution lock.
     pub(crate) fn recover(&self, ticket: &AudioCandidateTicket) -> Option<AudioCandidateRecovery> {
+        if let Some(ready) = self.0.eligible.recover_publication(ticket) {
+            crate::lifecycle::request_candidate_cleanup(self);
+            return Some(ready);
+        }
         let mut bank = self.0.bank.try_lock().ok()?;
         let a = ticket.stamp;
         if a.root != bank.root {

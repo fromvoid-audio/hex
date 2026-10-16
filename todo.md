@@ -3250,6 +3250,10 @@ admission, OS-stop success, deadline, listening or complete-cost claim is made.
   incarnation tokens and persistent lifecycle cleanup. Pair/metadata destruction
   precedes READY; cell occupancy and DATA remain until report consumption.
   Vacant opt-in refuses legacy mixing without changing default legacy channels.
-- This is an implementation checkpoint: native claim/anchor/resource and
-  install-versus-ACK wiring remains within PR236. Production admission remains
+- Reserved actual runtime/archive/receipt backings and retained covering anchors
+  before splitting an owner. Four focused controls cover original-input refusal,
+  normal runtime/origin/metadata cleanup before bank recovery, autonomous abandoned
+  bank/report destruction on control, and pre-allocation metadata-cap refusal.
+- This is an implementation checkpoint: production queue/return integration,
+  native resource-witness gating and install-versus-ACK wiring remain within PR236. Production admission remains
   refused; streamed readiness and full24/177 acceptance remain open.
