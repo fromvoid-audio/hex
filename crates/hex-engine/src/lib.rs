@@ -14,7 +14,12 @@ pub mod compensation;
 
 use std::{fmt, sync::Arc};
 
+mod audio_candidate;
 mod audio_storage;
+pub use audio_candidate::{
+    AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateIdentity,
+    AudioCandidateOwner, AudioCandidateRefusal,
+};
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
     AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
