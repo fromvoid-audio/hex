@@ -52,8 +52,13 @@ retention regressions pass, along with strict project/UI Clippy and source guard
 Full local CI passed all 14 steps on clean `373e8c2` in 276.455 s, with
 unchanged source digest and `stale=false`. Evidence:
 `artifacts/local-ci/20261009T182718Z-b28879d0/summary.json`.
-[PR31](https://github.com/PORTALSURFER/hex/pull/31) is source-complete; native
-interaction and dense 1/100-track feedback/completion measurements remain open. In the
+[PR31](https://github.com/PORTALSURFER/hex/pull/31) merged on 10 October; the user
+accepted the combined native build that day. The remaining dense 1/100-track
+feedback/completion timings were recorded on 16 October through supplementary
+[PR258](https://github.com/PORTALSURFER/hex/pull/258):
+[complete results and limits](evidence/time-selection-2026-10-16/report.md).
+At 100 tracks, median selection paint is about33ms; this does not establish
+60Hz or subjective smoothness. Pulse29 retains dense UI acceptance. In the
 combined build, select time on main, copy/cut/paste and ripple-paste over gaps,
 move through the upper-third handle, Option-copy, and split a main cursor across
 audio and MIDI. Check Undo, selection after track deletion, and empty projects.

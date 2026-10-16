@@ -251,3 +251,9 @@ Device rails support middle-button horizontal panning and a compact bottom-statu
 chain overview with a draggable viewport frame, click/wheel navigation and a
 device-pane toggle. Tracks and returns share the measured GPUI scroll handle;
 navigation is view state and does not enter project history.
+
+The explicit `hex-desktop --profile-time-selection` mode embeds the real editor
+in a disposable offline native profiling root. It injects input only into that
+window and reports scene-paint/following-frame timing, with isolated preferences
+and no recovery journal. Normal startup/editing is unchanged. See
+../../docs/time-selection-profile.md for fixture shape and timing limitations.

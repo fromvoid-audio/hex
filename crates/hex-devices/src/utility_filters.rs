@@ -10,12 +10,13 @@ const HISTORY_FLOOR: f64 = 1.0e-30;
 /// Bass mono uses an original fourth-order Linkwitz–Riley high-pass on the side
 /// signal. Audition uses the corresponding low-pass on the mid signal. Exact
 /// Live responses have not been measured.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedUtilityFilters {
     sample_rate: u32,
     dc_enabled: bool,
     bass_enabled: bool,
     audition: bool,
+    output_muted: bool,
     dc_pole: f64,
     low: BiquadCoefficients,
     high: BiquadCoefficients,
@@ -52,6 +53,7 @@ impl PreparedUtilityFilters {
             dc_enabled,
             bass_enabled,
             audition,
+            output_muted: false,
             dc_pole: (-std::f64::consts::TAU * DC_CUTOFF_HZ / f64::from(sample_rate)).exp(),
             low: BiquadCoefficients {
                 b0: low_b0,
@@ -77,11 +79,18 @@ impl PreparedUtilityFilters {
         0
     }
     pub const fn is_identity(self) -> bool {
-        !self.dc_enabled && !self.bass_enabled
+        !self.dc_enabled && !self.bass_enabled && !self.output_muted
+    }
+
+    /// Zero the processor's input and output while continuing to advance every
+    /// filter history, including during compatible live mute handoffs.
+    pub const fn with_output_mute(mut self, muted: bool) -> Self {
+        self.output_muted = muted;
+        self
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct BiquadCoefficients {
     b0: f64,
     b1: f64,
@@ -137,13 +146,34 @@ pub struct UtilityFilterProcessor {
 
 impl UtilityFilterProcessor {
     pub fn new(prepared: PreparedUtilityFilters) -> Self {
-        Self {
+        let runtime = Self {
             prepared,
             dc_input: [0.0; 2],
             dc_output: [0.0; 2],
             side_high: [BiquadHistory::default(); 2],
             mid_low: [BiquadHistory::default(); 2],
-        }
+        };
+        runtime.check_inline_ownership();
+        runtime
+    }
+
+    // The closed constructor's complete Box payload is fixed inline. Adding an
+    // owning field must fail this exhaustive, Copy-bounded review seam instead
+    // of silently making size_of_val omit a newly nested allocation/handle.
+    fn check_inline_ownership(&self) {
+        let Self {
+            prepared,
+            dc_input,
+            dc_output,
+            side_high,
+            mid_low,
+        } = self;
+        fn inline<T: Copy>(_: &T) {}
+        inline(prepared);
+        inline(dc_input);
+        inline(dc_output);
+        inline(side_high);
+        inline(mid_low);
     }
 
     pub fn reset(&mut self) {
@@ -176,6 +206,11 @@ impl UtilityFilterProcessor {
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
+        let input = if self.prepared.output_muted {
+            [0.0; 2]
+        } else {
+            input
+        };
         let mut signal = [f64::from(input[0]), f64::from(input[1])];
         // Histories advance even while each mode is bypassed. Enabling a mode
         // therefore never resurrects an old signal; exact neutral output remains.
@@ -198,16 +233,21 @@ impl UtilityFilterProcessor {
         for stage in &mut self.mid_low {
             low_mid = stage.sample(low_mid, self.prepared.low);
         }
-        if !self.prepared.bass_enabled {
+        let output = if !self.prepared.bass_enabled {
             if !self.prepared.dc_enabled {
-                return input;
+                input
+            } else {
+                [signal[0] as f32, signal[1] as f32]
             }
-            return [signal[0] as f32, signal[1] as f32];
-        }
-        if self.prepared.audition {
+        } else if self.prepared.audition {
             [low_mid as f32; 2]
         } else {
             [(mid + side) as f32, (mid - side) as f32]
+        };
+        if self.prepared.output_muted {
+            [0.0; 2]
+        } else {
+            output
         }
     }
 
@@ -249,6 +289,15 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
             .as_any()
             .downcast_ref::<Self>()
             .is_some_and(|previous| self.prepared.sample_rate == previous.prepared.sample_rate)
+    }
+
+    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.prepared.with_output_mute(false) == previous.prepared.with_output_mute(false)
+            })
     }
 
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {

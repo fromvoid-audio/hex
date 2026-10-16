@@ -277,6 +277,7 @@ impl gpui::Render for Toggle {
                 .bg(gpui::rgba(0))
                 .child(
                     div()
+                        .debug_selector(|| format!("{}-indicator", self.id))
                         .size(px(marker_size))
                         .border_1()
                         .border_color(rgb(if self.focus.is_focused(window) {
@@ -763,7 +764,33 @@ impl gpui::Render for Selector {
             let style = self.style;
             // Absolute children use the selector's content box; account for its one-pixel border
             // on each side so the overlay aligns with the visible field frame.
-            let popup_width = self.measured_size.get().width + px(2.0);
+            // A compact field may abbreviate its selection; its menu must fit
+            // the full choice labels in the inherited application typography.
+            let font = window.text_style().font();
+            let label_width = options
+                .iter()
+                .map(|label| {
+                    window
+                        .text_system()
+                        .shape_line(
+                            label.clone(),
+                            px(style.font_size),
+                            &[gpui::TextRun {
+                                len: label.len(),
+                                font: font.clone(),
+                                color: rgb(style.text).into(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            None,
+                        )
+                        .width
+                })
+                .fold(px(0.0), |width, next| width.max(next));
+            let popup_width = (self.measured_size.get().width + px(2.0))
+                .max(label_width + px(12.0))
+                .min((window.viewport_size().width - px(8.0)).max(px(1.0)));
             let max_popup_height = (window.viewport_size().height - px(8.0)).max(px(1.0));
             let mut popup = div()
                 .id(SharedString::from(format!("{}-popup", self.id)))
@@ -841,6 +868,7 @@ pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -
         .gap(gpui::px(3.0))
         .border_b_1()
         .border_color(gpui::rgb(if active { style.accent } else { style.border }))
+        .focus(move |focus| focus.border_color(gpui::rgb(style.focus_marker)))
         .text_size(gpui::px(8.0))
         .text_color(gpui::rgb(style.text))
         .child(

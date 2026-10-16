@@ -1,0 +1,188 @@
+//! Create-new mixed audio/MIDI fixtures for the native time-selection profiler.
+use hex_project::{
+    AssetSnapshot, BeatTime, ClipFade, ClipGain, ClipSnapshot, Meter, MeterPoint, MidiClipSnapshot,
+    MidiNoteSnapshot, Project, Snapshot, Tempo, TempoPoint, TrackContentSnapshot, TrackSnapshot,
+};
+use std::{
+    error::Error,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+};
+
+fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
+    if ![1, 100].contains(&count) {
+        return Err("expected one or 100 tracks".into());
+    }
+    let mut next_id = 2_u64;
+    let mut id = || {
+        let value = next_id;
+        next_id += 1;
+        value
+    };
+    let length = BeatTime::from_ratio(3, 2)?.raw();
+    let mut tracks = Vec::new();
+    for index in 0..count {
+        let track = id();
+        let mut audio_clips = Vec::new();
+        let mut midi_clips = Vec::new();
+        for position in 0..50_u64 {
+            audio_clips.push(ClipSnapshot {
+                id: id(),
+                asset: 1,
+                start: position * 48_000,
+                duration: 36_000,
+                source_offset: 0,
+                source_length: 48_000,
+                looping: false,
+                source_phase: 0,
+                edit: None,
+                fade: ClipFade::neutral(36_000)?,
+                gain: ClipGain::UNITY,
+            });
+            let clip = id();
+            let mut notes = Vec::new();
+            for note in 0..8_u64 {
+                notes.push(MidiNoteSnapshot {
+                    id: id(),
+                    start_raw: BeatTime::from_ratio(note * 3, 16)?.raw(),
+                    duration_raw: BeatTime::from_ratio(1, 8)?.raw(),
+                    pitch: 48 + (note % 12) as u8,
+                    channel: 0,
+                    velocity: 100,
+                });
+            }
+            midi_clips.push(MidiClipSnapshot {
+                id: clip,
+                start_raw: BeatTime::from_quarters(position * 2)?.raw(),
+                length_raw: length,
+                source_length_raw: length,
+                source_start_raw: 0,
+                loop_start_raw: 0,
+                loop_end_raw: length,
+                looping: false,
+                notes,
+            });
+        }
+        tracks.push(TrackSnapshot {
+            id: track,
+            name: format!("profile {index:03}"),
+            gain: 0.1,
+            balance: 0.0,
+            muted: false,
+            soloed: false,
+            devices: Vec::new(),
+            instrument: None,
+            instrument_position: None,
+            sends: Vec::new(),
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
+            content: TrackContentSnapshot::Hybrid {
+                audio_clips,
+                midi_clips,
+            },
+        });
+    }
+    Ok(Project::from_snapshot(Snapshot {
+        sample_rate: 48_000,
+        next_id,
+        assets: vec![AssetSnapshot {
+            id: 1,
+            path: wav.to_path_buf(),
+            source_sample_rate: 48_000,
+            source_frames: 48_000,
+            playback_frames: 48_000,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        }],
+        tracks,
+        return_tracks: Vec::new(),
+        session: Default::default(),
+        loop_region: None,
+        master_gain: 1.0,
+        tempo_points: vec![TempoPoint::new(BeatTime::ZERO, Tempo::DEFAULT)],
+        meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        return_feeds: Vec::new(),
+        import_provenance: None,
+    })?)
+}
+fn wav(path: &Path) -> Result<(), Box<dyn Error>> {
+    let bytes = 48_000_u32 * 4;
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    file.write_all(b"RIFF")?;
+    file.write_all(&(36 + bytes).to_le_bytes())?;
+    file.write_all(b"WAVEfmt ")?;
+    file.write_all(&16_u32.to_le_bytes())?;
+    file.write_all(&1_u16.to_le_bytes())?;
+    file.write_all(&2_u16.to_le_bytes())?;
+    file.write_all(&48_000_u32.to_le_bytes())?;
+    file.write_all(&192_000_u32.to_le_bytes())?;
+    file.write_all(&4_u16.to_le_bytes())?;
+    file.write_all(&16_u16.to_le_bytes())?;
+    file.write_all(b"data")?;
+    file.write_all(&bytes.to_le_bytes())?;
+    for frame in 0..48_000 {
+        let sample = ((frame % 100) as i16 - 50) * 100;
+        file.write_all(&sample.to_le_bytes())?;
+        file.write_all(&sample.to_le_bytes())?;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+fn generate(directory: &Path) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(directory)?;
+    let directory = fs::canonicalize(directory)?;
+    for name in ["shared.wav", "1.hex", "100.hex"] {
+        if directory.join(name).exists() {
+            return Err(format!("fixture already exists: {name}").into());
+        }
+    }
+    let media = directory.join("shared.wav");
+    // Validate both complete snapshots before creating files.
+    let small = project(1, &media)?;
+    let dense = project(100, &media)?;
+    wav(&media)?;
+    hex_storage::save_new(directory.join("1.hex"), &small)?;
+    hex_storage::save_new(directory.join("100.hex"), &dense)?;
+    Ok(())
+}
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut args = std::env::args_os().skip(1);
+    let directory = args
+        .next()
+        .ok_or("usage: time_selection_fixture directory")?;
+    if args.next().is_some() {
+        return Err("expected exactly one fixture directory".into());
+    }
+    generate(Path::new(&directory))?;
+    writeln!(
+        std::io::stdout().lock(),
+        "created 1/100-track fixtures; 100 clips and 400 notes per track; shared 48000 hz stereo wav"
+    )?;
+
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn both_sizes_are_hybrid_with_identical_density() -> Result<(), Box<dyn Error>> {
+        for count in [1, 100] {
+            let project = project(count, Path::new("shared.wav"))?;
+            assert_eq!(project.tracks().len(), count);
+            for track in project.tracks() {
+                assert_eq!(track.clips().len(), 50);
+                assert_eq!(track.midi_clips().len(), 50);
+                assert!(
+                    track
+                        .midi_clips()
+                        .iter()
+                        .all(|clip| clip.notes().len() == 8)
+                );
+            }
+        }
+        Ok(())
+    }
+}

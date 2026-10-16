@@ -1,4 +1,6 @@
 //! Native, disposable layout catalog. No audio, project or preferences I/O.
+#[path = "../src/device_composition.rs"]
+mod device_composition;
 #[path = "layout_review/gallery.rs"]
 mod gallery;
 #[path = "../src/theme.rs"]
@@ -9,6 +11,7 @@ use gpui::{App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px
 
 fn main() {
     Application::new().run(|cx: &mut App| {
+        hex_widgets::bind_numeric_control_keys(cx);
         if let Err(error) = theme::load_fonts(cx) {
             eprintln!("{error}");
             cx.quit();
@@ -23,7 +26,7 @@ fn main() {
         let result = cx.open_window(
             WindowOptions {
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some(theme::text("hex · layout review")),
+                    title: Some(theme::text("hex · layout review · fixture only")),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
