@@ -8,6 +8,7 @@ pub(super) struct RootResourceWitness {
     root_shared_groups: usize,
     shared_handle_bound: usize,
     lifecycle_workers: usize,
+    analysis_workers: usize,
     output_contexts: usize,
     source_workers: usize,
     catalog_channels: usize,
@@ -18,29 +19,48 @@ impl RootResourceWitness {
     pub(super) fn covers(&self, root: u64) -> bool {
         self.root == root && self.root_data != 0 && self.root_shared_groups != 0
             && self.shared_handle_bound >= self.root_shared_groups
-            && self.lifecycle_workers == 1 && self.output_contexts == 1
+            && self.lifecycle_workers == 1 && self.output_contexts == 1 && self.analysis_workers <= 1
             && self.source_workers <= 2 && self.catalog_channels <= 2
             // Counts are retained until actual source-pair/report closure;
             // zero sources legitimately need no reader or kernel handles.
             && self.source_readers.checked_add(self.kernel_handles).is_some()
     }
 }
-fn root_handle_bound(bank: &Bank) -> Option<usize> {
+fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     // Root handles: 2 per accepted State + at most8 control/callback/terminal,
     // queue/lifecycle/construction handles in this private factory. Life:3 per
-    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:4; two domain signals:4.
+    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:6; two domain signals:4.
+    // Six auxiliary rings and private channel atomic payload handles come from
+    // the actual callback constructor visitor, independently of queue occupancy.
     // Observer Status handles outside this publication Root own no graph or
     // source lease; no process-wide Arc/RSS bound is claimed.
-    bank.slots.len().checked_mul(5)?.checked_add(26)
+    bank.publication
+        .slots
+        .len()
+        .checked_mul(5)?
+        .checked_add(28)?
+        .checked_add(
+            bank.native
+                .as_ref()
+                .map_or(0, |native| native.channel_resources().1),
+        )
 }
-fn occupied_handles(bank: &NativeBank) -> Option<usize> {
-    let mut handles = root_handle_bound(&bank.publication)?;
+fn occupied_handles(bank: &NativeBank, excluded_preparation: Option<usize>) -> Option<usize> {
+    let mut handles = root_handle_bound(bank)?;
     for domain in &bank.domains {
         if let Some(resources) = domain.resources {
             handles = handles.checked_add(resources.shared_handle_bound)?;
+        } else if let Some(bound) = domain.preparation_bound {
+            handles = handles.checked_add(bound.shared_handle_bound)?;
         }
     }
-    for slot in &bank.publication.slots {
+    for (index, slot) in bank.publication.slots.iter().enumerate() {
+        if let Some(reservation) = slot
+            .preparation_reservation
+            .filter(|_| Some(index) != excluded_preparation)
+        {
+            handles = handles.checked_add(reservation.handle_rows)?;
+        }
         if let Some(summary) = slot.summary {
             handles = handles.checked_add(summary.shared_resource_handles)?;
         }
@@ -53,14 +73,31 @@ pub(in crate::candidate_custody::eligible) fn remaining_handle_reservation(
     let Some(reservation) = bank.publication.reservation else {
         return Some(usize::MAX);
     };
-    reservation.handle_rows.checked_sub(occupied_handles(bank)?)
+    reservation
+        .handle_rows
+        .checked_sub(occupied_handles(bank, None)?)
 }
 pub(super) fn for_candidate(
     bank: &NativeBank,
     summary: AudioCandidateConstructorSummary,
+    excluded_preparation: Option<usize>,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
+    if bank
+        .domains
+        .iter()
+        .any(|slot| slot.phase != Phase::Vacant && slot.resources.is_none())
+    {
+        return Err("source construction is not sealed");
+    }
     if summary.shared_resource_handles
-        > remaining_handle_reservation(bank).ok_or("constructor handle reservation exceeded")?
+        > bank
+            .publication
+            .reservation
+            .and_then(|r| {
+                r.handle_rows
+                    .checked_sub(occupied_handles(bank, excluded_preparation)?)
+            })
+            .ok_or("constructor handle reservation exceeded")?
     {
         return Err("constructor handle reservation exceeded");
     }
@@ -85,11 +122,13 @@ pub(super) fn for_candidate(
             .slots
             .len()
             .checked_add(9)
+            .and_then(|n| n.checked_add(native.channel_resources().0))
             .ok_or("resource count overflow")?,
-        shared_handle_bound: occupied_handles(bank)
+        shared_handle_bound: occupied_handles(bank, excluded_preparation)
             .and_then(|n| n.checked_add(summary.shared_resource_handles))
             .ok_or("resource count overflow")?,
         lifecycle_workers: 1,
+        analysis_workers: native.analysis_workers(),
         output_contexts: 1,
         source_workers: 0,
         catalog_channels: 0,

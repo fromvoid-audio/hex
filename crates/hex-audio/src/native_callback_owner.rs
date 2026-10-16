@@ -2,8 +2,10 @@
 //! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
 //! destroys its contents. Receiving a carrier is not final-active quiescence.
 use crate::prepared::{Callback, Status};
+#[cfg(all(test, feature = "allocation-probe"))]
+mod endpoint_tests;
 mod resources;
-pub(crate) use resources::NativeCandidateBoundary;
+pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS
@@ -23,6 +25,10 @@ pub(crate) struct NativeCallbackOwner {
     probe: Option<DropProbe>,
 }
 impl NativeCallbackOwner {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn borrowed_status(&self) -> &Status {
+        &self.status
+    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
         self.probe = Some(DropProbe(Box::new(probe)));
@@ -39,7 +45,7 @@ pub(crate) struct ErrorCallbackOwner {
     probe: Option<DropProbe>,
 }
 #[cfg(test)]
-struct DropProbe(Box<dyn FnMut() + Send>);
+pub(crate) struct DropProbe(pub(crate) Box<dyn FnMut() + Send>);
 #[cfg(test)]
 impl Drop for DropProbe {
     fn drop(&mut self) {
@@ -57,46 +63,72 @@ impl ErrorCallbackOwner {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
-pub(crate) struct Guard<T> {
-    owner: Option<Mutex<Box<T>>>,
-    cell: Arc<OnceLock<Mutex<Box<T>>>>,
+enum GuardState<T> {
+    Live {
+        owner: Box<T>,
+        cell: Arc<OnceLock<Mutex<Box<T>>>>,
+    },
+    Published(Arc<OnceLock<Mutex<Box<T>>>>),
+    Closed,
 }
-struct Terminal<T> {
+pub(crate) struct Guard<T> {
+    state: GuardState<T>,
+}
+pub(crate) struct Terminal<T> {
     cell: Option<Arc<OnceLock<Mutex<Box<T>>>>>,
 }
-fn reserve<T>(value: T) -> (Guard<T>, Terminal<T>) {
+pub(crate) fn reserve<T>(value: T) -> (Guard<T>, Terminal<T>) {
     let cell = Arc::new(OnceLock::new());
     (
         Guard {
-            owner: Some(Mutex::new(Box::new(value))),
-            cell: Arc::clone(&cell),
+            state: GuardState::Live {
+                owner: Box::new(value),
+                cell: Arc::clone(&cell),
+            },
         },
         Terminal { cell: Some(cell) },
     )
 }
 impl<T> Guard<T> {
+    pub(crate) fn owner_ref(&self) -> Option<&T> {
+        match &self.state {
+            GuardState::Live { owner, .. } => Some(owner.as_ref()),
+            GuardState::Published(_) | GuardState::Closed => None,
+        }
+    }
     pub(crate) fn owner_mut(&mut self) -> Option<&mut T> {
-        self.owner.as_mut().map(|owner| {
-            owner
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-        })
+        match &mut self.state {
+            GuardState::Live { owner, .. } => Some(owner.as_mut()),
+            GuardState::Published(_) | GuardState::Closed => None,
+        }
+    }
+    pub(crate) fn shared_cell(&self) -> Option<&Arc<OnceLock<Mutex<Box<T>>>>> {
+        match &self.state {
+            GuardState::Live { cell, .. } | GuardState::Published(cell) => Some(cell),
+            GuardState::Closed => None,
+        }
+    }
+    /// Nonblocking ownership transfer, leaving no live endpoint or anchor here.
+    /// Only the constructor-paired terminal may later destroy the whole bundle.
+    pub(crate) fn close(&mut self) {
+        self.publish_for_drop();
+        self.state = GuardState::Closed;
+    }
+    fn publish_for_drop(&mut self) {
+        self.state = match std::mem::replace(&mut self.state, GuardState::Closed) {
+            GuardState::Live { owner, cell } => {
+                // Private fresh cell and sole initializer. Mutex construction
+                // moves the existing Box; it neither allocates nor drops T.
+                cell.get_or_init(|| Mutex::new(owner));
+                GuardState::Published(cell)
+            }
+            other => other,
+        };
     }
 }
 impl<T> Drop for Guard<T> {
     fn drop(&mut self) {
-        self.publish_for_drop();
-    }
-}
-impl<T> Guard<T> {
-    fn publish_for_drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
-            // Private fresh cell, sole initializer; no provider or destructor.
-            self.cell.get_or_init(|| owner);
-        }
-        // The anchored terminal still owns a strong reference. This Drop never
-        // frees the root or its Box on a backend thread.
+        self.close();
     }
 }
 impl<T> Terminal<T> {
@@ -124,6 +156,7 @@ impl<T> Terminal<T> {
 pub(crate) struct NativeTerminals {
     data: Terminal<NativeCallbackOwner>,
     errors: Terminal<ErrorCallbackOwner>,
+    endpoints: Option<crate::prepared::EndpointTerminals>,
 }
 pub(crate) fn reserve_native(
     callback: Callback,
@@ -134,29 +167,116 @@ pub(crate) fn reserve_native(
     NativeTerminals,
 ) {
     let root = callback.candidate_root_for_native_boundary();
-    let (mut data_guard, data) = reserve(NativeCallbackOwner {
+    let (mut data, mut errors, terminals) = reserve_carriers(callback, status, None);
+    if let Some(boundary) = NativeCandidateBoundary::from_reserved(&root, &mut data, &mut errors) {
+        root.record_native_boundary(boundary);
+    }
+    (data, errors, terminals)
+}
+pub(crate) fn reserve_native_worker(
+    control: crate::prepared::Control,
+    callback: Callback,
+    reader: Option<crate::spectrum_worker::SpectrumReader>,
+) -> (
+    Guard<NativeCallbackOwner>,
+    Guard<ErrorCallbackOwner>,
+    NativeTerminals,
+    crate::prepared::Client,
+    crate::prepared::WorkerControl,
+) {
+    let root = control.native_candidate_root();
+    let status = Arc::clone(&control.status);
+    let (client, publication, endpoints) = control.reserve_worker_endpoints(reader);
+    let (mut data, mut errors, terminals) = reserve_carriers(callback, status, Some(endpoints));
+    if let Some(boundary) = NativeCandidateBoundary::from_reserved(&root, &mut data, &mut errors)
+        .and_then(|boundary| boundary.with_worker_endpoints(&client, &publication))
+    {
+        root.record_native_boundary(boundary);
+    }
+    (data, errors, terminals, client, publication)
+}
+fn reserve_carriers(
+    callback: Callback,
+    status: Arc<Status>,
+    endpoints: Option<crate::prepared::EndpointTerminals>,
+) -> (
+    Guard<NativeCallbackOwner>,
+    Guard<ErrorCallbackOwner>,
+    NativeTerminals,
+) {
+    let (data, data_terminal) = reserve(NativeCallbackOwner {
         callback,
         status: Arc::clone(&status),
         #[cfg(test)]
         probe: None,
     });
-    let (mut error_guard, errors) = reserve(ErrorCallbackOwner {
+    let (errors, error_terminal) = reserve(ErrorCallbackOwner {
         status,
         #[cfg(test)]
         probe: None,
     });
-    if let Some(boundary) =
-        NativeCandidateBoundary::from_reserved(&root, &mut data_guard, &mut error_guard)
-    {
-        root.record_native_boundary(boundary);
-    }
-    (data_guard, error_guard, NativeTerminals { data, errors })
+    (
+        data,
+        errors,
+        NativeTerminals {
+            data: data_terminal,
+            errors: error_terminal,
+            endpoints,
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn explicit_endpoint_close_is_inert_and_only_terminal_control_destroys_actual_box() {
+        struct Endpoint {
+            drops: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+        }
+        impl Drop for Endpoint {
+            fn drop(&mut self) {
+                self.drops.lock().unwrap().push(std::thread::current().id());
+            }
+        }
+        let drops = Arc::new(Mutex::new(Vec::new()));
+        let (mut guard, mut terminal) = reserve(Endpoint {
+            drops: Arc::clone(&drops),
+        });
+        let original = guard.owner_ref().unwrap() as *const Endpoint as usize;
+        let measured = allocation_counter::measure(|| {
+            guard.close();
+            guard.close();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(guard.owner_ref().is_none() && guard.owner_mut().is_none());
+        assert!(drops.lock().unwrap().is_empty());
+        // The inert UI token is still alive while the actual endpoint Box is
+        // extracted and destroyed elsewhere; it cannot strand a replacement.
+        assert!(terminal.ready());
+        let owner = terminal.take().unwrap();
+        assert_eq!(owner.as_ref() as *const Endpoint as usize, original);
+        let control_thread = std::thread::spawn(move || {
+            let id = std::thread::current().id();
+            drop(owner);
+            id
+        })
+        .join()
+        .unwrap();
+        assert_eq!(*drops.lock().unwrap(), vec![control_thread]);
+        drop(guard);
+        assert_eq!(drops.lock().unwrap().len(), 1);
+    }
     #[test]
     fn both_guards_must_fully_release_after_publication_and_exact_boxes_drop_only_on_control() {
         let _serial = crate::prepared::candidate_tests::serial();
@@ -288,6 +408,9 @@ pub(crate) struct NativeRetirement {
     data: Option<Box<NativeCallbackOwner>>,
     errors: Option<Box<ErrorCallbackOwner>>,
     states: [Disposal; 2],
+    endpoint_states: [Disposal; 2],
+    client: Option<Box<crate::prepared::ClientEndpoints>>,
+    publication: Option<Box<crate::prepared::PublicationControl>>,
     completed_stream_handle: bool,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
     final_active: Option<crate::candidate_custody::FinalActiveReturn>,
@@ -299,11 +422,19 @@ impl NativeRetirement {
         root: crate::candidate_custody::CandidateRoot,
     ) -> Self {
         root.anchor_native_boundary(&terminals);
+        let endpoint_states = if terminals.endpoints.is_some() {
+            [Disposal::Unreceived; 2]
+        } else {
+            [Disposal::Complete; 2]
+        };
         Self {
             terminals: Some(terminals),
             data: None,
             errors: None,
             states: [Disposal::Unreceived; 2],
+            endpoint_states,
+            client: None,
+            publication: None,
             completed_stream_handle: false,
             domain_pages: std::array::from_fn(|_| None),
             final_active: None,
@@ -321,6 +452,13 @@ impl NativeRetirement {
             .filter(|pages| pages.is_some())
             .count()
     }
+    pub(crate) fn bind_spectrum_reaper(
+        &self,
+        reaper: Option<&crate::spectrum_worker::SpectrumReaper>,
+    ) {
+        self.root
+            .anchor_native_spectrum(reaper.and_then(|reaper| reaper.native_identity()));
+    }
     pub(crate) fn root(&self) -> crate::candidate_custody::CandidateRoot {
         self.root.clone()
     }
@@ -337,10 +475,50 @@ impl NativeRetirement {
         self.completed_stream_handle = true;
         self.advance()
     }
+    fn advance_endpoints(&mut self) -> Result<(), ()> {
+        if self.endpoint_states == [Disposal::Complete; 2] {
+            return Ok(());
+        }
+        let terminals = self
+            .terminals
+            .as_mut()
+            .and_then(|t| t.endpoints.as_mut())
+            .ok_or(())?;
+        // Worker publication can disappear independently of the UI endpoint;
+        // its actual Drop abandons return custody before graph cleanup below.
+        if self.endpoint_states[1] == Disposal::Unreceived && terminals.publication.ready() {
+            self.publication = terminals.publication.take();
+            if self.publication.is_none() {
+                return Err(());
+            }
+            self.endpoint_states[1] = Disposal::Received;
+        }
+        if self.endpoint_states[1] == Disposal::Received {
+            self.endpoint_states[1] = Disposal::Pending;
+            drop(self.publication.take());
+            self.endpoint_states[1] = Disposal::Complete;
+        }
+        if self.endpoint_states[0] == Disposal::Unreceived && terminals.client.ready() {
+            self.client = terminals.client.take();
+            if self.client.is_none() {
+                return Err(());
+            }
+            self.endpoint_states[0] = Disposal::Received;
+        }
+        if self.endpoint_states[0] == Disposal::Received {
+            self.endpoint_states[0] = Disposal::Pending;
+            drop(self.client.take());
+            self.endpoint_states[0] = Disposal::Complete;
+        }
+        Ok(())
+    }
     pub(crate) fn advance(&mut self) -> Result<bool, ()> {
-        if self.states.contains(&Disposal::Pending) {
+        if self.states.contains(&Disposal::Pending)
+            || self.endpoint_states.contains(&Disposal::Pending)
+        {
             return Err(());
         }
+        self.advance_endpoints()?;
         if self.states[0] == Disposal::Unreceived {
             if self.data.is_some() || self.errors.is_some() {
                 return Err(());
@@ -421,7 +599,14 @@ impl NativeRetirement {
                 return Err(());
             }
         }
-        self.terminals = None;
-        Ok(self.root.finish_on_control())
+        // Graph/domain work progresses even while the UI client remains live.
+        // Only complete normal endpoint destruction can release the whole
+        // native resource extent and its exclusive device lease.
+        let graphs_complete = self.root.finish_on_control();
+        let endpoints_complete = self.endpoint_states == [Disposal::Complete; 2];
+        if endpoints_complete {
+            self.terminals = None;
+        }
+        Ok(graphs_complete && endpoints_complete)
     }
 }

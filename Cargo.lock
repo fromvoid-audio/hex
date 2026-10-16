@@ -2603,10 +2603,16 @@ dependencies = [
 name = "hex-desktop"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "gpui",
  "hex-audio",
  "hex-diagnostics",
+ "hex-engine",
+ "hex-media",
  "hex-midi",
+ "hex-project",
+ "hex-session",
+ "hex-stream",
  "hex-ui",
 ]
 

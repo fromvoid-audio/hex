@@ -54,7 +54,10 @@ fn retire_failed_finalize_barriers(deferred: &mut VecDeque<Request>) -> FailedBa
             | Request::Redo
             | Request::SaveDevicePreset { .. }
             | Request::LoadDevicePreset { .. } => {}
-            Request::Open(_) | Request::OpenWith { .. } => kept.push_back(request),
+            Request::Open(_)
+            | Request::OpenWith { .. }
+            | Request::NewWithAudioMode { .. }
+            | Request::OpenWithAudioMode { .. } => kept.push_back(request),
             request => kept.push_back(request),
         }
     }
@@ -380,7 +383,12 @@ mod tests {
         assert!(matches!(deferred.pop_front(), Some(Request::Edit(_))));
         assert!(matches!(
             deferred.pop_front(),
-            Some(Request::Open(_) | Request::OpenWith { .. })
+            Some(
+                Request::Open(_)
+                    | Request::OpenWith { .. }
+                    | Request::NewWithAudioMode { .. }
+                    | Request::OpenWithAudioMode { .. }
+            )
         ));
     }
 

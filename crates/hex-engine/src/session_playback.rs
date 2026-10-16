@@ -272,6 +272,22 @@ struct SessionContinuation {
     velocity: u8,
 }
 
+/// Shared conservative owning-location count for fresh closed constructors.
+/// Playback contributes five outer locations and Session two singleton roots.
+pub(crate) fn candidate_group_reservation(
+    tracks: usize,
+    returns: usize,
+) -> Result<usize, crate::AudioStorageError> {
+    tracks
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(returns))
+        .and_then(|n| n.checked_add(SESSION_TAIL_GROUP_CAPACITY.checked_mul(2)?))
+        .and_then(|n| n.checked_add(return_effect_tails::RETURN_EFFECT_TAIL_CAPACITY))
+        .and_then(|n| n.checked_add(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS))
+        .and_then(|n| n.checked_add(7))
+        .ok_or(crate::AudioStorageError::Overflow)
+}
+
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;

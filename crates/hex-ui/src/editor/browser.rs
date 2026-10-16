@@ -37,7 +37,7 @@ struct PreviewKey {
 struct PlaybackPreviewRequest {
     generation: u64,
     output_generation: u64,
-    output_status: Arc<hex_audio::prepared::Status>,
+    output_identity: u64,
     path: PathBuf,
     sample_rate: u32,
 }
@@ -484,11 +484,15 @@ impl EditorView {
         self.browser.playback_generation = self.browser.playback_generation.saturating_add(1);
         self.browser.playback_pending = None;
         if let Some(audio) = self.audio.as_mut() {
-            audio.control.sample_preview.cancel();
+            audio.control.preview_cancel();
         }
     }
 
     fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error = Some("sample preview is unavailable in verified streaming mode".into());
+            return;
+        }
         let Some(generation) = self.browser.playback_generation.checked_add(1) else {
             self.error = Some("sample preview request counter exhausted".into());
             return;
@@ -506,17 +510,21 @@ impl EditorView {
             self.error = Some("sample preview unavailable · no audio output".into());
             return;
         };
-        let output_generation = match audio.control.sample_preview.request() {
+        let output_generation = match audio.control.preview_request() {
             Ok(token) => token,
             Err(error) => {
                 self.error = Some(error.to_string());
                 return;
             }
         };
+        let Some(output_identity) = audio.control.output_identity() else {
+            self.error = Some("sample preview unavailable · audio output closed".into());
+            return;
+        };
         let request = PlaybackPreviewRequest {
             generation,
             output_generation,
-            output_status: audio.control.status.clone(),
+            output_identity,
             path,
             sample_rate: audio.sample_rate,
         };
@@ -547,15 +555,14 @@ impl EditorView {
                 view.browser.playback_in_flight = false;
                 if request.generation == view.browser.playback_generation
                     && let Some(audio) = view.audio.as_mut().filter(|audio| {
-                        Arc::ptr_eq(&audio.control.status, &request.output_status)
+                        audio.control.output_identity() == Some(request.output_identity)
                             && audio.sample_rate == request.sample_rate
                     })
                 {
                     let admitted = result.and_then(|pcm| {
                         audio
                             .control
-                            .sample_preview
-                            .publish(request.output_generation, pcm)
+                            .preview_publish(request.output_generation, pcm)
                             .map_err(|error| error.to_string())
                     });
                     match admitted {
@@ -2018,7 +2025,7 @@ impl EditorView {
     }
 
     fn open_browser_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.choose_project(path);
+        self.choose_project(path, hex_session::DocumentAudioMode::Resident);
         cx.notify();
     }
 }

@@ -4,23 +4,89 @@ use super::*;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
     context: hex_engine::AudioSourceContext,
+    mode: crate::DocumentAudioMode,
+    sources: BTreeMap<hex_project::AssetId, crate::AudioSourceBinding>,
 }
 impl CanonicalAudioSourceSnapshot {
     pub(super) fn capture(
         project: &Arc<Project>,
         project_generation: u64,
         editor_revision: u64,
+        session: &Session,
     ) -> Self {
         Self {
             project: Arc::clone(project),
+            mode: session.audio_mode(),
+            sources: session.source_bindings(),
             context: hex_engine::AudioSourceContext {
                 project_generation,
                 editor_revision,
             },
         }
     }
+    pub fn audio_mode(&self) -> crate::DocumentAudioMode {
+        self.mode
+    }
+    /// Immutable resolved bindings paired with this exact Project/context.
+    /// Facts only: native publication must match actual retained source leases.
+    pub fn sources(&self) -> &BTreeMap<hex_project::AssetId, crate::AudioSourceBinding> {
+        &self.sources
+    }
+    /// Current musical references only, excluding bindings retained solely for
+    /// Undo/Redo or unused asset records. This is a projection of the captured
+    /// Project, not a second editable model or native source authority.
+    pub fn required_sources(
+        &self,
+    ) -> impl Iterator<Item = (hex_project::AssetId, &crate::AudioSourceBinding)> {
+        self.sources.iter().filter_map(|(id, binding)| {
+            let arrangement = self.project.tracks().iter()
+                .any(|track| track.clips().iter().any(|clip| clip.asset() == *id));
+            let session = self.project.session_cells().iter().any(|cell| {
+                matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == *id)
+            });
+            (arrangement || session).then_some((*id, binding))
+        })
+    }
+    pub fn sample_rate(&self) -> u32 {
+        self.project.sample_rate()
+    }
+    /// Conservative reservation only; the actual native constructor remains
+    /// responsible for source/custody/closed-class validation.
+    pub fn candidate_reservation_quote(
+        &self,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        hex_engine::AudioCandidateReservationQuote::for_project(
+            &self.project,
+            self.required_sources().count(),
+        )
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
+    }
+    /// Prepare inside the native host's reserved cell without extracting its
+    /// bank, draft or completed owner into the Session/Desktop adapter.
+    pub fn prepare_candidate_on_control(
+        &self,
+        source_catalog_generation: u64,
+        destination: &mut hex_engine::AudioCandidatePreparation,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        destination.prepare_on_control(&self.project, source_catalog_generation, self.context)
+    }
+    /// Keep a host's already-rooted input bank in place during all fallible
+    /// preparation. Native custody still comes only from the actual constructor.
+    pub fn begin_prepared_revision_in_place(
+        &self,
+        source_catalog_generation: u64,
+        custody: &mut hex_engine::AudioPreparationCustody,
+        inputs: &mut Option<hex_engine::OwnedAudioInputs>,
+    ) -> Result<hex_engine::AudioPreparationToken, Box<hex_engine::AudioArrangementStartRefusal>>
+    {
+        custody.begin_prepared_revision_in_place_on_control(
+            &self.project,
+            source_catalog_generation,
+            self.context,
+            inputs,
+        )
     }
     /// Borrow the exact captured Project and copy its paired canonical context.
     /// Catalog generation validates media keys and is not document generation.

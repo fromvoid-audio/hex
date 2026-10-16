@@ -984,12 +984,7 @@ fn routing_detail(
         .gap(px(2.0))
         .child(algorithms::selector(view, cx, device, selected))
         .child(global::expression_routing(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            selected == Some(ParameterValue::Choice(0)),
+            view, cx, device, identity, parameters,
         ))
         .child(global::controls(view, cx, device, identity, parameters))
 }

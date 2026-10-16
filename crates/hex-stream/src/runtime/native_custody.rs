@@ -53,6 +53,13 @@ pub struct ConstructorStreamDomain {
     phase: Phase,
     first_panic: Option<Box<dyn Any + Send>>,
 }
+pub(super) struct PreparedDomainParts {
+    disposal: Option<PreparedStreamDisposal>,
+    lease: CatalogLease,
+    readiness: Option<super::readiness::PreparedReadiness>,
+    readiness_bytes: usize,
+    summary: StreamDomainConstructorSummary,
+}
 impl ConstructorStreamDomain {
     pub fn try_new_on_control(
         control: StreamControl,
@@ -105,141 +112,200 @@ impl ConstructorStreamDomain {
         max_shared_handle_bound: usize,
         readiness: Option<StreamReadinessReservation>,
     ) -> Result<Self, Box<StreamDomainSealRefusal>> {
-        let result = (|| {
-            let data = storage::closed_constructor_pair_data(&control, &pages)?;
-            let listed_data_bytes = data
-                .listed_data_bytes()
-                .ok_or(AudioStreamStorageError::UnknownData)?;
-            let listed_construction_peak_bytes = data
-                .listed_construction_peak()
-                .ok_or(AudioStreamStorageError::UnknownData)?;
-            // The original 32 MiB pool contract counts PCM, not page objects,
-            // descriptors, queues, paths, kernels or other listed metadata.
-            let pool_pcm_bytes = control
-                .owner
-                .config
-                .page_buffers
-                .checked_mul(hex_engine::STREAM_PAGE_FRAMES)
-                .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            if pool_pcm_bytes > 32 * 1024 * 1024 {
-                return Err(AudioStreamStorageError::ReservationExceeded);
-            }
-            let shared_handle_bound = 19usize
-                .checked_add(if readiness.is_some() { 3 } else { 0 })
-                .and_then(|handles| handles.checked_add(data.worker.kernel_handles))
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            if shared_handle_bound > max_shared_handle_bound {
-                return Err(AudioStreamStorageError::ReservationExceeded);
-            }
-            let readiness_requested = match readiness {
-                Some(reservation)
-                    if reservation.extents_per_role != 0
-                        && reservation.extents_per_role <= pages.endpoint.cache_capacity() =>
-                {
-                    reservation
-                        .extents_per_role
-                        .checked_mul(6)
-                        .and_then(|count| {
-                            count.checked_mul(std::mem::size_of::<crate::StreamPageExtent>())
-                        })
-                        .ok_or(AudioStreamStorageError::Overflow)?
-                }
-                Some(_) => return Err(AudioStreamStorageError::ReservationExceeded),
-                None => 0,
-            };
-            // Reject an insufficient allowance before the disposal/readiness
-            // Vec reserves. This is a requested-layout lower bound only;
-            // actual allocator capacities remain authoritative below.
-            let requested_metadata = control
-                .owner
-                .config
-                .page_buffers
-                .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreparedStreamDisposal>()))
-                .and_then(|bytes| bytes.checked_add(readiness_requested))
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            if listed_data_bytes
-                .checked_add(requested_metadata)
-                .ok_or(AudioStreamStorageError::Overflow)?
-                > max_retained_data_bytes
-                || listed_construction_peak_bytes
-                    .checked_add(requested_metadata)
-                    .ok_or(AudioStreamStorageError::Overflow)?
-                    > max_construction_peak_data_bytes
-            {
-                return Err(AudioStreamStorageError::ReservationExceeded);
-            }
-            let disposal = PreparedStreamDisposal::try_prepare_on_control(&control, &pages)
-                .map_err(|_| AudioStreamStorageError::Capacity)?;
-            let lease = control
-                .catalog_lease()
-                .map_err(|_| AudioStreamStorageError::UnknownData)?;
-            let CatalogLease {
-                owner: _,
-                catalog: _,
-                pair_id: _,
-            } = &lease;
-            if !pages.matches_catalog(&lease) {
-                return Err(AudioStreamStorageError::PairMismatch);
-            }
-            let readiness = readiness
-                .map(|reservation| {
-                    super::readiness::PreparedReadiness::try_new(&lease, &pages, reservation)
-                })
-                .transpose()?;
-            let readiness_bytes = readiness
-                .as_ref()
-                .map_or(Some(0), super::readiness::PreparedReadiness::backing_bytes)
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            let metadata = disposal
-                .metadata_bytes()
-                .and_then(|bytes| bytes.checked_add(readiness_bytes))
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            let retained_data_bytes = listed_data_bytes
-                .checked_add(metadata)
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            let construction_peak_data_bytes = listed_construction_peak_bytes
-                .checked_add(metadata)
-                .ok_or(AudioStreamStorageError::Overflow)?;
-            if retained_data_bytes > max_retained_data_bytes
-                || construction_peak_data_bytes > max_construction_peak_data_bytes
-            {
-                return Err(AudioStreamStorageError::ReservationExceeded);
-            }
-            let summary = StreamDomainConstructorSummary {
-                data,
-                listed_data_bytes,
-                listed_construction_peak_bytes,
-                pool_pcm_bytes,
-                retained_data_bytes,
-                construction_peak_data_bytes,
-                shared_handle_bound,
-                kernel_handle_bound: data.worker.kernel_handles,
-                worker_lifetimes: 1,
-                catalog_channel_lifetimes: 1,
-                source_reader_lifetimes: lease.footprint().sources,
-            };
-            Ok((disposal, lease, readiness, readiness_bytes, summary))
-        })();
+        let result = Self::prepare_pair(
+            &control,
+            &pages,
+            None,
+            max_retained_data_bytes,
+            max_construction_peak_data_bytes,
+            max_shared_handle_bound,
+            readiness,
+        );
         match result {
-            Ok((disposal, lease, readiness, readiness_bytes, summary)) => Ok(Self {
-                pair: Some((control, pages)),
-                loaned_control: None,
-                readiness,
-                readiness_bytes,
-                lease: Some(lease),
-                disposal: Some(disposal),
-                summary,
-                phase: Phase::Prepared,
-                first_panic: None,
-            }),
+            Ok(parts) => {
+                let disposal = parts.disposal;
+                Ok(Self {
+                    pair: Some((control, pages)),
+                    loaned_control: None,
+                    readiness: parts.readiness,
+                    readiness_bytes: parts.readiness_bytes,
+                    lease: Some(parts.lease),
+                    disposal,
+                    summary: parts.summary,
+                    phase: Phase::Prepared,
+                    first_panic: None,
+                })
+            }
             Err(reason) => Err(Box::new(StreamDomainSealRefusal {
                 reason,
                 control,
                 pages,
             })),
         }
+    }
+    pub(super) fn prepare_pair(
+        control: &StreamControl,
+        pages: &StreamCallbackPages,
+        prebound: Option<&PreparedStreamDisposal>,
+        max_retained_data_bytes: usize,
+        max_construction_peak_data_bytes: usize,
+        max_shared_handle_bound: usize,
+        readiness: Option<StreamReadinessReservation>,
+    ) -> Result<PreparedDomainParts, AudioStreamStorageError> {
+        let data = match prebound {
+            Some(disposal) => storage::closed_prebound_pair_data(control, pages, disposal)?,
+            None => storage::closed_constructor_pair_data(control, pages)?,
+        };
+        let listed_data_bytes = data
+            .listed_data_bytes()
+            .ok_or(AudioStreamStorageError::UnknownData)?;
+        let listed_construction_peak_bytes = data
+            .listed_construction_peak()
+            .ok_or(AudioStreamStorageError::UnknownData)?;
+        // The original 32 MiB pool contract counts PCM, not page objects,
+        // descriptors, queues, paths, kernels or other listed metadata.
+        let pool_pcm_bytes = control
+            .owner
+            .config
+            .page_buffers
+            .checked_mul(hex_engine::STREAM_PAGE_FRAMES)
+            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        if pool_pcm_bytes > 32 * 1024 * 1024 {
+            return Err(AudioStreamStorageError::ReservationExceeded);
+        }
+        let shared_handle_bound = 19usize
+            .checked_add(if readiness.is_some() { 3 } else { 0 })
+            .and_then(|handles| handles.checked_add(data.worker.kernel_handles))
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        if shared_handle_bound > max_shared_handle_bound {
+            return Err(AudioStreamStorageError::ReservationExceeded);
+        }
+        let readiness_requested = match readiness {
+            Some(reservation)
+                if reservation.extents_per_role != 0
+                    && reservation.extents_per_role <= pages.endpoint.cache_capacity() =>
+            {
+                reservation
+                    .extents_per_role
+                    .checked_mul(6)
+                    .and_then(|count| {
+                        count.checked_mul(std::mem::size_of::<crate::StreamPageExtent>())
+                    })
+                    .ok_or(AudioStreamStorageError::Overflow)?
+            }
+            Some(_) => return Err(AudioStreamStorageError::ReservationExceeded),
+            None => 0,
+        };
+        // Reject an insufficient allowance before the disposal/readiness
+        // Vec reserves. This is a requested-layout lower bound only;
+        // actual allocator capacities remain authoritative below.
+        let requested_metadata = control
+            .owner
+            .config
+            .page_buffers
+            .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreparedStreamDisposal>()))
+            .and_then(|bytes| bytes.checked_add(readiness_requested))
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        if listed_data_bytes
+            .checked_add(requested_metadata)
+            .ok_or(AudioStreamStorageError::Overflow)?
+            > max_retained_data_bytes
+            || listed_construction_peak_bytes
+                .checked_add(requested_metadata)
+                .ok_or(AudioStreamStorageError::Overflow)?
+                > max_construction_peak_data_bytes
+        {
+            return Err(AudioStreamStorageError::ReservationExceeded);
+        }
+        let reserved_disposal = if prebound.is_none() {
+            Some(
+                PreparedStreamDisposal::try_prepare_on_control(control, pages)
+                    .map_err(|_| AudioStreamStorageError::Capacity)?,
+            )
+        } else {
+            None
+        };
+        let disposal = prebound
+            .or(reserved_disposal.as_ref())
+            .ok_or(AudioStreamStorageError::UnknownData)?;
+        let lease = control
+            .catalog_lease()
+            .map_err(|_| AudioStreamStorageError::UnknownData)?;
+        let CatalogLease {
+            owner: _,
+            catalog: _,
+            pair_id: _,
+        } = &lease;
+        if !pages.matches_catalog(&lease) {
+            return Err(AudioStreamStorageError::PairMismatch);
+        }
+        let readiness = readiness
+            .map(|reservation| {
+                super::readiness::PreparedReadiness::try_new(&lease, pages, reservation)
+            })
+            .transpose()?;
+        let readiness_bytes = readiness
+            .as_ref()
+            .map_or(Some(0), super::readiness::PreparedReadiness::backing_bytes)
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        let metadata = disposal
+            .metadata_bytes()
+            .and_then(|bytes| bytes.checked_add(readiness_bytes))
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        let retained_data_bytes = listed_data_bytes
+            .checked_add(metadata)
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        let construction_peak_data_bytes = listed_construction_peak_bytes
+            .checked_add(metadata)
+            .ok_or(AudioStreamStorageError::Overflow)?;
+        if retained_data_bytes > max_retained_data_bytes
+            || construction_peak_data_bytes > max_construction_peak_data_bytes
+        {
+            return Err(AudioStreamStorageError::ReservationExceeded);
+        }
+        let summary = StreamDomainConstructorSummary {
+            data,
+            listed_data_bytes,
+            listed_construction_peak_bytes,
+            pool_pcm_bytes,
+            retained_data_bytes,
+            construction_peak_data_bytes,
+            shared_handle_bound,
+            kernel_handle_bound: data.worker.kernel_handles,
+            worker_lifetimes: 1,
+            catalog_channel_lifetimes: 1,
+            source_reader_lifetimes: lease.footprint().sources,
+        };
+        Ok(PreparedDomainParts {
+            disposal: reserved_disposal,
+            lease,
+            readiness,
+            readiness_bytes,
+            summary,
+        })
+    }
+    pub(super) fn from_prepared_pair(
+        pair: Option<(StreamControl, StreamCallbackPages)>,
+        disposal: Option<PreparedStreamDisposal>,
+        parts: PreparedDomainParts,
+    ) -> Self {
+        Self {
+            pair,
+            loaned_control: None,
+            readiness: parts.readiness,
+            readiness_bytes: parts.readiness_bytes,
+            lease: Some(parts.lease),
+            disposal,
+            summary: parts.summary,
+            phase: Phase::Prepared,
+            first_panic: None,
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn test_disposal_identity(&self) -> Option<(usize, usize, usize)> {
+        Some(self.disposal.as_ref()?.test_identity())
     }
     pub fn loan_pages_on_control(&mut self) -> Option<ConstructorPageLoan> {
         if self.phase != Phase::Prepared || self.loaned_control.is_some() {

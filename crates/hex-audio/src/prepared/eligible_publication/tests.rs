@@ -52,7 +52,7 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
         .ok()
         .unwrap();
     assert_eq!(control.revision, 1);
-    assert!(control.publication_pending.load(Acquire));
+    assert!(control.status.publication_pending.load(Acquire));
     assert_eq!(control.status.applied_revision.load(Acquire), 0);
     let second = candidate().unwrap();
     let second_id = second.identity();
@@ -80,7 +80,7 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block());
-    assert!(!control.publication_pending.load(Acquire));
+    assert!(!control.status.publication_pending.load(Acquire));
     let second_ticket = control
         .stage_eligible_audio_candidate(
             refused.owner,
@@ -223,7 +223,7 @@ fn actual_eligible_active_slot_installs_then_acks_renders_commands_and_returns_a
         (0, 0, 0, 0)
     );
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
-    assert!(!control.publication_pending.load(Acquire));
+    assert!(!control.status.publication_pending.load(Acquire));
     control.command(PlaybackCommand::Play).unwrap();
     let mut output = [[0.0; 2]; 4];
     data.owner_mut().unwrap().run(|callback, _| {
@@ -456,7 +456,7 @@ fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_a
         assert!(matches!(c.active, Some(ActivePublication::Eligible(_))));
     });
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
-    assert!(control.publication_pending.load(Acquire));
+    assert!(control.status.publication_pending.load(Acquire));
     assert_eq!(
         control.cancel_audio_candidate(&b_ticket),
         crate::AudioCandidateCancellationResult::Cancelled

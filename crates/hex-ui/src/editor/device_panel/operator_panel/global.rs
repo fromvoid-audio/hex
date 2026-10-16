@@ -55,7 +55,6 @@ pub(super) fn expression_routing(
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
-    custom: bool,
 ) -> Div {
     const WIDTHS: [f32; 5] = [70.0, 78.0, 46.0, 78.0, 46.0];
     let behavior = compact_control(
@@ -84,11 +83,6 @@ pub(super) fn expression_routing(
             .w(px(WIDTHS[0]))
             .flex()
             .items_center()
-            .when(custom, |cell| {
-                cell.child(
-                    detail_caption("custom").debug_selector(|| "operator-routing-custom".into()),
-                )
-            })
             .child(behavior.flex_1().min_w_0()),
     );
     for (column, label) in ["", "conn. a", "amt. a", "conn. b", "amt. b"]
@@ -96,15 +90,11 @@ pub(super) fn expression_routing(
         .enumerate()
         .skip(1)
     {
-        header = header.child(detail_caption(label).w(px(WIDTHS[column])).debug_selector(
-            move || {
-                if column == 0 && custom {
-                    "operator-routing-custom".into()
-                } else {
-                    format!("operator-routing-column-{column}")
-                }
-            },
-        ));
+        header = header.child(
+            detail_caption(label)
+                .w(px(WIDTHS[column]))
+                .debug_selector(move || format!("operator-routing-column-{column}")),
+        );
     }
     let mut content = div()
         .w_full()

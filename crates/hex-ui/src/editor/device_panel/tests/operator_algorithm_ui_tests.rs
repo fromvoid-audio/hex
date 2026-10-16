@@ -224,7 +224,14 @@ fn custom_legacy_routing_keeps_sound_state_and_all_global_controls(cx: &mut Test
         cx.notify();
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("operator-routing-custom").is_some());
+    let custom_bounds = visual.debug_bounds("operator-routing-custom").unwrap();
+    let mode_selector =
+        Box::leak(format!("device-{}-parameter-608", device.value()).into_boxed_str());
+    let mode_bounds = visual.debug_bounds(mode_selector).unwrap();
+    assert!(
+        custom_bounds.bottom() <= mode_bounds.top(),
+        "custom routing marker must not consume the behavior selector's narrow cell",
+    );
     assert!(visual.debug_bounds("operator-routing-header").is_none());
     for parameter in
         (601..=608).chain((620..=639).filter(|parameter| !matches!(*parameter, 626 | 634)))

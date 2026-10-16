@@ -20,6 +20,68 @@ local CI and merge evidence. The repository test-build receipt records optimized
 stable-path delivery. Native controller/UI/listening acceptance remains separate;
 see the supplied finite test checklist. Implementation, merge and disk installation
 must not be reported as measured Live sonic parity or native acceptance.
+## connected verified document audio — pulse2544 / PR239, 17 october 2026
+
+- Desktop composes the actual Session worker/source snapshot with persistent
+  native pair/graph preparation and same-slot queue acceptance. UI receives only
+  the constructor-bound Client in both modes; Resident preroll ownership remains
+  a scoped compatibility path and never a Verified fallback.
+- Verified new-track import removes only the freshly generated default instrument
+  atomically. Empty/resident successors retain typed context and actual N2 domain
+  admission. Conservative per-request quote/scratch reservations preserve the
+  existing separate mutable-runtime, page-pool PCM, metadata and opaque scopes.
+- Actual install status reconciles coalesced Submitted events with last-audible
+  context and stable current refusal. Canonical generation events release the old
+  Client before replacement readiness; existing workers own cleanup without UI
+  polling or joins. Headless connected controls use actual mixed-rate verified
+  worker pages and zero-total/net callback probes.
+- Targeted and final exact local-CI evidence is recorded externally on the PR and
+  Pulse. No physical device, native UI/listening, installation, 100-track or
+  original24/177 completion is claimed; PR240/241 and export followup2650 remain.
+
+## verified document source/service checkpoint — pulse2544 / PR239, 16 october 2026
+
+Explicit verified New/Open branches before resident decode; imports/batches retain
+immutable verified source facts and use the existing mixed-source semantic
+compiler. History/source metadata budgets include Undo-retained facts, while
+canonical snapshots share verified path backing and pair actual worker context.
+Resident defaults remain. Verified events omit legacy Playback; offline export
+refuses explicitly (separate Pulse2650 / PR266). All163 Session tests, three
+focused real-reader/worker controls, strict Session Clippy and the UI compatibility
+check passed at this source checkpoint. The next accounting checkpoint enumerates actual auxiliary queue/atomic payload
+DATA and bounded opaque resource handles, with a never-used preview seal and
+owning refusals (including sentinel request0). All164 audio feature unit tests and
+76 integration tests plus strict feature Clippy pass; the handle-budget and
+sentinel-token negative controls fail with their guards disabled. The native endpoint checkpoint reserves four terminal destinations before CPAL
+exposure and separates callback nonrenderability, autonomous graph cleanup and
+final client endpoint/lease release. The move-only client transfers its whole
+bundle on close/Drop; the lifecycle thread destroys actual endpoint Boxes.
+Split gain/publication admission uses one atomic word with matching terminal
+release and enqueue-failure rollback. Legacy Resident Control remains compatible.
+The strict capture-enabled factory also measures actual analysis buffers and
+capture capacity, keeps Reader inside Client, binds the actual Reaper, and uses
+persistent normal-join/first-panic custody. Native analysis is fixed to device rate;
+generic dynamic workers remain unchanged and cannot mint its native receipt.
+The pending source constructor now reserves one existing N2 Root cell before
+factory work, keeps Starting occupied through close, seals the exact same pair
+in place, and transfers its endpoint only through the real reserved publication
+ring/terminal barrier. Verification refusal conserves the pool until normal
+lifecycle cleanup and report consumption; the real first-play readiness fixture
+uses this path. Session sink/desktop/UI wiring is still unfinished; no full-CI,
+native UI or delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+## loop-enabled prepared arrangement seek — #2652 / PR268, 17 october 2026
+
+Interactive seek candidates now accept admitted enabled transport loops instead
+of failing with `UnsupportedTransportLoop`. End/beyond-end targets normalize into
+the loop before bounded first-pass reconstruction; both candidate clocks start
+at that frame with pass zero. Ordinary rendering preserves mutable gate clipping,
+track/return processor history, first-pass tempo and subsequent periodic playback.
+Raw-request work budgets, cancellation, exact revision ownership, storage limits
+and linear-export preroll refusals remain unchanged. The focused regression
+failed with the reported error before the fix; boundary/paused-resume PCM tests
+cover mutable feedback plus stateful Track/Return chains and inside/outside-loop
+tempo changes across repeated seams. Full local CI and optimized native delivery
+are tracked with the canonical PR; native listening remains user-owned.
 
 ## cold clip-cache geometry identity — #2651 / PR267, 17 october 2026
 
@@ -3721,3 +3783,21 @@ same-owner device/context refusal, with zero total/net callback probes. A narrow
 negative control reproduces premature speculative repin. Final source evidence
 and exact full local CI are recorded externally; PR239 UI composition and original
 #24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.
+
+- PR #239 worker-connection checkpoint: one existing lifecycle open lane selects
+  legacy or worker-owned completion. Neutral Session sink negotiates before
+  canonical startup, polls through event backpressure, and closes on worker exit.
+  Focused negotiated-rate/offline/editing/backpressure/close controls and existing
+  Session suites pass; desktop/native publication and mode UI remain open.
+
+- PR #239 Resident forwarding checkpoint: one nonblocking constructor-owned
+  request/result cell preserves owning refusal and separates request/submitted/
+  applied identities. Verified sealing refuses that owning compatibility path.
+  Headless real queue/ACK, contention, refusal identity and zero-allocation
+  controls pass; desktop/UI integration remains outstanding.
+
+- PR #239 pending verified-pair checkpoint: endpoint/disposal reserve precedes
+  worker spawn; ready seal moves the same pair and cleanup backing. Mixed-rate
+  and empty-source seals, alias refusal, cancellation/pool conservation, changed
+  fingerprint, early insufficient allowance and retained worker-panic controls
+  pass. Root N2 slot integration and desktop/UI connection remain open.

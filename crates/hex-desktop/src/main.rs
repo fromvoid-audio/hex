@@ -2,6 +2,9 @@
 use gpui::{App, Application};
 use std::io::Write;
 
+mod audio_policy;
+mod native_audio;
+mod native_sources;
 mod time_selection_profile;
 
 fn main() {
@@ -43,10 +46,7 @@ fn main() {
         let result = if demo {
             hex_ui::open(cx, hex_audio::AudioOutput::open())
         } else {
-            hex_ui::open_editor_pending(
-                cx,
-                hex_audio::request_initial_open().map_err(|error| error.to_string()),
-            )
+            native_audio::backend().and_then(|backend| hex_ui::open_editor_backend(cx, backend))
         };
         if let Err(error) = result {
             eprintln!("{}", error.to_lowercase());

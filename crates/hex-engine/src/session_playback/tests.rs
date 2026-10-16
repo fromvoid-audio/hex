@@ -10305,6 +10305,12 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
 }
 
 fn mutable_feedback_with_stateful_track_and_return() -> Arc<PreparedRevision> {
+    mutable_feedback_with_stateful_track_and_return_edited(|_| {})
+}
+
+fn mutable_feedback_with_stateful_track_and_return_edited(
+    edit: impl FnOnce(&mut Snapshot),
+) -> Arc<PreparedRevision> {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
@@ -10355,6 +10361,7 @@ fn mutable_feedback_with_stateful_track_and_return() -> Arc<PreparedRevision> {
                 state: filter_state,
             }],
         });
+    edit(&mut snapshot);
     let source = Project::from_snapshot(snapshot).unwrap();
     revision_with_instrument_registry(&source, table, &registry)
 }
@@ -10394,11 +10401,107 @@ fn run_preroll_continuation_on_worker_stack(prepared: Arc<PreparedRevision>, tar
 }
 
 #[test]
-fn interactive_arrangement_preroll_refuses_loops_and_cancellation() {
-    let prepared = revision(
-        &project(0.5, 0, 1 << 32),
-        Arc::new(hex_devices::SineTable::new()),
+fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect_history() {
+    thread::Builder::new()
+        .name("hex-engine-loop-preroll-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let prepared = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
+                snapshot.loop_region = Some(LoopRegion::new(128, 1024, true).unwrap());
+                snapshot.tempo_points.push(TempoPoint::new(
+                    BeatTime::from_ratio(1, 100).unwrap(),
+                    Tempo::new(90_000_000).unwrap(),
+                ));
+                // This later authored transition is outside the loop. It must
+                // not leak into the periodic performance clock after replay.
+                snapshot.tempo_points.push(TempoPoint::new(
+                    BeatTime::from_ratio(1, 10).unwrap(),
+                    Tempo::new(180_000_000).unwrap(),
+                ));
+            });
+            for (requested, destination) in [
+                (0, 0),
+                (64, 64),
+                (128, 128),
+                (512, 512),
+                (1024, 128),
+                (1408, 512),
+                (91_008, 512),
+            ] {
+                for playing in [false, true] {
+                    assert_loop_preroll_continuation(&prepared, requested, destination, playing);
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[inline(never)]
+fn assert_loop_preroll_continuation(
+    prepared: &Arc<PreparedRevision>,
+    requested: u64,
+    destination: u64,
+    playing: bool,
+) {
+    let mut expected = vec![[0.0; 2]; 2500];
+    {
+        // Ordinary uninterrupted playback is independently covered against
+        // explicitly authored linear occurrences in transport_loop_tests.
+        let mut oracle = SessionPlayback::new(Arc::clone(prepared)).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        render_checkpoint_partitioned(&mut oracle, &[17, 61, 193], destination as usize);
+        oracle.render(&mut expected).unwrap();
+    }
+    let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+        Arc::clone(prepared),
+        requested,
+        requested,
+        playing,
+        &AtomicBool::new(false),
+    )
+    .expect("loop-enabled mutable and stateful seek is admitted");
+    assert_eq!(runtime.arrangement_loop_pass, 0);
+    assert_eq!(runtime.device_chains[0].stateful_count(), 1);
+    assert_eq!(runtime.return_chains[0].stateful_count(), 1);
+    let mut candidate = Playback::from_interactive_arrangement_preroll(runtime).unwrap();
+    assert!(Arc::ptr_eq(
+        candidate.prepared_revision().unwrap(),
+        prepared
+    ));
+    assert_eq!(candidate.position(), destination);
+    assert_eq!(candidate.performance_frame(), destination);
+    assert_eq!(candidate.playing(), playing);
+    if !playing {
+        let mut silence = [[1.0; 2]; 19];
+        candidate.render(&mut silence).unwrap();
+        assert_eq!(silence, [[0.0; 2]; 19]);
+        assert_eq!(candidate.position(), destination);
+        assert_eq!(candidate.performance_frame(), destination);
+        candidate.apply(PlaybackCommand::Play);
+    }
+    let mut actual = vec![[0.0; 2]; expected.len()];
+    for chunk in actual.chunks_mut(127) {
+        candidate.render(chunk).unwrap();
+    }
+    assert_eq!(
+        actual, expected,
+        "loop continuation from {requested} to {destination}, playing={playing}"
     );
+    assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(
+        candidate.performance_frame(),
+        destination + actual.len() as u64
+    );
+    assert_eq!(
+        candidate.position(),
+        128 + (destination + actual.len() as u64 - 128) % 896
+    );
+}
+
+#[test]
+fn interactive_arrangement_preroll_accepts_loops_and_checks_cancellation() {
     let mut looped_snapshot = project(0.5, 0, 1 << 32).snapshot();
     looped_snapshot.loop_region = Some(LoopRegion::new(0, 1024, true).unwrap());
     let looped_project = Project::from_snapshot(looped_snapshot).unwrap();
@@ -10408,20 +10511,24 @@ fn interactive_arrangement_preroll_refuses_loops_and_cancellation() {
         .name("hex-engine-interactive-refusal-test".into())
         .stack_size(SEEK_STACK_BYTES)
         .spawn(move || {
-            assert_eq!(
+            let mut candidate =
                 SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
                     Arc::clone(&looped),
                     128,
                     128,
-                    false,
+                    true,
                     &AtomicBool::new(false),
                 )
-                .unwrap_err(),
-                ArrangementPrerollError::UnsupportedTransportLoop
-            );
+                .expect("enabled loop permits interactive seek");
+            assert!(Arc::ptr_eq(&candidate.revision, &looped));
+            assert_eq!(candidate.arrangement_frame(), 128);
+            let mut actual = [[0.0; 2]; 1200];
+            candidate.render(&mut actual).unwrap();
+            assert_eq!(candidate.arrangement_frame(), 304);
+            assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
             assert_eq!(
                 SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
-                    prepared,
+                    Arc::clone(&looped),
                     128,
                     128,
                     false,
@@ -10429,6 +10536,19 @@ fn interactive_arrangement_preroll_refuses_loops_and_cancellation() {
                 )
                 .unwrap_err(),
                 ArrangementPrerollError::Cancelled
+            );
+            // Even though 1408 normalizes to 384, admission still requires the
+            // caller's original explicit work budget before doing any replay.
+            assert_eq!(
+                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                    looped,
+                    1408,
+                    384,
+                    true,
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err(),
+                ArrangementPrerollError::WorkBudgetExceeded,
             );
         })
         .unwrap()

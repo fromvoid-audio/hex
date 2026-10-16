@@ -147,3 +147,21 @@ then moves the actual protected Vec backing to Active without allocation or a
 fallible second-domain commit. Bounded single failure consumption releases the
 actual failed pending key for retry; the native owner retains its diagnostic.
 Legacy borrowed pages retain their established miss behavior.
+
+`PendingStreamDomain` is the control-side constructor phase before a verified
+catalog can be sealed. The host must reserve its normal N2 cell and quoted
+DATA/resource allowance first. Endpoint and exact-pair disposal backings are
+allocated before the worker starts; the factory has no fallible live-owner
+return gap after spawn. Requested limits are checked before allocation, actual
+control capacities before spawn, and actual complete catalog capacities before
+seal. Kernel-cache backing is reserved once from the bounded source count.
+The quote includes finite worker/manifest/kernel/scratch/role reservations and
+never reports pending storage as complete or opaque costs as bytes.
+
+Ready sealing transfers the original pair and prebound disposal without a
+second pair or allocation of replacement cleanup backing. Alias/capacity refusal
+keeps the pending owner intact. Cancellation and failed verification use the same
+prepared cleanup capsule; worker panic preserves its first payload and remaining
+endpoints without retry. A normal report follows actual pair and capsule
+metadata destruction. This type does not provide native admission or manage a
+host slot; PR239's Root and desktop connection are separate integration steps.

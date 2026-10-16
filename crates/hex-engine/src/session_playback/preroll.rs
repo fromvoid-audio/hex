@@ -89,8 +89,12 @@ impl SessionPlayback {
     /// remain routed to Arrangement, then reconstruct Arrangement history to
     /// `destination_frame`. Unlike the linear export candidate, this runtime
     /// accepts subsequent Session commands and state inheritance. Enabled
-    /// transport loops are refused because this operation reconstructs one
-    /// monotonic Arrangement pass. Run preparation on an adequately sized
+    /// transport loops normalize destinations at or beyond their end into the
+    /// loop, matching playing seek content coordinates. Both candidate clocks
+    /// start at that normalized destination with a fresh loop pass; history is
+    /// reconstructed from zero through the first pass, preserving gate clipping.
+    /// The work budget is checked against the original requested destination.
+    /// Run preparation on an adequately sized
     /// control thread; the production seek worker reserves an explicit 8 MiB
     /// stack because stateful multi-chain construction can exceed the Rust
     /// platform-default test-thread stack.
@@ -174,13 +178,27 @@ impl SessionPlayback {
         if blocks > MAX_ARRANGEMENT_PREROLL_FRAMES / PREROLL_BLOCK_FRAMES as u64 {
             return Err(ArrangementPrerollError::WorkBudgetExceeded);
         }
-        if revision
-            .arrangement()
-            .loop_region()
-            .is_some_and(|region| region.enabled())
+        if matches!(policy, PrerollRuntimePolicy::LinearExport)
+            && revision
+                .arrangement()
+                .loop_region()
+                .is_some_and(|region| region.enabled())
         {
             return Err(ArrangementPrerollError::UnsupportedTransportLoop);
         }
+        // A fresh seek reconstructs the first pass to the same content cursor
+        // as ordinary playing Seek, rather than inventing elapsed loop history.
+        // Request budgets above remain based on the caller's absolute target.
+        let destination_frame = match policy {
+            PrerollRuntimePolicy::Interactive => revision
+                .arrangement()
+                .loop_region()
+                .filter(|region| region.enabled())
+                .map(|region| render::normalize_loop_cursor(destination_frame, region, 0))
+                .transpose()?
+                .map_or(destination_frame, |(frame, _)| frame),
+            PrerollRuntimePolicy::LinearExport => destination_frame,
+        };
         let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
@@ -209,6 +227,9 @@ impl SessionPlayback {
             candidate.apply(SessionPlaybackCommand::Play)?;
         }
 
+        // An enabled interactive loop was normalized above, so reconstruction
+        // ends strictly before its end. Ordinary rendering retains loop gate
+        // clipping and the first-pass tempo without ever wrapping this replay.
         let mut remaining = destination_frame;
         let mut block = [[0.0; 2]; PREROLL_BLOCK_FRAMES];
         while remaining > 0 {

@@ -31,6 +31,17 @@ pub(super) fn selector(
         .flex_shrink_0()
         .flex()
         .gap(px(1.0));
+    if selected == Some(ParameterValue::Choice(0)) {
+        row = row.child(
+            detail_caption("custom")
+                .debug_selector(|| "operator-routing-custom".into())
+                .w(px(38.0))
+                .h_full()
+                .flex_shrink_0()
+                .flex()
+                .items_center(),
+        );
+    }
     for index in 0..11 {
         let choice = index as u32 + 1;
         let active = selected == Some(ParameterValue::Choice(choice));

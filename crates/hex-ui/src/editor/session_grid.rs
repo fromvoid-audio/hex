@@ -370,7 +370,7 @@ impl EditorView {
         });
         let route_snapshot = self.audio.as_ref().and_then(|audio| {
             self.session_routes.matching_snapshot(
-                &audio.control.status,
+                audio.control.output_identity()?,
                 audible,
                 revision,
                 generation,

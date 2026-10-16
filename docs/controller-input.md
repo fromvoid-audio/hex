@@ -5,6 +5,8 @@ input endpoints. Choose a port and channel 1–16. The selected enabled instrume
 receives channel pressure, pitch bend and CC1; hardware notes, sustain, recording
 and MPE are outside this workflow. Input is off by default and is not persisted.
 Unsupported instruments or legacy Vector modes are rejected before port opening.
+Verified-streaming documents refuse controller discovery and activation; this
+workflow currently uses the resident borrowed-client publication bridge.
 
 `hex-midi` owns the joining control worker and connection. Its command and result
 channels each hold four entries. Hardware messages do not enter those queues:

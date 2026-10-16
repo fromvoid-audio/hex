@@ -15,12 +15,14 @@ pub use hex_engine::StreamPageExtent;
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
     AudioStreamStorageSummary, CatalogLease, ConstructorPageLoan, ConstructorStreamDomain,
-    OpaqueStreamCost, OpaqueStreamHandleGroup, PagePoolReport, PreparedRolePromotion,
-    PreparedStreamDisposal, ProtectedStreamPages, ProtectionRole, ReadinessProgress,
-    ReadinessRefusal, ReadinessStamp, ShutdownError, StreamBusy, StreamCallbackPages,
-    StreamControl, StreamDisposalError, StreamDisposalPhase, StreamDomainConstructorSummary,
-    StreamDomainSealRefusal, StreamHandleLocation, StreamOwningHandleObligation,
-    StreamPairMismatch, StreamReadinessReservation, StreamRuntime, StreamSourceDomainObligation,
+    OpaqueStreamCost, OpaqueStreamHandleGroup, PagePoolReport, PendingStreamDomain,
+    PreparedRolePromotion, PreparedStreamDisposal, ProtectedStreamPages, ProtectionRole,
+    ReadinessProgress, ReadinessRefusal, ReadinessStamp, ShutdownError, StreamBusy,
+    StreamCallbackPages, StreamControl, StreamDisposalError, StreamDisposalPhase,
+    StreamDomainConstructorSummary, StreamDomainSealRefusal, StreamHandleLocation,
+    StreamOwningHandleObligation, StreamPairMismatch, StreamPreparationAllowance,
+    StreamPreparationBound, StreamReadinessReservation, StreamRuntime,
+    StreamSourceDomainObligation,
 };
 pub use types::{
     CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,

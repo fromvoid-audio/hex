@@ -210,3 +210,80 @@ fn controller_activation_preserves_worker_prepared_held_vector_keyboard_and_note
     oracle.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn verified_streaming_refuses_controller_before_success_ack_or_playback() {
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    next(&service);
+    service
+        .submit(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(SourcePlanReservation {
+                reader: hex_media::VerifiedWavReaderLimits::new(
+                    hex_media::WavReaderLimits::new(64 * 1024 * 1024, 8_000_000, 32, 4096),
+                    1024 * 1024,
+                ),
+                max_retained_sources: 1,
+                max_path_bytes: 1024 * 1024,
+                max_manifest_bytes: 1024 * 1024,
+            }),
+        })
+        .unwrap();
+    let created = next(&service);
+    assert!(created.error.is_none());
+    service
+        .submit(Request::Edit(hex_project::Command::AddMidiTrack {
+            name: "vector".into(),
+        }))
+        .unwrap();
+    let added = next(&service);
+    assert!(added.error.is_none());
+    let track = added.state.project.tracks()[0].id();
+    let instrument = added
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(hex_project::Command::ReplaceDeviceState {
+            device: instrument,
+            state,
+        }))
+        .unwrap();
+    let edited = next(&service);
+    assert!(edited.error.is_none());
+    let generation = edited
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    let input = Arc::new(LiveExpressionInput::new(generation, track, instrument));
+    service
+        .submit(Request::PrepareLiveExpression {
+            input: Arc::clone(&input),
+            revision: edited.state.revision,
+        })
+        .unwrap();
+    let refused = next(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("controller input is unavailable for verified streaming audio")
+    );
+    assert!(input.is_cancelled());
+    assert!(refused.live_expression_complete.is_none());
+    assert!(refused.playback.is_none());
+    assert!(
+        Arc::ptr_eq(&refused.state, &edited.state),
+        "refusal must not edit source or history"
+    );
+}

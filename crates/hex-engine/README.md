@@ -87,7 +87,12 @@ transport loops are refused. This API does not inspect live route ownership,
 restore Session routes, or establish native seek/publication readiness; live
 route fencing and supersede/Stop admission remain a separate integration layer.
 Interactive Session preroll uses the same bounded replay contract with the
-dedicated seek worker's 8 MiB control stack reservation. The opt-in
+dedicated seek worker's 8 MiB control stack reservation. It admits enabled
+transport loops, normalizing end/beyond-end targets into the loop before the
+first-pass replay. Both returned clocks start at that normalized content frame;
+the exact revision, mutable gates, stateful history and ordinary subsequent loop
+rendering are preserved. The raw request still must fit the explicit work budget.
+The opt-in
 [`playback stack probe`](../../docs/playback-stack.md) records isolated
 debug/release completion thresholds for Utility and dense mutable-instrument
 fixtures; it measures requested-stack completion, not peak stack residency.
@@ -574,3 +579,15 @@ absence never certifies an owner closure or transfer fanout. Non-default
 `instrument-test-support` adds bounded candidate action/render and scalar
 transport methods for headless actual-slot tests, with no raw runtime/Arc escape
 or default admission authority. See [final-active disposal](../../docs/final-active-audio-disposal.md).
+
+PR239 adds a borrowed control-side construction seam for a host's already
+reserved preparation cell. `OwnedAudioInputs::try_new_in_place` keeps partial
+source collections in that cell through bank validation;
+`AudioPreparationCustody::begin_prepared_revision_in_place_on_control` keeps the
+original bank there through pre-transfer reservation. `AudioCandidateDraft`
+retains the actual runtime before later fallible bookkeeping, then transfers
+that same runtime and preparation into an empty owner destination only after
+all checks. Refusal and first-panic states remain host-owned until explicit
+control-side cleanup; these APIs do not publish, grant readiness or certify
+complete storage. The host must keep draft/custody wrappers and all their
+charges until their normal destruction, including after successful transfer.

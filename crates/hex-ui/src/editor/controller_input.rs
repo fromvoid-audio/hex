@@ -20,6 +20,7 @@ pub(super) struct ControllerInput {
     connected: bool,
     activation: u64,
     discovery: u64,
+    blocked_for_streaming: bool,
 }
 impl ControllerInput {
     fn connection_event(
@@ -66,6 +67,12 @@ impl Drop for ControllerInput {
 }
 impl EditorView {
     fn refresh_controller_inputs(&mut self, cx: &mut Context<Self>) {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error =
+                Some("controller input is unavailable for verified streaming audio".into());
+            cx.notify();
+            return;
+        }
         if self.controller_input.handle.is_none() {
             self.controller_input.handle = cx
                 .try_global::<crate::controller_input::ControllerWorker>()
@@ -148,6 +155,23 @@ impl EditorView {
         }
     }
     pub(super) fn tick_controller_input(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            if !self.controller_input.blocked_for_streaming {
+                let active = self.controller_input.selected_port.is_some()
+                    || self.controller_input.input.is_some();
+                self.controller_input.cancel();
+                self.controller_input.selected_port = None;
+                self.controller_input.blocked_for_streaming = true;
+                self.reset_controller_selector(cx);
+                if active {
+                    self.error =
+                        Some("controller input is unavailable for verified streaming audio".into());
+                }
+                return true;
+            }
+            return false;
+        }
+        self.controller_input.blocked_for_streaming = false;
         let mut changed = false;
         for _ in 0..4 {
             let event = self
@@ -238,10 +262,12 @@ impl EditorView {
                 .filter(|instrument| !instrument.bypassed())?;
             Some((self.project_generation, track, instrument.id()))
         });
-        self.controller_input
-            .input
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, input))
+        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self
+                .controller_input
+                .input
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, input))
             && self.controller_input.target == current_target
             && current_target == Some((input.project_generation, input.track, input.instrument))
             && !input.is_cancelled()
@@ -340,4 +366,79 @@ mod tests {
         assert!(input.is_cancelled());
         assert!(!state.connected);
     }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn controller_input_streaming_guard_cancels_without_discovery_or_retry(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::{AppContext, Empty};
+    let mut project =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+    let hex_project::Created::Track(track) = project
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "controller".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let instrument = project
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let input = Arc::new(LiveExpressionInput::new(0, track, instrument));
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let service = hex_session::service::Service::new(48_000, 8, 8_000_000).unwrap();
+            window.replace_root(cx, |window, cx| {
+                let preferences = std::env::temp_dir()
+                    .join(format!("hex-controller-input-test-{}", std::process::id()));
+                EditorView::new_for_test_with_theme_preferences_path(
+                    window,
+                    cx,
+                    service,
+                    Err("test offline output".into()),
+                    preferences.join("browser"),
+                    preferences.join("recent"),
+                    preferences.join("theme"),
+                )
+            })
+        })
+        .unwrap();
+    editor.update(cx, |view, cx| {
+        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        view.controller_input.input = Some(Arc::clone(&input));
+        view.controller_input.selected_port = Some(hex_midi::Port {
+            id: 1,
+            name: "synthetic".into(),
+        });
+        view.controller_input.target = Some((0, track, instrument));
+        let requests = view.worker_requests_pending;
+        view.refresh_controller_inputs(cx);
+        assert!(
+            view.controller_input.handle.is_none(),
+            "streaming refusal must precede discovery/native worker lookup"
+        );
+        assert_eq!(
+            view.error.as_deref(),
+            Some("controller input is unavailable for verified streaming audio")
+        );
+        assert!(view.tick_controller_input(cx));
+        assert!(input.is_cancelled());
+        assert!(view.controller_input.selected_port.is_none());
+        assert_eq!(view.worker_requests_pending, requests);
+        let activation = view.controller_input.activation;
+        assert!(!view.tick_controller_input(cx));
+        assert_eq!(
+            view.controller_input.activation, activation,
+            "refusal must not run a repeated activation/cancellation loop"
+        );
+    });
 }
