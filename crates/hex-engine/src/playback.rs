@@ -302,6 +302,24 @@ impl Playback {
             .validate_candidate_runtime_storage(metadata)
     }
     #[cfg(test)]
+    pub(crate) fn test_track_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        self.session_runtime.as_ref()?.test_track_boxes(track)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_tail_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        self.session_runtime.as_ref()?.test_tail_boxes(track)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
+        self.session_runtime.as_ref()?.test_tail_activity(track)
+    }
+    #[cfg(test)]
     pub(crate) fn test_populate_unsupported_tail(&mut self) {
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime.test_populate_unsupported_tail();
@@ -876,6 +894,25 @@ impl Playback {
         if let (Some(next), Some(old)) = (&mut self.metronome, &previous.metronome) {
             next.inherit(old, same_timing);
         }
+    }
+
+    pub(crate) fn inherit_candidate_groups(
+        &mut self,
+        previous: &mut Self,
+        groups: crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(), PlaybackHandoffError> {
+        let next = self
+            .session_runtime
+            .as_mut()
+            .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
+        let old = previous
+            .session_runtime
+            .as_mut()
+            .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
+        next.inherit_candidate_groups(old, groups)
+            .map_err(PlaybackHandoffError::Session)?;
+        self.inherit_metronome(previous);
+        Ok(())
     }
 
     /// Inherit graph-local state at a publication boundary without allocating

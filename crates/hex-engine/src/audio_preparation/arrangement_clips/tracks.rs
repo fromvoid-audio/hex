@@ -1,4 +1,5 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
+mod utility;
 use super::*;
 use crate::{
     CompiledSend, PreparedTrackMix, Track,
@@ -69,6 +70,7 @@ struct Row {
     prepared_gain: Option<PreparedGainEnvelope>,
     meter: Option<OwnedShared<hex_lattice::DeviceMeter>>,
     chain: Option<OwnedShared<[hex_lattice::PreparedProcessorInstance]>>,
+    utility: utility::UtilityCustody,
     bare_meter: Option<Arc<hex_lattice::DeviceMeter>>,
     bare_chain: Option<Arc<[hex_lattice::PreparedProcessorInstance]>>,
     meter_declaration: Option<SharedDeclaration>,
@@ -207,6 +209,19 @@ impl TrackAssembly {
                     .as_ref()
                     .and_then(|m| r.meter_declaration.as_ref().and_then(|d| d.parts(m)))
             };
+            let nested = if let Some(t) = r.actual(root)? {
+                r.utility.bytes(&t.device_chain)?
+            } else if let Some(chain) = &r.chain {
+                r.utility.bytes(chain)?
+            } else if let Some(chain) = &r.bare_chain {
+                r.utility.bytes(chain)?
+            } else {
+                r.utility.metadata_bytes()?
+            };
+            c.chain_payload_bytes = c
+                .chain_payload_bytes
+                .checked_add(nested)
+                .ok_or(AudioStorageError::Overflow)?;
             let chain = if let Some(t) = r.actual(root)? {
                 r.chain_declaration
                     .as_ref()
@@ -263,7 +278,7 @@ impl TrackAssembly {
                         || r.bare_chain.is_some()
                         || r.root_index.is_some()
                         || r.track.is_some(),
-                )
+                ) + r.utility.handles()
             })
             .sum();
         c.reserved_handle_destinations = self
@@ -324,7 +339,11 @@ impl TrackAssembly {
         }
         crate::gain_envelope::validate_project(project).map_err(invalid)?;
         if project.tracks().iter().any(|t| {
-            t.instrument().is_some() || !t.midi_clips().is_empty() || !t.devices().is_empty()
+            t.instrument().is_some()
+                || !t.midi_clips().is_empty()
+                || t.devices()
+                    .iter()
+                    .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
         }) {
             return Err(AudioStorageError::UnsupportedGraph);
         }
@@ -388,7 +407,7 @@ impl TrackAssembly {
                 });
             }
             r.handles = [handle()?, handle()?];
-            if !t.sends().is_empty() || !t.gain_envelope().is_empty() {
+            if !t.devices().is_empty() || !t.sends().is_empty() || !t.gain_envelope().is_empty() {
                 r.source_mix = Some(PreparedTrackMix::identity());
             }
         }
@@ -405,7 +424,14 @@ impl TrackAssembly {
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
-            r.chain = Some(OwnedShared::new_owned_empty_slice());
+            r.chain = Some(
+                r.utility
+                    .prepare(t.devices(), t.id(), project.sample_rate())?,
+            );
+            self.growth = self
+                .growth
+                .checked_add(r.utility.construction_overlap())
+                .ok_or(AudioStorageError::Overflow)?;
             let meter = r.meter.as_ref().ok_or(AudioStorageError::UnknownStorage)?;
             let (p, _) = meter
                 .parts()
@@ -579,7 +605,6 @@ impl TrackAssembly {
                 || t.instrument.is_some()
                 || t.instrument_state.is_some()
                 || t.instrument_id.is_some()
-                || !t.device_chain.is_empty()
                 || t.mutable_instrument
                 || t.mutable_looping_source
                 || t.ordered_prefix.is_some()
@@ -677,6 +702,7 @@ impl TrackAssembly {
             drop(r.bare_chain.take());
             #[cfg(test)]
             drop(self.chain_probe.take());
+            r.utility.clear();
             r.chain_disposal = Disposal::Complete;
             return Ok(());
         }
@@ -909,6 +935,7 @@ impl TrackAssembly {
                 prepared_gain,
                 meter,
                 chain,
+                utility,
                 bare_meter,
                 bare_chain,
                 meter_declaration,
@@ -919,6 +946,7 @@ impl TrackAssembly {
                 meter_disposal: _,
                 chain_disposal: _,
             } = r;
+            utility.visit_metadata(l)?;
             l.vec(clips)?;
             l.vec(pairs)?;
             l.vec(sends)?;
@@ -957,7 +985,6 @@ impl TrackAssembly {
                     || *mutable_instrument
                     || *mutable_looping_source
                     || midi_source_index.is_some()
-                    || !device_chain.is_empty()
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }
@@ -984,6 +1011,7 @@ impl TrackAssembly {
                     handles[1],
                     None,
                 )?;
+                utility.visit(device_chain, l)?;
                 clips
             } else {
                 if let Some(owner) = meter {
@@ -996,9 +1024,7 @@ impl TrackAssembly {
                     )?;
                 }
                 if let Some(owner) = chain {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    utility.visit(owner.arc(), l)?;
                     l.shared(
                         owner.arc(),
                         owner.parts(),
@@ -1017,9 +1043,7 @@ impl TrackAssembly {
                     )?;
                 }
                 if let Some(owner) = bare_chain {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    utility.visit(owner, l)?;
                     l.shared(
                         owner,
                         chain_declaration.as_ref().and_then(|d| d.parts(owner)),

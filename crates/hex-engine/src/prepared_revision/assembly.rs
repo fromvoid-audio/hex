@@ -138,7 +138,10 @@ impl RevisionAssembly {
         // Empty mutable descriptors are permitted only for this exhaustive class.
         for track in project.tracks() {
             if track.instrument().is_some()
-                || !track.devices().is_empty()
+                || track
+                    .devices()
+                    .iter()
+                    .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
                 || !track.midi_clips().is_empty()
             {
                 return Err(Error::UnsupportedGraph);

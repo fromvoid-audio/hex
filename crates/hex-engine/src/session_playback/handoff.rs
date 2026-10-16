@@ -188,6 +188,13 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_with_groups(previous, None)
+    }
+    pub(super) fn inherit_state_with_groups(
+        &mut self,
+        previous: &mut Self,
+        mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -2564,6 +2571,40 @@ impl SessionPlayback {
                 "compensated processor tails require stopping transport before changing the chain",
             ));
         }
+        if let Some(groups) = groups.as_mut() {
+            // This closed class carries only actual Utility chain owners.
+            // Analytic context/instrument/Return-tail moves remain unsupported.
+            if !self.context_lease_plan.is_empty()
+                || previous.mutable_instruments.iter().any(Option::is_some)
+                || previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .any(Option::is_some)
+                || previous
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .any(Option::is_some)
+                || previous.retained_contexts.iter().any(Option::is_some)
+                || self.compensation.is_some()
+                || previous.compensation.is_some()
+            {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            use crate::audio_candidate::groups::Location as L;
+            for slot in 0..previous.tail_groups.len() {
+                if active_tail_groups.get(slot).copied().unwrap_or(false)
+                    && previous.tail_groups[slot].is_some()
+                {
+                    groups.plan(L::TailChain(slot), L::TailChain(slot))?;
+                }
+            }
+            for (index, slot) in old_track_tail_slots.iter().copied().enumerate() {
+                if let Some(slot) = slot {
+                    groups.plan(L::TrackChain(index), L::TailChain(slot))?;
+                }
+            }
+        }
         // Stage shared-context leases before moving any owner. The Return plan
         // validates every destination below; owner moves then use only these
         // prevalidated private indices.
@@ -2739,6 +2780,9 @@ impl SessionPlayback {
             {
                 std::mem::swap(&mut candidate.delays, &mut old.delays);
             }
+        }
+        if let Some(groups) = groups {
+            groups.commit();
         }
         Ok(report)
     }

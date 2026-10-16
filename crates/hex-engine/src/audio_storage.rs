@@ -77,6 +77,16 @@ impl<'a> Owner<'a> {
             },
         }
     }
+    pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
+        Self {
+            value,
+            compare: |a, b| {
+                a.downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .zip(b.downcast_ref::<hex_lattice_contract::NativeDeviceState>())
+                    .is_some_and(|(a, b)| a.shares_payload_storage_with(b))
+            },
+        }
+    }
     fn same(self, other: Self) -> bool {
         (self.compare)(self.value, other.value)
     }

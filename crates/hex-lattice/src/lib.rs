@@ -334,7 +334,108 @@ pub struct NativeRuntimeChain {
     declared_runtime_bytes: usize,
 }
 
+/// Borrowed physical storage observations, never a provider declaration or
+/// ownership/retirement capability. Private chain fields remain inaccessible.
+pub struct NativeRuntimeStorage<'a> {
+    chain: &'a NativeRuntimeChain,
+}
+pub struct NativeRuntimeEntryStorage<'a> {
+    entry: &'a RuntimeEntry,
+}
+impl NativeRuntimeStorage<'_> {
+    pub fn entry_capacity_bytes(&self) -> Option<usize> {
+        self.chain
+            .entries
+            .capacity()
+            .checked_mul(std::mem::size_of::<RuntimeEntry>())
+    }
+    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'_>> {
+        self.chain
+            .entries
+            .iter()
+            .map(NativeRuntimeEntryStorage::new)
+    }
+}
+impl NativeRuntimeEntryStorage<'_> {
+    fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
+        let RuntimeEntry {
+            meter: _,
+            metering: _,
+            input_gain: _,
+            output_gain: _,
+            owner: _,
+            device_id: _,
+            device_type: _,
+            matrix: _,
+            bypassed: _,
+            runtime_version: _,
+            sample_rate: _,
+            configuration: _,
+            output_tail: _,
+            algorithmic_latency_frames: _,
+            primary: _,
+            scratch: _,
+        } = entry;
+        NativeRuntimeEntryStorage { entry }
+    }
+    /// Only scalar addresses leave this view. They are observations, not origin
+    /// receipts; equal bytes or addresses alone never establish provenance.
+    pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
+        (
+            self.entry
+                .primary
+                .as_deref()
+                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
+            self.entry
+                .scratch
+                .as_deref()
+                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
+        )
+    }
+    pub fn primary_payload_bytes(&self) -> Option<usize> {
+        self.entry.primary.as_deref().map(std::mem::size_of_val)
+    }
+    pub fn scratch_payload_bytes(&self) -> Option<usize> {
+        self.entry.scratch.as_deref().map(std::mem::size_of_val)
+    }
+    pub fn runtime_types_are<T: NativeProcessorRuntime>(&self) -> bool {
+        self.entry
+            .primary
+            .as_ref()
+            .is_some_and(|v| v.as_any().is::<T>())
+            && self
+                .entry
+                .scratch
+                .as_ref()
+                .is_some_and(|v| v.as_any().is::<T>())
+    }
+    /// Compare against an already borrowed prepared owner. The view never
+    /// returns or clones either shared owning field.
+    pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
+        self.entry.owner == prepared.owner
+            && self.entry.device_id == prepared.device_id
+            && self.entry.device_type == prepared.device_type
+            && self.entry.sample_rate == prepared.sample_rate
+            && std::sync::Arc::ptr_eq(&self.entry.meter, &prepared.meter)
+            && match (&self.entry.configuration, &prepared.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
 impl NativeRuntimeChain {
+    /// Control-side inventory or bounded scalar test observation only. This
+    /// does not authorize concurrent access to an active runtime.
+    pub fn storage_view(&self) -> NativeRuntimeStorage<'_> {
+        let Self {
+            entries: _,
+            stateful_count: _,
+            declared_runtime_bytes: _,
+        } = self;
+        NativeRuntimeStorage { chain: self }
+    }
     pub fn empty() -> Self {
         Self {
             entries: Vec::new(),

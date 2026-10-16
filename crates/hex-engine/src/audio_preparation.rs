@@ -383,6 +383,17 @@ impl AudioPreparationCustody {
                 } else {
                     0
                 };
+                let device_handles = if assemble_tracks {
+                    project
+                        .tracks()
+                        .iter()
+                        .try_fold(0usize, |n, t| {
+                            n.checked_add(t.devices().len().checked_mul(4)?)
+                        })
+                        .ok_or(AudioStorageError::Overflow)?
+                } else {
+                    0
+                };
                 let return_handles = if assemble_returns {
                     project.return_tracks().len()
                 } else {
@@ -393,6 +404,7 @@ impl AudioPreparationCustody {
                     .checked_add(slots.len())
                     .and_then(|n| n.checked_add(self.session.capacity.reserved_handle_destinations))
                     .and_then(|n| n.checked_add(track_handles))
+                    .and_then(|n| n.checked_add(device_handles))
                     .and_then(|n| n.checked_add(return_handles))
                     .and_then(|n| n.checked_add(usize::from(assemble_preview)))
                     .and_then(|n| n.checked_add(if assemble_revision { 4 } else { 0 }))
@@ -669,7 +681,11 @@ impl AudioPreparationCustody {
         // This first compiler stage has no Session inventory output. Unsupported
         // instruments/effects/MIDI refuse; Session stage is deliberately separate.
         if project.tracks().iter().any(|t| {
-            !t.devices().is_empty() || t.instrument().is_some() || !t.midi_clips().is_empty()
+            t.devices()
+                .iter()
+                .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                || t.instrument().is_some()
+                || !t.midi_clips().is_empty()
         }) || project
             .return_tracks()
             .iter()
@@ -1187,6 +1203,11 @@ impl AudioPreparationCustody {
             })
             .count()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn candidate_test_project() -> hex_project::Project {
+    tests::fixture(1).0
 }
 
 #[cfg(test)]

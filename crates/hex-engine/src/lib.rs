@@ -18,7 +18,8 @@ mod audio_candidate;
 mod audio_storage;
 pub use audio_candidate::{
     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateIdentity,
-    AudioCandidateOwner, AudioCandidateRefusal,
+    AudioCandidateOwner, AudioCandidateRefusal, AudioCandidateRuntimeDisposed,
+    AudioCandidateTransfer,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,

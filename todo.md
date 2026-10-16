@@ -3236,3 +3236,16 @@ retain ownership and charges. Exhaustive present/absent location coverage refuse
 unsupported tail/context population; broader transfer fanout remains #24/177.
 Exact-source CI and remaining native evidence are recorded with PR235; no native
 admission, OS-stop success, deadline, listening or complete-cost claim is made.
+
+### 16 october 2026 — streaming constructor-origin checkpoint (pulse2541 / pr236)
+
+- Added closed concrete Utility preparation with both host trims, full nested
+  state-payload/meter/prepared allocation and independent-handle declarations;
+  preserved original source banks and the generic incomplete-ledger refusal.
+- Connected a reserved original177-derived origin journal to real Session chain
+  swaps and normal Runtime Box destruction with atomic archive fanout. Real
+  filter decay and exact primary/scratch Box pairs prove A→B→C subset movement;
+  copied z history receives no original transfer credit.
+- This is an implementation checkpoint: native claim/anchor/resource and
+  install-versus-ACK wiring remains within PR236. Production admission remains
+  refused; streamed readiness and full24/177 acceptance remain open.

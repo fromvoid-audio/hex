@@ -1,9 +1,11 @@
 //! Constructor-owned runtime custody, independent of cost/admission authority.
 //! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+pub(crate) mod groups;
 use crate::{
     AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, AudioStorageError,
     OwnedAudioInputs, playback::Playback,
 };
+pub use groups::{AudioCandidateRuntimeDisposed, AudioCandidateTransfer};
 use std::{
     any::Any,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -249,6 +251,7 @@ struct Group {
     location: (u8, usize),
     present: bool,
     closed: bool,
+    origin: Option<groups::Origin>,
 }
 struct RuntimeOwner {
     playback: Playback,
@@ -356,6 +359,61 @@ impl AudioCandidateOwner {
     pub fn dispose_on_control(&mut self) -> Result<AudioCandidateDisposed, AudioStorageError> {
         self.inner.dispose_on_control()
     }
+    /// Control-only normal runtime destruction. The returned book does not
+    /// release prepared roots/bank; every origin archive must ingest it first.
+    pub fn dispose_runtime_on_control(
+        &mut self,
+    ) -> Result<AudioCandidateRuntimeDisposed, AudioStorageError> {
+        self.inner.dispose_runtime_on_control()
+    }
+    pub fn finish_disposal_on_control(
+        &mut self,
+    ) -> Result<AudioCandidateDisposed, AudioStorageError> {
+        self.inner.finish_disposal_on_control()
+    }
+    /// Actual bounded inheritance with paired original origin bookkeeping.
+    /// Every destination must already be vacant; refusals retain all owners.
+    pub fn try_inherit_and_retire_in_place(
+        &mut self,
+        previous: &mut Option<Self>,
+        retired: &mut Option<Self>,
+        manifest: &mut Option<AudioCandidateTransfer>,
+    ) -> Result<(), crate::PlaybackHandoffError> {
+        let invalid =
+            || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        if retired.is_some()
+            || manifest.is_some()
+            || previous.is_none()
+            || self.inner.phase != AudioCandidateDisposalPhase::Owned
+        {
+            return Err(invalid());
+        }
+        let old = previous.as_mut().ok_or_else(invalid)?;
+        if old.inner.phase != AudioCandidateDisposalPhase::Owned
+            || old.identity() == self.identity()
+        {
+            return Err(invalid());
+        }
+        self.inner.validate_groups().map_err(|_| invalid())?;
+        old.inner.validate_groups().map_err(|_| invalid())?;
+        let next_runtime = self.inner.runtime.as_mut().ok_or_else(invalid)?;
+        let previous_runtime = old.inner.runtime.as_mut().ok_or_else(invalid)?;
+        let transfer = groups::Transfer::new(
+            &mut self.inner.groups,
+            &mut old.inner.groups,
+            &mut self.inner.journal,
+        );
+        next_runtime
+            .playback
+            .inherit_candidate_groups(&mut previous_runtime.playback, transfer)?;
+        *manifest = Some(AudioCandidateTransfer {
+            predecessor: old.identity(),
+            successor: self.identity(),
+            rows: std::mem::take(&mut self.inner.journal),
+        });
+        *retired = previous.take();
+        Ok(())
+    }
     pub fn recover_inputs_on_control(&mut self) -> Option<OwnedAudioInputs> {
         self.inner.recover_inputs_on_control()
     }
@@ -369,6 +427,9 @@ struct CandidateState {
     token: AudioPreparationToken,
     runtime: Option<Box<RuntimeOwner>>,
     groups: Vec<Group>,
+    journal: Vec<groups::TransferRow>,
+    archive: groups::Archive,
+    runtime_receipt: Option<AudioCandidateRuntimeDisposed>,
     phase: AudioCandidateDisposalPhase,
     first_panic: Option<Box<dyn Any + Send>>,
     receipt_taken: bool,
@@ -387,6 +448,11 @@ impl CandidateState {
         let result = (|| {
             let runtime_id = crate::audio_only_inputs::handle()?;
             let (root, incarnation, revision) = custody.candidate_root(&token)?;
+            let identity = AudioCandidateIdentity {
+                root,
+                incarnation,
+                runtime: runtime_id,
+            };
             let sample_rate = revision.arrangement().sample_rate();
             let runtime = Playback::new_audio_candidate(revision)?;
             let mut count = 0_usize;
@@ -412,15 +478,41 @@ impl CandidateState {
                     location: (kind, index),
                     present,
                     closed: false,
+                    origin: present.then_some(groups::Origin {
+                        runtime: identity,
+                        member: groups.len(),
+                    }),
                 });
                 Ok(())
             })?;
+            let archive = groups::Archive::prepare(identity, &groups)?;
+            let mut journal = Vec::new();
+            journal
+                .try_reserve_exact(count)
+                .map_err(|_| AudioStorageError::Allocation)?;
+            let extra = archive
+                .metadata_bytes()?
+                .checked_add(
+                    journal
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<groups::TransferRow>())
+                        .ok_or(AudioStorageError::Overflow)?,
+                )
+                .ok_or(AudioStorageError::Overflow)?;
+            runtime.validate_candidate_runtime_storage(
+                extra
+                    .checked_add(
+                        groups
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<Group>())
+                            .ok_or(AudioStorageError::Overflow)?,
+                    )
+                    .and_then(|n| n.checked_add(std::mem::size_of::<RuntimeOwner>()))
+                    .and_then(|n| n.checked_add(std::mem::size_of::<CandidateState>()))
+                    .ok_or(AudioStorageError::Overflow)?,
+            )?;
             Ok((
-                AudioCandidateIdentity {
-                    root,
-                    incarnation,
-                    runtime: runtime_id,
-                },
+                identity,
                 sample_rate,
                 Box::new(RuntimeOwner {
                     playback: runtime,
@@ -428,15 +520,20 @@ impl CandidateState {
                     probe: None,
                 }),
                 groups,
+                journal,
+                archive,
             ))
         })();
         match result {
-            Ok((identity, sample_rate, runtime, groups)) => Ok(Self {
+            Ok((identity, sample_rate, runtime, groups, journal, archive)) => Ok(Self {
                 identity,
                 custody,
                 token,
                 runtime: Some(runtime),
                 groups,
+                journal,
+                archive,
+                runtime_receipt: None,
                 phase: AudioCandidateDisposalPhase::Owned,
                 first_panic: None,
                 receipt_taken: false,
@@ -481,9 +578,16 @@ impl CandidateState {
         runtime
             .playback
             .visit_candidate_groups(&mut |kind, member, present| {
-                validate_supported_location(kind, present)?;
+                validate_supported_location(kind, present && kind != 1)?;
+                if kind == 1 && present && self.groups.get(index).is_none_or(|g| g.origin.is_none())
+                {
+                    return Err(AudioStorageError::UnsupportedGraph);
+                }
                 if self.groups.get(index).is_none_or(|g| {
-                    g.location != (kind, member) || g.present != present || g.closed
+                    g.location != (kind, member)
+                        || g.present != present
+                        || g.closed
+                        || (kind == 1 && present && g.origin.is_none())
                 }) {
                     return Err(AudioStorageError::SourceMismatch);
                 }
@@ -498,56 +602,79 @@ impl CandidateState {
 
     /// Borrow persistent storage outside ordinary locks. A destructor failure is
     /// terminal: retain the first payload and all remaining roots, never retry.
+    fn dispose_runtime_on_control(
+        &mut self,
+    ) -> Result<AudioCandidateRuntimeDisposed, AudioStorageError> {
+        if self.phase != AudioCandidateDisposalPhase::Owned || self.receipt_taken {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        if let Err(error) = self.validate_groups() {
+            if error == AudioStorageError::UnsupportedGraph {
+                self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+            }
+            return Err(error);
+        }
+        if self.runtime.is_none() {
+            self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        self.phase = AudioCandidateDisposalPhase::RuntimePending;
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.runtime.take()))) {
+            self.first_panic = Some(payload);
+            self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        self.phase = AudioCandidateDisposalPhase::RootsCleaning;
+        for group in &mut self.groups {
+            group.closed = group.present;
+        }
+        Ok(AudioCandidateRuntimeDisposed {
+            runtime: self.identity,
+            groups: std::mem::take(&mut self.groups),
+        })
+    }
     pub fn dispose_on_control(&mut self) -> Result<AudioCandidateDisposed, AudioStorageError> {
         if self.receipt_taken {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if matches!(
-            self.phase,
-            AudioCandidateDisposalPhase::RuntimePending
-                | AudioCandidateDisposalPhase::FailedIncomplete
-        ) {
+        if self.phase == AudioCandidateDisposalPhase::Owned {
+            self.runtime_receipt = Some(self.dispose_runtime_on_control()?);
+        }
+        if let Some(proof) = &self.runtime_receipt {
+            // Compatibility disposal is valid only for an entirely local book.
+            // Foreign origins need the actual host's atomic all-archive fanout.
+            if proof
+                .groups
+                .iter()
+                .any(|g| g.origin.is_some_and(|o| o.runtime != self.identity))
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            if !self.archive.original_disposed {
+                self.archive.preflight(proof)?;
+                self.archive.commit(proof);
+            }
+        }
+        self.finish_disposal_on_control()
+    }
+    fn finish_disposal_on_control(&mut self) -> Result<AudioCandidateDisposed, AudioStorageError> {
+        if self.receipt_taken {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if self.phase != AudioCandidateDisposalPhase::RootsCleaning || !self.archive.all_closed() {
             return Err(AudioStorageError::UnknownStorage);
         }
-        if self.phase == AudioCandidateDisposalPhase::Owned {
-            if let Err(error) = self.validate_groups() {
-                if error == AudioStorageError::UnsupportedGraph {
-                    self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
-                }
-                return Err(error);
-            }
-            if self.runtime.is_none() {
-                self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
-                return Err(AudioStorageError::UnknownStorage);
-            }
-            self.phase = AudioCandidateDisposalPhase::RuntimePending;
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                drop(self.runtime.take());
-            }));
-            if let Err(payload) = result {
-                self.first_panic = Some(payload);
-                self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
-                return Err(AudioStorageError::UnknownStorage);
-            }
-            self.phase = AudioCandidateDisposalPhase::RootsCleaning;
-            for group in &mut self.groups {
-                // An absent slot never invents an owner or a closure fact.
-                group.closed = group.present;
-            }
-            self.custody.close_on_control();
+        self.custody.close_on_control();
+        self.custody.cleanup_on_control();
+        if self.custody.phase() != AudioPreparationPhase::Recoverable {
+            self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+            return Err(AudioStorageError::UnknownStorage);
         }
-        if self.phase == AudioCandidateDisposalPhase::RootsCleaning {
-            self.custody.cleanup_on_control();
-            if self.custody.phase() != AudioPreparationPhase::Recoverable {
-                self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
-                return Err(AudioStorageError::UnknownStorage);
-            }
-            self.phase = AudioCandidateDisposalPhase::Complete;
-        }
+        self.phase = AudioCandidateDisposalPhase::Complete;
         self.receipt_taken = true;
         Ok(AudioCandidateDisposed {
             identity: self.identity,
-            closed_groups: self.groups.iter().filter(|g| g.closed).count(),
+            closed_groups: self.archive.groups.len(),
         })
     }
     /// Recovery conserves the original bank and its charges. It is separate from
