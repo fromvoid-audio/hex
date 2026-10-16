@@ -87,13 +87,6 @@ struct Voice {
     id: u64,
 }
 
-struct PreparationClock(u32);
-impl hex_lattice::NativeInstrumentClock for PreparationClock {
-    fn beat_at_offset(&self, offset: usize) -> Option<u64> {
-        u64::try_from((offset as u128).checked_mul(2_u128 << 32)? / u128::from(self.0)).ok()
-    }
-}
-
 pub(crate) enum KeyboardClock<'a> {
     Playing {
         timing: &'a dyn crate::MidiTiming,
@@ -181,10 +174,19 @@ impl ComputerKeyboardRuntime {
         let instrument = registry
             .prepare_instrument(device.state(), project.sample_rate())
             .map_err(|_| Invalid("computer keyboard instrument preparation failed"))?;
+        Self::prepare_instrument(track, input, project.sample_rate(), instrument.as_ref())
+    }
+
+    fn prepare_instrument(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        instrument: &dyn hex_lattice::PreparedNativeInstrument,
+    ) -> Result<Self, Invalid> {
         let factory = instrument
             .prepare_mutable_runtime()
             .map_err(|_| Invalid("computer keyboard runtime preparation failed"))?;
-        let mut mutable = factory
+        let mutable = factory
             .as_ref()
             .map(|factory| {
                 NativeInstrumentRuntimePair::new(
@@ -194,7 +196,7 @@ impl ComputerKeyboardRuntime {
                         max_events_per_block: 256,
                         max_active_occurrences: VOICES,
                         max_tail_frames: crate::mutable_instrument::max_mutable_tail_frames(
-                            project.sample_rate(),
+                            sample_rate,
                         )
                         .ok_or(hex_lattice::NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?,
                     },
@@ -229,25 +231,21 @@ impl ComputerKeyboardRuntime {
         for (velocity_index, velocity) in COMPUTER_KEY_VELOCITIES.into_iter().enumerate() {
             for pitch in 0..128_u8 {
                 let index = velocity_index * 128 + usize::from(pitch);
-                if let Some(runtime) = mutable.as_mut() {
+                if let Some(runtime) = mutable.as_ref() {
                     // Validate against the actual native runtime too. A provider's
                     // optional source validator may not cover every pitch domain.
-                    runtime.begin_block();
-                    let mut probe = [[0.0; 2]; 1];
                     supported[index] = instrument.validate_event_note(pitch, velocity).is_ok()
                         && runtime
-                            .process_block_with_clock(
+                            .preflight_event_batch(
                                 &[NativeInstrumentEvent::NoteOn {
                                     frame_offset: 0,
                                     occurrence_id: 1,
                                     pitch,
                                     velocity,
                                 }],
-                                &mut probe,
-                                Some(&PreparationClock(project.sample_rate())),
+                                1,
                             )
                             .is_ok();
-                    runtime.rollback_block();
                     continue;
                 }
                 let sampler = if let Some(context) = &context {
@@ -976,11 +974,6 @@ mod clock_tests {
         assert_eq!(clock.transport_is_running(), Some(false));
         assert_eq!(clock.performance_frame_at_offset(0), None);
         assert_eq!(clock.performance_frame_at_offset(96_000), None);
-        assert_eq!(PreparationClock(48_000).transport_is_running(), None);
-        assert_eq!(
-            PreparationClock(48_000).performance_frame_at_offset(0),
-            None
-        );
         assert_eq!(
             clock.beat_at_offset(96_000),
             Some(BeatTime::from_quarters(4).unwrap().raw()),
@@ -1120,3 +1113,7 @@ mod pitch_domain_tests {
         assert!(frames.iter().flatten().any(|sample| sample.abs() > 1e-6));
     }
 }
+
+#[cfg(test)]
+#[path = "computer_keyboard_clock_admission_tests.rs"]
+mod clock_admission_tests;

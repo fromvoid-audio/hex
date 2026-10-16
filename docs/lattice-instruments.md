@@ -651,7 +651,22 @@ uses the same origin. Stopped audition reports `Some(false)` and no advancing
 performance origin: Session transport frames freeze while audition age advances.
 Its existing beat clock still extrapolates from the actual current canonical
 tempo, so an advancing musical clock must not be used to infer playback.
-Preparation probes leave both new observations unknown.
+Keyboard preparation validates event domains without constructing a synthetic
+performance clock.
+
+`NativeInstrumentRuntimePair::preflight_event_batch` checks generic event bounds
+and both twins' immutable event-domain, active-ID and capacity preflights against
+their current histories. It does not open a block, consult a clock, process PCM
+or change history. Keyboard preparation uses this check plus the prepared
+instrument's note validation to fill its fixed supported-pitch table. The old
+one-frame process probe and synthetic 120 BPM `PreparationClock` are removed.
+A successful preparation check is not renderability: real processing retains
+its full event and clock preflight. Clock-required Sync notes can therefore be
+admitted without inventing playback state during preparation, while actual
+rendering with missing or unknown transport observations still refuses before
+PCM or committed-history mutation. A strict clock-required test provider exercises the real
+keyboard pool constructor, domain refusal, failed render rollback and successful
+stopped-clock rendering; the existing Operator Nyquist regression remains.
 
 Latency compensation carries the performance frame and actual playing state in
 each existing transactional transport stamp, along with content frame, loop

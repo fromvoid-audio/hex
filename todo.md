@@ -3348,3 +3348,7 @@ all existing storage, voice, density, query and replay limits. Separate effect
 suffix limits are unchanged. Focused headless lattice/engine checks and remaining
 exact-source CI are recorded with PR261; this prerequisite does not implement
 Operator companion controls or establish native/listening/deadline acceptance.
+Follow-up integration removes the synthetic keyboard preparation clock and uses
+both twins' immutable event-only preflight instead. A clock-required provider
+reproduces the old preparation refusal and checks that actual rendering still
+refuses absent/unknown clocks without PCM or committed-history mutation.
