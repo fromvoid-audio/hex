@@ -813,3 +813,200 @@ fn meter_error(error: hex_project::MeterMapCopyError) -> AudioStorageError {
         hex_project::MeterMapCopyError::Incomplete => AudioStorageError::UnknownStorage,
     }
 }
+
+impl SessionAssembly {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        external: Option<&'a PreparedSessionInventory>,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        self.capacity_at(false, external)?;
+        let Self {
+            scenes,
+            tracks,
+            cells,
+            indices,
+            ranges,
+            audio,
+            pairs,
+            inventory,
+            timing,
+            meter_copy,
+            meter,
+            sine: _,
+            sine_declaration: _,
+            contexts: _,
+            metadata_handles: _,
+            phase: _,
+            growth,
+            unused_midi,
+            unused_mutable,
+            name_pending: _,
+            scene_cursor: _,
+            track_cursor: _,
+            pending_source,
+            pending_name,
+            pending_pair: _,
+            sine_disposal: _,
+            context_disposal: _,
+            #[cfg(test)]
+                fail_after_move: _,
+            #[cfg(test)]
+                wrong_handle: _,
+            #[cfg(test)]
+                occupy_name: _,
+            #[cfg(test)]
+                panic_after_move: _,
+            #[cfg(test)]
+                disposal_probe: _,
+        } = self;
+        l.vec(scenes)?;
+        l.vec(tracks)?;
+        l.vec(cells)?;
+        l.vec(indices)?;
+        l.vec(ranges)?;
+        l.vec(audio)?;
+        l.vec(pairs)?;
+        l.vec(unused_midi)?;
+        l.vec(unused_mutable)?;
+        for scene in scenes {
+            l.string(&scene.name)?;
+        }
+        for track in tracks {
+            l.string(&track.name)?;
+        }
+        let c = meter_copy.capacity();
+        l.allocation(
+            Owner::exclusive(meter_copy),
+            Location("meter-copy-points", 0),
+            c.layout.point_capacity(),
+            c.layout.point_element_bytes(),
+        )?;
+        l.allocation(
+            Owner::exclusive(meter_copy),
+            Location("meter-copy-prefix", 0),
+            c.layout.prefix_capacity(),
+            c.layout.prefix_element_bytes(),
+        )?;
+        l.growth(c.previous_growth_backing_bytes)?;
+        l.growth(*growth)?;
+        if meter_copy.phase() == hex_project::MeterMapCopyPhase::Incomplete {
+            l.unknown()?;
+        }
+        if let Some(meter) = meter {
+            l.meter(meter)?;
+        }
+        if let Some(timing) = timing {
+            timing.visit_audio_storage(l)?;
+        }
+        if let Some(name) = pending_name {
+            l.string(name)?;
+        }
+        if pending_source.is_some() {
+            l.unknown()?;
+        }
+        let actual = inventory.as_ref().or(external);
+        let clips = if let Some(i) = actual {
+            let PreparedSessionInventory {
+                meter_map,
+                timing,
+                periodic_tempo: _,
+                periodic_tempo_error: _,
+                source_admission_max_micro_bpm: _,
+                sine_table: _,
+                scenes,
+                cells,
+                scene_cell_indices,
+                scene_cell_ranges,
+                tracks,
+                midi_clips,
+                routed_midi_clips,
+                midi_source_roots,
+                mutable_instruments,
+                mutable_history_retarget_storage_bytes: _,
+                audio_clips,
+                work: _,
+                contains_streamed_sources: _,
+                midi_note_bank_storage_bytes: _,
+                midi_note_bank_reference_count: _,
+                shared_contexts: _,
+            } = i;
+            l.meter(meter_map)?;
+            timing.visit_audio_storage(l)?;
+            l.vec(scenes)?;
+            l.vec(cells)?;
+            l.vec(scene_cell_indices)?;
+            l.vec(scene_cell_ranges)?;
+            l.vec(tracks)?;
+            l.vec(midi_clips)?;
+            l.vec(routed_midi_clips)?;
+            l.vec(midi_source_roots)?;
+            l.vec(mutable_instruments)?;
+            l.vec(audio_clips)?;
+            for scene in scenes {
+                l.string(&scene.name)?;
+            }
+            for track in tracks {
+                l.string(&track.name)?;
+            }
+            audio_clips
+        } else {
+            audio
+        };
+        if clips.len() > pairs.len() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (index, row) in pairs.iter().enumerate() {
+            let AudioTarget {
+                plan,
+                clip,
+                declaration,
+                actual_handle,
+                source_disposal: _,
+                name_disposal: _,
+            } = row;
+            if clip.is_some() && clips.get(index).is_some() {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            if let Some(clip) = clip.as_ref().or_else(|| clips.get(index)) {
+                let PreparedSessionAudioClip {
+                    id,
+                    track,
+                    scene,
+                    name,
+                    asset,
+                    source_start,
+                    source_end,
+                    gain,
+                    source,
+                } = clip;
+                if *id != plan.clip
+                    || *track != plan.track
+                    || *scene != plan.scene
+                    || *asset != plan.asset
+                    || *source_start != plan.start
+                    || *source_end != plan.end
+                    || *gain != plan.gain.linear()
+                    || *actual_handle != Some(plan.handle)
+                {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                l.string(name)?;
+                match source {
+                    PreparedAudioSource::Resident(audio) => {
+                        l.resident(audio, Owner::exclusive(source), plan.handle)?
+                    }
+                    PreparedAudioSource::Streamed(owner) => l.shared(
+                        owner,
+                        declaration.as_ref().and_then(|d| d.parts(owner)),
+                        Owner::exclusive(source),
+                        plan.handle,
+                        Some(owner.as_ref()),
+                    )?,
+                }
+            }
+        }
+        Ok(())
+    }
+}

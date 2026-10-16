@@ -404,3 +404,48 @@ impl FeedPlanCustody {
         self.plan.as_ref()
     }
 }
+
+impl FeedPlanCustody {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        external: Option<&'a ReturnFeedPlan>,
+    ) -> Result<(), Error> {
+        let Self {
+            rows,
+            order,
+            outgoing,
+            incoming,
+            visited,
+            plan,
+            active: _,
+            nonempty: _,
+            phase: _,
+            growth,
+            empty_disposal_pending: _,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+        } = self;
+        if plan.is_some() && external.is_some() {
+            return Err(Error::SourceMismatch);
+        }
+        l.vec(rows)?;
+        for Row { feeds } in rows {
+            l.vec(feeds)?;
+        }
+        l.vec(order)?;
+        l.vec(outgoing)?;
+        for feeds in outgoing {
+            l.vec(feeds)?;
+        }
+        l.vec(incoming)?;
+        l.vec(visited)?;
+        l.growth(*growth)?;
+        if let Some(plan) = plan.as_ref().or(external) {
+            plan.visit_audio_storage(l)?;
+        }
+        Ok(())
+    }
+}

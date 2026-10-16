@@ -111,6 +111,27 @@ impl ReturnFeedPlan {
     }
 }
 
+impl ReturnFeedPlan {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self { order, outgoing } = self;
+        l.vec(order)?;
+        l.vec(outgoing)?;
+        for feeds in outgoing {
+            l.vec(feeds)?;
+            for Feed {
+                destination: _,
+                gain: _,
+                id: _,
+            } in feeds
+            {}
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

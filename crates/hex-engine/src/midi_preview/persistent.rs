@@ -240,6 +240,46 @@ impl PreviewCustody {
         self.disposal == Disposal::Pending
     }
 }
+impl PreviewCustody {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        external: Option<&'a MidiArrangementPreview>,
+    ) -> Result<(), Error> {
+        use crate::audio_storage::Owner;
+        self.capacity_at(external)?;
+        let Self {
+            clips,
+            preview,
+            handle,
+            phase: _,
+            disposal: _,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+            #[cfg(test)]
+                probe: _,
+        } = self;
+        let owner = clips.as_ref().or_else(|| {
+            preview
+                .as_ref()
+                .or(external)
+                .map(|MidiArrangementPreview { clips }| clips)
+        });
+        if let Some(owner) = owner {
+            l.shared(
+                owner.arc(),
+                owner.parts(),
+                Owner::exclusive(owner),
+                *handle,
+                None,
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

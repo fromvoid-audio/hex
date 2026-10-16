@@ -636,6 +636,19 @@ impl MidiTiming for SessionTimingView<'_> {
     }
 }
 
+impl PreparedTempoMap {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            canonical,
+            max_micro_bpm: _,
+        } = self;
+        ledger.map(canonical)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -865,3 +865,192 @@ impl ArrangementTrackMetadata<'_> {
 #[cfg(test)]
 #[path = "track_tests.rs"]
 mod tests;
+
+impl TrackAssembly {
+    pub(super) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        root: &'a [Track],
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::Owner;
+        self.capacity_at(false, root)?;
+        let Self {
+            rows,
+            destinations,
+            active: _,
+            phase: _,
+            growth,
+            cursor: _,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                mismatch: _,
+            #[cfg(test)]
+                panic_after: _,
+            #[cfg(test)]
+                probe: _,
+            #[cfg(test)]
+                chain_probe: _,
+        } = self;
+        l.vec(rows)?;
+        l.vec(destinations)?;
+        l.growth(*growth)?;
+        for r in rows {
+            let Row {
+                ordinal: _,
+                installed_ordinal: _,
+                id: _,
+                mix: _,
+                source_mix: _,
+                clips,
+                pairs,
+                sends,
+                gain,
+                prepared_gain,
+                meter,
+                chain,
+                bare_meter,
+                bare_chain,
+                meter_declaration,
+                chain_declaration,
+                handles,
+                track: _,
+                root_index: _,
+                meter_disposal: _,
+                chain_disposal: _,
+            } = r;
+            l.vec(clips)?;
+            l.vec(pairs)?;
+            l.vec(sends)?;
+            gain.visit_audio_storage(l)?;
+            if let Some(gain) = prepared_gain {
+                gain.visit_audio_storage(l)?;
+            }
+            let actual = r.actual(root)?;
+            let actual_clips = if let Some(t) = actual {
+                let Track {
+                    track_id: _,
+                    clips,
+                    mix: _,
+                    source_mix: _,
+                    gain_envelope,
+                    instrument,
+                    instrument_position: _,
+                    ordered_prefix: _,
+                    ordered_suffix: _,
+                    device_chain,
+                    sends,
+                    instrument_id: _,
+                    instrument_state,
+                    instrument_bypassed: _,
+                    instrument_input_gain: _,
+                    instrument_output_gain: _,
+                    instrument_latency: _,
+                    instrument_runtime_latency: _,
+                    instrument_meter,
+                    mutable_instrument,
+                    mutable_looping_source,
+                    midi_source_index,
+                } = t;
+                if instrument.is_some()
+                    || instrument_state.is_some()
+                    || *mutable_instrument
+                    || *mutable_looping_source
+                    || midi_source_index.is_some()
+                    || !device_chain.is_empty()
+                {
+                    return Err(AudioStorageError::UnknownStorage);
+                }
+                l.vec(clips)?;
+                l.vec(sends)?;
+                if let Some(gain) = gain_envelope {
+                    gain.visit_audio_storage(l)?;
+                }
+                l.shared(
+                    instrument_meter,
+                    meter_declaration
+                        .as_ref()
+                        .and_then(|d| d.parts(instrument_meter)),
+                    Owner::exclusive(instrument_meter),
+                    handles[0],
+                    None,
+                )?;
+                l.shared(
+                    device_chain,
+                    chain_declaration
+                        .as_ref()
+                        .and_then(|d| d.parts(device_chain)),
+                    Owner::exclusive(device_chain),
+                    handles[1],
+                    None,
+                )?;
+                clips
+            } else {
+                if let Some(owner) = meter {
+                    l.shared(
+                        owner.arc(),
+                        owner.parts(),
+                        Owner::exclusive(owner),
+                        handles[0],
+                        None,
+                    )?;
+                }
+                if let Some(owner) = chain {
+                    if !owner.is_empty() {
+                        return Err(AudioStorageError::UnknownStorage);
+                    }
+                    l.shared(
+                        owner.arc(),
+                        owner.parts(),
+                        Owner::exclusive(owner),
+                        handles[1],
+                        None,
+                    )?;
+                }
+                if let Some(owner) = bare_meter {
+                    l.shared(
+                        owner,
+                        meter_declaration.as_ref().and_then(|d| d.parts(owner)),
+                        Owner::exclusive(owner),
+                        handles[0],
+                        None,
+                    )?;
+                }
+                if let Some(owner) = bare_chain {
+                    if !owner.is_empty() {
+                        return Err(AudioStorageError::UnknownStorage);
+                    }
+                    l.shared(
+                        owner,
+                        chain_declaration.as_ref().and_then(|d| d.parts(owner)),
+                        Owner::exclusive(owner),
+                        handles[1],
+                        None,
+                    )?;
+                }
+                clips
+            };
+            if actual_clips.len() > pairs.len() {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            for (clip, plan) in actual_clips.iter().zip(pairs) {
+                let owner = plan
+                    .owner
+                    .as_ref()
+                    .ok_or(AudioStorageError::SourceMismatch)?;
+                if owner.binding != plan.origin
+                    || owner.handle != Some(plan.origin.handle)
+                    || owner.slot != Some(plan.origin.slot)
+                {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                l.clip(
+                    clip,
+                    owner.declaration.as_ref(),
+                    owner.handle.ok_or(AudioStorageError::SourceMismatch)?,
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
