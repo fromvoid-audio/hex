@@ -791,6 +791,8 @@ remain separate from time editing and DSP.
   native acceptance remains open. No runtime change or new delivery is claimed.
 - [ ] **native audio reliability** — listening, device selection/disconnect/restart,
   stop under pressure, sustained stress, physical timing and first-transient checks.
+  Owner-reported 16 October start/stop and Stop-during-editing results are in
+  `docs/native-audio-acceptance.md`; remaining native gates stay open.
 - [ ] **long-project streaming** — graph/catalog leases, callback endpoint retirement,
   prewarm/readiness and sustained advancing 100-track mixed-rate native playback,
   edit/seek/launch and fault acceptance before lifting resident import limits.
