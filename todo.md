@@ -2393,3 +2393,16 @@ resident import limits are preserved. See [page delivery](docs/page-delivery.md)
 This is the first stage only: endpoint retirement, installed-page readiness and
 all native advancing100-track/edit/seek/launch/fault/human acceptance remain open.
 PR177 remains draft/in progress; full Pulse24 criteria are not narrowed.
+
+
+16 October 2026 — Pulse2453 / PR192 continuation: retain the existing overflow-safe
+mono conversion and final host-copy validation. Extend the actual host-finish
+regression across f32/i16/u16 and mono/stereo/four-channel output to cover explicit
+render refusal with finite PCM, as well as nonfinite PCM. Both paths must silence
+only the failed chunk, invalidate typing admission, preserve the committed prefix
+and never resurrect its failed ACK. Allocation-probe coverage includes the actual
+finish path. Exact-candidate local CI is recorded in the PR/Pulse; this entry does
+not claim a passing run. PR192 still contains unmerged PR190 runtime source; a
+trial merge of current main produced 22 conflicted files and was aborted without
+changing history. Shared-runtime reconciliation, focused final-source validation,
+merge and optimized delivery remain outstanding; native device evidence is separate.

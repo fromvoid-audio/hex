@@ -97,8 +97,20 @@ the open acceptance gate and remaining native validation.
 
 A failed open leaves the current model/audio intact; new media and save-as paths
 preserve case. Device faults retain offline editing.
-A nonfinite render block becomes silence and stops transport. Finite floating
-output preserves headroom; integer output formats necessarily saturate conversion.
+A failed or nonfinite render chunk becomes silence and stops transport. The native
+host adapter validates every source sample and final channel/sample-format
+conversion before copying a chunk or publishing successful output acknowledgments.
+Mono uses `(left + right) * 0.5` when the sum is finite, preserving normal rounding
+and subnormals; overflowing finite sums use `left * 0.5 + right * 0.5`, whose mean
+remains representable. Stereo preserves both lanes; additional host channels are
+silent. Finite f32 output preserves headroom; i16/u16 retain CPAL saturation and
+unsigned silence uses its midpoint. Every finite f32 mean fits these supported
+formats under those semantics. Nonfinite input or final conversion is refused,
+with the whole failed chunk silenced and no successful typing/output ACK; an
+already copied successful prefix remains intact. Spectrum capture also receives
+the final conversion decision. Two deterministic conversion passes require no
+callback scratch allocation. See Pulse2453 / PR192; physical device behavior and
+deadlines remain separate evidence.
 
 The compact ⟳ control requests a default-output reopen while the editor is offline.
 The lifecycle worker validates the actual default rate against the project rate

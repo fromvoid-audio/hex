@@ -542,8 +542,9 @@ mod tests {
         }
     }
 
-    fn host_copy_ack_regression<T: SizedSample + FromSample<f32> + std::fmt::Debug>()
-    where
+    fn host_copy_ack_regression<T: SizedSample + FromSample<f32> + std::fmt::Debug>(
+        render_failed: bool,
+    ) where
         f32: FromSample<T>,
     {
         for channels in [1, 2, 4] {
@@ -586,7 +587,15 @@ mod tests {
             let rendered = callback.render(&mut source);
             assert!(rendered.is_ok());
             assert!(control.status.typing.snapshot().unwrap().applications[1].is_none());
-            source[255][1] = f32::NAN;
+            let rendered = if render_failed {
+                // Finite PCM must not turn a refused render into output success.
+                Err(hex_engine::Invalid(
+                    "host conversion regression render refusal",
+                ))
+            } else {
+                source[255][1] = f32::NAN;
+                rendered
+            };
             assert!(!checked_host_finish(
                 &mut callback,
                 &mut output[count..],
@@ -640,9 +649,11 @@ mod tests {
 
     #[test]
     fn actual_host_copy_commits_extrema_but_failed_chunk_never_publishes_or_resurrects_ack() {
-        host_copy_ack_regression::<f32>();
-        host_copy_ack_regression::<i16>();
-        host_copy_ack_regression::<u16>();
+        for render_failed in [false, true] {
+            host_copy_ack_regression::<f32>(render_failed);
+            host_copy_ack_regression::<i16>(render_failed);
+            host_copy_ack_regression::<u16>(render_failed);
+        }
     }
 
     #[cfg(feature = "allocation-probe")]
