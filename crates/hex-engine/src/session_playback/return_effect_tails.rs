@@ -112,7 +112,12 @@ impl ReturnEffectTailBank {
     /// The caller invokes this once after current Return processing and before
     /// the current master mix. The reusable chain owns all callback state.
     /// `output.len()` is bounded to 256 by `render_route_chunk`.
-    pub(super) fn render_chunk(&mut self, output: &mut [Frame]) {
+    pub(super) fn render_chunk(
+        &mut self,
+        output: &mut [Frame],
+        frame_offset: usize,
+        capture: &mut Option<&mut super::OutputCapture<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
         let (slots, scratch) = (&mut self.slots, &mut self.scratch);
         for tail in slots.iter_mut().flatten() {
             if !tail.output_scratch {
@@ -133,7 +138,22 @@ impl ReturnEffectTailBank {
                     destination[1] += source[1] * tail.gain;
                 }
             }
+            if let Some(capture) = capture.as_mut() {
+                for frame in frames.iter_mut() {
+                    *frame = if tail.muted {
+                        [0.0; 2]
+                    } else {
+                        [frame[0] * tail.gain, frame[1] * tail.gain]
+                    };
+                }
+                capture.add(
+                    super::OutputCaptureId::Return(tail.return_id),
+                    frame_offset,
+                    frames,
+                )?;
+            }
         }
+        Ok(())
     }
 
     pub(super) fn accounted_storage_bytes(&self) -> Option<usize> {
@@ -273,6 +293,9 @@ impl ReturnEffectTailPlan {
         Ok(plan)
     }
 
+    pub(super) fn captures_bus(&self) -> bool {
+        self.capture.iter().any(Option::is_some)
+    }
     pub(super) fn inherit_bus(&self, index: usize) -> bool {
         self.inherit_bus.get(index).copied().unwrap_or(false)
     }
@@ -380,7 +403,7 @@ fn reserve_chain(
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
     match chain
-        .output_tail_for_range(0..chain.len())
+        .zero_input_drain_for_range(0..chain.len())
         // The full range is validated by this caller; `None` therefore means
         // its serial finite declarations overflowed their aggregate bound.
         .ok_or(SessionPlaybackError::ReleaseBankFull)?

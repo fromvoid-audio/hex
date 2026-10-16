@@ -123,6 +123,9 @@ impl NativeInstrumentDefinition for FixtureDefinition {
 }
 
 impl PreparedNativeInstrument for FixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, DeviceContractError> {
         Err(DeviceContractError::UnsupportedProcessingClass)
     }
@@ -134,6 +137,9 @@ impl PreparedNativeInstrument for FixturePrepared {
 }
 
 impl PreparedMutableInstrumentRuntime for FixtureFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn runtime_version(&self) -> u32 {
         1
     }

@@ -3,8 +3,8 @@
 ## Purpose
 
 Own a Linux x86_64 standalone safe-Rust supervisor for explicit original SDK
-fixture modules and a separately built native factory probe. This is discovery,
-not an audio host. Installed-directory and production third-party scanning remain
+fixture modules, a separately built native factory probe and bounded offline
+component attempts. Installed-directory and production third-party scanning remain
 refused pending a reviewed OS containment policy. Processes isolate ordinary
 crashes; they are not a security sandbox against arbitrary same-user code.
 
@@ -20,11 +20,12 @@ removing inherited SIG_IGN/SA_NOCLDWAIT auto-reaping. Its existing
 signal-hook-registry1.4.8 action flags were audited; the controlled native launcher
 proves the negative control and repaired child/descendant ownership. Native SDK-interface loading occurs only in the separate C++ executable,
 never in this supervisor, engine or audio process. No Rust VST3 wrapper, audio
-backend, GUI toolkit or component/processor/editor interface is adopted.
+backend or GUI toolkit is adopted. Component/controller/processor interfaces
+remain inside the separate controlled offline child; editors are unimplemented.
 
 ## Does not own
 
-Plugin processing, realtime queues, buses, automation, latency compensation,
+Production plugin hosting, realtime queues, general buses/automation, latency compensation,
 canonical project state, state recovery, editors, provider/audio/root UI,
 third-party security containment, Mac builds/signing or full Pulse21 acceptance.
 
@@ -128,13 +129,22 @@ and license notices). It is caller-owned build provenance, not plugin authentici
 The builder audits runtime libraries for ALL scanner/offline fixtures and helpers.
 No additional Rust dependency or native SDK implementation library is added.
 
-On this cloud executor, Rust UnixStream send needs the supported command-scoped
-network permission even for local child IPC; default-sandbox `EPERM` is retained
-as failed-attempt evidence. No proxy/network-policy change or credential copying
-is needed. Linux tests require `HEX_OFFLINE_FIXTURE_RECEIPT` and explicit
+The supervisor requires local Unix-domain IPC. Earlier default-sandbox `EPERM`
+attempts remain historical evidence; the current Linux environment executed all
+22 controlled native cases without a permission or network-policy change. Tests require `HEX_OFFLINE_FIXTURE_RECEIPT` and explicit
 `cargo test -p hex-plugin-scan --test offline_native --locked -- --ignored
 --test-threads=1`. Default workspace tests visibly ignore native fixture suites.
 Run the existing scanner native suite with `HEX_SCAN_FIXTURE_RECEIPT` as well.
 Native Mac packaging/signing, editors, realtime deadlines/queues, production
 containment, broad buses/events/automation, graph/state integration, listening and
 whole VST3 hosting remain unverified or unimplemented.
+
+## current-main review — 16 october 2026
+
+The pinned official SDK and four submodules were fetched without modification;
+the builder verified their exact commits, MIT notices and actual compiler/header/
+runtime closure. Ten scanner and twelve offline native fixture tests passed with
+explicit receipts, alongside default protocol tests and strict crate Clippy. The
+final exact-source native rerun and full workspace CI are recorded with PR193.
+These results cover the original controlled fixtures, not arbitrary third-party
+modules or production application hosting.

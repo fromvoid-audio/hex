@@ -60,6 +60,92 @@ fn run(directory: &Path, args: &[&str]) -> Output {
         .expect("run hex-cli")
 }
 
+#[test]
+fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
+    let directory = TempDir::new();
+    fs::write(
+        directory.path().join("source.wav"),
+        wav(&[16384, 8192, -8192]),
+    )
+    .unwrap();
+    assert!(
+        run(
+            &directory.0,
+            &["import-project", "source.wav", "project.hex"]
+        )
+        .status
+        .success()
+    );
+    let project = hex_storage::load(directory.path().join("project.hex")).unwrap();
+    let id = project.tracks()[0].id().value();
+    let scope = format!("--stems={id}");
+    let stems = run(
+        &directory.0,
+        &["export-project", "project.hex", "batch", "1", "3", &scope],
+    );
+    assert!(
+        stems.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stems.stderr)
+    );
+    let entries: Vec<_> = fs::read_dir(directory.path().join("batch"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let data = fs::read(&entries[0]).unwrap();
+    assert_eq!(data.len(), 52);
+    assert_eq!(i16::from_le_bytes([data[44], data[45]]), 8192);
+    fs::write(directory.path().join("existing.wav"), b"old recording").unwrap();
+    let refusal = run(
+        &directory.0,
+        &["export-project", "project.hex", "existing.wav", "1", "3"],
+    );
+    assert!(!refusal.status.success());
+    assert_eq!(
+        fs::read(directory.path().join("existing.wav")).unwrap(),
+        b"old recording"
+    );
+    let replaced = run(
+        &directory.0,
+        &[
+            "export-project",
+            "project.hex",
+            "existing.wav",
+            "1",
+            "3",
+            "--overwrite",
+        ],
+    );
+    assert!(
+        replaced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replaced.stderr)
+    );
+    let text = String::from_utf8(replaced.stdout).unwrap();
+    assert!(!text.contains("previous file preserved"));
+    assert!(fs::read_dir(directory.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".hex-export-")
+    }));
+    assert_eq!(
+        &fs::read(directory.path().join("existing.wav")).unwrap()[44..],
+        &data[44..]
+    );
+    assert!(
+        !run(
+            &directory.0,
+            &["export-project", "project.hex", "refused.wav", "3", "1"]
+        )
+        .status
+        .success()
+    );
+    assert!(!directory.path().join("refused.wav").exists());
+}
+
 fn valid_project_with_missing_media(path: &str) -> Project {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
     match editor
