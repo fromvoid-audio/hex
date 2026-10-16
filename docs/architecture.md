@@ -625,3 +625,10 @@ The receipt records pinned MIT SDK provenance, compiler/header/runtime closure
 and licenses; process cleanup contains ordinary fixture faults, without claiming
 a security sandbox. See the crate README for the finite wire, lifecycle and test
 contracts. Other platforms expose refusal stubs, not a translation fallback.
+
+`hex-clap-scan` owns the corresponding separate CLAP format boundary, with no
+workspace dependency edges. Its descriptor and controlled offline children cover
+original audio/MIDI/state/delay fixtures on Linux. The arm64 Mac portability unit
+requires its own enrolled immutable artifact root and native evidence; Linux
+results do not open that eligibility. It shares no process-global signal owner
+with the primary application or the independent VST3 supervisor.

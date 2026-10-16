@@ -1,3 +1,54 @@
+## vector B edits and stopped playback recovery — #2643 / PR259, 16 october 2026
+
+Reproduced the user's compile error with an above-Nyquist B ratio and a separate
+active-filter handoff refusal with a supported B ratio. Invalid tuning leaves
+canonical state/history intact; all B/C/D levels affect serial-routed FM PCM.
+Default custom routing leaves B/C/D disconnected. Stop now requests canonical
+playback on the worker and installs fresh histories, with Play/Seek fenced until
+callback acknowledgment. Ordinary edits preserve existing history/refusal rules.
+The session suite, strict session Clippy, all491 enabled UI feature tests and
+the audio allocation-probe suite pass. A negative control disabling the recovery
+publication policy fails the focused UI regression as expected. Final-source
+full local CI is recorded separately; optimized Mac delivery and native
+listening/interaction remain open.
+See [Vector contract and checklist](docs/operator-native.md).
+
+## computer midi keyboard — PR257 / #2642, 16 october 2026
+
+Added the default-off toolbar/M keyboard with seventeen chromatic physical keys,
+Z/X octave and C/V finite velocity steps. Worker-prepared selected banks use the
+existing native instruments and ordinary graph custody, with independent bounded
+live voices, queue-independent cancellation and stopped monitoring that freezes
+musical clocks. Source tests cover PCM/release, mutable voices, routing, pressure,
+revision/history and focus/shortcut dispatch; callback allocation probes cover
+live publication, release, full-queue priority Stop and retirement. Exact final
+local CI/optimized build provenance is recorded by the PR coordinator. Native
+checklist and limits are in docs/midi.md. Positive-latency monitoring remains
+explicitly refused and tracked as #2644 / PR260; native listening/input acceptance
+remains open, without MIDI recording or hardware output claims.
+
+## knob history shortcut coverage — PR171 / #2374, 16 october 2026
+
+Strengthened the existing rendered Operator shared-control history fixture to use
+actual keyboard shortcuts for drag and typed edits, immediate Undo after typed
+commit/Tab focus movement, one-entry restoration and save/reopen after Redo. The
+current representative paths pass; the original unspecified native report is not
+reproduced, and no production history change or generic bug fix is claimed.
+The user will file a specific recurrence if observed. Full exact-source checks
+are recorded with PR171; native input acceptance remains separate. Pulse requires
+reauthentication here; no ticket completion is claimed.
+
+## controlled CLAP fixture tooling — PR199 / #20, 16 october 2026
+
+Integrated the isolated format-owned supervisor/native helpers and preserved
+scoped dependency/process boundaries. Official pinned CLAP headers/MIT notice and
+compiler/header/runtime closure are verified. All53 explicit Linux native cases,
+default protocol/unit tests and strict crate Clippy pass. Final exact-head native
+rerun/full CI are recorded with PR199. Mac's8 tests, SDK/toolchain/enrollment
+acceptance and production third-party/application hosting remain open. No guards
+were weakened or Linux results relabeled as Darwin evidence. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
 ## controlled VST3 fixture tooling — PR193 / #21, 16 october 2026
 
 Integrated the isolated Linux scanner/offline helper crate and scoped hash,

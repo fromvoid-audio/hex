@@ -636,3 +636,12 @@ removal, Return control gesture admission and owner/project retirement. Native
 macOS visual acceptance remains pending: click an instrument then an effect,
 click/adjust a Return effect knob, and verify only the clicked card is highlighted
 while its controls still work.
+
+## knob history shortcut regression — 16 october 2026
+
+The rendered shared Operator frequency-control fixture exercises real keyboard
+Undo/Redo after a drag and after typed commit, with immediate Undo, Tab focus
+movement, complete pre-edit state restoration and save/reopen after Redo. It
+passes on current source; the older unspecified native report is not reproduced
+and no speculative runtime fix is applied. Native confirmation remains separate:
+drag or type a value, use one Undo and Redo, and verify the saved/reopened value.

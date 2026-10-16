@@ -241,6 +241,9 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
+        if let Some(keyboard) = &self.computer_keyboard {
+            checked_add(&mut total, keyboard.storage_bytes()?)?;
+        }
         if let Some(compensation) = &self.compensation {
             checked_add(&mut total, compensation.storage_bytes()?)?;
         }

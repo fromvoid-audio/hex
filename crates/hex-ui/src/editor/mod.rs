@@ -16,6 +16,7 @@ mod clip_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_view_ui_test;
 mod close;
+mod computer_keyboard;
 mod context_menu;
 mod controller;
 mod device_gesture;
@@ -429,6 +430,7 @@ pub(super) struct EditorView {
     audio: Option<PreparedOutput>,
     recovery_open: Option<hex_audio::RecoveryOpen>,
     recovery: RecoveryState,
+    stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -464,6 +466,8 @@ pub(super) struct EditorView {
     device_gesture_barriers: VecDeque<Request>,
     device_panel: device_panel::DevicePanelState,
     worker_requests_pending: usize,
+    audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
+    audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
     pending_seek_ticket: Option<u64>,
@@ -497,6 +501,8 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<String>,
+    computer_keyboard: computer_keyboard::ComputerKeyboard,
+    _computer_keyboard_keys: gpui::Subscription,
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
@@ -674,14 +680,33 @@ impl EditorView {
             }
         })
         .detach();
+        let keyboard_window_id = window.window_handle().window_id();
+        let keyboard_entity = cx.entity().downgrade();
+        let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle().window_id() == keyboard_window_id
+                && let Some(entity) = keyboard_entity.upgrade()
+                && entity.read(cx).computer_keyboard_accepts(
+                    &event.keystroke.key,
+                    event.keystroke.modifiers,
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        });
         let focus = cx.focus_handle();
         let scrub_focus_blur = cx.on_blur(&focus, window, |view, _, cx| {
+            view.cancel_computer_keyboard();
+            view.computer_keyboard.suspended = true;
             if view.cancel_scrub() {
                 cx.notify();
             }
         });
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
+            view.cancel_computer_keyboard();
+            view.computer_keyboard.suspended = true;
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
                 cx.notify();
@@ -689,6 +714,8 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_computer_keyboard();
+                view.computer_keyboard.suspended = true;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 if let Some(audio) = view.audio.as_mut() {
@@ -716,6 +743,7 @@ impl EditorView {
             state: None,
             recovery_open: None,
             recovery: RecoveryState::default(),
+            stopped_playback_restore: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -751,6 +779,8 @@ impl EditorView {
             device_gesture_barriers: VecDeque::new(),
             device_panel: device_panel::DevicePanelState::default(),
             worker_requests_pending: 0,
+            audio_batch: None,
+            audio_batch_progress: None,
             pending_playback: None,
             pending_audio_commands: VecDeque::new(),
             pending_seek_ticket: None,
@@ -784,6 +814,8 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
+            _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],

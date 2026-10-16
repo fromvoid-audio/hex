@@ -823,19 +823,63 @@ fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppCo
     });
     let changed = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
     assert_ne!(changed, original);
-    editor.update(cx, |v, _| assert!(v.enqueue(Request::Undo)));
+    visual.simulate_keystrokes("cmd-z");
     pump_until(&editor, cx, |v| {
         v.worker_requests_pending == 0 && v.pending_requests.is_empty()
     });
     editor.read_with(cx, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, original)
     });
-    editor.update(cx, |v, _| assert!(v.enqueue(Request::Redo)));
+    visual.simulate_keystrokes("cmd-shift-z");
     pump_until(&editor, cx, |v| {
         v.worker_requests_pending == 0 && v.pending_requests.is_empty()
     });
     editor.read_with(cx, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, changed)
+    });
+    // Commit a typed value and immediately Undo through the normal shortcut
+    // after moving focus. This exercises the pending terminal/barrier path.
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-20005-value", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("1375");
+    visual.simulate_keystrokes("enter tab cmd-z");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project,
+            changed,
+            "one keyboard Undo restores the entire pre-typed state"
+        );
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    let changed = editor.read_with(cx, |view, _| {
+        let project = view.state.as_ref().unwrap().project.clone();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                project.device(device).unwrap().state(),
+                hex_lattice_contract::ParameterId::from_static(20005),
+            )
+            .unwrap(),
+            ParameterValue::Float(1375.0)
+        );
+        project
     });
     let path = std::env::temp_dir().join(format!(
         "hex-filter-{}-{}.hex",

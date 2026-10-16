@@ -10,7 +10,8 @@ widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
     'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
-    'self.icon(', 'self.control_icon(', 'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
+    'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
