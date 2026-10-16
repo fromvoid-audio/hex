@@ -66,8 +66,10 @@ may be released on the caller after unlocking.
 export-style Arrangement-only runtime. `ArrangementSeekMode::Interactive`
 constructs a normal Session runtime before replaying Arrangement history, so it
 keeps Session route support and can inherit into a normal compiled successor.
-The request and result carry the selected mode. Both modes refuse enabled
-Arrangement transport loops. Wrapping a candidate does not prove its target
+The request and result carry the selected mode. Linear mode refuses enabled
+Arrangement transport loops; Interactive mode reconstructs the first pass to the
+normalized content cursor within the original requested work budget. Wrapping a
+candidate does not prove its target
 position or publication readiness; the caller still validates current
 project/route/Stop identity. Normally the lane owns one candidate runtime; its
 two fixed retirement slots bound defensive stale-state retirement to at most

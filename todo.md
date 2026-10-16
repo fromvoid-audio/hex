@@ -47,6 +47,20 @@ ring/terminal barrier. Verification refusal conserves the pool until normal
 lifecycle cleanup and report consumption; the real first-play readiness fixture
 uses this path. Session sink/desktop/UI wiring is still unfinished; no full-CI,
 native UI or delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+## loop-enabled prepared arrangement seek — #2652 / PR268, 17 october 2026
+
+Interactive seek candidates now accept admitted enabled transport loops instead
+of failing with `UnsupportedTransportLoop`. End/beyond-end targets normalize into
+the loop before bounded first-pass reconstruction; both candidate clocks start
+at that frame with pass zero. Ordinary rendering preserves mutable gate clipping,
+track/return processor history, first-pass tempo and subsequent periodic playback.
+Raw-request work budgets, cancellation, exact revision ownership, storage limits
+and linear-export preroll refusals remain unchanged. The focused regression
+failed with the reported error before the fix; boundary/paused-resume PCM tests
+cover mutable feedback plus stateful Track/Return chains and inside/outside-loop
+tempo changes across repeated seams. Full local CI and optimized native delivery
+are tracked with the canonical PR; native listening remains user-owned.
+
 ## cold clip-cache geometry identity — #2651 / PR267, 17 october 2026
 
 Corrected the stored lane key to the exact geometry consumed by the first cached
