@@ -800,7 +800,7 @@ pub struct PublicationControl {
     rate: u32,
     revision: u64,
     command_storage_bytes: usize,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
@@ -909,7 +909,7 @@ pub fn channel_with_spectrum(
                 rate,
                 revision: 0,
                 command_storage_bytes,
-                #[cfg(test)]
+                #[cfg(all(test, feature = "allocation-probe"))]
                 endpoint_probe: None,
                 latest_fresh_runtime_cancellation: None,
             },
@@ -1371,7 +1371,7 @@ impl Drop for PublicationControl {
         }
         self.candidate_root
             .abandon_control(self.retired.take(), self.held_control_return.take());
-        #[cfg(test)]
+        #[cfg(all(test, feature = "allocation-probe"))]
         drop(self.endpoint_probe.take());
     }
 }

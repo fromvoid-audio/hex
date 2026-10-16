@@ -18,7 +18,7 @@ pub(crate) struct ClientEndpoints {
     gain_recording: crate::gain_recording::Control,
     status: Arc<Status>,
     command_ticket: u64,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     probe: Option<crate::native_callback_owner::DropProbe>,
 }
 pub(crate) struct EndpointTerminals {
@@ -46,7 +46,7 @@ impl Control {
             gain_recording,
             status,
             command_ticket,
-            #[cfg(test)]
+            #[cfg(all(test, feature = "allocation-probe"))]
             probe: None,
         });
         let (endpoint, publication) = reserve(publication);
@@ -61,7 +61,7 @@ impl Control {
     }
 }
 impl WorkerControl {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
         if let Some(control) = self.endpoint.owner_mut() {
             control.endpoint_probe = Some(crate::native_callback_owner::DropProbe(Box::new(probe)));
@@ -91,7 +91,7 @@ impl Drop for WorkerControl {
     }
 }
 impl Client {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
         if let Some(endpoints) = self.endpoints.owner_mut() {
             endpoints.probe = Some(crate::native_callback_owner::DropProbe(Box::new(probe)));
