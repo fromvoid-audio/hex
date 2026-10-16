@@ -1,4 +1,5 @@
 mod compensated;
+mod computer_keyboard;
 use super::{commands::transition_captures, *};
 use crate::compile::PreparedAudioSource;
 use crate::{MediaPages, MidiTiming, StreamedPageSpan, render_streamed_page_span};
@@ -112,7 +113,7 @@ impl SessionPlayback {
         mut capture: Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         output.fill([0.0; 2]);
-        if output.is_empty() || !self.playing {
+        if output.is_empty() || (!self.playing && self.computer_keyboard.is_none()) {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
             }
@@ -125,8 +126,18 @@ impl SessionPlayback {
                 .begin_transaction()
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
-        let result = self.render_playing(output, pages, &mut observer, &mut capture);
+        if let Some(keyboard) = &mut self.computer_keyboard {
+            keyboard.begin_block();
+        }
+        let result = if self.playing {
+            self.render_playing(output, pages, &mut observer, &mut capture)
+        } else {
+            self.render_keyboard_monitor(output, &mut observer, &mut capture)
+        };
         if result.is_err() {
+            if let Some(keyboard) = &mut self.computer_keyboard {
+                keyboard.rollback();
+            }
             if let Some(compensation) = self.compensation.as_mut() {
                 let _ = compensation.delays.rollback_transaction();
             }
@@ -142,6 +153,9 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
+            if let Some(keyboard) = &mut self.computer_keyboard {
+                keyboard.commit();
+            }
             if let Some(compensation) = self.compensation.as_mut() {
                 compensation
                     .delays
@@ -441,12 +455,17 @@ impl SessionPlayback {
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
             let metered_instrument = self.device_metering && track.instrument_id.is_some();
-            let buffered = stateful_effects
+            let live_target = self
+                .computer_keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.track() == self.route_scratch[index].id);
+            let buffered = live_target
+                || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
                 || metered_instrument;
-            let ordered = track.requires_ordered_processing();
+            let ordered = live_target || track.requires_ordered_processing();
             let already_mixed = metered_instrument
                 && !ordered
                 && !stateful_effects
@@ -471,7 +490,8 @@ impl SessionPlayback {
                 .iter()
                 .any(|entry| entry.tail_group.is_none());
             let midi_route = effective_midi_route(&self.revision, &self.route_scratch, index)?;
-            let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
+            let has_current_route = live_target
+                || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
                 || !matches!(midi_route.owner, RouteOwner::Silence);
             let has_current_effect_tail = !has_current_route
                 && !has_current_release
@@ -593,6 +613,18 @@ impl SessionPlayback {
                         index,
                         render_output,
                     )?;
+                    if let Some(keyboard) = self
+                        .computer_keyboard
+                        .as_mut()
+                        .filter(|keyboard| keyboard.track() == self.route_scratch[index].id)
+                    {
+                        let clock = keyboard
+                            .musical_clock(&timing, performance_frame, true)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        keyboard
+                            .render(render_output, Some(&clock))
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
                     track.apply_instrument_output_gain(render_output);
                     if self.device_metering {
                         track.instrument_meter.observe_output(render_output);
@@ -846,6 +878,16 @@ impl SessionPlayback {
             }
         }
         self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+        self.render_return_buses(output, frame_offset, observer, capture)
+    }
+
+    fn render_return_buses(
+        &mut self,
+        output: &mut [Frame],
+        frame_offset: usize,
+        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
             for &index in arrangement.return_feed_plan.order() {
@@ -899,8 +941,10 @@ impl SessionPlayback {
                 }
             }
             // Captured chains feed Main only, never any current or old edge.
-            self.return_effect_tails
-                .render_chunk(output, frame_offset, capture)?;
+            if self.playing {
+                self.return_effect_tails
+                    .render_chunk(output, frame_offset, capture)?;
+            }
             return Ok(());
         }
         for (index, bus) in self
@@ -955,8 +999,10 @@ impl SessionPlayback {
                 capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
             }
         }
-        self.return_effect_tails
-            .render_chunk(output, frame_offset, capture)?;
+        if self.playing {
+            self.return_effect_tails
+                .render_chunk(output, frame_offset, capture)?;
+        }
         Ok(())
     }
     fn render_detached_tails(

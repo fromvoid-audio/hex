@@ -55,6 +55,7 @@ fn completed_event(state: &ViewState) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        computer_keyboard_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,

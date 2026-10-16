@@ -30,6 +30,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        computer_keyboard_complete: None,
         save_complete: false,
         open_complete: replaced,
         project_replaced: replaced,
@@ -539,6 +540,11 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
             let generation = view.project_generation;
             view.stopped_playback_restore =
                 Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
+            view.computer_keyboard.enabled = true;
+            view.computer_keyboard.suspended = false;
+            assert!(view.tick_computer_keyboard());
+            assert!(view.computer_keyboard.suspended);
+            assert!(view.computer_keyboard.target.is_none());
             let mut restored = event(Arc::clone(&project), 2, false);
             restored.stopped_playback_restore_complete = true;
             view.receive(restored);

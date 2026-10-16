@@ -13,6 +13,20 @@ full local CI is recorded separately; optimized Mac delivery and native
 listening/interaction remain open.
 See [Vector contract and checklist](docs/operator-native.md).
 
+## computer midi keyboard — PR257 / #2642, 16 october 2026
+
+Added the default-off toolbar/M keyboard with seventeen chromatic physical keys,
+Z/X octave and C/V finite velocity steps. Worker-prepared selected banks use the
+existing native instruments and ordinary graph custody, with independent bounded
+live voices, queue-independent cancellation and stopped monitoring that freezes
+musical clocks. Source tests cover PCM/release, mutable voices, routing, pressure,
+revision/history and focus/shortcut dispatch; callback allocation probes cover
+live publication, release, full-queue priority Stop and retirement. Exact final
+local CI/optimized build provenance is recorded by the PR coordinator. Native
+checklist and limits are in docs/midi.md. Positive-latency monitoring remains
+explicitly refused and tracked as #2644 / PR260; native listening/input acceptance
+remains open, without MIDI recording or hardware output claims.
+
 ## knob history shortcut coverage — PR171 / #2374, 16 october 2026
 
 Strengthened the existing rendered Operator shared-control history fixture to use
