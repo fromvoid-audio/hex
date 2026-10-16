@@ -13,6 +13,53 @@ The harmonic tool row now occupies the graph area above the stationary tabs;
 rendered overlap coverage accompanies the integration. Native/listening results
 and exact-source validation are recorded with the candidate PR/build evidence.
 
+## computer midi keyboard — PR257 / #2642, 16 october 2026
+
+Added the default-off toolbar/M keyboard with seventeen chromatic physical keys,
+Z/X octave and C/V finite velocity steps. Worker-prepared selected banks use the
+existing native instruments and ordinary graph custody, with independent bounded
+live voices, queue-independent cancellation and stopped monitoring that freezes
+musical clocks. Source tests cover PCM/release, mutable voices, routing, pressure,
+revision/history and focus/shortcut dispatch; callback allocation probes cover
+live publication, release, full-queue priority Stop and retirement. Exact final
+local CI/optimized build provenance is recorded by the PR coordinator. Native
+checklist and limits are in docs/midi.md. Positive-latency monitoring remains
+explicitly refused and tracked as #2644 / PR260; native listening/input acceptance
+remains open, without MIDI recording or hardware output claims.
+
+## knob history shortcut coverage — PR171 / #2374, 16 october 2026
+
+Strengthened the existing rendered Operator shared-control history fixture to use
+actual keyboard shortcuts for drag and typed edits, immediate Undo after typed
+commit/Tab focus movement, one-entry restoration and save/reopen after Redo. The
+current representative paths pass; the original unspecified native report is not
+reproduced, and no production history change or generic bug fix is claimed.
+The user will file a specific recurrence if observed. Full exact-source checks
+are recorded with PR171; native input acceptance remains separate. Pulse requires
+reauthentication here; no ticket completion is claimed.
+
+## controlled CLAP fixture tooling — PR199 / #20, 16 october 2026
+
+Integrated the isolated format-owned supervisor/native helpers and preserved
+scoped dependency/process boundaries. Official pinned CLAP headers/MIT notice and
+compiler/header/runtime closure are verified. All53 explicit Linux native cases,
+default protocol/unit tests and strict crate Clippy pass. Final exact-head native
+rerun/full CI are recorded with PR199. Mac's8 tests, SDK/toolchain/enrollment
+acceptance and production third-party/application hosting remain open. No guards
+were weakened or Linux results relabeled as Darwin evidence. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
+## controlled VST3 fixture tooling — PR193 / #21, 16 october 2026
+
+Integrated the isolated Linux scanner/offline helper crate and scoped hash,
+process and signal boundaries. Official pinned SDK/submodules, MIT notices,
+compiler/header/runtime closure and fixture receipts were verified. All10 scanner
+and12 offline native fixture tests pass, as do default protocol tests and strict
+crate Clippy. Final exact-head rerun/full CI are recorded in PR193. Production
+third-party containment, application hosting, real-time/editor/state integration,
+Mac/native/reference/listening and physical deadlines remain open. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
 ## eq8 response measurement tooling — PR198 / #2251, 16 october 2026
 
 Reviewed actual prepared-response export and the bounded uncertainty comparator.
@@ -3384,3 +3431,19 @@ fixture now requires v12/1,488 bytes and exercises authored/hidden harmonics,
 range and Repeat through the existing complete-state load/Undo/Redo and neighbor
 identity checks. Production preset behavior is unchanged. This failed run is not
 merge or delivery evidence; the final source requires a new full run.
+
+## 16 October 2026 — companion host clock and finite tail prerequisites (#2646 / PR261)
+
+Added optional exact performance-frame and actual running-state observations to
+native instrument clocks, forwarding checked offsets and delayed transport-stamp
+origins. Stopped audition keeps its canonical-tempo musical clock but exposes no
+invented advancing transport origin. Centralized finite mutable tail admission
+at 140 seconds for authored tracks, checkpoints and keyboard audition, retaining
+all existing storage, voice, density, query and replay limits. Separate effect
+suffix limits are unchanged. Focused headless lattice/engine checks and remaining
+exact-source CI are recorded with PR261; this prerequisite does not implement
+Operator companion controls or establish native/listening/deadline acceptance.
+Follow-up integration removes the synthetic keyboard preparation clock and uses
+both twins' immutable event-only preflight instead. A clock-required provider
+reproduces the old preparation refusal and checks that actual rendering still
+refuses absent/unknown clocks without PCM or committed-history mutation.

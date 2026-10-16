@@ -2880,6 +2880,7 @@ mod tests {
     }
 }
 
+pub mod computer_keyboard;
 pub mod live;
 pub mod midi_compile;
 mod midi_note_bank;

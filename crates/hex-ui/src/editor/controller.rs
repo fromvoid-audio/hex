@@ -46,6 +46,7 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_gain_recording();
+        visible_change |= self.tick_computer_keyboard();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -656,7 +657,11 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
-        if event.request_complete && event.error.is_some() && event.playback.is_none() {
+        if event.request_complete
+            && event.computer_keyboard_complete.is_none()
+            && event.error.is_some()
+            && event.playback.is_none()
+        {
             self.gain_recorder.arm_failed();
         }
         if event.save_complete {
@@ -674,6 +679,47 @@ impl EditorView {
             .restore_complete
             .is_some_and(|generation| self.recovery.generation() != Some(generation))
         {
+            return None;
+        }
+        if let Some(request_id) = event.computer_keyboard_complete {
+            let current = self.computer_keyboard.enabled
+                && !self.computer_keyboard.suspended
+                && request_id == self.computer_keyboard.request_id
+                && self.computer_keyboard.target
+                    == self
+                        .selected_track
+                        .map(|track| (self.project_generation, event.state.revision, track))
+                && self
+                    .computer_keyboard
+                    .input
+                    .as_ref()
+                    .is_some_and(|input| !input.is_cancelled())
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == event.state.revision);
+            if current {
+                if let Some(error) = event.error {
+                    self.error = Some(error);
+                }
+                if let Some(playback) = event.playback {
+                    let previous_reset = self
+                        .pending_playback
+                        .as_ref()
+                        .map(|pending| (pending.project_generation, pending.install_fresh_runtime));
+                    let mut pending = pending_playback_for_state(
+                        Arc::clone(&event.state),
+                        self.project_generation,
+                        playback,
+                    );
+                    pending.install_fresh_runtime = retained_install_fresh_policy(
+                        false,
+                        self.project_generation,
+                        previous_reset,
+                    );
+                    self.pending_playback = Some(pending);
+                }
+            }
             return None;
         }
         let successfully_opened_path =
@@ -1767,6 +1813,8 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.cancel_computer_keyboard();
+        self.computer_keyboard.suspended = true;
         self.cancel_scrub();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;

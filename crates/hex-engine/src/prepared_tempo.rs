@@ -589,7 +589,37 @@ pub(crate) enum SessionTimingView<'a> {
     Anchored(AnchoredSessionTempoView<'a>),
 }
 
+impl SessionBaseTimingView<'_> {
+    fn micro_bpm_at_frame(self, frame: u64) -> Result<u32, PreparedTempoError> {
+        let (map, frame) = match self {
+            Self::Canonical(map) => (map, frame),
+            Self::Periodic(view) => {
+                let frame = if frame < view.cycle.start_frame {
+                    frame
+                } else {
+                    view.cycle.start_frame
+                        + (frame - view.cycle.start_frame) % view.cycle.frame_period
+                };
+                (view.canonical, frame)
+            }
+        };
+        Ok(map
+            .canonical
+            .tempo_at(map.frame_to_beat(frame)?)
+            .micro_bpm())
+    }
+}
+
 impl<'a> SessionTimingView<'a> {
+    /// Effective local tempo, excluding the anchor's constant beat offset.
+    pub(crate) fn micro_bpm_at_frame(self, frame: u64) -> Result<u32, PreparedTempoError> {
+        match self {
+            Self::Canonical(map) => SessionBaseTimingView::Canonical(map).micro_bpm_at_frame(frame),
+            Self::Periodic(view) => SessionBaseTimingView::Periodic(view).micro_bpm_at_frame(frame),
+            Self::Anchored(view) => view.base.micro_bpm_at_frame(frame),
+        }
+    }
+
     pub(crate) fn from_base(base: SessionBaseTimingView<'a>) -> Self {
         match base {
             SessionBaseTimingView::Canonical(map) => Self::Canonical(map),

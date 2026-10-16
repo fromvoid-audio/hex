@@ -79,3 +79,25 @@ fn dry_fader_clock_reports_downstream_main_delivery_delay() {
         Some((0, 7, 0))
     );
 }
+
+#[test]
+fn computer_keyboard_positive_latency_refusal_preserves_authored_runtime() {
+    let f = fixture(&[&[7]], 1024);
+    let revision = prepare(&f).unwrap();
+    let mut tested = crate::playback::Playback::from_prepared(Arc::clone(&revision));
+    let mut oracle = crate::playback::Playback::from_prepared(revision);
+    for playback in [&mut tested, &mut oracle] {
+        playback.apply(crate::playback::PlaybackCommand::Play);
+        playback.render(&mut [[0.0; 2]; 3]).unwrap();
+    }
+    let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+    let error = tested
+        .prepare_computer_keyboard(f.editor.project(), f.tracks[0], input)
+        .unwrap_err();
+    assert!(error.to_string().contains("positive latency"));
+    let mut actual = [[0.0; 2]; 32];
+    let mut expected = actual;
+    tested.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}

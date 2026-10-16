@@ -119,6 +119,10 @@ fn requested_ring_bytes<T>(capacity: usize) -> Result<usize, CompensationError> 
 /// Beat preserves exact Q32.32 quarter-note ticks; no project or runtime owner is retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportStamp {
+    /// Exact source performance-frame identity, independent of loop position.
+    pub performance_frame: u64,
+    /// Actual host transport state when this source frame entered the graph.
+    pub transport_is_running: bool,
     pub arrangement_frame: u64,
     pub loop_pass: u64,
     pub performance_beat_raw: u64,

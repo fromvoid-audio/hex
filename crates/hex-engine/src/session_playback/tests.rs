@@ -10983,3 +10983,6 @@ mod instrument_memory_budget_tests;
 mod harmonic_tests;
 #[path = "operator_filter_tests.rs"]
 mod operator_filter_tests;
+
+#[path = "mutable_long_tail_tests.rs"]
+mod mutable_long_tail_tests;

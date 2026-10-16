@@ -13,6 +13,10 @@ impl EditorView {
         let can_undo = self.state().is_some_and(|state| state.can_undo);
         let can_redo = self.state().is_some_and(|state| state.can_redo);
         let output_label = self.output_label();
+        let keyboard_description = format!(
+            "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
+            self.computer_keyboard.base_pitch, self.computer_keyboard.velocity
+        );
         let mut row = header::toolbar_row()
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
             .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
@@ -29,6 +33,20 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("■", "stop · escape", Stop, cx))
+            .child(
+                self.control_icon_description(
+                    "⌨",
+                    "computer midi keyboard",
+                    keyboard_description.into(),
+                    |view, window, cx| view.toggle_computer_keyboard(window, cx),
+                    cx,
+                )
+                .text_color(rgb(theme::color(if self.computer_keyboard.enabled {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Muted
+                }))),
+            )
             .child(
                 self.control_icon(
                     "m",
@@ -243,6 +261,17 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
+        self.control_icon_description(label, description, description.into(), handler, cx)
+    }
+
+    fn control_icon_description(
+        &self,
+        label: &'static str,
+        description: &'static str,
+        tooltip_description: gpui::SharedString,
+        handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         div()
             .id(description)
             .debug_selector(move || description.into())
@@ -259,7 +288,7 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| MiniTooltip {
-                    description: description.into(),
+                    description: tooltip_description.clone(),
                 })
                 .into()
             })

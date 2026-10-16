@@ -296,6 +296,7 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
@@ -389,6 +390,11 @@ fn effective_midi_route(
 }
 
 impl SessionPlayback {
+    pub(crate) fn computer_keyboard_latency_supported(&self) -> bool {
+        self.compensation
+            .as_ref()
+            .is_none_or(|runtime| runtime.graph.plan.max_latency_frames() == 0)
+    }
     pub(crate) fn new_audio_candidate(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::AudioStorageError> {
@@ -427,6 +433,7 @@ impl SessionPlayback {
         // Exhaustive owning-field match: other buffers belong to the Session
         // container group, not independent transferable device/context groups.
         let Self {
+            computer_keyboard: _,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -951,6 +958,7 @@ impl SessionPlayback {
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {
+            computer_keyboard: None,
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,

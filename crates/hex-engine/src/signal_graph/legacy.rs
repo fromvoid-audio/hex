@@ -38,6 +38,8 @@ impl RendererRuntime {
                 compensation
                     .delays
                     .push_transport_stamp(TransportStamp {
+                        performance_frame: frame,
+                        transport_is_running: true,
                         arrangement_frame: frame,
                         loop_pass: 0,
                         performance_beat_raw: beat.raw(),
