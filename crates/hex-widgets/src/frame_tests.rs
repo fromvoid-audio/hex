@@ -285,3 +285,96 @@ fn rendered_compositions_reflow_without_changing_control_heights(cx: &mut TestAp
         }
     }
 }
+
+struct SelectionFixture {
+    selected: bool,
+}
+impl Render for SelectionFixture {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut frame = device_frame(
+            "device",
+            STYLE.with_device_selection(self.selected),
+            div(),
+            device_body(STYLE)
+                .id("selection-body")
+                .debug_selector(|| "selection-body".into())
+                .flex_1()
+                .child(
+                    device_display(STYLE)
+                        .id("selection-section")
+                        .debug_selector(|| "selection-section".into())
+                        .size_full(),
+                ),
+        )
+        .id("selection-frame")
+        .debug_selector(|| "selection-frame".into())
+        .size_full();
+        // Filled paint is checked from the completed scene below. Resolve border
+        // style during rendering too; this does not claim GPU pixel readback.
+        let mut idle = device_frame("device", STYLE, div(), div());
+        let idle = idle.interactivity().compute_style(None, None, window, cx);
+        let current = frame.interactivity().compute_style(None, None, window, cx);
+        assert_eq!(current.border_color, idle.border_color);
+        assert_eq!(current.border_widths, idle.border_widths);
+        frame
+    }
+}
+
+#[gpui::test]
+fn selection_changes_only_header_paint_without_moving_or_recoloring_the_frame(
+    cx: &mut TestAppContext,
+) {
+    let handle = *cx.add_window(|_, _| SelectionFixture { selected: false });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(220.0), px(120.0)));
+    visual.run_until_parked();
+    let selectors = ["selection-frame", "selection-body", "selection-section"];
+    let baseline: Vec<_> = selectors
+        .iter()
+        .map(|selector| {
+            (
+                visual.debug_bounds(selector).expect("rendered region"),
+                visual.rendered_background(selector),
+                visual.rendered_surface_geometry(selector),
+            )
+        })
+        .collect();
+    for selected in [true, false] {
+        visual.update(|window, app| {
+            window
+                .root::<SelectionFixture>()
+                .expect("window root")
+                .expect("selection fixture")
+                .update(app, |view, cx| {
+                    view.selected = selected;
+                    cx.notify();
+                });
+        });
+        visual.run_until_parked();
+        for (selector, expected) in selectors.iter().zip(&baseline) {
+            assert_eq!(
+                visual.debug_bounds(selector),
+                Some(expected.0),
+                "{selector}"
+            );
+            assert_eq!(
+                visual.rendered_background(selector),
+                expected.1,
+                "{selector}"
+            );
+            assert_eq!(
+                visual.rendered_surface_geometry(selector),
+                expected.2,
+                "{selector}"
+            );
+        }
+        assert_eq!(
+            visual.rendered_background("device-frame-header"),
+            Some(gpui::Background::from(rgb(if selected {
+                STYLE.accent
+            } else {
+                STYLE.surface
+            })))
+        );
+    }
+}

@@ -1,4 +1,4 @@
-use crate::{ControlStyle, DEVICE_CORNER_RADIUS};
+use crate::{ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle};
 use gpui::{Div, IntoElement, div, prelude::*, px, rgb};
 
 /// Canonical compact shell geometry, in logical pixels, for every device.
@@ -122,10 +122,11 @@ pub fn device_display(style: ControlStyle) -> Div {
 /// Use `device_body` for rounded lower-surface/content containment.
 pub fn device_frame(
     title: impl IntoElement,
-    style: ControlStyle,
+    style: impl Into<DeviceFrameStyle>,
     header_actions: impl IntoElement,
     body: impl IntoElement,
 ) -> Div {
+    let style = style.into();
     let radius = DEVICE_CORNER_RADIUS;
     div()
         .flex()
@@ -133,8 +134,8 @@ pub fn device_frame(
         .min_w_0()
         .min_h_0()
         .border_1()
-        .border_color(rgb(style.border))
-        .bg(rgb(style.surface))
+        .border_color(rgb(style.controls.border))
+        .bg(rgb(style.controls.surface))
         .rounded(px(radius))
         .overflow_hidden()
         .child(device_header(title, style, header_actions))
@@ -145,9 +146,10 @@ pub fn device_frame(
 /// oversized caller actions/title content to the safe rounded interior.
 pub fn device_header(
     title: impl IntoElement,
-    style: ControlStyle,
+    style: impl Into<DeviceFrameStyle>,
     header_actions: impl IntoElement,
 ) -> Div {
+    let style = style.into();
     div()
         .debug_selector(|| "device-frame-header".into())
         .flex()
@@ -155,11 +157,11 @@ pub fn device_header(
         .h(px(DEVICE_FRAME_HEADER_HEIGHT))
         .border_l(px(DEVICE_FRAME_HEADER_PADDING))
         .border_r(px(DEVICE_FRAME_HEADER_PADDING))
-        .border_color(rgb(style.surface))
+        .border_color(rgb(style.header_background))
         .overflow_hidden()
         .gap(px(DEVICE_FRAME_HEADER_GAP))
         .items_center()
-        .bg(rgb(style.surface))
+        .bg(rgb(style.header_background))
         .rounded_tl(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
         .rounded_tr(px(DEVICE_CORNER_RADIUS - DEVICE_FRAME_BORDER_WIDTH))
         .child(
@@ -167,7 +169,7 @@ pub fn device_header(
                 .size(px(7.0))
                 .flex_shrink_0()
                 .rounded_full()
-                .bg(rgb(style.accent)),
+                .bg(rgb(style.controls.accent)),
         )
         .child(
             div()
@@ -177,8 +179,8 @@ pub fn device_header(
                 .items_center()
                 .min_w_0()
                 .overflow_hidden()
-                .text_color(rgb(style.text))
-                .text_size(px(style.font_size))
+                .text_color(rgb(style.header_text))
+                .text_size(px(style.controls.font_size))
                 .child(title),
         )
         .child(header_actions)

@@ -5,7 +5,9 @@ use gpui::{App, SharedString};
 mod device;
 // Native review examples include this module and use only a subset of its API.
 #[allow(unused_imports)]
-pub(crate) use device::{DeviceStyleRole, device_style, oscillator_identity_color};
+pub(crate) use device::{
+    DeviceStyleRole, device_frame_style, device_style, oscillator_identity_color,
+};
 use std::borrow::Cow;
 use std::cell::Cell;
 

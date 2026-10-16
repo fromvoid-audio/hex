@@ -23,6 +23,13 @@ control purpose, never a device identity.
 
 Device frames accept title elements as well as text, so callers can attach header
 drag input while the frame retains shared title styling and fixed geometry.
+`ControlStyle::with_device_selection` returns `DeviceFrameStyle`, which keeps the
+neutral shell palette separate from header paint. `device_frame` and
+`device_header` accept either presentation; a plain `ControlStyle` gives an idle
+header matching its surround. Products may inject contrast-checked selected
+header colors with `with_header_colors`. Selection never recolors the outer
+border, body or control palette, and widgets do not acquire selection/focus,
+bypass or drag/drop ownership.
 
 ## Dependencies
 

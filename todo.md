@@ -2829,6 +2829,24 @@ and gain-render regressions exercise it, without enabling native streamed
 publication or lifting resident limits. This separation does not complete or
 authorize either prerequisite feature.
 
+## header-only native device selection — pulse2472 / PR207, 16 october 2026
+
+The shared frame now separates neutral shell colors from selected header paint
+through `DeviceFrameStyle`. The product resolver supplies readable selected
+header text; Track instruments/effects, Return effects and the shared gallery
+frame use that contract. Whole-device selection, numeric gesture/focus ownership,
+Vector internal sections, bypass and replacement-drop feedback are unchanged.
+
+A rendered regression first reproduced the prior accent-colored surround using
+the same frame implementation as optimized source0518cd0/build85511434. With the
+repair, the header changes while frame/body/section paint, border style, geometry
+and clipping stay stable through selection/deselection. Source/scene evidence is
+not a native display screenshot or physical-input acceptance. Existing Track and
+Return interaction tests now also check neutral body paint/geometry; Return
+child selection checks the selected shared header. All 50 widget, 86 device-panel and 9 gallery tests pass. Full
+exact-source local CI follows on the final candidate. Optional native review
+uses the finite checklist supplied with optimized stable-path delivery.
+
 
 ## 16 October 2026 — musical editing / routing integration
 
