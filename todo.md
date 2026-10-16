@@ -1,3 +1,18 @@
+## cold clip-cache geometry identity — #2651 / PR267, 17 october 2026
+
+Corrected the stored lane key to the exact geometry consumed by the first cached
+clip build. Row construction preceded lane prepaint, so the old key caused an
+unnecessary rebuild on the immediate next selection frame. The strengthened
+existing regression fails with two builds before the assignment and passes with
+one afterward, without executor parking/settling frames; current selection paint,
+first-frame clip/trim geometry and cached trim capture remain covered. All 522
+enabled UI tests and strict desktop/UI Clippy pass, along with source guards.
+The merged `5607b14c` native run completed 360 samples but 100-track cut selection
+p95 was 28.229 ms (median 5.649 ms), so the 16.67 ms target remains open. This
+source fix does not establish the cause of every outlier. Final exact-source full
+local CI and unchanged optimized native capture belong to the follow-up PR.
+See [geometry identity and measurement limits](docs/waveform-display.md).
+
 ## dense selection candidate integration — #2648 / PR264, 16 october 2026
 
 Integrated current main00cb2c70, preserving the separately merged unsnapped Main

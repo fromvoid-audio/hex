@@ -84,22 +84,24 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
     let ungridded = content();
     assert_eq!(themed.entity_id(), ungridded.entity_id());
     let ungridded_epoch = ungridded.read_with(cx, |content, _| content.epoch);
+    let ungridded_builds = ungridded.read_with(cx, |content, _| content.builds);
     assert_ne!(themed_epoch, ungridded_epoch);
     assert!(
         visual.debug_bounds(grid_selector).is_none(),
         "snap off paints no musical grid"
     );
     visual.simulate_resize(gpui::size(gpui::px(980.0), gpui::px(680.0)));
-    // Test-platform resize updates the native bounds; explicitly drive its new
-    // scene and the owner notification from live lane measurement.
+    // GPUI's changed bounds rebuild the resize scene. The following owner
+    // notification must reuse it rather than rebuild for the consumed lane.
     for _ in 0..2 {
         visual.update(|window, cx| window.draw(cx).clear());
     }
     let resized = content();
     assert_eq!(ungridded.entity_id(), resized.entity_id());
-    assert_ne!(
-        ungridded_epoch,
-        resized.read_with(cx, |content, _| content.epoch)
+    assert_eq!(
+        resized.read_with(cx, |content, _| content.builds),
+        ungridded_builds + 1,
+        "one resize build, with no redundant following-frame rebuild"
     );
     editor.read_with(cx, |view, app| {
         let lane = view.drag_lanes[&source];
@@ -607,33 +609,70 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn main_selection_reuses_clip_scene_while_overlay_and_lane_epochs_change(cx: &mut TestAppContext) {
-    let (project, source, _, _) = super::super::clip_drag_ui_test::audio_project();
+fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppContext) {
+    use gpui::{MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, px};
+    let (project, source, _, clip) = super::super::clip_drag_ui_test::audio_project();
     let (handle, editor) =
         super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let lane = visual.debug_bounds("main-track-lane").expect("main lane");
-    let at = |fraction| point(lane.origin.x + lane.size.width * fraction, lane.center().y);
-    visual.simulate_mouse_down(at(0.2), MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
+    // The window helper may paint during root replacement. Recreate the cold
+    // lane/cache state of project replacement, then draw exactly once without
+    // parking the executor or settling another frame.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.clip_content_cache = TrackCache::default();
+            view.drag_lanes.clear();
+            view.drag_lane_epochs.clear();
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
     let content = editor.read_with(cx, |view, _| {
-        view.clip_content_cache
-            .entries
-            .get(&source)
-            .expect("cached source")
-            .clone()
+        view.clip_content_cache.entries[&source].clone()
     });
     let builds = content.read_with(cx, |content, _| content.builds);
-    assert!(builds > 0, "actual child scene was built");
+    assert_eq!(builds, 1, "one cold child render");
+    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_bounds = visual.debug_bounds(clip_selector).expect("cold clip scene");
+    editor.read_with(cx, |view, _| {
+        let lane = view.drag_lanes[&source];
+        assert!((f32::from(clip_bounds.origin.x) - lane.left).abs() <= 1.0);
+        assert!((f32::from(clip_bounds.size.width) - lane.width * 0.25).abs() <= 1.0);
+    });
+    let trim_selector = Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
+    let handle_bounds = visual
+        .debug_bounds(trim_selector)
+        .expect("cold trim handle");
+    assert!((f32::from(handle_bounds.right() - clip_bounds.right())).abs() <= 1.0);
+    let lane = visual.debug_bounds("main-track-lane").expect("main lane");
+    let at = |fraction| point(lane.origin.x + lane.size.width * fraction, lane.center().y);
+    visual.update(|window, cx| {
+        window.dispatch_input(
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: at(0.3),
+                button: MouseButton::Left,
+                ..Default::default()
+            }),
+            cx,
+        );
+    });
     let selector = Box::leak(format!("edit-time-selection-{}", source.value()).into_boxed_str());
     let mut previous_width = None;
     for fraction in [0.4, 0.6] {
-        visual.simulate_mouse_move(at(fraction), MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.dispatch_input(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: at(fraction),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+            window.draw(cx).clear();
+        });
         let overlay = visual
             .debug_bounds(selector)
-            .expect("live project selection overlay");
+            .expect("current selection paint");
         if let Some(width) = previous_width {
             assert!(
                 overlay.size.width > width,
@@ -644,22 +683,54 @@ fn main_selection_reuses_clip_scene_while_overlay_and_lane_epochs_change(cx: &mu
         assert_eq!(
             content.read_with(cx, |content, _| content.builds),
             builds,
-            "selection changes must reuse the real cached clip scene"
+            "immediate selection must reuse the first cold clip scene"
         );
         editor.read_with(cx, |view, _| {
             assert_eq!(
                 view.drag_lane_epochs.get(&source),
-                Some(&view.drag_layout_generation),
-                "lane geometry remains current outside cached content"
+                Some(&view.drag_layout_generation)
             );
             assert!(view.time_selection_project_scope);
         });
     }
-    visual.simulate_mouse_up(at(0.6), MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.dispatch_input(
+            PlatformInput::MouseUp(MouseUpEvent {
+                position: at(0.6),
+                button: MouseButton::Left,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.draw(cx).clear();
+    });
     assert!(
         visual.debug_bounds(selector).is_some(),
-        "completed overlay remains visible"
+        "completed overlay stays live"
     );
     assert_eq!(content.read_with(cx, |content, _| content.builds), builds);
+    // The first scene's cached handle still captures an ordinary trim drag.
+    let down = visual
+        .debug_bounds(trim_selector)
+        .expect("reused trim handle")
+        .center();
+    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x - px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert!(
+        cx.update(|app| app.has_active_drag()),
+        "cached cold trim handle captures drag"
+    );
+    editor.read_with(cx, |view, _| {
+        let drag = view
+            .active_trim_drag
+            .as_ref()
+            .expect("current trim gesture");
+        assert_eq!(drag.source_track, source);
+        assert!(view.trim_drag_current(drag));
+    });
 }

@@ -1,5 +1,34 @@
 # detailed Arrangement waveform display
 
+## cold clip-cache geometry identity — #2651 / PR267
+
+The first clip-child key was captured during row construction, before the live
+lane prepaint callback measured its bounds. The child then built trim/drag
+geometry from the updated lane while retaining the earlier key. The following
+selection-only draw compared that old key against the same geometry already
+painted and rebuilt the clip scene unnecessarily.
+
+The child now records the exact lane bounds consumed immediately before building
+its content, after parent/snapshot/track validation. This does not advance its
+epoch or schedule a frame. Actual geometry changes retain normal invalidation.
+The strengthened selection regression performs one cold draw, immediate GPUI
+in-process selection events, and one draw per update without executor parking or
+extra settling. Removing the assignment reproduces two child builds instead of
+one. The fixed case also checks current selection paint, cold clip/trim bounds
+and capture through the reused trim handle. All 522 enabled UI tests, strict
+desktop/UI Clippy and architecture/GPUI/style/format guards pass.
+
+The optimized merged `5607b14c` native run completed all 360 samples without
+failures, but 100-track cut selection-first-paint p95 was 28.229 ms (median
+5.649 ms), missing the 16.67 ms target. Six measured selection samples exceeded
+the budget; all were at 100 tracks. Their cause is not established by wall-time
+samples. Raw output is retained in
+`artifacts/issue2648/smooth-5607b14c-capture1/`. This redundant-invalidation fix
+does not claim to explain every tail.
+Full local CI and a new optimized unchanged-protocol native capture are pending
+for the fixed source. Fixtures, six metrics, 5 warm-ups/40 measured iterations,
+7–17 ms phase delays and the native harness remain unchanged.
+
 ## dense selection feedback cache experiment — #2648 / PR264
 
 The waveform LRU now retains 512 entries while keeping the existing 65,536
@@ -44,8 +73,8 @@ clip drag and worker Undo/Redo regressions run with this cache enabled. See
 [native boundary decisions](native-input.md) for the epoch and metadata patches.
 
 The first eight-case native child-cache diagnostic at `49e7109` still missed
-the target (100-track selection first paint 18.5–29.2 ms); corrected epoch timing
-and the final unchanged 360-sample native benchmark remain pending. A passing
+the target (100-track selection first paint 18.5–29.2 ms). The merged-source
+360-sample result and open fixed-source rerun are recorded above. A passing
 source regression does not establish the 16.67 ms native p95 target.
 
 The optimized headless fixed-fixture run at `cfc07ca` measured zero clip rebuilds
@@ -75,7 +104,8 @@ Local receipts and raw output are retained under
 `artifacts/issue2648/headless-bulk-replay-recovery/`, with the earlier run under
 `artifacts/issue2648/headless-replay/`. This establishes a framework replay
 speedup under the limits below, not the native 16.67 ms selection-feedback target.
-Final full local CI and the unchanged native 360-sample run remain required.
+Subsequent full local CI and native results are recorded with the candidate;
+the fixed-source native rerun described above remains required.
 
 The ignored `headless_time_selection_framework_profile` test opens the existing
 100-track fixture through the normal Session worker with isolated settings and
