@@ -14,6 +14,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
     );
     Event {
         state: Arc::new(ViewState {
+            canonical_audio_source: None,
             project,
             waveforms: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -50,6 +51,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
 fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: bool) -> Event {
     let previous = &event.state;
     event.state = Arc::new(ViewState {
+        canonical_audio_source: None,
         project: Arc::clone(&previous.project),
         waveforms: Default::default(),
         audio_clip_waveforms: std::collections::BTreeMap::new(),

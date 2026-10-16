@@ -26,6 +26,7 @@ use std::time::Instant;
 const COMMANDS: usize = 32;
 mod eligible_publication;
 mod runtime_view;
+mod streaming;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -195,11 +196,13 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::ReturnedCandidate),
@@ -344,6 +347,21 @@ pub struct Status {
     /// Highest admitted command consumed, including commands discarded by Stop.
     /// Release publication follows transport state; readers acquire before reading it.
     pub consumed_command: AtomicU64,
+    /// Opt-in streamed prefix resolved by ready Play or real Pause/Stop/rejection;
+    /// dequeuing a pending Play does not advance this observation.
+    pub stream_applied_command_prefix: AtomicU64,
+    /// Best-effort render telemetry, never a readiness/ownership receipt.
+    pub stream_buffering: AtomicBool,
+    /// Latest streamed launch accepted into actual PendingRoute scheduling.
+    pub stream_scheduled_command: AtomicU64,
+    /// Latest scheduled launch whose actual due route/render chunk committed.
+    pub stream_activated_command: AtomicU64,
+    /// Latest schedule observation cancelled or not retained by actual handoff.
+    /// This does not claim that an already committed musical route was undone.
+    pub stream_invalidated_schedule: AtomicU64,
+    pub stream_readiness_refused: AtomicBool,
+    /// Frames committed before the latest BUFFERING gap; zero when complete.
+    pub stream_committed_frames: AtomicU64,
     /// Latest rejected command is read through `rejected_action` for a coherent pair.
     rejected_action_ticket: AtomicU64,
     rejected_action_reason: AtomicU32,
@@ -400,6 +418,13 @@ impl Status {
             peak_right: AtomicU32::new(0),
             applied_revision: AtomicU64::new(0),
             consumed_command: AtomicU64::new(0),
+            stream_applied_command_prefix: AtomicU64::new(0),
+            stream_buffering: AtomicBool::new(false),
+            stream_scheduled_command: AtomicU64::new(0),
+            stream_activated_command: AtomicU64::new(0),
+            stream_invalidated_schedule: AtomicU64::new(0),
+            stream_readiness_refused: AtomicBool::new(false),
+            stream_committed_frames: AtomicU64::new(0),
             rejected_action_ticket: AtomicU64::new(0),
             rejected_action_reason: AtomicU32::new(0),
             rejected_action_sequence: AtomicU64::new(0),
@@ -734,6 +759,9 @@ pub struct Callback {
     test_admit_candidate: bool,
     deferred: Option<Publication>,
     deferred_eligible: Option<crate::candidate_custody::QueuedEligibleCandidate>,
+    domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
+    stream_pending_play: Option<u64>,
+    stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
     terminal_disposal_pending: bool,
@@ -828,6 +856,9 @@ pub fn channel_with_spectrum(
             test_admit_candidate: false,
             deferred: None,
             deferred_eligible: None,
+            domain_pages: std::array::from_fn(|_| None),
+            stream_pending_play: None,
+            stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
             published_route_key: None,
@@ -1133,6 +1164,12 @@ impl Control {
                 break;
             };
             match publication {
+                ReturnedPublication::Domain(pages) => {
+                    if let Err(pages) = self.candidate_root.ingest_pages(pages) {
+                        self.held_control_return = Some(ReturnedPublication::Domain(pages));
+                        break;
+                    }
+                }
                 ReturnedPublication::Eligible(value) => {
                     if let Err(value) = self.candidate_root.ingest_eligible(value) {
                         self.held_control_return = Some(ReturnedPublication::Eligible(value));
@@ -1198,6 +1235,8 @@ impl Control {
     ) -> Option<hex_stream::PagePoolReport> {
         self.candidate_root.recover_domain(token)
     }
+    /// Nonblocking observation. None includes temporary lifecycle contention;
+    /// it does not establish zero occupancy or release any reservation.
     pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
         self.candidate_root.domain_usage()
     }
@@ -1353,6 +1392,27 @@ impl Callback {
         self.closing.store(true, Release);
         self.candidate_root.close();
     }
+    pub(crate) fn has_domain_pages(&self) -> bool {
+        self.domain_pages.iter().any(Option::is_some)
+    }
+    pub(crate) fn extract_domain_pages_on_control(
+        &mut self,
+        destination: &mut [Option<crate::candidate_custody::DomainEnvelope>; 2],
+    ) -> bool {
+        if destination.iter().any(Option::is_some)
+            || self.domain_pages.iter().enumerate().any(|(index, pages)| {
+                pages.as_ref().is_some_and(|pages| {
+                    pages.index_for(self.candidate_root.root_id()) != Some(index)
+                })
+            })
+        {
+            return false;
+        }
+        for (from, to) in self.domain_pages.iter_mut().zip(destination) {
+            *to = from.take();
+        }
+        true
+    }
     pub(crate) fn drain_candidate_custody_on_control(&mut self) -> bool {
         self.close_candidate_custody_on_control();
         if self.terminal_disposal_pending {
@@ -1370,6 +1430,7 @@ impl Callback {
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
                         self.publications.pop().ok().map(|queued| match queued {
+                            QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
                             QueuedPublication::Eligible(value) => {
                                 ReturnedPublication::Eligible(value.reject_before_install())
                             }
@@ -1389,6 +1450,16 @@ impl Callback {
                 self.terminal_disposal_pending = false;
             } else if let Some(value) = self.held_retirement.take() {
                 let refused = match value {
+                    ReturnedPublication::Domain(pages) => {
+                        if let Some(index) = pages.index_for(self.candidate_root.root_id())
+                            && self.domain_pages[index].is_none()
+                        {
+                            self.domain_pages[index] = Some(pages);
+                            None
+                        } else {
+                            Some(ReturnedPublication::Domain(pages))
+                        }
+                    }
                     ReturnedPublication::Candidate(value) => self
                         .candidate_root
                         .ingest(value)
@@ -1446,6 +1517,7 @@ impl Callback {
                 return;
             }
         }
+        self.return_requested_domain_pages();
         if self.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
@@ -1489,6 +1561,10 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        QueuedPublication::Domain(pages) => {
+                            self.return_publication(ReturnedPublication::Domain(pages));
+                            return;
+                        }
                         QueuedPublication::Eligible(value) => {
                             self.return_publication(ReturnedPublication::Eligible(
                                 value.reject_before_install(),
@@ -1543,6 +1619,15 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                QueuedPublication::Domain(pages) => {
+                    if let Some(index) = pages.index_for(self.candidate_root.root_id())
+                        && self.domain_pages[index].is_none()
+                    {
+                        self.domain_pages[index] = Some(pages);
+                    } else {
+                        self.return_publication(ReturnedPublication::Domain(pages));
+                    }
+                }
                 QueuedPublication::Eligible(value) => {
                     self.deferred_eligible = Some(value);
                 }
@@ -1574,7 +1659,7 @@ impl Callback {
         }
 
         if self.deferred_eligible.is_some() {
-            self.advance_eligible_publication();
+            self.advance_eligible_publication(None);
             self.consume_commands();
             return;
         }
@@ -1886,6 +1971,10 @@ impl Callback {
     }
 
     fn consume_commands(&mut self) {
+        if self.streamed_transport_mode() {
+            self.consume_stream_commands();
+            return;
+        }
         // Capture the published queue prefix before clearing the marker. Later
         // producer admissions stay queued for the next block; a Stop arriving
         // after this swap also remains pending for the next block.
@@ -2014,6 +2103,14 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if !self.closing.load(Acquire)
+            && self
+                .deferred_eligible
+                .as_ref()
+                .is_some_and(|next| next.streaming_enabled())
+        {
+            self.advance_eligible_publication(Some(output.len()));
+        }
         self.render_project(output)?;
         if !self.closing.load(Acquire) {
             self.sample_preview.mix(output);
@@ -2072,15 +2169,31 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
-        if let Some(mut active) = self
+        let stage = &mut self.spectrum_stage;
+        let mut observe =
+            |identity, offset, frames: &[Frame]| stage.observe(identity, offset, frames);
+        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+            && active.contains_streamed_sources()
+        {
+            let outcome = active.render_streamed(
+                &mut self.domain_pages,
+                self.stream_pending_play.is_some(),
+                self.stream_prefix,
+                output,
+                Some(&mut observe),
+            );
+            streaming::record_outcome(
+                &self.status,
+                &mut self.stream_pending_play,
+                self.stream_prefix,
+                active.has_stream_action(),
+                outcome,
+            )?;
+        } else if let Some(mut active) = self
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            let stage = &mut self.spectrum_stage;
-            let mut observe = |identity, offset, frames: &[Frame]| {
-                stage.observe(identity, offset, frames);
-            };
             active
                 .playback
                 .render_with_post_node_observer(output, Some(&mut observe))?;
@@ -2095,6 +2208,52 @@ impl Callback {
     fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.closing.load(Acquire) {
             output.fill([0.0; 2]);
+            return Ok(());
+        }
+        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+            && active.contains_streamed_sources()
+        {
+            let outcome = active.render_streamed(
+                &mut self.domain_pages,
+                self.stream_pending_play.is_some(),
+                self.stream_prefix,
+                output,
+                None,
+            );
+            streaming::record_outcome(
+                &self.status,
+                &mut self.stream_pending_play,
+                self.stream_prefix,
+                active.has_stream_action(),
+                outcome,
+            )?;
+            self.publish_transport();
+            self.publish_active_routes(false);
+            return Ok(());
+        }
+        if self.active.is_none()
+            && self
+                .deferred_eligible
+                .as_ref()
+                .is_some_and(|next| next.streaming_enabled())
+        {
+            output.fill([0.0; 2]);
+            streaming::record_outcome(
+                &self.status,
+                &mut self.stream_pending_play,
+                self.stream_prefix,
+                false,
+                crate::candidate_custody::StreamOutcome {
+                    progress: crate::candidate_custody::StreamProgress::Buffering {
+                        committed_frames: 0,
+                    },
+                    play_applied: false,
+                    readiness_refused: false,
+                    fault: None,
+                    action_rejection: None,
+                    activated: None,
+                },
+            )?;
             return Ok(());
         }
         if let Some(mut active) = self

@@ -10,6 +10,7 @@ fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut Te
 fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, revision: u64) {
     let old = view.state.as_ref().expect("current state");
     view.state = Some(Arc::new(ViewState {
+        canonical_audio_source: None,
         project,
         waveforms: old.waveforms.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),

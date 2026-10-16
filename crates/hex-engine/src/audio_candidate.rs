@@ -350,6 +350,10 @@ impl AudioCandidateOwner {
     pub fn identity(&self) -> AudioCandidateIdentity {
         self.inner.identity()
     }
+    pub fn source_context(&self) -> Option<crate::AudioSourceContext> {
+        self.inner.custody.source_context()
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.inner.sample_rate()
     }

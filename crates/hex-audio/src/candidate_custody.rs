@@ -13,9 +13,11 @@ use std::{
     },
 };
 mod eligible;
+pub(crate) use eligible::DomainEnvelope;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
-    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate,
+    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
+    StreamInstall, StreamOutcome, StreamProgress,
 };
 pub use eligible::{
     AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,
@@ -352,6 +354,7 @@ impl CandidateRoot {
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
             .ok_or("constructor Root metadata overflow")?;
         self.0
             .eligible
@@ -388,11 +391,15 @@ impl CandidateRoot {
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
             .and_then(|n| n.checked_add(queue_bytes))
             .ok_or("constructor Root metadata overflow")?;
         self.0
             .eligible
             .configure_publications(self.root_id(), reservation, bytes)
+    }
+    pub(crate) fn configure_streaming(&self, limit: usize) -> Result<(), &'static str> {
+        self.0.eligible.configure_streaming(limit)
     }
     pub(crate) fn eligible_claims_open(&self) -> bool {
         self.0.eligible.claims_open()
@@ -400,8 +407,9 @@ impl CandidateRoot {
     pub(crate) fn seal_publication(
         &self,
         owner: &mut AudioCandidateOwner,
+        domain_capacity: usize,
     ) -> Result<hex_engine::AudioCandidateConstructorSummary, &'static str> {
-        self.0.eligible.seal_for_stage(owner)
+        self.0.eligible.seal_for_stage(owner, domain_capacity)
     }
     /// The caller already holds an actual ring write chunk. The same short
     /// terminal barrier prevents a successful late push after terminal draining.
@@ -459,6 +467,42 @@ impl CandidateRoot {
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
+    pub(crate) fn register_domain_pages(
+        &self,
+        domain: CandidateDomain,
+        reservation: hex_stream::StreamReadinessReservation,
+        enqueue: impl FnOnce(DomainEnvelope),
+    ) -> Result<AudioCandidateDomainToken, Box<AudioCandidateDomainRefusal>> {
+        // Same barrier as runtime staging: terminal drain cannot pass the final
+        // accepted queue publication. Seal allocates outside the eligible bank.
+        {
+            let bank = lock(&self.0.bank);
+            if bank.closing || bank.retiring {
+                return Err(Box::new(AudioCandidateDomainRefusal {
+                    reason: "candidate terminal custody closing",
+                    domain,
+                }));
+            }
+        }
+        let (token, pages) = self.0.eligible.register_pages(domain, reservation)?;
+        let bank = lock(&self.0.bank);
+        if let Some(pages) = pages {
+            if bank.closing || bank.retiring {
+                // Sealing succeeded after closure. This is accepted cleanup,
+                // never an original-pair refusal or a late callback publication.
+                // The just-created exact envelope has a vacant persistent cell.
+                self.0.eligible.retain_closed_pages(pages);
+            } else {
+                enqueue(pages);
+            }
+        }
+        drop(bank);
+        crate::lifecycle::request_candidate_cleanup(self);
+        Ok(token)
+    }
+    pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
+        self.0.eligible.ingest_pages(pages)
+    }
     pub(crate) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
         let result = self.0.eligible.retire_domain(token);
         crate::lifecycle::request_candidate_cleanup(self);
@@ -511,6 +555,12 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                crate::prepared::ReturnedPublication::Domain(pages) => {
+                    if let Err(pages) = self.ingest_pages(pages) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Candidate(candidate) => {
                     if let Err(candidate) = self.ingest(candidate) {
                         returns.held =
@@ -898,7 +948,8 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()));
+            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?));
         for slot in &bank.slots {
             for catalog in slot.catalog.iter() {
                 bytes = bytes.and_then(|n| n.checked_add(catalog.metadata_bytes()?));

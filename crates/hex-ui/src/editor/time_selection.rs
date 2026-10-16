@@ -392,7 +392,7 @@ impl EditorView {
         gesture.pointer_x = x;
         gesture.pointer_y = y;
         gesture.free_modifier = free;
-        let Some((pointer_track, lane)) = self.visible_lane_near_y(y) else {
+        let Some((pointer_track, lane)) = self.time_gesture_lane_near_y(y) else {
             self.time_range_move_gesture = Some(gesture);
             return true;
         };
@@ -706,7 +706,7 @@ impl EditorView {
         gesture.pointer_x = x;
         gesture.pointer_y = y;
         gesture.free_modifier = free;
-        let Some((track, lane)) = self.visible_lane_near_y(y) else {
+        let Some((track, lane)) = self.time_gesture_lane_near_y(y) else {
             self.time_selection_gesture = Some(gesture);
             return false;
         };

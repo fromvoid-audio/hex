@@ -2543,6 +2543,7 @@ mod tests {
             audio_revision,
             project_generation: generation,
             state: Arc::new(ViewState {
+                canonical_audio_source: None,
                 project,
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),

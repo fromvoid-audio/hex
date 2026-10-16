@@ -1,3 +1,15 @@
+## dense selection candidate integration — #2648 / PR264, 16 october 2026
+
+Integrated current main00cb2c70, preserving the separately merged unsnapped Main
+cursor fix and current canonical worker/streaming contracts. Updated only the
+synthetic cache snapshot fixture for the worker-captured source field; the
+production cache/replay algorithm and original timing harness are unchanged.
+Nine focused cache/replay regressions pass (one manual profile remains ignored),
+including current-draw invalidation, painter ordering/refusal, snapshot ownership,
+scroll/resize and pending drag identity. Final full CI belongs to the linked PR.
+The complete360-row optimized native rerun and16.67ms p95 target remain pending
+an actual Mac capture; headless results do not establish native/display timing.
+
 ## dense selection feedback experiment — #2648 / PR264, 16 october 2026
 
 Confirmed the dense visible waveform working set thrashed the 128-entry LRU;
@@ -21,6 +33,14 @@ the native harness matches the merged measurement source byte for byte. Final
 full local CI, corrected optimized native timing and the unchanged 360-sample
 benchmark remain open.
 See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
+## unsnapped main cursor — #2647 / PR263, 16 october 2026
+
+Main gestures now retain Main-lane pointer geometry for selection updates,
+range movement and edge scrolling, with current-layout checks. Regular track
+projection is unchanged. The regression reproduces the one-pixel width mismatch
+and checks stationary cursor, range endpoints and no-op move across viewport
+changes. Exact-source checks are recorded in the PR; native unsnapped
+click/drag/resize/pan acceptance remains user-owned.
 
 ## Operator harmonic authoring — pulse2342 / PR158
 
@@ -3575,3 +3595,88 @@ main245f8b2b timing evidence, preserving both todo histories. Both prerequisite
 and feature exact candidates require fresh full local CI before merge. Native
 acceptance and dense high-rate/FM deadline validation remain separate open
 test results; no numerical Live parity or deadline safety is inferred.
+
+## 16 october 2026 — exact streaming demand checkpoint (pulse2542 / pr237)
+
+The pure next-chunk and current-predecessor handoff visitor is adapted from
+published177 source8d444c06, sharing Arrangement clip traversal with rendering.
+The focused page-edge/Play preview/capacity-refusal/repeated-handoff control keeps
+committed transport and routes unchanged. This first layer does not release
+streamed native installation or readiness; final integrated evidence and remaining
+endpoint/transaction controls belong to PR237.
+
+
+PR237 metadata checkpoint: canonical Session worker views now pair the exact
+Project with the existing document generation/editor revision, retained through
+actual preparation and runtime/anchor splitting. Preview views cannot mint that
+capture, and media catalog generation remains separate. Targeted Session92,
+engine candidate8, stream allocation/worker suites, strict affected Clippy and UI
+compatibility checks pass. Protected page borrows expose only installed keys and
+cannot schedule; an insufficient caller DATA allowance refuses before readiness
+backing allocation (negative control retained externally). Native page-loan
+placement, transport/BUFFERING and installation transactions remain unfinished.
+
+PR237 page-custody checkpoint: the single actual domain endpoint now traverses the
+existing native publication/return rings into fixed callback slots. Real pair
+join/report reuse waits for endpoint restoration; terminal custody retains loans
+through both guard releases, completed handle and normal carrier destruction.
+Five focused real-pair/ring/terminal/fault controls and the complete affected
+allocation-feature audio suite pass, including zero total/net callback allocation
+and deallocation on the exercised loan boundaries. Streamed install remains
+refused pending actual demand/prefix/BUFFERING integration.
+
+PR237 workspace checkpoint: optional pre-first-accept configuration reserves actual
+per-runtime demand Vec capacities and temporary construction overlap against the
+existing caller DATA allowances. Real cancellation/return keeps the original
+backing pointers/capacities, with overflow refusing before allocation. Stream
+opt-in staging validates the actual captured owner context and retained loans;
+default resident and disposal-only streamed staging remain unchanged.
+
+
+PR237 integrated readiness checkpoint: actual exact engine chunks now gate real
+worker-backed initial/replacement installation and opt-in rendering. Missing or
+capacity-refused chunks preserve previously committed PCM/clocks and report
+BUFFERING; real Pause/Stop pass pending Play, and grouped Utility transfer Retry
+releases speculative pins so the old active page can progress and the candidate
+can cancel. A real pool-pressure regression exposed unconsumed worker failures;
+bounded receipt consumption now releases their pending keys while retaining the
+last diagnostic. Actual native mutable wrapper/workspace capacity reduces the
+existing 32 MiB runtime allowance before split, in addition to caller DATA/peak
+reservations. Four actual native controls cover first Play/context refusal,
+partial/pressure behavior, observer offsets and Retry/cancel; source inspection
+and zero total/net probes retain their stated limits. Final exact full repository
+CI, PR238 seek/launch, PR239 UI composition and original #24/native acceptance remain
+open. See docs/streamed-native-readiness.md; final CI evidence is recorded externally.
+
+
+## 16 october 2026 — seek/launch projection checkpoint (pulse2543 / pr238)
+
+Recovered canonical PR238 and integrated actual PR237 merge a196631f, preserving
+its intake plan. Shared pure seek/route planning now feeds opaque move-only action
+preparation and exact projected chunk demand; existing typed commits recheck actual
+runtime/clocks/routes before reset. Two focused engine controls use warmed Utility
+history, mixed-rate source metadata, page seams, stale/Pause refusal and real
+quantized loop activation. A paused immediate launch initially projected loop
+normalization without render; its failing zero-page cursor control now passes.
+Full engine tests and strict engine Clippy pass at this checkpoint. Native stage,
+revocable prewarm, real worker pressure/allocation controls and exact final full
+repository CI remain PR238 work; broader original #24 acceptance stays open.
+
+
+## 16 october 2026 — streamed actions and revocable prewarm (pulse2543 / pr238)
+
+One scalar-only prepared Seek/PlayFrom/immediate Session action now waits in the
+actual native runtime Workspace until exact protected projected pages can commit
+the existing typed reset/route operation once. Pause/Stop/matching CancelPending
+and replacement invalidate old speculation; conflicts report Busy. Quantized
+launches retain their actual original PendingRoute due, with distinct scheduled
+and activated telemetry. Early prewarm reuses Candidate protection and existing
+extent backing; current-window pressure revokes it, retries once, and bars repin
+until real current progress. Due-page misses hold the exact due frame, preserving
+prior chunks. Fixed metadata remains in actual State/caller DATA and the existing
+32 MiB mutable runtime allowance. Three real native controls include 24k→48k worker
+conversion, loop/due hold, cancellation, pressure, shared-domain replacement and
+same-owner device/context refusal, with zero total/net callback probes. A narrow
+negative control reproduces premature speculative repin. Final source evidence
+and exact full local CI are recorded externally; PR239 UI composition and original
+#24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.

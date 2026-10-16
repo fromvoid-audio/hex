@@ -1,8 +1,14 @@
 use super::*;
 #[cfg(feature = "allocation-probe")]
+mod actions;
+#[cfg(feature = "allocation-probe")]
 mod fanout;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
+#[cfg(feature = "allocation-probe")]
+mod pages;
+#[cfg(feature = "allocation-probe")]
+mod readiness;
 #[cfg(feature = "allocation-probe")]
 mod stream_fixture;
 #[cfg(feature = "allocation-probe")]
@@ -603,13 +609,20 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
         }
         assert!(control.recover_audio_candidate_domain(token).is_none());
     }
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        0
-    );
+    let usage = loop {
+        if let Some(usage) = control.audio_candidate_domain_usage() {
+            break usage;
+        }
+        // The lifecycle worker may still inspect the bank after the last
+        // report. Poll the nonblocking observation; never infer zero from None.
+        assert!(
+            std::time::Instant::now() < deadline,
+            "domain usage unavailable after complete reports: {}",
+            control.candidate_root.test_status()
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(usage.occupied_domains, 0);
     drop(a_bank);
     drop(b_bank);
     drop(control);

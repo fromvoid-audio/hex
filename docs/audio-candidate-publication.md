@@ -191,8 +191,10 @@ latch revokes queued installation claims without revoking their physical return
 identity. Admission linearizes at the final open observation for an apply that
 wins its cancellation CAS; a decision already in flight may finish under normal
 shutdown semantics. A real queued-owner closure control verifies no install/ACK,
-zero total/net allocation and exact original-bank recovery. Fresh-runtime seek/launch policies refuse
-original inputs here and remain separate PR238 work.
+zero total/net allocation and exact original-bank recovery. Fresh-runtime publication
+policies continue to refuse original inputs. PR238 prepares bounded streamed
+actions on the same actual current runtime through
+[exact readiness](streamed-native-readiness.md), without another publication path.
 
 The real native A-to-B-to-C fixture observes physical Utility Box pairs and actual
 move-only manifests (two groups, then only x after y's real decay). B's original
@@ -202,6 +204,86 @@ identities survive. Other DSP/instruments/MIDI/compensation and broader original
 
 Streamed construction/accounting, actual verified-file catalog associations,
 wrong-context refusal and reuse of the same actual domain cell are exercised.
-Streamed installation still returns `StreamedPagesNotReady` until PR237. No page
+At the PR236 checkpoint streamed installation still returned `StreamedPagesNotReady`. No page
 endpoint moves to this callback and no readiness release is inferred. Native UI,
 listening and physical-deadline acceptance remain separate.
+
+## exact streaming demand checkpoint (pr237)
+
+The first PR237 layer adapts the pure source/chunk traversal from published177
+`8d444c06`. Arrangement rendering and demand share the same clip span traversal,
+including source phase, page/clip edges, fades and clip gain. Session demand
+resolves the actual next route/loop boundary without applying it. A proposed
+Play/Pause flag describes a speculative window; it does not mutate transport or
+certify pages. Handoff preview runs the real current-predecessor planning up to
+its existing mutation frontier, leaving committed clocks/routes/owners unchanged.
+The later actual handoff must repeat its own preflight.
+
+These borrowed extents and scalar windows are observations, never installation
+or native-readiness authority. The opaque claimed runtime exposes no Playback,
+Arc or owning provider through this seam. Current streamed installation remains
+refused until the exact endpoint/protection transaction is connected. Legacy
+borrowed-page miss behavior is preserved.
+
+The next stream checkpoint adds one actual endpoint loan per constructor domain
+and control-reserved Active/Candidate/Transition extent/receipt storage. Its
+component tests distinguish real decoded buffers from installed protection,
+exercise short-page/role/pool/receipt refusal and exact pair return, and verify
+normal pool conservation. These component receipts still do not authorize native
+installation: binding to the captured canonical source context, exact engine
+window and real callback transaction remains required.
+
+## exact page endpoint custody (PR237 checkpoint)
+
+Readiness registration reserves the real publication-ring chunk before consuming
+an original pair. A successful seal moves that domain's single page endpoint in
+one constructor-created capsule; every future generation shares its fixed
+callback domain slot instead of cloning a producer. The capsule's actual Box
+payload is reserved against remaining retained/construction DATA before sealing.
+The two fixed return signals have actual DATA payloads and four declared internal
+handles; their opaque Arc headers remain RESOURCE costs. Default legacy domain
+registration remains unchanged.
+
+Sealing runs outside ordinary bank/terminal locks. The original terminal barrier
+then chooses either the actual queue fill or accepted closed-Root cleanup. A loan
+is never published behind completed terminal draining. Only authoritative retained
+domain uses and retirement under the bank can request its return; the callback
+reads that signal without locking and moves the same capsule through its existing
+bounded return ring. Endpoint restoration and capsule metadata destruction happen
+on the lifecycle worker before join, READY and report reuse.
+
+Terminal extraction requires both actual guard releases and the completed stream
+handle. Its persistent page slots retain extracted loans through both carrier
+destructors, so a later destructor panic pins the exact endpoints without a join
+or retry. Application callback nonrenderability still does not certify native OS
+Dispose success. This endpoint checkpoint does not enable streamed installation;
+engine demand, command-prefix and per-chunk BUFFERING wiring remain PR237 work.
+
+### reserved exact-demand workspace
+
+Before accepting any domain or graph, an opted-in channel can reserve a finite
+extent capacity per domain for every runtime cell. Requested backing and the
+control-side construction Vec overlap are checked before allocation, then actual
+capacities are checked against the same caller retained/peak allowances. The
+existing resident reservation API needs no new field or opt-in.
+
+The same two Vec backings move from their reserved Root cell into its actual
+runtime State. They return to that original cell before State metadata normally
+drops, including cancellation; report consumption cannot make a slot reusable
+with missing backing. Their original capacities stay charged during all moves,
+failed cleanup and unconsumed reports. Stream-enabled staging requires the actual
+prepared owner's captured document context and actual outstanding domain loans;
+caller context numbers cannot relabel it. Default non-stream-enabled candidate
+staging keeps its existing readiness refusal. Native readiness/render integration
+is still unfinished at this checkpoint.
+
+
+## integrated initial/replacement readiness (PR237)
+
+The opt-in path now binds the retained exact endpoint, actual engine demand,
+canonical source context and staged command prefix before each chunk/install.
+See [exact native streamed readiness](streamed-native-readiness.md) for role
+promotion, partial BUFFERING, pressure/failure retry, real Pause/Stop ordering,
+mutable runtime accounting and remaining PR238/239/native acceptance boundaries.
+The earlier checkpoints above describe their staged source state, not the final
+readiness behavior. Default resident and non-opted-in paths remain unchanged.

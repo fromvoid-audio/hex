@@ -28,10 +28,10 @@ impl RootResourceWitness {
 fn root_handle_bound(bank: &Bank) -> Option<usize> {
     // Root handles: 2 per accepted State + at most8 control/callback/terminal,
     // queue/lifecycle/construction handles in this private factory. Life:3 per
-    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:4.
+    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:4; two domain signals:4.
     // Observer Status handles outside this publication Root own no graph or
     // source lease; no process-wide Arc/RSS bound is claimed.
-    bank.slots.len().checked_mul(5)?.checked_add(22)
+    bank.slots.len().checked_mul(5)?.checked_add(26)
 }
 fn occupied_handles(bank: &NativeBank) -> Option<usize> {
     let mut handles = root_handle_bound(&bank.publication)?;
@@ -84,7 +84,7 @@ pub(super) fn for_candidate(
             .publication
             .slots
             .len()
-            .checked_add(7)
+            .checked_add(9)
             .ok_or("resource count overflow")?,
         shared_handle_bound: occupied_handles(bank)
             .and_then(|n| n.checked_add(summary.shared_resource_handles))

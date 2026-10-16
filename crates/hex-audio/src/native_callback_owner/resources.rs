@@ -31,6 +31,11 @@ impl NativeCandidateBoundary {
         let data_bytes = std::mem::size_of_val(data)
             .checked_add(std::mem::size_of_val(errors))?
             .checked_add(cell_data)?
+            // Separate fixed terminal destinations remain reserved through both
+            // carrier destructors, including a failed destructor's quarantine.
+            .checked_add(std::mem::size_of::<
+                [Option<crate::candidate_custody::DomainEnvelope>; 2],
+            >())?
             .checked_add(data.status.candidate_boundary_data_bytes()?)?;
         Some(Self {
             root: root.root_id(),

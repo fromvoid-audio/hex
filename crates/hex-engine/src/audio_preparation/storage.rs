@@ -6,6 +6,7 @@ impl AudioPreparationCustody {
     ) -> Result<(), AudioStorageError> {
         let Self {
             root: _,
+            source_context: _,
             incarnation: _,
             phase: _,
             bank,
