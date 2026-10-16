@@ -1944,3 +1944,43 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
         corrupt
     );
 }
+
+#[gpui::test]
+fn browser_sample_drop_above_first_track_shows_line_and_inserts_before_it(cx: &mut TestAppContext) {
+    let (handle, editor, tracks, _directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["first", "second"]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual.debug_bounds("browser-entry-0").expect("sample row");
+    let selector = Box::leak(format!("arrangement-lane-{}", tracks[0].value()).into_boxed_str());
+    let first = visual.debug_bounds(selector).expect("first lane");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = point(
+        first.origin.x + first.size.width / 2.0,
+        first.origin.y + px(1.0),
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insert-preview").is_some());
+    assert!(visual.debug_bounds("clip-drop-preview").is_none());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        let (dropped_path, anchor, _) = view
+            .last_enqueued_import_to_new_track
+            .as_ref()
+            .expect("new track import");
+        assert_eq!(dropped_path, &path);
+        assert_eq!(*anchor, Some(tracks[0]));
+        assert!(view.last_enqueued_import_to_track.is_none());
+    });
+}
