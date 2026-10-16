@@ -3,14 +3,20 @@ use crate::arrangement_seek::{
     ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
 };
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
+use crate::import_batch::AudioBatchDestination;
+use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
 use crate::{PreparedImport, Session, SessionError};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
+#[cfg(test)]
+mod audio_batch_tests;
 pub mod preset;
 mod recovery;
+#[cfg(test)]
+mod stopped_playback_tests;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
 use recovery::{absolute_document_path, checkpoint_project, open_source, project_for_save};
@@ -69,10 +75,15 @@ pub struct Event {
     pub error: Option<String>,
     pub request_complete: bool,
     pub computer_keyboard_complete: Option<u64>,
+    /// Correlates one final batch result; contains metadata only, never PCM.
+    pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
+    /// Completion of explicit Stop recovery, including refusal. A returned graph
+    /// must install with fresh histories; this never replaces the project.
+    pub stopped_playback_restore_complete: bool,
     pub created: Option<Created>,
     pub duplicate_complete: bool,
     /// Generation echoed for each processed restore request, including errors.
@@ -272,6 +283,12 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    ImportAudioBatch {
+        paths: Vec<PathBuf>,
+        destination: AudioBatchDestination,
+        context: AudioBatchContext,
+        control: Arc<AudioBatchControl>,
+    },
     ImportToTrack {
         path: PathBuf,
         track: hex_project::TrackId,
@@ -316,6 +333,8 @@ pub enum Request {
     RestorePlayback {
         generation: u64,
     },
+    /// Reprepare the current canonical sound after the caller explicitly stops.
+    RestoreStoppedPlayback,
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
     ExportRange {
@@ -329,6 +348,24 @@ pub enum Request {
 }
 
 impl Request {
+    /// Construct bounded owned-path metadata without decoding on the UI thread.
+    pub fn audio_batch(
+        paths: Vec<PathBuf>,
+        destination: AudioBatchDestination,
+        context: AudioBatchContext,
+    ) -> Result<(Self, Arc<AudioBatchControl>), String> {
+        let control = Arc::new(AudioBatchControl::new(paths.len()).map_err(|e| e.to_string())?);
+        Ok((
+            Self::ImportAudioBatch {
+                paths,
+                destination,
+                context,
+                control: Arc::clone(&control),
+            },
+            control,
+        ))
+    }
+
     pub fn is_project_open(&self) -> bool {
         matches!(self, Self::Open(_) | Self::OpenWith { .. })
     }
@@ -777,9 +814,11 @@ fn run_worker(
                 error: None,
                 request_complete: false,
                 computer_keyboard_complete: None,
+                audio_batch_complete: None,
                 save_complete: false,
                 open_complete: false,
                 project_replaced: false,
+                stopped_playback_restore_complete: false,
                 created: None,
                 duplicate_complete: false,
                 restore_complete: None,
@@ -797,9 +836,11 @@ fn run_worker(
             error: Some(error),
             request_complete: false,
             computer_keyboard_complete: None,
+            audio_batch_complete: None,
             save_complete: false,
             open_complete: false,
             project_replaced: false,
+            stopped_playback_restore_complete: false,
             created: None,
             duplicate_complete: false,
             restore_complete: None,
@@ -817,6 +858,7 @@ fn run_worker(
     while let Ok(request) = requests.recv() {
         let mut computer_keyboard_complete = None;
         let mut computer_keyboard_playback = None;
+        let mut audio_batch_complete = None;
         let mut open_complete = false;
         let mut save_complete = false;
         let mut project_replaced = false;
@@ -825,6 +867,7 @@ fn run_worker(
         let revision_before_request = revision;
         let mut duplicate_complete = false;
         let mut restore_complete = None;
+        let mut stopped_playback_restore_complete = false;
         let mut restore_prepared = None;
         let mut status = None;
         let mut error = None;
@@ -1087,6 +1130,48 @@ fn run_worker(
                             }
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::ImportAudioBatch {
+                    paths,
+                    destination,
+                    context,
+                    control,
+                } => {
+                    audio_batch_complete = Some(Arc::clone(&control));
+                    let actual = AudioBatchContext {
+                        project_generation,
+                        revision,
+                        active_gesture: device_gesture.snapshot().is_some(),
+                    };
+                    let result = if context != actual {
+                        Err(crate::import_batch_decode::AudioBatchError::ContextChanged)
+                    } else {
+                        AudioBatchImport::capture_with_control(
+                            paths,
+                            destination,
+                            &session,
+                            actual,
+                            Arc::clone(&control),
+                        )
+                        .and_then(|job| {
+                            job.run(
+                                &mut session,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                || actual,
+                            )
+                        })
+                    };
+                    match result {
+                        Ok((_, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("audio batch imported · one undo".into());
+                        }
+                        Err(reason) => {
+                            control.refuse();
+                            error = Some(reason.to_string());
+                        }
                     }
                 }
                 Request::Import(path) => match import(
@@ -1669,6 +1754,21 @@ fn run_worker(
                         }
                     }
                 }
+                Request::RestoreStoppedPlayback => {
+                    stopped_playback_restore_complete = true;
+                    if device_gesture.snapshot().is_some() {
+                        error = Some(
+                            "finish the device gesture before restoring stopped playback".into(),
+                        );
+                    } else if let Some((compiled_revision, prepared)) = compiled.as_ref()
+                        && *compiled_revision == revision
+                    {
+                        restore_prepared = Some(Arc::clone(prepared));
+                        status = Some("restoring stopped playback".into());
+                    } else {
+                        error = Some("current playback revision is unavailable".into());
+                    }
+                }
                 Request::PrepareComputerKeyboard {
                     project_generation: generation,
                     revision: expected_revision,
@@ -1827,9 +1927,11 @@ fn run_worker(
                 error,
                 request_complete: true,
                 computer_keyboard_complete,
+                audio_batch_complete,
                 save_complete,
                 open_complete,
                 project_replaced,
+                stopped_playback_restore_complete,
                 created,
                 duplicate_complete,
                 restore_complete,
