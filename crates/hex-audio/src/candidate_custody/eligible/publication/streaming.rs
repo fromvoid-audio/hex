@@ -181,7 +181,9 @@ impl Custody {
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests {
     use super::*;
-    use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
+    use crate::prepared::candidate_tests::{
+        anchored, candidate_with_context, finish, recover, serial,
+    };
     fn backing(root: &CandidateRoot) -> Vec<[(usize, usize); 2]> {
         let bank = lock(&root.0.eligible.bank);
         bank.publication
@@ -202,7 +204,15 @@ mod tests {
     #[test]
     fn finite_actual_workspace_moves_with_runtime_and_returns_before_report_slot_reuse() {
         let _serial = serial();
-        let Some(mut owner) = candidate() else { return };
+        let Some((mut owner, _)) = candidate_with_context(
+            false,
+            Some(hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 0,
+            }),
+        ) else {
+            return;
+        };
         let ledger = AudioStorageLedgerReservation {
             data_rows: 4096,
             handle_rows: 2048,
@@ -243,6 +253,19 @@ mod tests {
             (0, 0, 0, 0)
         );
         control.configure_audio_candidate_streaming(8).unwrap();
+        let domain = control
+            .register_audio_candidate_domain_with_readiness(
+                crate::prepared::candidate_tests::pair(),
+                hex_stream::StreamReadinessReservation {
+                    extents_per_role: 2,
+                },
+            )
+            .ok()
+            .unwrap();
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        });
         let root = control.native_candidate_root();
         let original = backing(&root);
         assert_eq!(original.len(), 2);
@@ -255,7 +278,7 @@ mod tests {
         let ticket = control
             .stage_eligible_audio_candidate(
                 owner,
-                vec![],
+                Vec::from([domain]),
                 crate::prepared::PublicationPolicy::InheritRuntime,
                 0,
             )
@@ -266,9 +289,12 @@ mod tests {
             AudioCandidateCancellationResult::Cancelled
         );
         assert!(control.configure_audio_candidate_streaming(8).is_err());
-        data.owner_mut()
-            .unwrap()
-            .run(|callback, _| callback.begin_block());
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            // Opted-in resident/empty owners share the actual render-slice
+            // transaction; begin_block alone never certifies installation.
+            callback.render(&mut [[0.0; 2]; 8]).unwrap();
+        });
         let recovered = recover(&mut control, &ticket);
         assert_eq!(backing(&root), original);
         assert_eq!(
@@ -279,6 +305,19 @@ mod tests {
         drop(control);
         drop(data);
         drop(errors);
+        // This fixture exposed an actual callback page endpoint. Its terminal
+        // extraction needs the same completed-handle frontier as native output.
+        let mut backend = Some(());
+        let mut pending = false;
+        let mut disposed = false;
+        crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap();
         finish(&mut retirement);
     }
 }

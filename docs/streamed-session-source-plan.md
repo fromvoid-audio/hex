@@ -1,9 +1,11 @@
 # canonical verified source plan
 
 Pulse2544 / PR239 connects the existing Session worker to the native streamed
-publication path. The first source/service checkpoint supplies the neutral
-preparation described here; desktop composition, nonowning UI clients and native
-publication remain unfinished until the rest of that PR is implemented.
+publication path. Desktop now composes the neutral source plan, worker-owned
+native preparation and nonowning UI Client described below. Exact final repository
+verification and native UI/listening acceptance are recorded separately. Earlier
+checkpoint sections retain their historical scope and do not override this
+connected contract.
 
 `DocumentAudioMode` is selected explicitly for a fresh New/Open before media
 preparation. Resident remains the default. `VerifiedStreaming` imports and opens
@@ -55,6 +57,73 @@ run the current prepared NoPages renderer. No device eligibility, ownership,
 readiness, physical deadline or native UI/listening acceptance is established by
 this source plan. The native admitted audio-only/Utility class and original
 Pulse24 / PR177 acceptance remain unchanged.
+
+## connected desktop and editor
+
+New/Open selects the mode before decoding. A Verified new-track import removes
+only its freshly generated default instrument in the same validated canonical
+transaction; batch import remains one Undo step with stable IDs. Existing-track
+instruments and all Resident creation behavior are preserved. Unsupported edited
+instrument/MIDI/DSP/typing graphs remain editable/saveable and explicitly refused
+for native audio; they never fall back to legacy publication.
+
+The existing Session worker owns the Desktop sink. It binds complete captured
+source facts to actual sealed Root domains, prepares fresh consuming banks in one
+persistent runtime slot, and stages from that same slot. One active, one queued
+successor and one preparing runtime justify three cells and their archive/report
+reservations. Existing canonical cardinality limits produce conservative global
+row ceilings; each request reserves scratch for its smaller captured Project.
+Actual constructor capacities, aliases, DATA/resource closure and final seal
+remain authoritative. These reservations are not exact costs or a process memory
+cap: 32 MiB mutable runtime (including native State/workspace), 32 MiB page-pool
+PCM per actual domain, immutable graph/source metadata and opaque kernel/resource
+scopes remain distinct. No arbitrary 192 MiB/eight-graph allowance is introduced.
+
+All revisions after Verified opt-in, including resident-only and empty successors,
+use captured context, typed custody, command-prefix ACKs and normal N2 admission.
+An empty required-source set still checks the actual sealed/nonretiring domain;
+it may reuse an actual covering domain, never a stale token. Same-document Undo
+can reuse a retained superset; a new document generation needs a new output/domain
+identity even when paths are identical. Source-bank construction starts only
+after the Root runtime cell and source pair cell are reserved. Cancelled, refused,
+failed and archived owners remain charged through normal destruction and report
+consumption. Ordinary domain/queue pressure reports busy without vetoing an
+already valid canonical edit. A permanent refusal stays refused while its
+ordinary cleanup retires. Incomplete ownership cleanup retains its lease and
+reports save/restart hex, rather than promising an impossible in-process reopen.
+
+Generation notification is independent of output readiness. The worker relinquishes
+old output/publication before event backpressure; the editor closes the old Client
+on that notification before awaiting the new Client. Explicit restart results are
+request-correlated; automatic replacement is not a second restart. Output failure
+leaves canonical editing/saving usable. Service Drop signals without joining; the
+existing worker/lifecycle paths progress cleanup without UI collection.
+
+The UI owns no native stream/output or Verified candidate. Its Client supplies
+borrowed status, scalar command tokens, direct priority Stop and bounded Pause. Resident
+compatibility alone retains existing preroll/PendingPlayback and one nonblocking
+forwarding cell; this is not a universal rewrite of Resident graph ownership.
+Verified seek/launch uses PR238 only after the exact current graph is actually
+applied. Preview/recording/typing ownership never crosses the sealed Verified lane.
+
+Submitted, installed and applied are separate observations. A bounded SeqCst
+status tuple is written only by the actual eligible install before its ACK;
+legacy install clears it. It binds full captured source context, actual output
+identity and audio revision. Bounded reads may return unavailable on contention
+without erasing the UI's prior observation. This preserves truthful last-audible A
+when Submitted(A) is coalesced and newer canonical B refuses. Only an exact current
+context/client match can reconstruct nonowning current graph/seek metadata or
+advance restoration. A current unpublished refusal stays rejected in the footer;
+an actual later ACK wins. This status reconciliation adds no owning graph history or event queue.
+
+The nondefault Desktop fixture substitutes only output-open completion, using
+actual callback/endpoint guards and the normal completed-handle retirement path.
+It runs production Session verification, domain preparation, native publication,
+worker decode and callback rendering. This proves headless behavior, not physical
+CPAL stop/disposal success, device deadlines, UI interaction or listening.
+Waveform peaks for verified sources remain explicitly unavailable; offline streamed
+export remains Pulse2650 / PR266. Original Pulse24/PR177 and native100-track/edit
+acceptance in PR240/241 remain open.
 
 ## worker/client endpoint checkpoint
 

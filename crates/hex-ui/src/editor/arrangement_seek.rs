@@ -207,6 +207,45 @@ pub(super) fn requires_preroll(prepared: Option<&Arc<PreparedRevision>>) -> Opti
     prepared.map(|prepared| prepared.arrangement_seek_requires_preroll())
 }
 
+pub(super) fn seek_requires_preroll_for_mode(
+    mode: hex_session::DocumentAudioMode,
+    prepared: Option<&Arc<PreparedRevision>>,
+    verified_candidate_is_applied: bool,
+) -> Option<bool> {
+    match mode {
+        hex_session::DocumentAudioMode::Resident => requires_preroll(prepared),
+        hex_session::DocumentAudioMode::VerifiedStreaming => {
+            verified_candidate_is_applied.then_some(false)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VerifiedSeekCandidateContext {
+    client_mode: hex_session::DocumentAudioMode,
+    output_identity: Option<u64>,
+    candidate_audio_revision: u64,
+    applied_audio_revision: u64,
+    candidate_generation: u64,
+    current_generation: u64,
+    candidate_project_revision: u64,
+    current_project_revision: u64,
+    applied_project_revision: Option<u64>,
+    has_prepared_revision: bool,
+    is_canonical_candidate: bool,
+}
+
+fn verified_audio_candidate_is_current(context: VerifiedSeekCandidateContext) -> bool {
+    context.client_mode == hex_session::DocumentAudioMode::VerifiedStreaming
+        && context.output_identity.is_some()
+        && !context.has_prepared_revision
+        && context.is_canonical_candidate
+        && context.candidate_audio_revision == context.applied_audio_revision
+        && context.candidate_generation == context.current_generation
+        && context.candidate_project_revision == context.current_project_revision
+        && context.applied_project_revision == Some(context.current_project_revision)
+}
+
 #[cfg(test)]
 #[path = "arrangement_seek_tests.rs"]
 mod tests;
@@ -217,11 +256,40 @@ use std::sync::atomic::Ordering::Acquire;
 
 impl EditorView {
     pub(super) fn current_seek_requires_preroll(&self) -> Option<bool> {
-        self.audible_playback
-            .as_ref()?
-            .prepared_revision
-            .as_ref()
-            .map(|prepared| prepared.arrangement_seek_requires_preroll())
+        let candidate = self.audible_playback.as_ref()?;
+        let (audio, state) = match self.document_audio_mode {
+            hex_session::DocumentAudioMode::Resident => {
+                return candidate
+                    .prepared_revision
+                    .as_ref()
+                    .map(|prepared| prepared.arrangement_seek_requires_preroll());
+            }
+            hex_session::DocumentAudioMode::VerifiedStreaming => {
+                (self.audio.as_ref()?, self.state.as_ref()?)
+            }
+        };
+        let status = audio.control.status()?;
+        let applied_revision = status.applied_revision.load(Acquire);
+        let verified_candidate_is_applied =
+            verified_audio_candidate_is_current(VerifiedSeekCandidateContext {
+                client_mode: audio.mode,
+                output_identity: audio.control.output_identity(),
+                candidate_audio_revision: candidate.audio_revision,
+                applied_audio_revision: applied_revision,
+                candidate_generation: candidate.project_generation,
+                current_generation: self.project_generation,
+                candidate_project_revision: candidate.state.revision,
+                current_project_revision: state.revision,
+                applied_project_revision: self.applied_project_revision,
+                has_prepared_revision: candidate.prepared_revision.is_some(),
+                is_canonical_candidate: candidate.seek_request_id.is_none()
+                    && candidate.device_preview_identity.is_none(),
+            });
+        seek_requires_preroll_for_mode(
+            self.document_audio_mode,
+            candidate.prepared_revision.as_ref(),
+            verified_candidate_is_applied,
+        )
     }
 
     pub(super) fn current_preroll_source(

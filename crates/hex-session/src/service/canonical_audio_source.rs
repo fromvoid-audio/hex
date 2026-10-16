@@ -47,6 +47,19 @@ impl CanonicalAudioSourceSnapshot {
             (arrangement || session).then_some((*id, binding))
         })
     }
+    pub fn sample_rate(&self) -> u32 {
+        self.project.sample_rate()
+    }
+    /// Conservative reservation only; the actual native constructor remains
+    /// responsible for source/custody/closed-class validation.
+    pub fn candidate_reservation_quote(
+        &self,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        hex_engine::AudioCandidateReservationQuote::for_project(
+            &self.project,
+            self.required_sources().count(),
+        )
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
     }

@@ -314,6 +314,13 @@ impl EditorView {
                     format!("audio revision {audio_revision} submitted · waiting for playback");
             }
             crate::EditorPublicationState::Refused(reason) => {
+                self.audio_admission.unpublished_refusal(
+                    super::audio_admission::ProjectRevision {
+                        generation: context.project_generation,
+                        revision: context.editor_revision,
+                    },
+                    "audio publication refused",
+                );
                 self.status = format!("audio publication refused · {}", reason.to_lowercase());
                 if self.pending_recovery_generation.is_some() {
                     self.fail_audio_recovery(reason);
@@ -865,6 +872,19 @@ impl EditorView {
             .control
             .status()
             .map_or(0, |status| status.applied_revision.load(Acquire));
+        let (reconciled, current_applied) = reconcile_verified_applied_source(
+            &mut self.audio_admission,
+            self.document_audio_mode,
+            audio.control.output_identity(),
+            self.project_generation,
+            self.state.as_ref().map(|state| state.revision),
+            audio
+                .control
+                .status()
+                .and_then(|status| status.applied_audio_source()),
+        );
+        visible_change |= reconciled;
+
         if let Some((project, audio_revision)) = latest_applied_canonical_candidate(
             &self.playback_candidates,
             applied,
@@ -903,6 +923,35 @@ impl EditorView {
                     &mut self.error,
                     "device preview source did not match its prepared revision",
                 );
+            }
+        }
+        if let Some(source) = current_applied {
+            restore_verified_recovery_from_applied(
+                &mut self.recovery,
+                self.pending_recovery_generation,
+            );
+            // Actual ACK can arrive after Submitted metadata was coalesced.
+            // Reconstruct only nonowning canonical view metadata, never an
+            // audio owner or a state for an older, unavailable Project snapshot.
+            if let Some(state) = self
+                .state
+                .as_ref()
+                .filter(|state| state.revision == source.context.editor_revision)
+            {
+                self.applied_project_revision = Some(source.context.editor_revision);
+                if self.audible_playback.as_ref().is_none_or(|candidate| {
+                    candidate.audio_revision != source.audio_revision
+                        || candidate.project_generation != source.context.project_generation
+                }) {
+                    self.audible_playback = Some(PlaybackCandidate {
+                        audio_revision: source.audio_revision,
+                        project_generation: source.context.project_generation,
+                        state: Arc::clone(state),
+                        prepared_revision: None,
+                        seek_request_id: None,
+                        device_preview_identity: None,
+                    });
+                }
             }
         }
         if let Some((revision, _)) = rejected_revision {
@@ -2643,6 +2692,44 @@ impl EditorView {
     }
 }
 
+// Called only after exact current context/output identity has been reconciled.
+fn restore_verified_recovery_from_applied(
+    recovery: &mut super::recovery_state::RecoveryState,
+    pending: Option<u64>,
+) {
+    if let Some(generation) = pending {
+        recovery.restored(generation);
+    }
+}
+
+fn reconcile_verified_applied_source(
+    admission: &mut super::audio_admission::AudioAdmissionStatus,
+    mode: hex_session::DocumentAudioMode,
+    output_identity: Option<u64>,
+    generation: u64,
+    current_revision: Option<u64>,
+    source: Option<hex_audio::prepared::AppliedAudioSource>,
+) -> (bool, Option<hex_audio::prepared::AppliedAudioSource>) {
+    let Some(source) = source.filter(|source| {
+        mode == hex_session::DocumentAudioMode::VerifiedStreaming
+            && output_identity == Some(source.output_identity)
+            && source.context.project_generation == generation
+    }) else {
+        return (false, None);
+    };
+    let changed = admission.applied(
+        super::audio_admission::ProjectRevision {
+            generation,
+            revision: source.context.editor_revision,
+        },
+        source.audio_revision,
+    );
+    (
+        changed,
+        (current_revision == Some(source.context.editor_revision)).then_some(source),
+    )
+}
+
 fn audio_command_prefix(
     status: &hex_audio::prepared::Status,
     mode: hex_session::DocumentAudioMode,
@@ -3674,5 +3761,127 @@ mod tests {
         assert!(!intent.is_pending());
         assert!(allows_non_open_request(false, false, false));
         assert!(!allows_non_open_request(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod verified_actual_applied_tests {
+    use super::*;
+    #[test]
+    fn actual_current_ack_restores_recovery_without_a_submitted_event() {
+        let mut recovery = super::super::recovery_state::RecoveryState::default();
+        let generation = recovery.begin(640).unwrap();
+        assert!(recovery.opened(generation));
+        assert_eq!(recovery.seek_needed(true), None);
+        restore_verified_recovery_from_applied(&mut recovery, Some(generation + 1));
+        assert_eq!(recovery.seek_needed(true), None);
+        restore_verified_recovery_from_applied(&mut recovery, Some(generation));
+        restore_verified_recovery_from_applied(&mut recovery, Some(generation));
+        assert_eq!(recovery.seek_needed(true), Some(640));
+        assert_eq!(recovery.seek_needed(false), None);
+    }
+
+    #[test]
+    fn coalesced_submission_keeps_actual_audible_context_when_newer_edit_refuses() {
+        use super::super::audio_admission::{AudioAdmissionStatus, ProjectRevision};
+        let mut admission = AudioAdmissionStatus::default();
+        let mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        let source = hex_audio::prepared::AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 7,
+            },
+            audio_revision: 11,
+            output_identity: 13,
+        };
+        // Submitted(A) was never received; B is already canonical/refused.
+        admission.canonical_revision(ProjectRevision {
+            generation: 2,
+            revision: 8,
+        });
+        assert!(admission.unpublished_refusal(
+            ProjectRevision {
+                generation: 2,
+                revision: 8
+            },
+            "audio publication refused",
+        ));
+        let (changed, current) = reconcile_verified_applied_source(
+            &mut admission,
+            mode,
+            Some(13),
+            2,
+            Some(8),
+            Some(source),
+        );
+        assert!(changed && current.is_none());
+        assert_eq!(admission.last_audible().unwrap().project.revision, 7);
+        assert_eq!(admission.current().unwrap().project.revision, 8);
+        assert!(admission.label().contains("rev 8 rejected"));
+        assert!(admission.label().contains("rev 7 audible"));
+        assert_eq!(
+            reconcile_verified_applied_source(&mut admission, mode, Some(13), 2, Some(8), None),
+            (false, None)
+        );
+        assert!(admission.label().contains("rev 7 audible"));
+        // Only exact current state/client correlation may recover seek metadata.
+        assert_eq!(
+            reconcile_verified_applied_source(
+                &mut admission,
+                mode,
+                Some(99),
+                2,
+                Some(7),
+                Some(source)
+            ),
+            (false, None)
+        );
+        let (_, current) = reconcile_verified_applied_source(
+            &mut admission,
+            mode,
+            Some(13),
+            2,
+            Some(7),
+            Some(source),
+        );
+        assert_eq!(current, Some(source));
+        assert_eq!(
+            reconcile_verified_applied_source(
+                &mut admission,
+                mode,
+                Some(13),
+                3,
+                Some(7),
+                Some(source)
+            ),
+            (false, None)
+        );
+        let actual_b = hex_audio::prepared::AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 8,
+            },
+            audio_revision: 12,
+            ..source
+        };
+        reconcile_verified_applied_source(
+            &mut admission,
+            mode,
+            Some(13),
+            2,
+            Some(8),
+            Some(actual_b),
+        );
+        assert_eq!(
+            admission.current().unwrap().state,
+            super::super::audio_admission::AdmissionState::Applied
+        );
+        assert!(!admission.unpublished_refusal(
+            ProjectRevision {
+                generation: 2,
+                revision: 8
+            },
+            "late refusal"
+        ));
     }
 }

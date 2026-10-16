@@ -61,6 +61,8 @@ impl Custody {
             if bank.closing
                 || domains.len() > 2
                 || reservation.storage.handle_obligations > reservation.handle_rows
+                || reservation.storage.allocation_items > limits.data_rows
+                || reservation.handle_rows > limits.handle_rows
                 || reservation.storage.max_construction_data_bytes
                     < reservation.storage.max_prepared_data_bytes
                 || bank
@@ -447,7 +449,7 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
-        let (reservation, external) = {
+        let (ledger, external) = {
             let bank = lock(&self.bank);
             let slot = bank
                 .publication
@@ -484,12 +486,22 @@ impl Custody {
                     )
                 })
                 .ok_or("candidate mutable runtime storage overflow")?;
-            (
-                bank.publication
-                    .reservation
-                    .ok_or("candidate publication is not reserved")?,
-                external,
-            )
+            let limits = bank
+                .publication
+                .reservation
+                .ok_or("candidate publication is not reserved")?;
+            let pending = slot
+                .preparation_reservation
+                .ok_or("candidate preparation reservation differs")?;
+            if pending.storage.allocation_items > limits.data_rows
+                || pending.handle_rows > limits.handle_rows
+            {
+                return Err("candidate ledger reservation exceeded");
+            }
+            let mut ledger = limits.ledger();
+            ledger.data_rows = pending.storage.allocation_items;
+            ledger.handle_rows = pending.handle_rows;
+            (ledger, external)
         };
         let execution = work.publication.preparations[token.slot]
             .as_mut()
@@ -507,7 +519,7 @@ impl Custody {
                 return Err("candidate constructor rate or phase differs");
             }
             owner
-                .seal_constructor_with_runtime_storage_on_control(reservation.ledger(), external)
+                .seal_constructor_with_runtime_storage_on_control(ledger, external)
                 .map_err(|_| "candidate DATA or resource closure refused")
         })) {
             Ok(result) => result?,

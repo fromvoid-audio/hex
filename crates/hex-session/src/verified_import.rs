@@ -146,34 +146,42 @@ impl Session {
             ));
         }
         let command = verified_import_command(&source, destination);
+        let commands = verified_audio_only_commands(self.project(), vec![command])?;
         let mut bank = self.media_bank();
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
         let table = self.sine_table();
-        let (created, (id, prepared)) = self.editor.execute_prepared(command, |candidate| {
-            let mut added = candidate
-                .assets()
-                .filter(|asset| !bank.contains_key(&asset.id()));
-            let id = added
-                .next()
-                .map(|a| a.id())
-                .ok_or(SessionError::Invalid("import candidate has no new source"))?;
-            if added.next().is_some() {
-                return Err(SessionError::Invalid(
-                    "import candidate has multiple new sources",
-                ));
-            }
-            bank.verified.insert(id, source.clone());
-            let prepared = prepare_with_waveforms(
-                candidate,
-                &bank,
-                Arc::clone(&table),
-                previous.map(|p| p.session().as_ref()),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-            )?;
-            Ok::<_, SessionError>((id, Arc::new(prepared)))
-        })?;
+        let (_, (created, id, prepared)) =
+            self.editor
+                .execute_many_prepared(commands, |candidate, results| {
+                    let created = results
+                        .iter()
+                        .find(|created| matches!(created, Created::Imported { .. }))
+                        .cloned()
+                        .ok_or(SessionError::Invalid("verified import result missing"))?;
+                    let mut added = candidate
+                        .assets()
+                        .filter(|asset| !bank.contains_key(&asset.id()));
+                    let id = added
+                        .next()
+                        .map(|a| a.id())
+                        .ok_or(SessionError::Invalid("import candidate has no new source"))?;
+                    if added.next().is_some() {
+                        return Err(SessionError::Invalid(
+                            "import candidate has multiple new sources",
+                        ));
+                    }
+                    bank.verified.insert(id, source.clone());
+                    let prepared = prepare_with_waveforms(
+                        candidate,
+                        &bank,
+                        Arc::clone(&table),
+                        previous.map(|p| p.session().as_ref()),
+                        &self.audio_transforms,
+                        &self.audio_clip_waveforms,
+                    )?;
+                    Ok::<_, SessionError>((created, id, Arc::new(prepared)))
+                })?;
         self.verified_sources.insert(id, source);
         self.semantic_source_epoch = epoch;
         Ok((created, prepared))
@@ -238,6 +246,7 @@ impl Session {
                     .ok_or(SessionError::Invalid("timeline end overflow"))?;
             }
         }
+        let commands = verified_audio_only_commands(self.project(), commands)?;
         let mut bank = self.media_bank();
         bank.epoch = fresh_source_epoch()?;
         let epoch = bank.epoch;
@@ -245,7 +254,11 @@ impl Session {
         let (created, prepared) =
             self.editor
                 .execute_many_prepared(commands, |candidate, results| {
-                    for (created, source) in results.iter().zip(&sources) {
+                    for (created, source) in results
+                        .iter()
+                        .filter(|created| matches!(created, Created::Imported { .. }))
+                        .zip(&sources)
+                    {
                         let Created::Imported { asset, .. } = created else {
                             return Err(SessionError::Invalid("verified batch has no asset"));
                         };
@@ -265,6 +278,8 @@ impl Session {
                     admit()?;
                     Ok::<_, SessionError>(prepared)
                 })?;
+        let mut created = created;
+        created.retain(|created| matches!(created, Created::Imported { .. }));
         for (created, source) in created.iter().zip(sources) {
             if let Created::Imported { asset, .. } = created {
                 self.verified_sources.insert(*asset, source);
@@ -273,6 +288,44 @@ impl Session {
         self.semantic_source_epoch = epoch;
         Ok((created, prepared))
     }
+}
+
+// Only newly created Verified audio tracks shed the generated default
+// instrument. Project/history observes one transaction, and existing tracks or
+// Resident imports never pass through this helper.
+fn verified_audio_only_commands(
+    project: &Project,
+    commands: Vec<Command>,
+) -> Result<Vec<Command>, SessionError> {
+    let mut projected = Editor::new(project.clone(), 1)?;
+    let mut expanded = Vec::new();
+    expanded
+        .try_reserve_exact(
+            commands
+                .len()
+                .checked_mul(2)
+                .ok_or(SessionError::Invalid("verified command count overflow"))?,
+        )
+        .map_err(|_| SessionError::Allocation)?;
+    for command in commands {
+        let creates_track = matches!(command, Command::ImportPreparedAudioTrackAt { .. });
+        let created = projected.execute(command.clone())?;
+        expanded.push(command);
+        if creates_track && let Created::Imported { track, .. } = created {
+            let instrument = projected
+                .project()
+                .track(track)
+                .and_then(|track| track.instrument());
+            if instrument.is_some_and(|instrument| {
+                instrument.state().type_id() == hex_project::DEFAULT_INSTRUMENT_TYPE_ID
+            }) {
+                let remove = Command::RemoveInstrument { track };
+                projected.execute(remove.clone())?;
+                expanded.push(remove);
+            }
+        }
+    }
+    Ok(expanded)
 }
 
 fn verified_import_command(

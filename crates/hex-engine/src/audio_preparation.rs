@@ -33,6 +33,36 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
+pub(crate) fn validate_constructor_project(
+    project: &hex_project::Project,
+) -> Result<(), AudioStorageError> {
+    if project.tracks().iter().any(|t| {
+        t.devices()
+            .iter()
+            .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+            || t.instrument().is_some()
+            || !t.midi_clips().is_empty()
+    }) || project
+        .return_tracks()
+        .iter()
+        .any(|t| !t.devices().is_empty())
+    {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
+    if !project.audio_feeds().is_empty()
+        || !project.midi_routes().is_empty()
+        || project.tracks().iter().any(|track| {
+            !track.gain_lane().spans().is_empty()
+                || track.clips().iter().any(|clip| clip.audio_edit().is_some())
+        })
+    {
+        return Err(AudioStorageError::UnsupportedGraph);
+    }
+    crate::gain_envelope::validate_project(project)
+        .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioPreparationPhase {
     Vacant,
@@ -824,32 +854,7 @@ impl AudioPreparationCustody {
         if generation == 0 {
             return Err(AudioStorageError::SourceMismatch);
         }
-        // This first compiler stage has no Session inventory output. Unsupported
-        // instruments/effects/MIDI refuse; Session stage is deliberately separate.
-        if project.tracks().iter().any(|t| {
-            t.devices()
-                .iter()
-                .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                || t.instrument().is_some()
-                || !t.midi_clips().is_empty()
-        }) || project
-            .return_tracks()
-            .iter()
-            .any(|t| !t.devices().is_empty())
-        {
-            return Err(AudioStorageError::UnsupportedGraph);
-        }
-        if !project.audio_feeds().is_empty()
-            || !project.midi_routes().is_empty()
-            || project.tracks().iter().any(|track| {
-                !track.gain_lane().spans().is_empty()
-                    || track.clips().iter().any(|clip| clip.audio_edit().is_some())
-            })
-        {
-            return Err(AudioStorageError::UnsupportedGraph);
-        }
-        crate::gain_envelope::validate_project(project)
-            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+        validate_constructor_project(project)?;
         let count = project
             .tracks()
             .iter()

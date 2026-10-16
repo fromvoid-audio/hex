@@ -25,6 +25,10 @@ pub(crate) struct NativeCallbackOwner {
     probe: Option<DropProbe>,
 }
 impl NativeCallbackOwner {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn borrowed_status(&self) -> &Status {
+        &self.status
+    }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
         self.probe = Some(DropProbe(Box::new(probe)));

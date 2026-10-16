@@ -27,13 +27,17 @@ ALLOWED = {
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
     'hex-ui': {'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
-    'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio'},
+    # Desktop injects the Session sink and binds neutral source facts to actual
+    # audio/stream constructor custody; Session has no device/stream edge.
+    'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Actual Session -> native adapter fixtures, never a production editor model.
+    'hex-desktop': {'hex-project'},
     'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
 }
@@ -68,8 +72,8 @@ for name, package in packages.items():
         target = dep['name']
         if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
             errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
-        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream'} or dep['kind'] != 'dev'):
-            errors.append(f'{name}: allocation-counter is allowed only for audio/stream dev probes')
+        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop'} or dep['kind'] != 'dev'):
+            errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop dev probes')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())

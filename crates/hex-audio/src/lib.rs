@@ -202,3 +202,7 @@ mod tests {
 }
 
 pub mod prepared;
+
+/// Instrumented constructor-only fixture; no physical device/CPAL evidence.
+#[cfg(feature = "allocation-probe")]
+pub mod worker_fixture;

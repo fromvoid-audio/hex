@@ -604,7 +604,6 @@ impl super::Custody {
             }
         }
         if bank.publication.stream_extents.is_some()
-            && owner.streamed_sources().next().is_some()
             && (owner
                 .source_context()
                 .is_none_or(|context| context.project_generation != context_generation)
@@ -628,8 +627,17 @@ impl super::Custody {
             };
             used[index] = true;
         }
-        if used[..domains.len()].iter().any(|used| !used) {
+        // A sticky Verified generation also admits its source-free successors
+        // through one genuine sealed N2 pair. This is physical endpoint custody,
+        // not a fabricated source lease; unrelated extra pairs still refuse.
+        let source_free_verified = bank.publication.stream_extents.is_some()
+            && owner.streamed_sources().next().is_none()
+            && domains.len() == 1;
+        if !source_free_verified && used[..domains.len()].iter().any(|used| !used) {
             return Err("unused constructor domain association");
+        }
+        if bank.publication.stream_extents.is_some() && domains.is_empty() {
+            return Err("verified constructor requires an actual source domain");
         }
         let metadata = domains
             .capacity()

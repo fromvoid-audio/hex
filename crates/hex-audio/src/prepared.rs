@@ -31,7 +31,9 @@ mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
+mod applied_source;
 mod runtime_view;
+pub use applied_source::AppliedAudioSource;
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
@@ -350,6 +352,8 @@ pub struct Status {
     publication_pending: admission::PublicationAdmission,
     preview_used: AtomicBool,
     constructor_mode: AtomicBool,
+    verified_streaming_mode: AtomicBool,
+    applied_source: applied_source::AppliedSourceStatus,
     split_endpoints: AtomicBool,
     client_exposed: AtomicBool,
     submitted_revision: AtomicU64,
@@ -475,6 +479,8 @@ impl Status {
             publication_pending: admission::PublicationAdmission::default(),
             preview_used: AtomicBool::new(false),
             constructor_mode: AtomicBool::new(false),
+            verified_streaming_mode: AtomicBool::new(false),
+            applied_source: applied_source::AppliedSourceStatus::default(),
             split_endpoints: AtomicBool::new(false),
             client_exposed: AtomicBool::new(false),
             submitted_revision: AtomicU64::new(0),
@@ -1977,6 +1983,7 @@ impl Callback {
                     self.publish_active_routes(true);
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
                 }
@@ -2283,7 +2290,7 @@ impl Callback {
         let mut observe =
             |identity, offset, frames: &[Frame]| stage.observe(identity, offset, frames);
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
-            && active.contains_streamed_sources()
+            && active.streaming_enabled()
         {
             let outcome = active.render_streamed(
                 &mut self.domain_pages,
@@ -2321,7 +2328,7 @@ impl Callback {
             return Ok(());
         }
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
-            && active.contains_streamed_sources()
+            && active.streaming_enabled()
         {
             let outcome = active.render_streamed(
                 &mut self.domain_pages,

@@ -103,6 +103,19 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
     .unwrap();
     let (_, prepared) = batch.run(&mut session, None, || context).unwrap();
     assert!(prepared.arrangement().contains_streamed_sources());
+    assert!(
+        session
+            .project()
+            .tracks()
+            .iter()
+            .all(|track| track.instrument().is_none())
+    );
+    let track_ids: Vec<_> = session
+        .project()
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
     assert_eq!(session.resident_frames(), 0);
     assert!(session.media.is_empty());
     assert!(session.waveforms().is_empty());
@@ -136,6 +149,22 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
         .unwrap()
         .unwrap();
     assert!(redone.arrangement().contains_streamed_sources());
+    assert_eq!(
+        session
+            .project()
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect::<Vec<_>>(),
+        track_ids
+    );
+    assert!(
+        session
+            .project()
+            .tracks()
+            .iter()
+            .all(|track| track.instrument().is_none())
+    );
     assert_eq!(session.semantic_source_epoch, epoch);
     assert!(session.compile().is_err());
     let clips: Vec<_> = session
@@ -187,6 +216,15 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(empty.project_replaced && empty.playback.is_none());
     let imported = run(&service, Request::Import(path.clone()));
     assert!(imported.playback.is_none());
+    assert!(imported.state.project.tracks()[0].instrument().is_none());
+    let resident = Service::new(48000, 16, 4096).unwrap();
+    let _ = next(&resident);
+    let resident_import = run(&resident, Request::Import(path.clone()));
+    assert!(
+        resident_import.state.project.tracks()[0]
+            .instrument()
+            .is_some()
+    );
     let snapshot = imported.state.canonical_audio_source.as_ref().unwrap();
     assert_eq!(snapshot.audio_mode(), DocumentAudioMode::VerifiedStreaming);
     assert_eq!(snapshot.context().editor_revision, imported.state.revision);
@@ -315,4 +353,51 @@ fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_
     assert_eq!(refused.project().assets().count(), 0);
     limits.reader.reader.max_source_frames = 8_000_001;
     assert!(limits.validate().is_err());
+}
+
+#[test]
+fn verified_import_into_existing_track_preserves_its_instrument_and_native_refusal() {
+    let files = Files::new();
+    let path = files.wav("existing.wav", 48000, 16, 1000);
+    let service = Service::new(48000, 16, 0).unwrap();
+    next(&service);
+    run(
+        &service,
+        Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(reservation(2)),
+        },
+    );
+    let added = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "existing".into(),
+        }),
+    );
+    let track = &added.state.project.tracks()[0];
+    let instrument = track.instrument().unwrap().id();
+    let imported = run(
+        &service,
+        Request::ImportToTrack {
+            path,
+            track: track.id(),
+            start: 0,
+        },
+    );
+    assert_eq!(
+        imported.state.project.tracks()[0]
+            .instrument()
+            .unwrap()
+            .id(),
+        instrument
+    );
+    assert!(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .candidate_reservation_quote()
+            .is_err()
+    );
 }

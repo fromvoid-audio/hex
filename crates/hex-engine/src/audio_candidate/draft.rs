@@ -90,6 +90,10 @@ impl AudioCandidateDraft {
         };
         self.identity = Some(identity);
         self.sample_rate = revision.arrangement().sample_rate();
+        let group_bound = crate::session_playback::candidate_group_reservation(
+            revision.arrangement().tracks().len(),
+            revision.arrangement().return_buses().len(),
+        )?;
         self.runtime = Some(Box::new(RuntimeOwner {
             playback: Playback::new_audio_candidate(revision)?,
             #[cfg(any(test, feature = "instrument-test-support"))]
@@ -107,6 +111,9 @@ impl AudioCandidateDraft {
             count = count.checked_add(1).ok_or(AudioStorageError::Overflow)?;
             Ok(())
         })?;
+        if count > group_bound {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         self.groups
             .try_reserve_exact(count)
             .map_err(|_| AudioStorageError::Allocation)?;

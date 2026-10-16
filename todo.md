@@ -1,3 +1,22 @@
+## connected verified document audio — pulse2544 / PR239, 17 october 2026
+
+- Desktop composes the actual Session worker/source snapshot with persistent
+  native pair/graph preparation and same-slot queue acceptance. UI receives only
+  the constructor-bound Client in both modes; Resident preroll ownership remains
+  a scoped compatibility path and never a Verified fallback.
+- Verified new-track import removes only the freshly generated default instrument
+  atomically. Empty/resident successors retain typed context and actual N2 domain
+  admission. Conservative per-request quote/scratch reservations preserve the
+  existing separate mutable-runtime, page-pool PCM, metadata and opaque scopes.
+- Actual install status reconciles coalesced Submitted events with last-audible
+  context and stable current refusal. Canonical generation events release the old
+  Client before replacement readiness; existing workers own cleanup without UI
+  polling or joins. Headless connected controls use actual mixed-rate verified
+  worker pages and zero-total/net callback probes.
+- Targeted and final exact local-CI evidence is recorded externally on the PR and
+  Pulse. No physical device, native UI/listening, installation, 100-track or
+  original24/177 completion is claimed; PR240/241 and export followup2650 remain.
+
 ## verified document source/service checkpoint — pulse2544 / PR239, 16 october 2026
 
 Explicit verified New/Open branches before resident decode; imports/batches retain

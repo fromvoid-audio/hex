@@ -392,6 +392,35 @@ where
         })
 }
 
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn headless_worker_output(
+    rate: u32,
+) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
+    let lease = lifecycle::Lease::acquire()?;
+    let (control, callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    let root = control.native_candidate_root();
+    let (data, errors, terminals, client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let native = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let mut stream = lifecycle::StreamOwner::prepared_custody(lease, None, native);
+    stream.expose_headless_backend();
+    publication
+        .control()
+        .ok_or("worker publication endpoint unavailable")?
+        .enable_native_custody()?;
+    Ok((
+        WorkerPreparedOutput {
+            _stream: stream,
+            publication,
+            client: Some(client),
+            sample_rate: rate,
+            label: "headless constructor fixture".into(),
+            spectrum_error: None,
+        },
+        crate::worker_fixture::HeadlessBackend::new(data, errors),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate};

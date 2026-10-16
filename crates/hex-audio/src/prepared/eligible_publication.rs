@@ -2,6 +2,14 @@
 //! seam does not itself grant native installation or page readiness.
 use super::*;
 impl PublicationControl {
+    /// Scalar submission observation; callback installation/ACK is separate.
+    pub fn submitted_revision(&self) -> u64 {
+        self.revision
+    }
+    /// A negative-only fault/closing observation, never admission authority.
+    pub fn audio_candidate_claims_available(&self) -> bool {
+        self.candidate_root.eligible_claims_open()
+    }
     /// Reserve exact-demand rows per retained runtime before accepting any
     /// source domain or graph. Existing resident callers need not opt in.
     pub fn configure_audio_candidate_streaming(
@@ -16,7 +24,10 @@ impl PublicationControl {
         {
             return Err("stream demand requires a vacant native channel");
         }
-        self.candidate_root.configure_streaming(extents_per_domain)
+        self.candidate_root
+            .configure_streaming(extents_per_domain)?;
+        self.status.verified_streaming_mode.store(true, Release);
+        Ok(())
     }
 
     /// Move the one exact page endpoint into this native channel. Queue pressure
@@ -450,6 +461,14 @@ impl Callback {
                     self.publish_transport();
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status
+                        .applied_source
+                        .publish(match self.active.as_ref() {
+                            Some(ActivePublication::Eligible(active)) => {
+                                active.applied_audio_source()
+                            }
+                            _ => None,
+                        });
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
                 }

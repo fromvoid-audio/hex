@@ -57,6 +57,10 @@ impl CompletedStreamHandle {
 }
 struct Retirement {
     stream: Option<cpal::Stream>,
+    #[cfg(feature = "allocation-probe")]
+    headless_backend: Option<()>,
+    #[cfg(feature = "allocation-probe")]
+    headless: bool,
     spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
     native: Option<crate::native_callback_owner::NativeRetirement>,
@@ -83,6 +87,10 @@ impl StreamOwner {
         Self {
             retirement: Some(Retirement {
                 stream: Some(stream),
+                #[cfg(feature = "allocation-probe")]
+                headless_backend: None,
+                #[cfg(feature = "allocation-probe")]
+                headless: false,
                 spectrum_reaper,
                 _lease: lease,
                 native: None,
@@ -116,6 +124,10 @@ impl StreamOwner {
         Self {
             retirement: Some(Retirement {
                 stream: None,
+                #[cfg(feature = "allocation-probe")]
+                headless_backend: None,
+                #[cfg(feature = "allocation-probe")]
+                headless: false,
                 spectrum_reaper,
                 _lease: lease,
                 native,
@@ -125,6 +137,14 @@ impl StreamOwner {
                 failed: false,
                 first_panic: None,
             }),
+        }
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn expose_headless_backend(&mut self) {
+        if let Some(retirement) = self.retirement.as_mut() {
+            retirement.headless = true;
+            retirement.headless_backend = Some(());
+            retirement.backend_exposed = true;
         }
     }
     pub(crate) fn expose_backend(&mut self) {
@@ -633,6 +653,17 @@ fn retire_prepared_output(mut retirement: Retirement) {
     }
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
+    #[cfg(feature = "allocation-probe")]
+    if retirement.headless {
+        return dispose_stream_and_native_on_control(
+            &mut retirement.headless_backend,
+            true,
+            &mut retirement.stream_drop_pending,
+            &mut retirement.stream_disposed,
+            retirement.native.as_mut(),
+            |_| Ok(()),
+        );
+    }
     if !dispose_stream_and_native_on_control(
         &mut retirement.stream,
         retirement.backend_exposed,
