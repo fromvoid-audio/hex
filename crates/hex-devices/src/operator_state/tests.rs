@@ -8,6 +8,23 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
         .expect("valid patch")
 }
 
+/// Exact pre-algorithm, pre-global defaults for historical kernel/lifecycle
+/// fixtures. New product-default tests must use `default_state()` directly.
+pub(super) fn legacy_settings() -> OperatorSettings {
+    let mut settings = OperatorSettings::defaults();
+    settings.fields[12..32].fill(0.0);
+    settings.fields[28] = 1.0;
+    for operator in 0..4 {
+        settings.fields[operator * 3 + 1] = 1.0;
+    }
+    settings.global = global::Settings::legacy();
+    settings
+}
+
+pub(super) fn legacy_state() -> NativeDeviceState {
+    legacy_settings().to_state().expect("legacy fixture")
+}
+
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
@@ -29,7 +46,12 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
         match descriptor.kind {
             ParameterKind::Float { min, max, .. } => {
                 let value = min + (max - min) * 0.375;
-                let changed = patch(&original, descriptor.id, value);
+                let baseline = if (14..=32).contains(&descriptor.id.value()) {
+                    legacy_state()
+                } else {
+                    original.clone()
+                };
+                let changed = patch(&baseline, descriptor.id, value);
                 assert_eq!(
                     OPERATOR_METADATA
                         .read_parameter(&changed, descriptor.id)
@@ -75,6 +97,9 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
                     assert_eq!(labels, &harmonics::WAVE_LABELS);
                 }
                 for choice in 0..labels.len() as u32 {
+                    if choice == 0 && matches!(descriptor.id.value(), 61 | 600) {
+                        continue; // Custom is derived and selecting it preserves the current topology.
+                    }
                     let changed = OPERATOR_METADATA
                         .patch_parameter(&original, descriptor.id, ParameterValue::Choice(choice))
                         .expect("valid waveform choice");
@@ -139,7 +164,7 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
 
 #[test]
 fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
-    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    let mut state = legacy_state();
     state = patch(&state, parameter::oscillator_ratio(2), 2.0);
     state = patch(&state, parameter::oscillator_level(1), 0.8);
     state = patch(&state, parameter::oscillator_level(2), 0.7);
@@ -254,7 +279,7 @@ fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
     }
 
     // The neutral control leaves the legacy standalone kernel bit-identical.
-    let neutral = OperatorSettings::defaults();
+    let neutral = legacy_settings();
     let modern = neutral.prepare_note(48_000, 60, 83).expect("neutral note");
     let (oscillators, routing, envelopes) = neutral.kernel_parts().expect("legacy fields");
     let legacy = PreparedOperatorFm4::new_with_tuning(
@@ -284,7 +309,7 @@ fn routing_presets_are_derived_and_named_choices_replace_only_topology_fields() 
         OPERATOR_METADATA
             .read_parameter(&defaults, parameter::routing_preset())
             .expect("default preset"),
-        ParameterValue::Choice(OperatorRoutingPreset::Custom.choice())
+        ParameterValue::Choice(OperatorRoutingPreset::Serial.choice())
     );
 
     let mut with_unrelated_edits = OPERATOR_METADATA
@@ -331,7 +356,9 @@ fn routing_presets_are_derived_and_named_choices_replace_only_topology_fields() 
         assert_eq!(&settings.fields[..12], &before.fields[..12]);
         assert_eq!(&settings.fields[32..], &before.fields[32..]);
         assert_eq!(settings.waveforms, before.waveforms);
-        assert_ne!(&settings.fields[12..32], &default_settings.fields[12..32]);
+        if preset != OperatorRoutingPreset::Serial {
+            assert_ne!(&settings.fields[12..32], &default_settings.fields[12..32]);
+        }
         assert_eq!(
             OPERATOR_METADATA
                 .patch_parameter(
@@ -459,7 +486,7 @@ fn manual_matrix_or_carrier_edits_become_custom_and_can_select_another_preset() 
 
 #[test]
 fn exact_manual_routing_edits_read_back_as_a_named_preset() {
-    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    let mut state = legacy_state();
     for (source, target) in [(2, 1), (3, 2), (4, 3)] {
         state = patch(&state, parameter::modulation(source, target), 0.25);
     }
@@ -470,7 +497,7 @@ fn exact_manual_routing_edits_read_back_as_a_named_preset() {
         ParameterValue::Choice(OperatorRoutingPreset::Serial.choice())
     );
 
-    let mut parallel = OPERATOR_METADATA.default_state().expect("defaults");
+    let mut parallel = legacy_state();
     for operator in 1..=4 {
         parallel = patch(&parallel, parameter::carrier(operator), 0.25);
     }
@@ -516,7 +543,7 @@ fn version_one_migration_preserves_all_original_bytes_and_defaults_to_sine() {
 #[test]
 fn mixed_waveforms_render_through_the_registered_shared_context() {
     let registry = crate::native_instrument_registry().expect("registry");
-    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    let mut state = legacy_state();
     let waveforms = [
         OperatorWaveform::Saw,
         OperatorWaveform::Square,
@@ -580,7 +607,11 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
     let note = context.prepare_note(69, 127).expect("prepared mixed note");
     assert_eq!(note.payload()[6], 0x3f80_0000_3f80_0000);
     assert_eq!(note.payload()[7], 0x3f80_0000_3f80_0000);
-    assert_eq!(note.payload()[5] >> 32, 0);
+    assert_eq!(
+        note.payload()[5] >> 32,
+        0x4f50_7f45,
+        "origin pitch69/velocity127 metadata"
+    );
     println!(
         "mixed registered context={}B",
         context.declared_context_bytes()
@@ -622,7 +653,7 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
         assert!(PreparedOperatorNote::from_shared_payload(&malformed).is_none());
     }
 
-    let mut zero_scale_state = OPERATOR_METADATA.default_state().expect("defaults");
+    let mut zero_scale_state = legacy_state();
     for operator in 1..=4 {
         zero_scale_state = patch(
             &zero_scale_state,
@@ -639,19 +670,18 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
     let prepared_zero = zero_scale_context
         .prepare_note(69, 127)
         .expect("prepared note");
-    let mut zero_velocity_payload = *prepared_zero.payload();
-    let zero_velocity_release = prepared_zero.release_frames();
-    zero_velocity_payload[4] = 0.0_f64.to_bits();
-    zero_velocity_payload[5] |= 1 << 31;
-    zero_velocity_payload[6] = 0;
-    zero_velocity_payload[7] = 0;
-    let zero_velocity =
-        hex_lattice::PreparedSharedAnalyticNote::new(zero_velocity_payload, zero_velocity_release);
-    assert_ne!(zero_velocity.payload()[5] & (1 << 31), 0);
-    let decoded = PreparedOperatorNote::from_shared_payload(zero_velocity.payload())
+    let mut zero_scale_payload = *prepared_zero.payload();
+    let zero_scale_release = prepared_zero.release_frames();
+    zero_scale_payload[5] |= 1 << 31;
+    zero_scale_payload[6] = 0;
+    zero_scale_payload[7] = 0;
+    let zero_scale =
+        hex_lattice::PreparedSharedAnalyticNote::new(zero_scale_payload, zero_scale_release);
+    assert_ne!(zero_scale.payload()[5] & (1 << 31), 0);
+    let decoded = PreparedOperatorNote::from_shared_payload(zero_scale.payload())
         .expect("active all-zero scales are valid");
-    assert_eq!(decoded.into_shared_payload(), zero_velocity_payload);
-    assert_eq!(zero_scale_context.sample(&zero_velocity, 0, 4096), [0.0; 2]);
+    assert_eq!(decoded.into_shared_payload(), zero_scale_payload);
+    assert_eq!(zero_scale_context.sample(&zero_scale, 0, 4096), [0.0; 2]);
 }
 
 #[test]
@@ -661,7 +691,7 @@ fn one_hundred_distinct_operator_contexts_fit_declared_lattice_budgets() {
     for index in 0..100_u32 {
         let state = OPERATOR_METADATA
             .patch_parameter(
-                &OPERATOR_METADATA.default_state().expect("defaults"),
+                &legacy_state(),
                 parameter::oscillator_ratio(1),
                 ParameterValue::Float(0.5 + index as f32 / 100.0),
             )
@@ -692,7 +722,7 @@ fn one_hundred_distinct_operator_contexts_fit_declared_lattice_budgets() {
 
 #[test]
 fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
-    let original = OPERATOR_METADATA.default_state().expect("defaults");
+    let original = legacy_state();
     for (type_id, version, payload) in [
         (
             crate::fm4::device::FM4_TYPE_ID,
@@ -803,7 +833,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
 
 #[test]
 fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
-    let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+    let mut state = legacy_state();
     state = patch(&state, parameter::feedback(1), 0.6);
     assert!(
         OPERATOR_METADATA
@@ -962,7 +992,7 @@ fn routing_field_direction_and_carrier_sign_match_independent_modulation() {
     let table = SineTable::new();
     // Reverse operator order catches an accidental target-major routing codec.
     for (source, target) in [(1, 4), (4, 1), (2, 3), (3, 2)] {
-        let mut state = OPERATOR_METADATA.default_state().expect("defaults");
+        let mut state = legacy_state();
         for operator in 1..=4 {
             state = patch(
                 &state,
@@ -1031,7 +1061,7 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
     let definition = registry
         .definition(OPERATOR_TYPE_ID)
         .expect("Operator is in the native instrument registry");
-    let state = definition.default_state().expect("Operator defaults");
+    let state = legacy_state();
     assert_eq!(definition.descriptors().len(), PARAMETER_COUNT);
     let prepared = registry
         .prepare_instrument(&state, 48_000)
@@ -1051,7 +1081,11 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
         .prepare_configuration(48_000)
         .expect("standalone oracle configuration");
     let note = context.prepare_note(69, 100).expect("compact note");
-    assert_eq!(note.payload()[5], 0);
+    assert_eq!(
+        note.payload()[5],
+        0x4f50_6445_0000_0000,
+        "sine caps with origin pitch69/velocity100 metadata"
+    );
     assert_eq!(note.payload()[6], 0x3f80_0000_3f80_0000);
     assert_eq!(note.payload()[7], 0x3f80_0000_3f80_0000);
     let table = crate::shared_sine_table();

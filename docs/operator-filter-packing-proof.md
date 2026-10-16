@@ -11,8 +11,18 @@ The native control producer prepares velocity as f64(u8)/127. A 56-byte private
 note replaces only that derived f64 cache with its exact u8 source. All four
 u64 steps, u32 caps/active flags and four f32 scale bit patterns are retained.
 Packing requires exact velocity-bit equality and refuses arbitrary real,
-negative-zero or nonfinite velocity and overflowing flag words. It is not a
-replacement for the existing broader analytic-payload decoder.
+negative-zero or nonfinite velocity and malformed origin metadata. It is not a
+replacement for the registered analytic-payload decoder.
+
+
+17 October compatibility update for Vector globals (#2653): current prepared
+notes also carry a tagged original MIDI pitch/velocity in the upper half of the
+former caps word. This private witness retains the pitch and tag in its existing
+padding, reconstructs all bits, and rejects an invalid tag, out-of-range pitch or
+mismatched velocity. Its 56-byte note layout is unchanged. Untagged historical
+private witnesses remain lossless. The proof explicitly selects legacy processing
+and the historical unmodulated-A routing; it does not claim the new operator-mode runtime fits this
+rejected packing proposal.
 
 The tests configure all oscillator ratios to 1, then use actual registered
 preparation at 8/48/192 kHz, pitches 0/60/100/127 and every velocity 1–127.

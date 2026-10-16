@@ -93,8 +93,10 @@ impl EditorView {
         }));
     }
 
-    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let mut bar = div()
+            .id("editor-status-bar")
+            .debug_selector(|| "editor-status-bar".into())
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
@@ -146,6 +148,7 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
             bar = bar.child(
                 div()
@@ -403,6 +406,8 @@ impl Render for EditorView {
             .track_focus(&self.focus)
             .key_context(if self.theme_settings.open {
                 "hex_theme_settings"
+            } else if self.controller_input_is_open() {
+                "hex_controller_input"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
             } else if self.gain_numeric_editing(cx) {
@@ -1032,6 +1037,7 @@ impl Render for EditorView {
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())
             .children(self.context_menu_overlay(window, cx))
+            .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
     }
 }

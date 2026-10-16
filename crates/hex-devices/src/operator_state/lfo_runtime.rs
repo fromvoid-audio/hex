@@ -373,6 +373,7 @@ impl<const N: usize> Runtime<N> {
     }
     fn apply(&mut self, event: NativeInstrumentEvent) -> Result<(), Error> {
         match event {
+            NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -492,7 +493,8 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
         for event in events {
             let next = match *event {
                 NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. } => frame_offset,
+                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
             };
             if next < offset || next >= frames {
                 return Err(Error::InvalidEventBatch);
@@ -539,7 +541,8 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
             while let Some(next) = events.get(event) {
                 let at = match *next {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. } => frame_offset,
+                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                    | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
                 };
                 if at != offset {
                     break;
@@ -813,6 +816,16 @@ impl<const N: usize> super::harmonic_runtime::VoiceHistory for Runtime<N> {
             lfo_fraction: old.lfo.fraction,
             lfo_cycle: old.lfo.cycle,
             machines: [None; 4],
+            sequence: 0,
+            decimator: Default::default(),
+            effective: Default::default(),
+            modulated_filter: None,
+            drain: 0,
+            pitch_steps: Default::default(),
+            pan_gains: Default::default(),
+            lfo_rate_multiplier: 1.0,
+            envelope_age: old.age as f64,
+            envelope_gate: (old.gate != u64::MAX).then_some(old.gate),
         })
     }
 }
@@ -871,6 +884,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        rate: runtime.factory.rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,
         base,
@@ -989,6 +1003,12 @@ mod tests {
             ] {
                 if (start..end).contains(&at) {
                     events.push(match event {
+                        NativeInstrumentEvent::Expression { expression, .. } => {
+                            NativeInstrumentEvent::Expression {
+                                frame_offset: at - start,
+                                expression,
+                            }
+                        }
                         NativeInstrumentEvent::NoteOn {
                             occurrence_id,
                             pitch,

@@ -333,6 +333,9 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         }
         for event in events {
             let (offset, id, on) = match *event {
+                hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                    return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
                 hex_lattice::NativeInstrumentEvent::NoteOn {
                     frame_offset,
                     occurrence_id,
@@ -367,13 +370,13 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
-            while events.get(event_index).is_some_and(|event| match *event {
-                hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
-                    frame_offset == frame_index
-                }
-            }) {
+            while events
+                .get(event_index)
+                .is_some_and(|event| event.frame_offset() == frame_index)
+            {
                 match events[event_index] {
+                    // Unsupported by this fixture's read-only preflight.
+                    hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
                     hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
                             *voice = MutableFixtureVoice {

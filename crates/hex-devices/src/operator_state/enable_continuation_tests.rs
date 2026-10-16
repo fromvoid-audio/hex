@@ -12,7 +12,7 @@ fn context(state: &NativeDeviceState) -> Box<dyn PreparedSharedAnalyticContext> 
 }
 
 fn fixture() -> NativeDeviceState {
-    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    let mut state = tests::legacy_state();
     // A carrier, with B modulating A. No attack/decay obscures the level law.
     for (parameter, value) in [
         (29, 1.0),

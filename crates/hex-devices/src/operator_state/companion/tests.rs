@@ -2,9 +2,9 @@ use super::*;
 use crate::fm4::PreparedOperatorNote;
 #[test]
 fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
-    let current = OPERATOR_METADATA.default_state().unwrap();
-    assert_eq!(current.payload().len(), 1616);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 395);
+    let current = crate::operator_state::tests::legacy_state();
+    assert_eq!(current.payload().len(), 1728);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 424);
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -17,6 +17,7 @@ fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
         (11, 416),
         (12, 1488),
         (13, 1488),
+        (14, 1616),
     ] {
         let old = NativeDeviceState::new(
             OPERATOR_TYPE_ID,
@@ -63,7 +64,7 @@ fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
         (6, 0),
         (7, 11),
     ] {
-        let mut bytes = current.payload().to_vec();
+        let mut bytes = current.payload()[..1616].to_vec();
         let offset = 1488 + field * 4;
         bytes[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
         assert!(

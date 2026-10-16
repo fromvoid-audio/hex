@@ -594,6 +594,7 @@ impl EditorView {
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_computer_keyboard();
+        visible_change |= self.tick_controller_input(cx);
         visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
@@ -1369,6 +1370,19 @@ impl EditorView {
         }
         if event.request_complete {
             self.worker_requests_pending = self.worker_requests_pending.saturating_sub(1);
+        }
+        if let Some(input) = &event.live_expression_complete {
+            if self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == event.state.revision)
+                && self.controller_input_matches(input)
+            {
+                self.connect_prepared_controller();
+            } else {
+                input.cancel();
+                return None;
+            }
         }
         if event.open_complete {
             self.opening_project = false;

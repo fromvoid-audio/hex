@@ -196,6 +196,21 @@ impl OperatorWaveformBank {
         };
         first + (second - first) * fraction
     }
+    pub(crate) fn sample_frame_policy(
+        &self,
+        waveform: OperatorWaveform,
+        cap: u8,
+        phase: u64,
+        age: u64,
+        stream: u64,
+        interpolate: bool,
+    ) -> f32 {
+        if interpolate || waveform == OperatorWaveform::NoiseWhite {
+            return self.sample_frame(waveform, cap, phase, age, stream);
+        }
+        let quantized = phase & !((1_u64 << (64 - TABLE_BITS)) - 1);
+        self.sample_phase(waveform, cap, quantized)
+    }
     pub(crate) fn authoring_amplitude(&self, waveform: OperatorWaveform, harmonic: usize) -> f32 {
         if waveform == OperatorWaveform::NoiseWhite {
             return 1.0;

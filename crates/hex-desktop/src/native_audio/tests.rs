@@ -603,6 +603,8 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
     }
 }
 
+#[path = "controller_input_tests.rs"]
+mod controller_input_tests;
 #[test]
 fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
     let _native = NATIVE_FIXTURE.lock().unwrap();

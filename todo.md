@@ -1,3 +1,25 @@
+## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
+
+The eleven canonical algorithm diagrams replace the raw matrix UI; new serial
+patches expose level-driven FM while saved custom routing and legacy DSP remain
+preserved. Version 15 adds explicit legacy/operator behavior, source assignments,
+the requested 1–32 voice choices, stealing/retrigger/mono, per-note pan and real
+interpolation/2× antialias processing. See [contracts and limits](docs/vector-global.md)
+and [reference provenance](research/observations/vector-global-2653.md).
+
+All 288 device tests and 38 focused operator UI tests pass at the source milestone.
+Connected pressure/bend/wheel input uses a separate identity-bound lease and the
+native CoreMIDI boundary. Hardware notes, sustain, MPE and recorded controller
+lanes are excluded. A prepared callback/oracle probe covers controller changes,
+held algorithm switching and cancellation with zero total/signed-net allocations.
+The release headless profile records CPU/storage cost in
+[performance.md](docs/performance.md); it does not establish physical deadlines.
+
+[PR269](https://github.com/PORTALSURFER/hex/pull/269) retains final exact-source full
+local CI and merge evidence. The repository test-build receipt records optimized
+stable-path delivery. Native controller/UI/listening acceptance remains separate;
+see the supplied finite test checklist. Implementation, merge and disk installation
+must not be reported as measured Live sonic parity or native acceptance.
 ## native superseded preparation cleanup — pulse2656 / PR272, 17 october 2026
 
 - Adapter retirement intent now survives actual Root Cleaning/Complete and

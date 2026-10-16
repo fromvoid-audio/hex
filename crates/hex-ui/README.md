@@ -7,7 +7,11 @@ Own GPUI views, display state, interactions, lowercase text, and bundled Ioskele
 ## Dependencies
 
 hex-project read-only metadata and commands; hex-session worker endpoints;
-hex-engine contracts; hex-audio service handle; GPUI. The backend is created and injected by hex-desktop.
+hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI. The backend is created and injected by hex-desktop.
+
+The optional controller input row selects a CoreMIDI endpoint/channel for the
+selected instrument and dispatches a generation-bound engine lease through the
+session worker. See [controller input](../../docs/controller-input.md).
 
 ## Does not own
 

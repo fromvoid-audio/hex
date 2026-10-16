@@ -1,4 +1,6 @@
 //! Feedback-only private transport/layout proof. Not a native history adapter.
+mod support;
+
 #[path = "../src/operator_filter_lowpass.rs"]
 pub mod filter;
 #[path = "../src/operator_filter_packing.rs"]
@@ -10,7 +12,7 @@ use packing::{Cohort, Error, History, Note, Voice};
 
 #[test]
 fn canonical_notes_reconstruct_every_word_and_actual_native_pcm_exactly() {
-    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    let mut state = support::legacy_operator_state();
     for op in 1..=4 {
         state = OPERATOR_METADATA
             .patch_parameter(
@@ -65,7 +67,7 @@ fn canonical_notes_reconstruct_every_word_and_actual_native_pcm_exactly() {
             }
         }
     }
-    // Arbitrary decoder-accepted real velocities are not silently quantized.
+    // Noncanonical real velocities are not silently quantized.
     let mut words = [0; 8];
     for velocity in [0.123_f64, -0.0, f64::NAN, f64::INFINITY] {
         words[4] = velocity.to_bits();
@@ -73,6 +75,13 @@ fn canonical_notes_reconstruct_every_word_and_actual_native_pcm_exactly() {
     }
     words[4] = (100.0_f64 / 127.0).to_bits();
     words[5] = 1_u64 << 32;
+    assert_eq!(Note::pack(words), Err(Error::NoncanonicalNote));
+    // Origin metadata is retained exactly, never discarded into spare padding.
+    words[5] = (0x4f50_u64 << 48) | (60_u64 << 32) | (100_u64 << 40);
+    assert_eq!(Note::pack(words).unwrap().unpack(), words);
+    words[5] ^= 1_u64 << 40;
+    assert_eq!(Note::pack(words), Err(Error::NoncanonicalNote));
+    words[5] = (0x4f50_u64 << 48) | (128_u64 << 32) | (100_u64 << 40);
     assert_eq!(Note::pack(words), Err(Error::NoncanonicalNote));
 }
 
@@ -154,7 +163,7 @@ fn replacing_all_scratch_voices_keeps_original_committed_owner_and_clocks() {
     // Rollback/copy is a whole value, not a shared mutable note pool.
     scratch = primary;
     assert_eq!(scratch.unpack().unwrap(), committed);
-    let state = OPERATOR_METADATA.default_state().unwrap();
+    let state = support::legacy_operator_state();
     let settings = OperatorSettings::from_state(&state).unwrap();
     let configuration = settings.prepare_configuration(48_000).unwrap();
     let voice = configuration
