@@ -1,5 +1,11 @@
 # Architecture
 
+Foreign CLAP admission is specified in [the admission and containment
+contract](clap-admission.md) (Pulse #2523). It proposes a disposable macOS guest
+boundary for a finite offline profile; no foreign execution tuple is qualified.
+This design enables no plugin loading, entitlement, dependency or Rust FFI change.
+Original fixture implementation/history remains in frozen PR199/#20.
+
 ## Implemented
 
 The native device DSP system is named **lattice**. Its staged implementation,
@@ -107,7 +113,8 @@ of these substitutes for the others.
 | hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, hex-lattice-contract, std |
 | hex-storage | Versioned project metadata and recoverable file creation | hex-project, hex-lattice-contract, serde, serde_json, std |
 | hex-export | Fixed-block linear PCM16 WAV rendering and create-new file publication | hex-engine, std |
-| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering | hex-project, hex-devices, hex-lattice, hex-lattice-contract, std |
+| hex-warp | Pure bounded control-side stereo transformation; no project/I/O/UI/thread ownership | std |
+| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering and transform preparation/cache | hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, std |
 | hex-audio | Device stream lifetime, command delivery, callback boundary | hex-engine, CPAL, rtrb |
 | hex-library | Bounded nonrecursive folder/WAV/project listings with original paths | std |
 | hex-widgets | Reusable native control rendering, focus and local edit gestures with caller-supplied style/text | GPUI, std |
@@ -593,3 +600,6 @@ missing-attribute errno name changes to libc::ENODATA; macOS/BSD retain ENOATTR.
 There is no new workspace FFI or unsafe exception. See
 [xattr compatibility](xattr-compatibility.md) for provenance, locked compile
 regression, macOS query tests and explicit cross-compilation limits.
+
+Musical audio roots, preparation/retention bounds and the engine→warp boundary
+are specified in [musical editing](musical-editing.md#preparation-and-retained-memory).

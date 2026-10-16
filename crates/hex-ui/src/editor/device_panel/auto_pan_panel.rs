@@ -49,15 +49,15 @@ pub(super) fn render_body(
             .unwrap_or_else(|| div().child(crate::theme::text("unsupported")));
         controls = controls.child(control);
     }
-    div()
+    hex_widgets::device_body(super::device_layout_style())
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
         .w_full()
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
+        .h(px(super::DEVICE_FRAME_BODY_HEIGHT))
         .flex()
         .justify_center()
-        .p(px(3.0))
+        .py(px(3.0))
         .child(controls)
 }

@@ -244,6 +244,7 @@ fn linear_utility_and_saturator_observe_the_declared_device_order() {
         std::sync::Arc::from(saturator.processor.expect("nonlinear runtime"));
 
     let instance = |device_id, device_type, matrix, definition| PreparedProcessorInstance {
+        meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
         device_id,
         device_type,

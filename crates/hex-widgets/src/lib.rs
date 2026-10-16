@@ -1,10 +1,12 @@
 //! Small reusable GPUI controls for compact native audio-device interfaces.
 mod color_picker;
 mod curve;
+mod device_meters;
 mod dial;
 mod discrete;
 mod focus_marker;
 mod frame;
+pub use device_meters::DeviceMeterReadout;
 mod numeric;
 mod numeric_control;
 mod numeric_text;
@@ -21,8 +23,11 @@ pub use discrete::{
     ToggleConfig, panel_tab,
 };
 pub use frame::{
-    COMPACT_DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_HEIGHT,
-    compact_device_frame, device_frame,
+    DEVICE_BODY_INSET, DEVICE_FRAME_BORDER_WIDTH, DEVICE_FRAME_HEADER_GAP,
+    DEVICE_FRAME_HEADER_HEIGHT, DEVICE_FRAME_HEADER_PADDING, DEVICE_LAYOUT_GUTTER,
+    DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS, DeviceLayout,
+    DeviceSectionSurface, device_body, device_display, device_frame, device_grouped_row,
+    device_header, device_layout, device_rail, device_section, device_split,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
@@ -33,7 +38,9 @@ pub use numeric_control::{
 pub use response_graph::{
     ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
 };
-pub use style::{CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS};
+pub use style::{CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle};
 
+#[cfg(test)]
+mod frame_tests;
 #[cfg(test)]
 mod tests;

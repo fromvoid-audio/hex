@@ -84,11 +84,23 @@ pub fn render_new(
     start: u64,
     frames: u64,
 ) -> Result<ExportReport, ExportError> {
+    let end = start
+        .checked_add(frames)
+        .ok_or(ExportError::Invalid("frame range overflows"))?;
+    let latency = if frames == 0 {
+        0
+    } else {
+        project.main_latency_frames()
+    };
+    end.checked_add(u64::from(latency))
+        .ok_or(ExportError::Invalid("compensated render range overflows"))?;
     publish_new(path, project.sample_rate(), start, frames, || {
         let mut renderer = Renderer::new(project);
         renderer.seek(start);
         renderer.play();
-        Ok(LinearBlockRenderer(renderer))
+        let mut renderer = LinearBlockRenderer(renderer);
+        discard_latency(&mut renderer, latency)?;
+        Ok(renderer)
     })
 }
 
@@ -107,6 +119,16 @@ pub fn render_prepared_new(
         ));
     }
     let sample_rate = revision.arrangement().sample_rate();
+    let latency = if frames == 0 {
+        0
+    } else {
+        revision.arrangement().main_latency_frames()
+    };
+    let end = start
+        .checked_add(frames)
+        .ok_or(ExportError::Invalid("frame range overflows"))?;
+    end.checked_add(u64::from(latency))
+        .ok_or(ExportError::Invalid("compensated render range overflows"))?;
     publish_new(path, sample_rate, start, frames, || {
         let mut playback = SessionPlayback::new_linear_arrangement_export(revision)
             .map_err(ExportError::SessionRender)?;
@@ -116,8 +138,21 @@ pub fn render_prepared_new(
         playback
             .apply(SessionPlaybackCommand::Play)
             .map_err(ExportError::SessionRender)?;
-        Ok(PreparedBlockRenderer(playback))
+        let mut renderer = PreparedBlockRenderer(playback);
+        discard_latency(&mut renderer, latency)?;
+        Ok(renderer)
     })
+}
+
+fn discard_latency(renderer: &mut impl BlockRenderer, latency: u32) -> Result<(), ExportError> {
+    let mut remaining = u64::from(latency);
+    let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
+    while remaining > 0 {
+        let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
+        renderer.render_block(&mut block[..count])?;
+        remaining -= count as u64;
+    }
+    Ok(())
 }
 
 trait BlockRenderer {

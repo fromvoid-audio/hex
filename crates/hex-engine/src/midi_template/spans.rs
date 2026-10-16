@@ -126,6 +126,12 @@ pub struct MidiRenderSpan {
     voice: Option<crate::midi_note_bank::PreparedMidiNote>,
 }
 
+impl MidiRenderSpan {
+    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::PreparedMidiNote> {
+        self.voice
+    }
+}
+
 /// Identity of a carried occurrence that must not be emitted again by the
 /// newly prepared source while its copied voice is still sounding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,6 +228,40 @@ impl MidiReleaseVoice {
 
     pub(crate) fn set_context_ref(&mut self, context: crate::midi_note_bank::SharedContextRef) {
         self.voice = self.voice.with_context_ref(context);
+    }
+
+    pub(crate) fn sampler(&self) -> PreparedMidiNote {
+        self.voice
+    }
+
+    pub(crate) fn set_sampler(&mut self, sampler: PreparedMidiNote) {
+        self.voice = sampler;
+    }
+
+    pub(crate) fn detach(&mut self, transitions: &[Option<hex_lattice::AnalyticContinuation>]) {
+        self.voice = self.voice.detach(transitions);
+    }
+
+    pub(crate) fn sample_at_with_continuation(
+        &self,
+        frame: u64,
+        contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        transitions: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<Option<[f32; 2]>, crate::Invalid> {
+        if frame < self.start_frame || frame >= self.end_frame {
+            return Ok(None);
+        }
+        self.voice
+            .sample_at(
+                contexts,
+                retained,
+                transitions,
+                frame,
+                frame - self.start_frame,
+                self.gate_end_frame - self.start_frame,
+            )
+            .map(Some)
     }
 
     pub(crate) fn end_frame(&self) -> u64 {
@@ -352,6 +392,7 @@ impl MidiReleaseVoice {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn sample_at(
         &self,
         frame: u64,
@@ -377,6 +418,7 @@ pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTemp
     timing: &'a T,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
+    continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
 }
 
 impl<T: MidiTiming + ?Sized> Copy for MidiInstrumentRenderContext<'_, T> {}
@@ -394,6 +436,7 @@ impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
             timing,
             onset_floor_exclusive: None,
             suppressions: &[],
+            continuations: &[],
         }
     }
 
@@ -403,6 +446,16 @@ impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
     pub fn after_onset(self, beat: BeatTime) -> Self {
         Self {
             onset_floor_exclusive: Some(beat),
+            ..self
+        }
+    }
+
+    pub(crate) fn with_continuations(
+        self,
+        continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
+    ) -> Self {
+        Self {
+            continuations,
             ..self
         }
     }
@@ -899,14 +952,20 @@ impl PreparedMidiInstrumentTemplate {
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
                     let Some(voice) = span.voice else { continue };
-                    let Some(contribution) = voice.sample(
-                        &self.shared_contexts,
-                        &[],
-                        frame - span.start_frame,
-                        span.gate_end_frame - span.start_frame,
-                    ) else {
-                        continue;
-                    };
+                    let contribution = voice
+                        .sample_at(
+                            &self.shared_contexts,
+                            &[],
+                            context.continuations,
+                            frame,
+                            frame - span.start_frame,
+                            span.gate_end_frame - span.start_frame,
+                        )
+                        .map_err(|_| {
+                            MidiTemplateError::InvalidSource(
+                                "analytic continuation sample was refused",
+                            )
+                        })?;
                     mix.add_frame(output_frame, contribution);
                 }
             }

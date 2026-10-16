@@ -148,3 +148,19 @@ backend telemetry. This observational FFT is separate from musical device DSP
 in `hex-devices`; construction and analysis belong on control/worker threads.
 It does not capture audio, own a rolling stream window, schedule a worker or
 render a UI. See [spectrum analysis](../../docs/spectrum-analysis.md).
+
+
+## Delivered gain recording
+
+`gain_recording` owns bounded value/receipt rings:64 outstanding ordinary events,
+independent terminal reservation, and1022 events per take. Targets bind stable
+track and project/audio/transport/gesture identities. Callback consumption applies
+only the latest boundary value; superseded events release credits without an
+applied receipt. `finish_gain_recording_quantum` runs after native conversion and
+write, deferring acknowledgments until the compensated sample reaches Main.
+Failed output, transport reset and cancellation abort the uncommitted take.
+Priority Stop stays independent of queue saturation. No record or receipt owns a
+graph, allocates, blocks or drops final owners in the callback. Take normalization
+and saved history belong to session/project. See
+[gain recording](../../docs/gain-touch-spans.md) for quantum and physical-delivery
+limits and selected headless allocation coverage.

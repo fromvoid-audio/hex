@@ -18,7 +18,7 @@ use hex_widgets::{
 };
 
 pub(super) const FRAME_WIDTH: f32 = 600.0;
-const BODY_HEIGHT: f32 = super::UTILITY_FRAME_BODY_HEIGHT;
+const BODY_HEIGHT: f32 = super::DEVICE_FRAME_BODY_HEIGHT;
 const BAND_COUNT: usize = 8;
 const RESPONSE_POINTS: usize = 96;
 const MIN_HZ: f32 = 20.0;
@@ -235,7 +235,7 @@ pub(super) fn render_body(
             id(202),
             "out",
         ));
-    div()
+    hex_widgets::device_body(super::device_layout_style())
         .id(ElementId::Name(
             format!("eq8-body-{}", device.value()).into(),
         ))
@@ -246,7 +246,7 @@ pub(super) fn render_body(
         .overflow_hidden()
         .flex()
         .gap(px(4.0))
-        .p(px(3.0))
+        .py(px(3.0))
         .child(left)
         .child(
             div()
@@ -315,7 +315,10 @@ fn audition_toggle(
             .child(unavailable("audition toggle unavailable"));
     };
     let entity = control.entity.clone();
-    entity.update(cx, |toggle, cx| toggle.set_checked(armed, cx));
+    entity.update(cx, |toggle, cx| {
+        let _ = toggle.set_external_style(super::control_style(), cx);
+        toggle.set_checked(armed, cx);
+    });
     div()
         .id(ElementId::Name(
             format!("eq8-audition-arm-{}", device.value()).into(),

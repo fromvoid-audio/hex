@@ -43,6 +43,15 @@ struct WaveformGeometryKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    Prepared {
+        timeline_origin: u64,
+        root_offset: u64,
+        gain: i32,
+    },
+    GainedSource {
+        timeline_origin: u64,
+        gain: i32,
+    },
     Clip {
         id: u64,
         start: u64,
@@ -52,6 +61,7 @@ enum WaveformMappingKey {
         source_phase: u64,
         looping: bool,
         timeline_origin: u64,
+        gain: i32,
     },
     Source {
         timeline_origin: u64,
@@ -123,8 +133,22 @@ impl WaveformGeometryCache {
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
-    Clip { clip: Clip, timeline_origin: u64 },
-    Source { timeline_origin: u64 },
+    Prepared {
+        timeline_origin: u64,
+        root_offset: u64,
+        gain: hex_project::ClipGain,
+    },
+    GainedSource {
+        timeline_origin: u64,
+        gain: hex_project::ClipGain,
+    },
+    Clip {
+        clip: Clip,
+        timeline_origin: u64,
+    },
+    Source {
+        timeline_origin: u64,
+    },
 }
 
 pub(super) struct WaveformGeometryRequest<'a> {
@@ -182,11 +206,28 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::Prepared {
+            timeline_origin,
+            root_offset,
+            gain,
+        } => WaveformMappingKey::Prepared {
+            timeline_origin: *timeline_origin,
+            root_offset: *root_offset,
+            gain: gain.millidb(),
+        },
+        WaveformMapping::GainedSource {
+            timeline_origin,
+            gain,
+        } => WaveformMappingKey::GainedSource {
+            timeline_origin: *timeline_origin,
+            gain: gain.millidb(),
+        },
         WaveformMapping::Clip {
             clip,
             timeline_origin,
         } => WaveformMappingKey::Clip {
             id: clip.id().value(),
+            gain: clip.gain().millidb(),
             start: clip.start(),
             duration: clip.duration(),
             source_offset: clip.source_offset(),
@@ -222,6 +263,13 @@ pub(super) fn prepare_waveform_geometry(
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
     let frames = visible_end.saturating_sub(visible_start);
+    let gain = match mapping {
+        WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
+        WaveformMapping::GainedSource { gain, .. } | WaveformMapping::Prepared { gain, .. } => {
+            gain.linear()
+        }
+        WaveformMapping::Source { .. } => 1.0,
+    };
     let mut stereo_peaks = Vec::with_capacity(columns);
     for column in 0..columns {
         let start = visible_start.saturating_add(fraction_u64(frames, column, columns));
@@ -229,6 +277,19 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::Prepared {
+                timeline_origin,
+                root_offset,
+                ..
+            } => start
+                .checked_sub(*timeline_origin)
+                .and_then(|start| start.checked_add(*root_offset))
+                .zip(
+                    end.checked_sub(*timeline_origin)
+                        .and_then(|end| end.checked_add(*root_offset)),
+                )
+                .and_then(|(start, end)| usize::try_from(start).ok().zip(usize::try_from(end).ok()))
+                .and_then(|(start, end)| aggregate_peaks(waveform, start, end)),
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,
@@ -241,13 +302,23 @@ pub(super) fn prepare_waveform_geometry(
                 );
                 aggregate_ranges(waveform, ranges.as_slice())
             }
-            WaveformMapping::Source { timeline_origin } => start
+            WaveformMapping::Source { timeline_origin }
+            | WaveformMapping::GainedSource {
+                timeline_origin, ..
+            } => start
                 .checked_sub(*timeline_origin)
                 .zip(end.checked_sub(*timeline_origin))
                 .and_then(|(start, end)| usize::try_from(start).ok().zip(usize::try_from(end).ok()))
                 .and_then(|(start, end)| aggregate_peaks(waveform, start, end)),
         };
-        stereo_peaks.push(peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]));
+        let mut peaks = peaks.unwrap_or([CachedPeak { min: 0.0, max: 0.0 }; 2]);
+        if gain != 1.0 {
+            for peak in &mut peaks {
+                peak.min *= gain;
+                peak.max *= gain;
+            }
+        }
+        stereo_peaks.push(peaks);
     }
 
     let mut channels = Vec::with_capacity(2);
@@ -401,6 +472,40 @@ mod tests {
         assert!(cache.get(key(1, extent), &source).is_none());
         let different_source = waveform();
         assert!(cache.get(cache_key, &different_source).is_none());
+    }
+
+    #[test]
+    fn clip_detail_gain_changes_cached_geometry_and_unity_reuses_it() {
+        let source = waveform();
+        let cache = RefCell::new(WaveformGeometryCache::default());
+        let neutral = WaveformMapping::GainedSource {
+            timeline_origin: 0,
+            gain: hex_project::ClipGain::UNITY,
+        };
+        let quiet = WaveformMapping::GainedSource {
+            timeline_origin: 0,
+            gain: hex_project::ClipGain::new(-6_000).unwrap(),
+        };
+        let geometry = |mapping| {
+            cached_waveform_geometry(
+                &cache,
+                &source,
+                &WaveformGeometryRequest {
+                    mapping,
+                    visible_start: 0,
+                    visible_end: 96_000,
+                    bounds: bounds(),
+                    scale: 2.0,
+                    columns: 32,
+                },
+            )
+            .unwrap()
+        };
+        let first = geometry(&neutral);
+        let changed = geometry(&quiet);
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert!(Arc::ptr_eq(&first, &geometry(&neutral)));
+        assert_eq!(cache.borrow().entries.len(), 2);
     }
 
     #[test]
