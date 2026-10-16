@@ -16,6 +16,7 @@ pub struct PreparedUtilityFilters {
     dc_enabled: bool,
     bass_enabled: bool,
     audition: bool,
+    output_muted: bool,
     dc_pole: f64,
     low: BiquadCoefficients,
     high: BiquadCoefficients,
@@ -52,6 +53,7 @@ impl PreparedUtilityFilters {
             dc_enabled,
             bass_enabled,
             audition,
+            output_muted: false,
             dc_pole: (-std::f64::consts::TAU * DC_CUTOFF_HZ / f64::from(sample_rate)).exp(),
             low: BiquadCoefficients {
                 b0: low_b0,
@@ -77,7 +79,14 @@ impl PreparedUtilityFilters {
         0
     }
     pub const fn is_identity(self) -> bool {
-        !self.dc_enabled && !self.bass_enabled
+        !self.dc_enabled && !self.bass_enabled && !self.output_muted
+    }
+
+    /// Suppress the processor's output after filtering while continuing to
+    /// advance every enabled filter history from its input.
+    pub const fn with_output_mute(mut self, muted: bool) -> Self {
+        self.output_muted = muted;
+        self
     }
 }
 
@@ -198,16 +207,21 @@ impl UtilityFilterProcessor {
         for stage in &mut self.mid_low {
             low_mid = stage.sample(low_mid, self.prepared.low);
         }
-        if !self.prepared.bass_enabled {
+        let output = if !self.prepared.bass_enabled {
             if !self.prepared.dc_enabled {
-                return input;
+                input
+            } else {
+                [signal[0] as f32, signal[1] as f32]
             }
-            return [signal[0] as f32, signal[1] as f32];
-        }
-        if self.prepared.audition {
+        } else if self.prepared.audition {
             [low_mid as f32; 2]
         } else {
             [(mid + side) as f32, (mid - side) as f32]
+        };
+        if self.prepared.output_muted {
+            [0.0; 2]
+        } else {
+            output
         }
     }
 

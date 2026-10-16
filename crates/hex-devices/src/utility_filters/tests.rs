@@ -43,6 +43,11 @@ fn disabled_modes_preserve_every_input_bit() {
         assert_eq!(output[0].to_bits(), input[0].to_bits());
         assert_eq!(output[1].to_bits(), input[1].to_bits());
     }
+
+    let muted = config.with_output_mute(true);
+    assert!(!muted.is_identity());
+    let mut processor = UtilityFilterProcessor::new(muted);
+    assert_eq!(processor.process_frame([0.125, -0.734]), [0.0, 0.0]);
 }
 
 #[test]

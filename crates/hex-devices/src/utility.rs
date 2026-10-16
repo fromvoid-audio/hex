@@ -618,7 +618,8 @@ impl NativeDeviceDefinition for UtilityDefinition {
             f64::from(settings.bass_mono_cutoff_hz),
             settings.bass_mono_audition,
         )
-        .map_err(|_| DeviceContractError::MalformedState)?;
+        .map_err(|_| DeviceContractError::MalformedState)?
+        .with_output_mute(settings.mute);
         Ok(Some(Box::new(PreparedUtilityFilterRuntime(prepared))))
     }
 }
@@ -846,6 +847,83 @@ mod tests {
             assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
             assert_eq!(prepared.output_tail(), OutputTail::Unbounded);
             assert!(prepared.create_runtime().is_quiescent());
+        }
+    }
+
+    #[test]
+    fn registered_utility_mute_suppresses_filter_residual_after_history_copy() {
+        use hex_lattice_contract::ParameterValue;
+
+        let default_state = UTILITY_DEFINITION.default_state().unwrap();
+        for (dc_remove, bass_mono, audition) in [
+            (true, false, false),
+            (false, true, false),
+            (false, true, true),
+        ] {
+            let mut state = default_state.clone();
+            for (id, value) in [
+                (parameter::DC_REMOVE, ParameterValue::Bool(dc_remove)),
+                (parameter::BASS_MONO, ParameterValue::Bool(bass_mono)),
+                (
+                    parameter::BASS_MONO_AUDITION,
+                    ParameterValue::Bool(audition),
+                ),
+            ] {
+                state = UTILITY_DEFINITION
+                    .patch_parameter(&state, id, value)
+                    .unwrap();
+            }
+            let mut source = UTILITY_DEFINITION
+                .prepare_processor(&state, 48_000)
+                .unwrap()
+                .unwrap()
+                .create_runtime();
+            let matrix = UTILITY_DEFINITION.prepare_effect_matrix(&state).unwrap();
+            for _ in 0..512 {
+                let mut frame = [[0.75, -0.25]];
+                matrix.apply_block(&mut frame);
+                source.process_block(&mut frame);
+            }
+
+            let muted_state = UTILITY_DEFINITION
+                .patch_parameter(&state, parameter::MUTE, ParameterValue::Bool(true))
+                .unwrap();
+            let muted_matrix = UTILITY_DEFINITION
+                .prepare_effect_matrix(&muted_state)
+                .unwrap();
+            let mut candidate = UTILITY_DEFINITION
+                .prepare_processor(&muted_state, 48_000)
+                .unwrap()
+                .unwrap()
+                .create_runtime();
+            assert!(candidate.can_copy_history_from(source.as_ref()));
+            candidate.copy_history_from(source.as_ref());
+
+            let mut silence = [[0.5, -0.125]; 16];
+            muted_matrix.apply_block(&mut silence);
+            candidate.process_block(&mut silence);
+            assert!(
+                silence.iter().all(|frame| *frame == [0.0, 0.0]),
+                "mute leaked filter residual for dc={dc_remove}, bass={bass_mono}, audition={audition}"
+            );
+
+            let mut oracle_silence = [[0.0, 0.0]; 16];
+            source.process_block(&mut oracle_silence);
+            let mut unmuted = UTILITY_DEFINITION
+                .prepare_processor(&state, 48_000)
+                .unwrap()
+                .unwrap()
+                .create_runtime();
+            assert!(unmuted.can_copy_history_from(candidate.as_ref()));
+            unmuted.copy_history_from(candidate.as_ref());
+            for frame in 0..32 {
+                let input = [[0.2 + frame as f32 * 0.001, -0.4 + frame as f32 * 0.002]];
+                let mut actual = input;
+                let mut expected = input;
+                unmuted.process_block(&mut actual);
+                source.process_block(&mut expected);
+                assert_eq!(actual, expected);
+            }
         }
     }
 

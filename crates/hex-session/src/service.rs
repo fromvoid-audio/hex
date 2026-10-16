@@ -3117,6 +3117,113 @@ mod service_tests {
     }
 
     #[test]
+    fn utility_controls_survive_history_and_project_reopen() {
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "utility persistence".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(DeviceTypeId::from_static("hex.utility")),
+                before: None,
+            })
+            .expect("add utility");
+        let mut current = next_event(&service);
+        assert!(current.error.is_none(), "{:?}", current.error);
+        let device = current.state.project.track(track).unwrap().devices()[0].id();
+        // Exercise both matrix and stateful fields through the service rather
+        // than just round-tripping the codec's own output.
+        for (id, value) in [
+            (1, ParameterValue::Float(2.0)),
+            (2, ParameterValue::Float(-0.25)),
+            (3, ParameterValue::Float(2.5)),
+            (4, ParameterValue::Choice(3)),
+            (5, ParameterValue::Bool(true)),
+            (6, ParameterValue::Bool(true)),
+            (7, ParameterValue::Bool(true)),
+            (8, ParameterValue::Bool(true)),
+            (9, ParameterValue::Bool(true)),
+            (10, ParameterValue::Float(0.5)),
+            (11, ParameterValue::Bool(true)),
+            (12, ParameterValue::Bool(true)),
+            (13, ParameterValue::Float(500.0)),
+            (14, ParameterValue::Bool(true)),
+        ] {
+            let parameter = ParameterId::from_static(id);
+            let prior = current
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .clone();
+            service
+                .submit(Request::SetDeviceParameter {
+                    device,
+                    parameter,
+                    value,
+                })
+                .expect("edit utility parameter");
+            let changed = next_event(&service);
+            assert!(changed.error.is_none(), "{:?}", changed.error);
+            let expected = changed
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .clone();
+            assert_eq!(
+                hex_engine::native_device_parameter(&expected, parameter),
+                Ok(value)
+            );
+            service.submit(Request::Undo).expect("undo utility edit");
+            let undone = next_event(&service);
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(undone.state.project.device(device).unwrap().state(), &prior);
+            service.submit(Request::Redo).expect("redo utility edit");
+            current = next_event(&service);
+            assert!(current.error.is_none(), "{:?}", current.error);
+            assert_eq!(
+                current.state.project.device(device).unwrap().state(),
+                &expected
+            );
+        }
+        let expected = current
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone();
+        let directory = TestDir::new();
+        let path = directory.0.join("utility.hex");
+        service
+            .submit(Request::SaveNew(path.clone()))
+            .expect("save utility");
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        let reopened_service = Service::new(48_000, 16, 0).expect("reopen service");
+        next_event(&reopened_service);
+        reopened_service
+            .submit(Request::Open(path))
+            .expect("open utility");
+        let reopened = next_event(&reopened_service);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        let persisted = &reopened.state.project.track(track).unwrap().devices()[0];
+        assert_eq!(persisted.id(), device);
+        assert_eq!(persisted.state(), &expected);
+    }
+
+    #[test]
     fn explicit_effect_replacement_preserves_identity_order_bypass_and_undo() {
         use hex_engine::NativeDeviceClass;
         use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
