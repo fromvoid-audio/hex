@@ -66,6 +66,18 @@ prototype-specific header intrusion/inverse-tab corner assertions. Prior test
 counts and accepted images below apply only to their recorded sources and do
 not establish current production appearance.
 
+### extending the current catalog
+
+Add the catalog `Entry`, label/key and bounded fixture counts, then populate its
+slots by calling the owning production composition. Reuse the canonical width
+constant and semantic style role; keep fixture values and subscriptions local
+and retained. Add a state/geometry regression covering the new arrangement and
+its applicable Track/Return fixture labels. A new visual or layout capability
+belongs in `hex-widgets` first, with injected style and meaningful containment or
+interaction coverage, before production and gallery consumers use it. Keep
+canonical bindings, device metadata and graph/DSP calculations in their existing
+owners. Run the focused gallery harness and source guard before final full CI.
+
 Optional native checklist for the exact optimized source/build:
 
 1. Inspect Vector, Utility, Saturator and EQ8, then the remaining entries. Resize

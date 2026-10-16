@@ -9,6 +9,32 @@ with unchanged source digest and `stale=false`
 ([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Native acceptance
 remains open.
 
+## unified native device GUI — #2469
+
+The shared system covers five separate obligations:
+
+| Obligation | Owning source and evidence | Canonical PR |
+| --- | --- | --- |
+| Extensible frame, body, sections and layouts | `hex-widgets`; rendered geometry and containment tests | [#205](https://github.com/PORTALSURFER/hex/pull/205) |
+| Product semantic palette and retained-control refresh | `theme/device.rs`; contrasting-theme draft/focus regressions | [#206](https://github.com/PORTALSURFER/hex/pull/206) |
+| Selected header with neutral body and border | `DeviceFrameStyle`; scene-paint and child-gesture regressions | [#207](https://github.com/PORTALSURFER/hex/pull/207) |
+| Every existing specialized/generic/unsupported owner path | `device_composition.rs` and device panels; preserved width, edit and owner tests | [#208](https://github.com/PORTALSURFER/hex/pull/208) |
+| Production-backed native catalog and enforcement | `layout_review` plus `check-device-layout.py`; rendered fixtures and negative controls | [#209](https://github.com/PORTALSURFER/hex/pull/209) |
+
+Vector/Operator, Utility, Saturator and EQ8 are the 0.1 priorities. The other
+existing panels remain shared-library consumers. Composition varies with useful
+functionality and width; style and header metrics do not vary with device type.
+This integration changes no DSP, parameter laws/IDs, persistence or device
+inventory. Existing replacement-drop feedback and canonical edit ownership remain
+separate from device selection paint.
+
+Full local CI includes the source boundary guard and rendered catalog harness.
+The optimized macOS build, exact candidate/merged PR mapping and finite optional
+native checklist are supplied with delivery. Scene/source checks establish their
+bounded contracts; they do not establish physical input, listening, other display
+scales/platforms, rich accessibility or reference parity. Native testing remains
+separate from repository-owned verification, merge and installation.
+
 ## Boundary
 
 `hex-widgets` owns knobs, horizontal/vertical sliders, editable numeric values,
