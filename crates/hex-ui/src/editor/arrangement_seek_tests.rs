@@ -194,7 +194,9 @@ fn second_spacebar_cancels_pending_stateful_play_instead_of_restarting_it() {
 
 #[test]
 fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_terminal() {
-    let project = stateful_project();
+    let mut snapshot = stateful_project().snapshot();
+    snapshot.loop_region = Some(hex_project::LoopRegion::new(128, 512, true).expect("loop"));
+    let project = Project::from_snapshot(snapshot).expect("stateful looping project");
     let prepared = Arc::new(
         PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
             .expect("stateful prepared revision"),
