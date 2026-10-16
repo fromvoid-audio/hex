@@ -172,16 +172,28 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
     // Capture actual post-fader/Return outputs from the same graph, excluding
     // master gain. These independent PCM expectations distinguish send input,
     // Return output, dry track and Main instead of mirroring capture buffers.
+    // Automation replaces the base fader, including when that base is zero.
+    let track_output = if automation {
+        [0.25_f32, -0.5]
+    } else {
+        [0.125_f32, -0.25]
+    };
+    // The post-fader send is halved; Utility inverts the right channel.
+    let return_output = if automation {
+        [0.125_f32, 0.25]
+    } else {
+        [0.0625_f32, 0.125]
+    };
     for (name, id, expected) in [
         (
             "track",
             hex_engine::OutputCaptureId::Track(track),
-            [0.125_f32, -0.25],
+            track_output,
         ),
         (
             "return",
             hex_engine::OutputCaptureId::Return(return_track),
-            [0.0625_f32, 0.125],
+            return_output,
         ),
     ] {
         let control = hex_export::ExportControl::default();
@@ -237,8 +249,8 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
         .collect();
     assert_eq!(files.len(), 2);
     for (kind, id, expected) in [
-        ("track", track.value(), [0.125_f32, -0.25]),
-        ("return", return_track.value(), [0.0625_f32, 0.125]),
+        ("track", track.value(), track_output),
+        ("return", return_track.value(), return_output),
     ] {
         let data = fs::read(batch.join(format!("{kind}-{id}-same_name.wav"))).unwrap();
         assert_eq!(data.len(), 48);
