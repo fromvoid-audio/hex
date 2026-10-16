@@ -180,6 +180,10 @@ pub(super) enum Guard {
 }
 pub(super) struct HostOwner {
     guard: Guard,
+    // Mirror the actual host's new inline controller target and frozen value;
+    // these bytes are additional to the provider payload and both ledgers.
+    expression_identity: Option<hex_project::DeviceId>,
+    expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
     scratch: Vec<MutableOccurrence>,
     next_id: u64,

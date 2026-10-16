@@ -1,3 +1,5 @@
+#[path = "../../hex-devices/tests/support/mod.rs"]
+mod support;
 use hex_devices::SineTable;
 use hex_engine::{PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -145,11 +147,7 @@ struct Fixture {
 }
 
 fn operator_state(carrier: f32) -> hex_lattice_contract::NativeDeviceState {
-    let mut state = hex_engine::default_native_device_state_for_class(
-        hex_engine::NativeDeviceClass::Instrument,
-        OPERATOR,
-    )
-    .expect("registered Operator defaults");
+    let mut state = support::legacy_operator_state();
     for (parameter, value) in [
         (29, carrier), // op1 is the only default carrier
         (33, 1.0),     // initial

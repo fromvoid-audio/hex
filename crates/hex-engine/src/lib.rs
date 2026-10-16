@@ -14,6 +14,11 @@ pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
 
+// Historical analytic/import proofs opt into the shared pre-global kernel.
+#[cfg(test)]
+#[path = "../../hex-devices/tests/support/mod.rs"]
+mod operator_legacy_test;
+
 use std::{fmt, sync::Arc};
 
 mod audio_candidate;

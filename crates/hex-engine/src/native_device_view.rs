@@ -556,10 +556,21 @@ mod tests {
         for parameter in operator_view
             .parameters
             .iter()
-            .filter(|parameter| (57..=61).contains(&parameter.descriptor.id.value()))
+            .filter(|parameter| (57..=60).contains(&parameter.descriptor.id.value()))
         {
             assert_eq!(parameter.value, ParameterValue::Choice(0));
         }
+        let routing = operator_view
+            .parameters
+            .iter()
+            .find(|parameter| parameter.descriptor.id.value() == 61)
+            .unwrap();
+        assert_eq!(
+            routing.value,
+            ParameterValue::Choice(1),
+            "the product default uses the serial algorithm preset"
+        );
+        assert_eq!(routing.value, routing.descriptor.default);
         for operator_index in 0..4 {
             let id = hex_lattice_contract::ParameterId::new(74 + operator_index).unwrap();
             let parameter = operator_view

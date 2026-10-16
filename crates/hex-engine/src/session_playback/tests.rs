@@ -9714,10 +9714,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
     let sine = revision(&project(1.0, 0, 8 << 32), Arc::clone(&table));
     assert!(!sine.arrangement_seek_requires_preroll());
 
-    let instruments = hex_devices::native_instrument_registry().unwrap();
-    let operator_state = instruments
-        .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
-        .unwrap();
+    let operator_state = crate::operator_legacy_test::legacy_operator_state();
     let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
     snapshot.tracks[0].instrument.as_mut().unwrap().state = operator_state;
     let operator = revision(
@@ -9810,7 +9807,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
         level: f32,
         carrier: f32,
     ) -> hex_lattice_contract::NativeDeviceState {
-        let state = OPERATOR_METADATA.default_state().unwrap();
+        let state = crate::operator_legacy_test::legacy_operator_state();
         let state = OPERATOR_METADATA
             .patch_parameter(
                 &state,
@@ -10006,7 +10003,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 
     fn source_project(note_duration: u64, arrangement_note: bool) -> Project {
-        let mut state = OPERATOR_METADATA.default_state().unwrap();
+        let mut state = crate::operator_legacy_test::legacy_operator_state();
         state = OPERATOR_METADATA
             .patch_parameter(&state, parameter::feedback(1), ParameterValue::Float(0.25))
             .unwrap();
@@ -10169,7 +10166,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
 
     let table = Arc::new(hex_devices::SineTable::new());
     let source = {
-        let mut state = OPERATOR_METADATA.default_state().unwrap();
+        let mut state = crate::operator_legacy_test::legacy_operator_state();
         state = OPERATOR_METADATA
             .patch_parameter(&state, parameter::feedback(1), ParameterValue::Float(0.25))
             .unwrap();
