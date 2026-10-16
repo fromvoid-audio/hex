@@ -20,11 +20,12 @@ fn envelope(
 }
 impl Workspace {
     fn insert(
-        &mut self,
+        extents: &mut [Vec<StreamPageExtent>; 2],
+        limit: usize,
         index: usize,
         extent: StreamPageExtent,
     ) -> Result<(), hex_engine::Invalid> {
-        let rows = &mut self.extents[index];
+        let rows = &mut extents[index];
         match rows.binary_search_by_key(&(extent.source, extent.page_index), |row| {
             (row.source, row.page_index)
         }) {
@@ -32,7 +33,7 @@ impl Workspace {
                 rows[index].start = rows[index].start.min(extent.start);
                 rows[index].end = rows[index].end.max(extent.end);
             }
-            Err(index) if rows.len() < self.limit => rows.insert(index, extent),
+            Err(index) if rows.len() < limit => rows.insert(index, extent),
             Err(_) => return Err(hex_engine::Invalid("exact stream demand capacity exceeded")),
         }
         Ok(())
@@ -98,6 +99,9 @@ impl State {
         }
         let window = {
             let domains = &*request.domains;
+            let staged = workspace.pending_action.as_ref();
+            let extents = &mut workspace.extents;
+            let limit = workspace.limit;
             let mut visit = |extent: StreamPageExtent| {
                 let index = refs
                     .iter()
@@ -114,7 +118,7 @@ impl State {
                     .ok_or(hex_engine::Invalid(
                         "stream demand source lacks actual domain",
                     ))?;
-                workspace.insert(index, extent)
+                Workspace::insert(extents, limit, index, extent)
             };
             if let Some(previous) = previous {
                 runtime
@@ -128,6 +132,12 @@ impl State {
                         &mut visit,
                     )
                     .map_err(|_| hex_engine::Invalid("stream handoff demand refused"))?
+            } else if let Some(staged) = staged.filter(|_| role == ProtectionRole::Transition) {
+                runtime.visit_prepared_stream_action(
+                    &staged.prepared,
+                    request.frames,
+                    &mut visit,
+                )?
             } else {
                 runtime.visit_next_stream_chunk(
                     request.frames,
@@ -136,7 +146,13 @@ impl State {
                 )?
             }
         };
-        if request.pending_play && request.frames == 0 {
+        if request.frames == 0
+            && (request.pending_play
+                || workspace
+                    .pending_action
+                    .as_ref()
+                    .is_some_and(|staged| staged.prepared.playing_after_commit()))
+        {
             return Ok(None);
         }
         if workspace.role.is_some_and(|old| old != role) {
@@ -326,6 +342,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) play_applied: bool,
     pub(crate) readiness_refused: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
+    pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
 }
 impl Active {
     pub(crate) fn contains_streamed_sources(&self) -> bool {
@@ -345,6 +362,27 @@ impl Active {
         output: &mut [hex_engine::Frame],
         mut observer: Option<&mut hex_engine::PostNodeObserver<'_>>,
     ) -> StreamOutcome {
+        let mut request = StreamInstall {
+            domains,
+            pending_play: false,
+            command_prefix,
+            frames: output.len(),
+        };
+        let action_rejection = match self.resolve_stream_action(&mut request) {
+            super::actions::ActionResolution::Ready(rejection) => rejection,
+            super::actions::ActionResolution::Pending => {
+                output.fill([0.0; 2]);
+                return StreamOutcome {
+                    progress: StreamProgress::Buffering {
+                        committed_frames: 0,
+                    },
+                    play_applied: false,
+                    readiness_refused: false,
+                    fault: None,
+                    action_rejection: None,
+                };
+            }
+        };
         let mut committed = 0;
         let mut play_applied = false;
         while committed < output.len() {
@@ -370,6 +408,7 @@ impl Active {
                         play_applied,
                         readiness_refused: refused,
                         fault: None,
+                        action_rejection,
                     };
                 }
             };
@@ -384,6 +423,7 @@ impl Active {
                         play_applied,
                         readiness_refused: true,
                         fault: None,
+                        action_rejection,
                     };
                 }
             };
@@ -409,6 +449,7 @@ impl Active {
                         play_applied,
                         readiness_refused: false,
                         fault: Some(error),
+                        action_rejection,
                     };
                 }
                 play_applied = true;
@@ -450,6 +491,7 @@ impl Active {
                         play_applied,
                         readiness_refused: false,
                         fault: Some(error),
+                        action_rejection,
                     };
                 }
                 committed += window.frames;
@@ -467,6 +509,7 @@ impl Active {
             play_applied,
             readiness_refused: false,
             fault: None,
+            action_rejection,
         }
     }
 }

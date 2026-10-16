@@ -2174,6 +2174,7 @@ impl Callback {
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
+                active.has_stream_action(),
                 outcome,
             )?;
         } else if let Some(mut active) = self
@@ -2211,6 +2212,7 @@ impl Callback {
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
+                active.has_stream_action(),
                 outcome,
             )?;
             self.publish_transport();
@@ -2228,6 +2230,7 @@ impl Callback {
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
+                false,
                 crate::candidate_custody::StreamOutcome {
                     progress: crate::candidate_custody::StreamProgress::Buffering {
                         committed_frames: 0,
@@ -2235,6 +2238,7 @@ impl Callback {
                     play_applied: false,
                     readiness_refused: false,
                     fault: None,
+                    action_rejection: None,
                 },
             )?;
             return Ok(());

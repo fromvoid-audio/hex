@@ -7,6 +7,9 @@ impl Wav {
         Self::with_frames(8)
     }
     pub(super) fn with_frames(frames: u32) -> Self {
+        Self::with_samples(frames, |_| 8192)
+    }
+    pub(super) fn with_samples(frames: u32, sample: impl Fn(u32) -> i16) -> Self {
         let data_bytes = frames.checked_mul(4).unwrap();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -34,8 +37,10 @@ impl Wav {
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
         bytes.extend_from_slice(&data_bytes.to_le_bytes());
-        for _ in 0..frames * 2 {
-            bytes.extend_from_slice(&8192i16.to_le_bytes());
+        for frame in 0..frames {
+            for _ in 0..2 {
+                bytes.extend_from_slice(&sample(frame).to_le_bytes());
+            }
         }
         file.write_all(&bytes).unwrap();
         file.sync_all().unwrap();

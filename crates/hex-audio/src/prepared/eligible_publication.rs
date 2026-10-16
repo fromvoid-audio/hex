@@ -218,6 +218,9 @@ impl Callback {
         {
             return;
         }
+        // A new actual candidate invalidates the old owner's discontinuity;
+        // its scalar token cannot be replayed on the successor.
+        self.cancel_active_stream_action();
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {
             return;

@@ -2,8 +2,14 @@
 //! returns to the reserved Root slot before normal metadata destruction.
 use super::*;
 use hex_engine::StreamPageExtent;
+mod actions;
 mod demand;
+pub(crate) use actions::StageAction;
 pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress};
+struct PendingAction {
+    prepared: hex_engine::PreparedStreamAction,
+    ticket: u64,
+}
 pub(super) struct Workspace {
     pub(super) extents: [Vec<StreamPageExtent>; 2],
     pub(super) limit: usize,
@@ -11,6 +17,7 @@ pub(super) struct Workspace {
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) role: Option<hex_stream::ProtectionRole>,
     pub(super) predecessor: Option<AudioCandidateIdentity>,
+    pending_action: Option<PendingAction>,
 }
 impl Workspace {
     fn prepare(limit: usize) -> Result<Self, &'static str> {
@@ -26,6 +33,7 @@ impl Workspace {
             active: [None; 2],
             role: None,
             predecessor: None,
+            pending_action: None,
         })
     }
     pub(super) fn backing_bytes(&self) -> Option<usize> {
@@ -50,6 +58,7 @@ impl Workspace {
         self.active = [None; 2];
         self.role = None;
         self.predecessor = None;
+        self.pending_action = None;
     }
 }
 impl Custody {

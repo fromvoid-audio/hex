@@ -1,9 +1,11 @@
 //! Bounded streamed transport intent, separate from dequeued/applied prefixes.
 use super::*;
+use hex_engine::SessionPlaybackCommand;
 pub(super) fn record_outcome(
     status: &Status,
     pending_play: &mut Option<u64>,
     prefix: u64,
+    action_pending: bool,
     outcome: crate::candidate_custody::StreamOutcome,
 ) -> Result<(), Invalid> {
     if outcome.play_applied {
@@ -20,12 +22,43 @@ pub(super) fn record_outcome(
     status
         .stream_readiness_refused
         .store(outcome.readiness_refused, Release);
-    if pending_play.is_none() {
+    if let Some((ticket, reason)) = outcome.action_rejection {
+        status.publish_rejected_action(ticket, reason);
+    }
+    if pending_play.is_none() && !action_pending {
         status.stream_applied_command_prefix.store(prefix, Release);
     }
     outcome.fault.map_or(Ok(()), Err)
 }
 impl Callback {
+    pub(super) fn stream_action_pending(&self) -> bool {
+        matches!(self.active.as_ref(), Some(ActivePublication::Eligible(active)) if active.has_stream_action())
+    }
+    pub(super) fn cancel_active_stream_action(&mut self) {
+        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+            && let Some(ticket) = active.cancel_stream_action(&mut self.domain_pages)
+        {
+            self.status
+                .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionCancelled);
+        }
+    }
+    fn stage_stream_action(&mut self, action: PlaybackAction, ticket: u64) {
+        if self.publication_pending.load(Acquire) || self.stream_pending_play.is_some() {
+            self.status
+                .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionBusy);
+            return;
+        }
+        let Some(ActivePublication::Eligible(active)) = self.active.as_mut() else {
+            self.status
+                .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
+            return;
+        };
+        if let crate::candidate_custody::StageAction::Refused(reason) =
+            active.stage_stream_action(action, ticket)
+        {
+            self.status.publish_rejected_action(ticket, reason);
+        }
+    }
     pub(super) fn streamed_transport_mode(&self) -> bool {
         matches!(self.active.as_ref(), Some(ActivePublication::Eligible(active)) if active.contains_streamed_sources())
             || self.deferred_eligible.as_ref().is_some_and(|next| next.streaming_enabled())
@@ -91,6 +124,7 @@ impl Callback {
             self.pending_stop_marker.swap(0, AcqRel),
         );
         if let Some(stop) = cut.stop_through {
+            self.cancel_active_stream_action();
             self.stream_pending_play = None;
             self.invalidate_stream_readiness();
             self.apply_stream_zero_page_action(
@@ -119,10 +153,22 @@ impl Callback {
                 continue;
             }
             match queued.action {
-                PlaybackAction::Transport(PlaybackCommand::Play) => {
-                    self.stream_pending_play = Some(queued.ticket)
+                PlaybackAction::Transport(PlaybackCommand::Play)
+                | PlaybackAction::Session(SessionPlaybackCommand::Play) => {
+                    if self.stream_action_pending() {
+                        self.status.publish_rejected_action(
+                            queued.ticket,
+                            PlaybackActionRejection::StreamActionBusy,
+                        );
+                    } else {
+                        self.stream_pending_play = Some(queued.ticket);
+                    }
                 }
-                PlaybackAction::Transport(PlaybackCommand::Pause | PlaybackCommand::Stop) => {
+                PlaybackAction::Transport(PlaybackCommand::Pause | PlaybackCommand::Stop)
+                | PlaybackAction::Session(
+                    SessionPlaybackCommand::Pause | SessionPlaybackCommand::Stop,
+                ) => {
+                    self.cancel_active_stream_action();
                     self.stream_pending_play = None;
                     self.invalidate_stream_readiness();
                     self.apply_stream_zero_page_action(queued.action, queued.ticket);
@@ -133,10 +179,7 @@ impl Callback {
                 PlaybackAction::SetMetronome(_) => {
                     self.apply_stream_zero_page_action(queued.action, queued.ticket)
                 }
-                _ => self.status.publish_rejected_action(
-                    queued.ticket,
-                    PlaybackActionRejection::InvalidSessionAction,
-                ),
+                _ => self.stage_stream_action(queued.action, queued.ticket),
             }
         }
         self.publish_transport();
@@ -144,7 +187,7 @@ impl Callback {
         if let Some(ticket) = consumed {
             self.status.consumed_command.store(ticket, Release);
         }
-        if self.stream_pending_play.is_none() {
+        if self.stream_pending_play.is_none() && !self.stream_action_pending() {
             self.status
                 .stream_applied_command_prefix
                 .store(self.stream_prefix, Release);
