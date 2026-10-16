@@ -33,6 +33,8 @@ mod native_custody;
 pub use native_custody::{
     ConstructorStreamDomain, StreamDomainConstructorSummary, StreamDomainSealRefusal,
 };
+mod pending;
+pub use pending::{PendingStreamDomain, StreamPreparationAllowance, StreamPreparationBound};
 mod disposal;
 pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 
@@ -239,6 +241,21 @@ impl StreamRuntime {
         definitions: Vec<SourceDefinition>,
         #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
     ) -> Result<Self, StreamRuntimeError> {
+        Self::new_factory(
+            config,
+            definitions,
+            false,
+            #[cfg(test)]
+            test_hooks,
+        )
+        .map(|(runtime, _)| runtime)
+    }
+    fn new_factory(
+        config: StreamConfig,
+        definitions: Vec<SourceDefinition>,
+        reserve_disposal: bool,
+        #[cfg(test)] test_hooks: Option<crate::worker::TestWorkerHooks>,
+    ) -> Result<(Self, Option<PreparedStreamDisposal>), StreamRuntimeError> {
         let config = config.validate()?;
         if definitions.len() > config.max_sources {
             return Err(StreamRuntimeError::InvalidConfiguration);
@@ -339,6 +356,70 @@ impl StreamRuntime {
         let worker_finished_signal = Arc::clone(&worker_finished);
         #[cfg(test)]
         let test_panic = disposal::take_worker_test_panic();
+        let pair_id = Arc::new(());
+        let endpoint = Endpoint::new(
+            config.page_buffers,
+            config.request_capacity,
+            source_keys,
+            EndpointQueues {
+                request_tx,
+                ready_rx,
+                return_tx,
+                failure_rx,
+            },
+        )
+        .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        let disposal = reserve_disposal
+            .then(|| {
+                PreparedStreamDisposal::reserve_for_pair(Arc::clone(&pair_id), config.page_buffers)
+            })
+            .transpose()
+            .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        if reserve_disposal {
+            // The caller's requested allowance was checked before allocation.
+            // Now validate the actual control-side capacities before a live
+            // JoinHandle can exist. Worker payload is separately capped by its
+            // exact source/manifest/kernel/scratch constructor limits.
+            let bound = PendingStreamDomain::preparation_bound(
+                config,
+                &definitions,
+                definitions.capacity(),
+                None,
+            )?;
+            let (worker_data, worker_peak) =
+                crate::worker::preparation_data_bound(config, &definitions, definitions.capacity())
+                    .ok_or(StreamRuntimeError::InvalidConfiguration)?;
+            let free_handles = free_pages
+                .capacity()
+                .checked_sub(config.page_buffers)
+                .and_then(|n| n.checked_mul(std::mem::size_of::<Box<PageBuffer>>()))
+                .ok_or(StreamRuntimeError::AllocationFailed)?;
+            let common = crate::footprint::sum([
+                endpoint
+                    .data_footprint()
+                    .bytes()
+                    .ok_or(StreamRuntimeError::InvalidConfiguration)?,
+                transport_data
+                    .bytes()
+                    .ok_or(StreamRuntimeError::InvalidConfiguration)?,
+                disposal
+                    .as_ref()
+                    .and_then(PreparedStreamDisposal::metadata_bytes)
+                    .ok_or(StreamRuntimeError::InvalidConfiguration)?,
+                free_handles,
+            ])
+            .ok_or(StreamRuntimeError::AllocationFailed)?;
+            let actual = common
+                .checked_add(worker_data)
+                .ok_or(StreamRuntimeError::AllocationFailed)?;
+            let peak = common
+                .checked_add(worker_peak)
+                .and_then(|n| n.checked_add(transport_data.page_boxing_overlap))
+                .ok_or(StreamRuntimeError::AllocationFailed)?;
+            if actual > bound.retained_data_bytes || peak > bound.construction_peak_data_bytes {
+                return Err(StreamRuntimeError::InvalidConfiguration);
+            }
+        }
         let worker = thread::Builder::new()
             .name("hex-stream-worker".to_owned())
             .spawn(move || {
@@ -362,26 +443,6 @@ impl StreamRuntime {
             })
             .map_err(|_| StreamRuntimeError::WorkerSpawnFailed)?;
         let worker_wake = worker.thread().clone();
-        let pair_id = Arc::new(());
-        let endpoint = match Endpoint::new(
-            config.page_buffers,
-            config.request_capacity,
-            source_keys,
-            EndpointQueues {
-                request_tx,
-                ready_rx,
-                return_tx,
-                failure_rx,
-            },
-        ) {
-            Ok(endpoint) => endpoint,
-            Err(()) => {
-                stop.store(true, Ordering::Release);
-                worker_wake.unpark();
-                let _ = worker.join();
-                return Err(StreamRuntimeError::AllocationFailed);
-            }
-        };
         let owner = Arc::new(CatalogOwner {
             transport_data,
             config,
@@ -395,18 +456,21 @@ impl StreamRuntime {
             #[cfg(test)]
             worker_finished,
         });
-        Ok(Self {
-            control: Some(StreamControl {
-                pair_id: Arc::clone(&pair_id),
-                owner: Arc::clone(&owner),
-            }),
-            pages: Some(StreamCallbackPages {
-                pair_id,
-                endpoint,
-                max_ready_pages_per_pump: config.max_ready_pages_per_pump,
-                _owner: owner,
-            }),
-        })
+        Ok((
+            Self {
+                control: Some(StreamControl {
+                    pair_id: Arc::clone(&pair_id),
+                    owner: Arc::clone(&owner),
+                }),
+                pages: Some(StreamCallbackPages {
+                    pair_id,
+                    endpoint,
+                    max_ready_pages_per_pump: config.max_ready_pages_per_pump,
+                    _owner: owner,
+                }),
+            },
+            disposal,
+        ))
     }
 
     /// Separate control lifecycle from the callback-borrowed page endpoint.

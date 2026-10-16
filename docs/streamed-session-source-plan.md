@@ -156,3 +156,17 @@ payload and two shared handles are added to native constructor accounting.
 Verified configuration requires a virgin cell and refuses owning Playback
 admission for its entire exposed lifetime. Desktop/UI use of this cell is still
 being connected; the native headless controls establish only this boundary.
+
+## Pending verified pair checkpoint
+
+A new pending pair can quote bounded constructor DATA and resource counts before
+allocation. It reserves the existing endpoint and exact-pair disposal backings
+before starting the source worker, removing the former fallible endpoint setup
+and inline failure join after spawn. Complete catalog publication, actual byte
+capacities and closed handle associations are still required before sealing.
+The same cleanup backing moves into the sealed domain; cancellation or changed
+file refusal conserves the original pool through normal join and destruction.
+An actual worker panic retains its first payload and remaining custody. The
+quote is a conservative allowance, not scalar completeness or page authority.
+The host must hold its normal N2 cell throughout this phase; Root slot and
+desktop/UI integration remain outstanding at this source checkpoint.

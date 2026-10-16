@@ -3683,3 +3683,9 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   applied identities. Verified sealing refuses that owning compatibility path.
   Headless real queue/ACK, contention, refusal identity and zero-allocation
   controls pass; desktop/UI integration remains outstanding.
+
+- PR #239 pending verified-pair checkpoint: endpoint/disposal reserve precedes
+  worker spawn; ready seal moves the same pair and cleanup backing. Mixed-rate
+  and empty-source seals, alias refusal, cancellation/pool conservation, changed
+  fingerprint, early insufficient allowance and retained worker-panic controls
+  pass. Root N2 slot integration and desktop/UI connection remain open.
