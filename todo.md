@@ -1,3 +1,13 @@
+## isolated eq8 oversampling study — PR191 / #2252, 16 october 2026
+
+Private test-only halfband processing, independent response/convolution oracles,
+allocation sensitivity and actual EQ runtime layout/admission refusal are reviewed.
+The proposed wrapper exceeds the unchanged effect runtime cap; no production
+oversampling processor/toggle or latency policy is introduced. Final exact-source
+checks are recorded with PR191. Storage/actual EQ integration, native/reference
+and physical deadline acceptance remain open. Pulse requires reauthentication
+here; no parent completion or ticket update is claimed.
+
 ## private pitch-envelope math proofs — PR189 / #2327, 16 october 2026
 
 Reviewed the isolated signed normalized linear envelope and checked semitone
