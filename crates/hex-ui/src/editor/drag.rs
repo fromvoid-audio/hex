@@ -19,6 +19,7 @@ pub(super) struct ClipDrag {
     pub(super) origin_pointer_x: Rc<Cell<Option<f32>>>,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
+    pub(super) scroll: super::drag_autoscroll::DragScroll,
     pub(super) snap_grid: SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) copy_modifier: Rc<Cell<bool>>,
@@ -42,6 +43,7 @@ pub(super) struct BrowserAudioDrag {
     pub(super) label: String,
     pub(super) viewport_start: u64,
     pub(super) viewport_length: u64,
+    pub(super) scroll: super::drag_autoscroll::DragScroll,
     pub(super) snap_grid: SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) copy_modifier: Rc<Cell<bool>>,
@@ -78,6 +80,12 @@ pub(super) enum NativeDeviceDragSource {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ReturnDeviceDropTarget {
+    pub(super) owner: hex_project::ReturnId,
+    pub(super) before: Option<hex_project::DeviceId>,
+}
+
 /// Metadata-only payload shared by catalog drops and ordered-chain moves.
 #[derive(Clone, Debug)]
 pub(super) struct NativeDeviceDrag {
@@ -85,6 +93,7 @@ pub(super) struct NativeDeviceDrag {
     pub(super) revision: u64,
     pub(super) source: NativeDeviceDragSource,
     pub(super) destination: Rc<Cell<Option<NativeDeviceDropTarget>>>,
+    pub(super) return_destination: Rc<Cell<Option<ReturnDeviceDropTarget>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,8 +260,8 @@ fn candidate_position(
             let pointer_frame = drop_start(
                 pointer_x,
                 lane,
-                drag.viewport_start,
-                drag.viewport_length,
+                drag.viewport().start,
+                drag.viewport().length,
                 drag.grab_offset.get()?,
             )?;
             let start = drag
@@ -262,8 +271,8 @@ fn candidate_position(
                     project,
                     pointer_frame,
                     Viewport {
-                        start: drag.viewport_start,
-                        length: drag.viewport_length,
+                        start: drag.viewport().start,
+                        length: drag.viewport().length,
                     },
                     lane.width,
                 )?;
@@ -271,7 +280,8 @@ fn candidate_position(
             Some(ClipPosition::Audio { start, duration })
         }
         ClipPosition::Midi { length, .. } => {
-            if target_track == Some(drag.source_track)
+            if drag.scroll.get().viewport.is_none()
+                && target_track == Some(drag.source_track)
                 && drag
                     .origin_pointer_x
                     .get()
@@ -282,8 +292,8 @@ fn candidate_position(
             let pointer_frame = drop_start(
                 pointer_x,
                 lane,
-                drag.viewport_start,
-                drag.viewport_length,
+                drag.viewport().start,
+                drag.viewport().length,
                 0,
             )?;
             let pointer_beat = project.tempo_map().frame_to_beat(pointer_frame).ok()?;
@@ -296,8 +306,8 @@ fn candidate_position(
                     project,
                     start,
                     Viewport {
-                        start: drag.viewport_start,
-                        length: drag.viewport_length,
+                        start: drag.viewport().start,
+                        length: drag.viewport().length,
                     },
                     lane.width,
                 )?;
@@ -403,8 +413,8 @@ pub(super) struct DropState<'a> {
 pub(super) fn is_current(drag: &ClipDrag, state: DropState<'_>) -> bool {
     if drag.project_generation != state.project_generation
         || drag.revision != state.revision
-        || drag.viewport_start != state.viewport_start
-        || drag.viewport_length != state.viewport_length
+        || drag.viewport().start != state.viewport_start
+        || drag.viewport().length != state.viewport_length
         || drag.snap_grid != state.snap_grid
     {
         return false;
@@ -805,6 +815,7 @@ impl super::EditorView {
             self.active_native_device_drag = None;
         }
         drag.destination.set(None);
+        drag.return_destination.set(None);
     }
 
     pub(super) fn cancel_active_native_device_drag(&mut self) -> bool {
@@ -812,6 +823,7 @@ impl super::EditorView {
             return false;
         };
         drag.destination.set(None);
+        drag.return_destination.set(None);
         true
     }
 
@@ -829,8 +841,8 @@ impl super::EditorView {
             self.project_generation == drag.project_generation
                 && state.revision == drag.revision
                 && state.project.sample_rate() == drag.sample_rate
-                && viewport.start == drag.viewport_start
-                && viewport.length == drag.viewport_length
+                && viewport.start == drag.viewport().start
+                && viewport.length == drag.viewport().length
                 && self.snap_grid == drag.snap_grid
         })
     }
@@ -907,8 +919,8 @@ impl super::EditorView {
         {
             let Some(start) = browser_start(
                 &state.project,
-                drag.viewport_start,
-                drag.viewport_length,
+                drag.viewport().start,
+                drag.viewport().length,
                 drag.snap_grid
                     .with_platform_modifier(drag.snap_modifier.get()),
                 pointer_x,
@@ -928,8 +940,8 @@ impl super::EditorView {
         if let Some((target, lane)) = self.hovered_drag_target(pointer_x, pointer_y) {
             let Some(start) = browser_start(
                 &state.project,
-                drag.viewport_start,
-                drag.viewport_length,
+                drag.viewport().start,
+                drag.viewport().length,
                 drag.snap_grid
                     .with_platform_modifier(drag.snap_modifier.get()),
                 pointer_x,
@@ -953,8 +965,8 @@ impl super::EditorView {
                 .and_then(|metadata| {
                     browser_candidate(BrowserDropCandidate {
                         project: &state.project,
-                        viewport_start: drag.viewport_start,
-                        viewport_length: drag.viewport_length,
+                        viewport_start: drag.viewport().start,
+                        viewport_length: drag.viewport().length,
                         snap_grid: drag.snap_grid,
                         snap_modifier: drag.snap_modifier.get(),
                         pointer_x,
@@ -1105,6 +1117,13 @@ impl super::EditorView {
             self.drop_clip_to_new_track(drag, window, cx);
             return;
         }
+        if self.arrangement_bounds_epoch != self.drag_layout_generation
+            || self.drag_lane_epochs.get(&target_track) != Some(&self.drag_layout_generation)
+        {
+            clear(self);
+            cx.notify();
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             clear(self);
             return;
@@ -1206,6 +1225,24 @@ pub(super) fn copy_cursor(copy: bool) -> gpui::CursorStyle {
         gpui::CursorStyle::DragCopy
     } else {
         gpui::CursorStyle::Arrow
+    }
+}
+
+impl ClipDrag {
+    pub(super) fn viewport(&self) -> Viewport {
+        self.scroll.get().viewport.unwrap_or(Viewport {
+            start: self.viewport_start,
+            length: self.viewport_length,
+        })
+    }
+}
+
+impl BrowserAudioDrag {
+    pub(super) fn viewport(&self) -> Viewport {
+        self.scroll.get().viewport.unwrap_or(Viewport {
+            start: self.viewport_start,
+            length: self.viewport_length,
+        })
     }
 }
 
@@ -1315,6 +1352,7 @@ mod tests {
             origin_pointer_x: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 1_000,
+            scroll: Default::default(),
             snap_grid: SnapGrid::Off,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),
@@ -1342,6 +1380,7 @@ mod tests {
             origin_pointer_x: Rc::new(Cell::new(None)),
             viewport_start: 0,
             viewport_length: 288_000,
+            scroll: Default::default(),
             snap_grid: SnapGrid::Quarter,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),

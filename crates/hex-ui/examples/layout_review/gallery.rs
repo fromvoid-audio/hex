@@ -4,7 +4,7 @@ use crate::theme;
 use gpui::{
     AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px, rgb,
 };
-use hex_widgets::{ControlStyle, compact_device_frame, device_frame, panel_tab};
+use hex_widgets::{ControlStyle, device_frame, panel_tab};
 
 const BACKGROUND: u32 = 0x474747;
 const DARK: u32 = 0x363636;
@@ -278,7 +278,13 @@ impl Gallery {
         match self.family {
             Family::Device | Family::CompactDevice => {
                 let current = state_at(0);
-                let frame_style = style(current, true);
+                let base = style(current, true);
+                let frame_style = base.with_device_selection(current == State::Selected);
+                let frame_style = if current == State::Selected {
+                    frame_style.with_header_colors(SELECTED, base.text)
+                } else {
+                    frame_style
+                };
                 let contents = div().h(px(92.0)).p(px(6.0)).child(
                     div()
                         .size_full()
@@ -287,17 +293,10 @@ impl Gallery {
                         .p(px(3.0))
                         .child(theme::text("layout section · no audio")),
                 );
-                let frame = if self.family == Family::Device {
-                    device_frame(theme::text("device header"), frame_style, div(), contents)
-                } else {
-                    compact_device_frame(theme::text("device header"), frame_style, div(), contents)
-                };
+                let frame =
+                    device_frame(theme::text("device header"), frame_style, div(), contents);
                 // Transparent overlay owns only the header hitbox; body clicks do not select.
-                let header_height = if self.family == Family::Device {
-                    hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
-                } else {
-                    hex_widgets::COMPACT_DEVICE_FRAME_HEADER_HEIGHT
-                };
+                let header_height = hex_widgets::DEVICE_FRAME_HEADER_HEIGHT;
                 let hit = div()
                     .border_1()
                     .border_color(gpui::rgba(0))

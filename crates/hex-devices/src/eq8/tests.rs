@@ -811,6 +811,7 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
     let chain_for = |state: NativeDeviceState| {
         let prepared = Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
         NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Track(1),
             device_id: 9,
             device_type: EQ8_TYPE_ID,
@@ -856,6 +857,7 @@ fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twin
     let definition: Arc<dyn hex_lattice::PreparedNativeProcessor> =
         Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
     let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        meter: Default::default(),
         owner: ProcessorChainOwner::Return(7),
         device_id: 19,
         device_type: EQ8_TYPE_ID,
@@ -867,6 +869,7 @@ fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twin
     }])
     .unwrap();
     let mut bypassed_chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        meter: Default::default(),
         owner: ProcessorChainOwner::Return(7),
         device_id: 19,
         device_type: EQ8_TYPE_ID,
@@ -965,6 +968,7 @@ fn registered_eq8_can_transfer_only_the_held_selector_to_a_compatible_candidate(
         let definition: Arc<dyn hex_lattice::PreparedNativeProcessor> =
             Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
         NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+            meter: Default::default(),
             owner,
             device_id: 19,
             device_type: EQ8_TYPE_ID,

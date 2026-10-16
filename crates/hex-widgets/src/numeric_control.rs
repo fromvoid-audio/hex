@@ -78,6 +78,7 @@ pub enum NumericControlAppearance {
     MiniDial,
     MicroDial,
     InlineValue,
+    DeviceMeters,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +182,7 @@ pub struct NumericControl {
     pub(crate) editing: bool,
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
+    pub(crate) text_modified: bool,
     pub(crate) selected: Range<usize>,
     pub(crate) reversed: bool,
     pub(crate) marked: Option<Range<usize>>,
@@ -189,6 +191,7 @@ pub struct NumericControl {
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
     pub(crate) style: ControlStyle,
+    meter_readout: crate::DeviceMeterReadout,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
     tab_navigation: bool,
@@ -234,6 +237,7 @@ impl NumericControl {
             draft: value,
             enabled: true,
             editing: false,
+            text_modified: false,
             invalid_text: false,
             text,
             selected: 0..0,
@@ -246,10 +250,22 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            meter_readout: Default::default(),
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
+        }
+    }
+
+    pub fn set_meter_readout(
+        &mut self,
+        readout: crate::DeviceMeterReadout,
+        cx: &mut Context<Self>,
+    ) {
+        if self.meter_readout != readout {
+            self.meter_readout = readout;
+            cx.notify();
         }
     }
 
@@ -342,6 +358,7 @@ impl NumericControl {
         }
         if self.editing {
             self.editing = false;
+            self.text_modified = false;
             self.invalid_text = false;
             self.text = self.spec.format(self.value).unwrap_or_default();
             self.selected = 0..0;
@@ -354,7 +371,8 @@ impl NumericControl {
         if !self.enabled || event.button != MouseButton::Left {
             return;
         }
-        if matches!(self.kind, NumericControlKind::Knob)
+        if (matches!(self.kind, NumericControlKind::Knob)
+            || self.appearance == NumericControlAppearance::DeviceMeters)
             && matches!(target, PressTarget::Control)
             && event.click_count >= 2
         {
@@ -578,6 +596,7 @@ impl NumericControl {
                 < 3.0
         {
             self.editing = true;
+            self.text_modified = false;
             self.invalid_text = false;
             self.text = self.spec.format(self.draft).unwrap_or_default();
             self.selected = 0..self.text.len();
@@ -669,7 +688,7 @@ impl NumericControl {
         if !self.editing {
             return Ok(());
         }
-        let value = match self.spec.parse(&self.text) {
+        let value = match self.finalized_text_value() {
             Ok(value) => value,
             Err(error) => {
                 self.invalid_text = true;
@@ -696,6 +715,7 @@ impl NumericControl {
         }
         self.text = self.spec.format(value)?;
         self.editing = false;
+        self.text_modified = false;
         self.invalid_text = false;
         self.selected = 0..0;
         self.marked = None;
@@ -727,7 +747,7 @@ impl NumericControl {
         if !self.editing {
             return Ok(None);
         }
-        let value = match self.spec.parse(&self.text) {
+        let value = match self.finalized_text_value() {
             Ok(value) => value,
             Err(error) => {
                 self.invalid_text = true;
@@ -744,6 +764,16 @@ impl NumericControl {
         }))
     }
 
+    fn finalized_text_value(&self) -> Result<f64, NumericError> {
+        // A display codec may round the exact value. Focusing then leaving its
+        // readout is not an edit; explicit input of that same text is an edit.
+        if !self.text_modified && self.text == self.spec.format(self.value)? {
+            Ok(self.value)
+        } else {
+            self.spec.parse(&self.text)
+        }
+    }
+
     /// Complete a previously prepared draft after its owner admitted the
     /// canonical change. This method emits no subscription events.
     pub fn accept_finish_edit_for_owner(
@@ -758,6 +788,7 @@ impl NumericControl {
                 self.text = finalized.formatted;
             }
             self.editing = false;
+            self.text_modified = false;
             self.invalid_text = false;
             self.selected = 0..0;
             self.marked = None;
@@ -771,6 +802,7 @@ impl NumericControl {
         self.draft = finalized.value;
         self.text = finalized.formatted;
         self.editing = false;
+        self.text_modified = false;
         self.invalid_text = false;
         self.selected = 0..0;
         self.marked = None;
@@ -991,6 +1023,13 @@ impl gpui::Render for NumericControl {
         {
             self.cancel(cx);
         }
+        // A text draft owns printable keys even beneath editor shortcut contexts.
+        // Keep numeric editing actions available in the same focused node.
+        let key_context = if self.editing {
+            "hex_numeric_control hex_text_editing"
+        } else {
+            "hex_numeric_control"
+        };
         let entity = cx.entity();
         let enabled = self.enabled;
         let style = self.style;
@@ -1029,6 +1068,24 @@ impl gpui::Render for NumericControl {
         }
 
         let mut root = match (self.kind, self.appearance) {
+            (_, NumericControlAppearance::DeviceMeters) => div()
+                .id(self.id.clone())
+                .w(px(10.0))
+                .h(px(self.meter_readout.height))
+                .flex()
+                .py(px(4.0))
+                .track_focus(&self.focus)
+                .key_context("hex_numeric_control")
+                .child(
+                    crate::device_meters::well(
+                        self.id.clone(),
+                        self.meter_readout.index,
+                        &self.meter_readout,
+                        style,
+                    )
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx)),
+                ),
             (
                 NumericControlKind::Knob,
                 NumericControlAppearance::MicroDial | NumericControlAppearance::MiniDial,
@@ -1038,7 +1095,7 @@ impl gpui::Render for NumericControl {
                 .w(px(crate::MICRO_DIAL_WIDTH))
                 .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .absolute()
@@ -1092,7 +1149,7 @@ impl gpui::Render for NumericControl {
                     .gap(px(gap))
                     .items_center()
                     .track_focus(&self.focus)
-                    .key_context("hex_numeric_control")
+                    .key_context(key_context)
                     .child(
                         div()
                             .w(px(width))
@@ -1127,7 +1184,7 @@ impl gpui::Render for NumericControl {
                 .h(px(14.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(value_field_sized(
                     self.id.clone(),
                     value_text,
@@ -1150,7 +1207,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(1.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w(px(48.0))
@@ -1181,7 +1238,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(5.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w(px(42.0))
@@ -1217,7 +1274,7 @@ impl gpui::Render for NumericControl {
                 .gap(px(2.0))
                 .items_center()
                 .track_focus(&self.focus)
-                .key_context("hex_numeric_control")
+                .key_context(key_context)
                 .child(
                     div()
                         .w_full()

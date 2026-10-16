@@ -164,7 +164,12 @@ pub(super) fn open_source(
         current.sine_table(),
     )
     .map_err(|error| error.to_string().to_lowercase())?;
-    Ok((session, project_dir, document, dirty))
+    Ok((
+        session.with_shutdown(Arc::clone(&current.shutdown)),
+        project_dir,
+        document,
+        dirty,
+    ))
 }
 
 pub(super) fn checkpoint_project(

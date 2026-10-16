@@ -1386,6 +1386,7 @@ impl EditorView {
                         label: name.clone(),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
+                        scroll: Default::default(),
                         snap_grid,
                         snap_modifier: Rc::new(Cell::new(false)),
                         copy_modifier: Rc::new(Cell::new(false)),
@@ -1670,6 +1671,7 @@ impl EditorView {
             revision: state.revision,
             source: drag::NativeDeviceDragSource::Browser { class, type_id },
             destination: Rc::new(Cell::new(None)),
+            return_destination: Rc::new(Cell::new(None)),
         });
         let row = div()
             .id(("browser-device", index))
