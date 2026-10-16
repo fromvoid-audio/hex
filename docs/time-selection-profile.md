@@ -78,3 +78,11 @@ The main down uses main geometry while up reprojects through a regular lane.
 The untimed snapped cursor setup avoids this known defect without changing editing
 behavior. It does not claim free-snap click correctness. Pulse #2647 and its
 separate [draft PR #263](https://github.com/PORTALSURFER/hex/pull/263) track the fix.
+
+## Recorded native capture
+
+The complete 16 October 2026 capture and all six timing distributions are in
+[the evidence report](evidence/time-selection-2026-10-16/report.md), with raw CSV,
+validation script and exact-source/build/fixture/CI provenance. The measured
+100-track selection paint median is about33ms; no constant-work, 60Hz or subjective
+smoothness claim is made.
