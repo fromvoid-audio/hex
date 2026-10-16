@@ -13,8 +13,13 @@ per-primitive bounds-tree insertion. Its retained legacy painter oracle passes
 mixed/layered/alpha/future-overlay/repeated-generation and refusal checks;
 all 510 enabled UI tests pass. Strict checks are recorded with the candidate.
 The ignored headless framework diagnostic uses the same loaded fixture and
-explicit draw timing, with test text/renderer limitations disclosed. Corrected
-optimized native timing and the unchanged 360-sample benchmark remain open.
+explicit draw timing, with test text/renderer limitations disclosed. Optimized
+`80330bc` reduced headless draw median/p95 from 18.353/19.123 ms to
+5.426/5.799 ms with zero clip rebuilds; the optimized replay oracle passed.
+All temporary production probes and eight-case termination are removed, and
+the native harness matches the merged measurement source byte for byte. Final
+full local CI, corrected optimized native timing and the unchanged 360-sample
+benchmark remain open.
 See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
 
 ## vector B edits and stopped playback recovery — #2643 / PR259, 16 october 2026

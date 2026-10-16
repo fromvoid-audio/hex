@@ -215,8 +215,6 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
-        let _row_diagnostic =
-            super::render_diagnostic::scope(super::render_diagnostic::Kind::RowBuild);
         let ClipViewTimeline {
             viewport,
             grid,
@@ -285,16 +283,7 @@ impl EditorView {
             },
             cx,
         );
-        clip_area = if super::render_diagnostic::enabled() {
-            let (leading, trailing) = super::render_diagnostic::clip_brackets();
-            clip_area.children([
-                leading.into_any_element(),
-                content,
-                trailing.into_any_element(),
-            ])
-        } else {
-            clip_area.child(content)
-        };
+        clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         let live_midi_trim_preview = self
@@ -861,8 +850,6 @@ impl EditorView {
         let move_display = self.time_range_move_display();
         let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
         for clip in track.clips() {
-            let _audio_diagnostic =
-                super::render_diagnostic::scope(super::render_diagnostic::Kind::AudioBuild);
             let Some(end) = clip.start().checked_add(clip.duration()) else {
                 continue;
             };
@@ -908,8 +895,6 @@ impl EditorView {
         }
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
-            let _diagnostic =
-                super::render_diagnostic::scope(super::render_diagnostic::Kind::MidiBuild);
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
             };

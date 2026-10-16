@@ -57,8 +57,6 @@ impl OverviewCache {
 }
 
 fn overview_cells(project: &Project, horizon: u64) -> Vec<u8> {
-    let _diagnostic =
-        super::render_diagnostic::scope(super::render_diagnostic::Kind::OverviewBuild);
     let mut cells = vec![0; OVERVIEW_CELLS];
     let track_count = project.tracks().len();
     if track_count == 0 || horizon == 0 {
@@ -172,8 +170,6 @@ fn paint_overview(
     bounds: Bounds<gpui::Pixels>,
     window: &mut Window,
 ) {
-    let _diagnostic =
-        super::render_diagnostic::scope(super::render_diagnostic::Kind::OverviewPaint);
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 || horizon == 0 {
@@ -266,8 +262,6 @@ pub(super) fn cached(
     generation: u64,
     state: &ViewState,
 ) -> Rc<OverviewCache> {
-    let _diagnostic =
-        super::render_diagnostic::scope(super::render_diagnostic::Kind::OverviewLookup);
     let mut cache = cache.borrow_mut();
     if let Some(current) = cache
         .as_ref()

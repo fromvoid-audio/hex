@@ -51,8 +51,8 @@ source regression does not establish the 16.67 ms native p95 target.
 The optimized headless fixed-fixture run at `cfc07ca` measured zero clip rebuilds
 but explicit draw median 18.353 ms/p95 19.123 ms; cached clip paint median
 12.813 ms/p95 13.422 ms dominated it. This is the limited test-framework profile
-described below, not native input latency. The next candidate replaces repeated
-per-primitive bounds-tree insertions with one validated ordered interval for a
+described below, not native input latency. The replay implementation replaces
+repeated per-primitive bounds-tree insertions with one validated ordered interval for a
 cached scene range. Internal order differences/ties, layer operations, typed
 payloads and fresh path IDs are preserved; the unchanged old loop handles
 refused contexts. No whole-row paint-layer shortcut is used.
@@ -63,8 +63,19 @@ overlays, multiple cached ranges and eight repeated generations with stable
 order spans. Refused invalid geometry/layer/range/overflow cases leave state
 unchanged. All 510 enabled UI tests pass with the cache and replay path active.
 Native image-buffer Surface rendering has no new fixture; its shared append
-branch is unchanged. Optimized replay speedup and final native timing remain
-pending. See [the scene replay boundary](native-input.md).
+branch is unchanged. The same oracle also passed in the optimized test binary.
+See [the scene replay boundary](native-input.md).
+
+The optimized headless comparison at `80330bc` retained zero clip rebuilds over
+40 measured draws. Draw median/p95/max fell from 18.353/19.123/43.264 ms to
+5.426/5.799/5.996 ms. Nested cached-clip paint wall median/p95 fell from
+12.813/13.422 ms to 0.858/1.065 ms. These elapsed spans include scheduling and
+are not thread CPU measurements; the nested spans overlap the whole draw.
+Local receipts and raw output are retained under
+`artifacts/issue2648/headless-bulk-replay-recovery/`, with the earlier run under
+`artifacts/issue2648/headless-replay/`. This establishes a framework replay
+speedup under the limits below, not the native 16.67 ms selection-feedback target.
+Final full local CI and the unchanged native 360-sample run remain required.
 
 The ignored `headless_time_selection_framework_profile` test opens the existing
 100-track fixture through the normal Session worker with isolated settings and
@@ -78,7 +89,11 @@ The test backend uses `NoopTextSystem`, test selector bookkeeping and no native
 font shaping/raster, GPU submission/presentation, physical input/display or audio.
 Its framework timings diagnose cache/replay work; they are not comparable native
 feedback measurements or proof of smoothness. The canonical native harness and
-its six metrics, fixtures and 360-sample protocol remain unchanged.
+its six metrics, fixtures and 360-sample protocol remain unchanged. Temporary
+production diagnostic hooks, phase brackets and eight-case termination were
+removed; the native harness is byte-identical to merged measurement source
+`bc8da487`. The retained ignored profile emits only iteration, warm-up flag,
+explicit draw wall time and test-only clip-build count.
 
 Source implemented, 9 October 2026. The user-provided screenshot is the
 visual reference: black filled signed waveforms, separate channel bands and

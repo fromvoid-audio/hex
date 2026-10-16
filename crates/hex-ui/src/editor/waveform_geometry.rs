@@ -85,8 +85,6 @@ impl WaveformGeometryCache {
         key: WaveformGeometryKey,
         source: &Arc<CachedWaveform>,
     ) -> Option<Arc<WaveformGeometry>> {
-        let _diagnostic =
-            super::render_diagnostic::scope(super::render_diagnostic::Kind::WaveLookup);
         let index = self
             .entries
             .iter()
@@ -113,10 +111,6 @@ impl WaveformGeometryCache {
             let Some(removed) = self.entries.pop_front() else {
                 break;
             };
-            super::render_diagnostic::record(
-                super::render_diagnostic::Kind::CacheEvict,
-                std::time::Duration::ZERO,
-            );
             self.columns = self.columns.saturating_sub(removed.columns);
         }
         self.columns = self.columns.saturating_add(columns);
@@ -126,10 +120,6 @@ impl WaveformGeometryCache {
             geometry,
             columns,
         });
-    }
-
-    pub(super) fn diagnostic_occupancy(&self) -> (usize, usize) {
-        (self.entries.len(), self.columns)
     }
 
     pub(super) fn clear(&mut self) {
@@ -189,16 +179,8 @@ pub(super) fn cached_waveform_geometry(
         .ok()
         .and_then(|mut cache| cache.get(key, waveform))
     {
-        super::render_diagnostic::record(
-            super::render_diagnostic::Kind::CacheHit,
-            std::time::Duration::ZERO,
-        );
         return Some(geometry);
     }
-    super::render_diagnostic::record(
-        super::render_diagnostic::Kind::CacheMiss,
-        std::time::Duration::ZERO,
-    );
     let geometry = Arc::new(prepare_waveform_geometry(
         waveform,
         request.mapping,
@@ -280,7 +262,6 @@ pub(super) fn prepare_waveform_geometry(
     bounds: Bounds<Pixels>,
     columns: usize,
 ) -> Option<WaveformGeometry> {
-    let _diagnostic = super::render_diagnostic::scope(super::render_diagnostic::Kind::WavePrepare);
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
     let frames = visible_end.saturating_sub(visible_start);

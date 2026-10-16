@@ -64,7 +64,6 @@ mod recovery;
 mod recovery_state;
 mod refresh;
 mod render;
-mod render_diagnostic;
 mod return_tracks;
 mod routing_controls;
 mod save;

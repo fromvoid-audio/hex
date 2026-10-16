@@ -2,13 +2,11 @@
 use super::*;
 use gpui::{
     Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
-    TestAppContext, VisualTestContext, canvas, point, px,
+    TestAppContext, VisualTestContext, point, px,
 };
 use hex_session::service::{Request, Service};
 use std::{
-    cell::Cell,
     path::PathBuf,
-    rc::Rc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -30,60 +28,8 @@ struct ProfileRoot {
 }
 impl Render for ProfileRoot {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // Temporary phase probes; the retained manual profile needs only draw
-        // wall time/build counts after production instrumentation is removed.
-        let started = Instant::now();
-        let prepaint = Rc::new(Cell::new(None::<Instant>));
-        let paint = Rc::new(Cell::new(None::<Instant>));
-        let leading_prepaint = Rc::clone(&prepaint);
-        let leading_paint = Rc::clone(&paint);
-        let leading = canvas(
-            move |_, _, _| {
-                super::super::render_diagnostic::record(
-                    super::super::render_diagnostic::Kind::RootToLeadingPrepaint,
-                    started.elapsed(),
-                );
-                leading_prepaint.set(Some(Instant::now()));
-            },
-            move |_, _, _, _| leading_paint.set(Some(Instant::now())),
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .w(px(1.0))
-        .h(px(1.0));
-        let trailing = canvas(
-            move |_, _, _| {
-                if let Some(started) = prepaint.take() {
-                    super::super::render_diagnostic::record(
-                        super::super::render_diagnostic::Kind::LeadingToTrailingPrepaint,
-                        started.elapsed(),
-                    );
-                }
-            },
-            move |_, _, _, _| {
-                if let Some(started) = paint.take() {
-                    super::super::render_diagnostic::record(
-                        super::super::render_diagnostic::Kind::LeadingToTrailingPaint,
-                        started.elapsed(),
-                    );
-                }
-                super::super::render_diagnostic::record(
-                    super::super::render_diagnostic::Kind::FrameCpu,
-                    started.elapsed(),
-                );
-            },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .w(px(1.0))
-        .h(px(1.0));
-        div().size_full().relative().children([
-            leading.into_any_element(),
-            self.editor.clone().into_any_element(),
-            trailing.into_any_element(),
-        ])
+        let content = self.editor.clone();
+        div().size_full().relative().child(content)
     }
 }
 
@@ -252,14 +198,12 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
                 }),
                 cx,
             );
-            super::super::render_diagnostic::begin();
             let started = Instant::now();
             let arena = window.draw(cx);
             let elapsed = started.elapsed();
             arena.clear(); // Outside the explicit draw interval.
             elapsed
         });
-        let stats = super::super::render_diagnostic::snapshot(true).expect("diagnostic frame");
         let after = builds(cx);
         let overlay = visual
             .debug_bounds(selector)
@@ -285,7 +229,7 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
                 "steady selection must reuse all warmed clip children"
             );
         }
-        rows.push((iteration, elapsed, after - before, stats.report()));
+        rows.push((iteration, elapsed, after - before));
     }
     visual.update(|window, cx| {
         window.dispatch_input(
@@ -301,10 +245,10 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
     println!(
         "headless_gpui_framework_only=true; noop_text_system=true; native_font_shaping_raster=false; physical_input_gpu_present_audio=false; debug_smoke={smoke}; size=1240x760; scale=2; tracks=100; warmup=5; measured=40"
     );
-    println!("iteration,warmup,explicit_draw_us,clip_builds,phase_diagnostics");
-    for (iteration, elapsed, builds, stats) in rows {
+    println!("iteration,warmup,explicit_draw_us,clip_builds");
+    for (iteration, elapsed, builds) in rows {
         println!(
-            "{iteration},{},{:.3},{builds},{stats}",
+            "{iteration},{},{:.3},{builds}",
             iteration < 5,
             elapsed.as_secs_f64() * 1_000_000.0
         );

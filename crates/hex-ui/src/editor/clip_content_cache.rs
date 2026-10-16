@@ -93,10 +93,6 @@ impl Render for ClipContents {
         {
             self.builds += 1;
         }
-        super::render_diagnostic::record(
-            super::render_diagnostic::Kind::ClipContentBuild,
-            std::time::Duration::ZERO,
-        );
         self.parent
             .update(cx, |view, cx| {
                 if view.project_generation != self.key.generation
@@ -197,11 +193,6 @@ impl EditorView {
                 if content.key != key || fresh || content.fresh_last {
                     content.key = key;
                     content.epoch = content.epoch.wrapping_add(1);
-                } else {
-                    super::render_diagnostic::record(
-                        super::render_diagnostic::Kind::ClipContentReuse,
-                        std::time::Duration::ZERO,
-                    );
                 }
                 content.fresh_last = fresh;
             });

@@ -226,6 +226,9 @@ branch keeps the original shared append logic; native image-buffer rendering
 has no dedicated fixture here. Pinned archive/original hashes are preserved and
 the cumulative diff/hash guard includes the explicitly approved files.
 
-Source verification does not establish a speedup or native frame budget. The
-next optimized headless replay comparison and canonical native 360-sample run
-remain required; their distinct measurement limits remain unchanged.
+The optimized `80330bc` headless comparison reduced explicit draw p95 from
+19.123 ms to 5.799 ms with zero clip rebuilds over 40 measured draws; its
+optimized oracle also passed. This test uses NoopTextSystem without native
+font/GPU/presentation work and does not establish the native frame budget.
+Temporary production probes are removed. Final full local CI and the canonical
+native 360-sample run remain required; see [method and limits](waveform-display.md).

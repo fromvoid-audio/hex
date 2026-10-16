@@ -77,8 +77,6 @@ pub(super) struct PendingTimeRangeMove {
 
 impl EditorView {
     pub(super) fn normalized_time_selection(&self) -> Option<hex_project::TimeRange> {
-        let _diagnostic =
-            super::render_diagnostic::scope(super::render_diagnostic::Kind::Normalize);
         let selection = self.time_selection?;
         if selection.anchor_frame == selection.end_frame {
             return None;
