@@ -144,17 +144,15 @@ impl Callback {
             && let Ok(preview) = self.incoming.pop()
         {
             self.active = Some(preview);
-            if closing
+            if (closing
                 || self
                     .active
                     .as_ref()
-                    .is_some_and(|p| p.generation != generation)
+                    .is_some_and(|p| p.generation != generation))
+                && let Some(preview) = self.active.take()
+                && let Err(PushError::Full(preview)) = self.retired.push(preview)
             {
-                if let Some(preview) = self.active.take()
-                    && let Err(PushError::Full(preview)) = self.retired.push(preview)
-                {
-                    self.active = Some(preview);
-                }
+                self.active = Some(preview);
             }
         }
     }
