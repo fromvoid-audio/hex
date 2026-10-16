@@ -85,11 +85,33 @@ physical report. A report is not Root slot reuse; the host must retain its
 reservation until report consumption. Wrong pairs, caller leases/Weak aliases
 and unsupported constructor observations refuse without consuming the pair.
 
+## retained Root domain cells
+
+A vacant native channel can opt into constructor-domain custody. Previously
+published legacy revisions or unclaimed candidate custody prevent opt-in; after
+opt-in, legacy publication and the old unclaimed staging path refuse their
+original inputs. Default legacy channels keep their existing behavior.
+
+The Root retains exactly two actual factory-pair cells, with sealed nonowning
+Root/slot/incarnation tokens. Caller DATA limits include the actual worker,
+pool and queue backing plus the pre-reserved cleanup capsule. The 32 MiB pool
+cap still counts only PCM. Cell reservation precedes construction outside the
+ordinary bank lock. A construction refusal returns both original endpoints; a
+successful seal racing Root closure stays accepted and retires through the same
+persistent lifecycle executor. There is no callback page endpoint escape.
+
+Normal join, pool conservation and domain metadata destruction precede READY.
+The actual occupied cell and its DATA reservation remain until the caller consumes
+that scalar report, or the lifecycle worker consumes it after Control abandonment.
+Other cells can progress independently. Stale incarnation tokens cannot retire or
+consume a replacement. This domain layer alone does not establish a candidate's
+covering source association or native claims; that wiring remains below.
+
 ## admission boundary
 
 This intermediate source checkpoint does not enable native admission. Complete
-Root reservations/anchors/domain cells, native install-versus-ACK wiring and
-independent archive scheduling are still required within PR236. No opaque OS/std
+Runtime/anchor reservations, source-bound domain uses, native install-versus-ACK
+wiring and independent archive scheduling are still required within PR236. No opaque OS/std
 byte estimate, RSS total, new global graph cap or readiness receipt is inferred.
 
 Once the complete eligible claim path is connected, resident candidates may use

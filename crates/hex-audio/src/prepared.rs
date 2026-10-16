@@ -951,7 +951,9 @@ impl Control {
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
-        let reason = if self.gain_recording.target().is_some() {
+        let reason = if self.candidate_root.domains_configured() {
+            Some("constructor publication does not adopt legacy playback")
+        } else if self.gain_recording.target().is_some() {
             Some("finish gain recording before replacing playback")
         } else if self.closing.load(Acquire) {
             Some("playback is shutting down")
@@ -1135,9 +1137,49 @@ impl Control {
     pub(crate) fn native_candidate_root(&self) -> crate::candidate_custody::CandidateRoot {
         self.candidate_root.clone()
     }
-    /// Accept custody only. The current admission check always refuses these
-    /// candidates before inheritance/active/render; accepted queueing is not an
-    /// installed revision or a complete-cost claim.
+    /// Opt in only on a vacant native channel. This reserves retained domain
+    /// DATA, not native installation, page readiness or complete scalar costs.
+    pub fn configure_audio_candidate_domains(
+        &mut self,
+        reservation: crate::AudioCandidateDomainReservation,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.revision != 0
+            || self.closing.load(Acquire)
+            || self.publication_pending.load(Acquire)
+            || self.held_control_return.is_some()
+            || self.latest_fresh_runtime_cancellation.is_some()
+        {
+            return Err("constructor publication requires a vacant native channel");
+        }
+        self.candidate_root.configure_domains(reservation)
+    }
+    /// Retains one actual factory pair in a fixed Root cell. Successful custody
+    /// may already be closing; the token does not promise publication/readiness.
+    pub fn register_audio_candidate_domain(
+        &mut self,
+        domain: crate::CandidateDomain,
+    ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
+        self.candidate_root.register_domain(domain)
+    }
+    pub fn retire_audio_candidate_domain(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.retire_domain(token)
+    }
+    /// Moves an already READY scalar report; never joins or destroys endpoints.
+    pub fn recover_audio_candidate_domain(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> Option<hex_stream::PagePoolReport> {
+        self.candidate_root.recover_domain(token)
+    }
+    pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
+        self.candidate_root.domain_usage()
+    }
+    /// Accept disposal-only custody. Queue acceptance is not installation or a
+    /// complete-cost claim; the callback currently refuses this path before use.
     pub fn stage_audio_candidate(
         &mut self,
         owner: hex_engine::AudioCandidateOwner,

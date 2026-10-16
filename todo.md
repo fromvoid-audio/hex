@@ -3246,6 +3246,10 @@ admission, OS-stop success, deadline, listening or complete-cost claim is made.
   swaps and normal Runtime Box destruction with atomic archive fanout. Real
   filter decay and exact primary/scratch Box pairs prove A→B→C subset movement;
   copied z history receives no original transfer credit.
+- Added two actual Root domain cells with original-pair cap refusal, exact
+  incarnation tokens and persistent lifecycle cleanup. Pair/metadata destruction
+  precedes READY; cell occupancy and DATA remain until report consumption.
+  Vacant opt-in refuses legacy mixing without changing default legacy channels.
 - This is an implementation checkpoint: native claim/anchor/resource and
   install-versus-ACK wiring remains within PR236. Production admission remains
   refused; streamed readiness and full24/177 acceptance remain open.

@@ -12,6 +12,10 @@ pub struct StreamDomainConstructorSummary {
     pub listed_data_bytes: usize,
     pub listed_construction_peak_bytes: usize,
     pub pool_pcm_bytes: usize,
+    /// Listed backing plus the actual prepared cleanup capsule capacity. Inline
+    /// Self storage belongs to the host cell; opaque resources remain separate.
+    pub retained_data_bytes: usize,
+    pub construction_peak_data_bytes: usize,
     /// The fifteen physical factory fields, three real lease fields, one
     /// exact-pair disposal anchor, and the actual worker kernel-plan handles.
     pub shared_handle_bound: usize,
@@ -50,6 +54,17 @@ impl ConstructorStreamDomain {
         control: StreamControl,
         pages: StreamCallbackPages,
     ) -> Result<Self, Box<StreamDomainSealRefusal>> {
+        Self::try_new_with_data_limits_on_control(control, pages, usize::MAX, usize::MAX)
+    }
+    /// Host reservation applies before consuming either original endpoint. The
+    /// domain's inline value is stored in the host's already charged cell; these
+    /// limits cover its listed backing storage and actual cleanup capsule.
+    pub fn try_new_with_data_limits_on_control(
+        control: StreamControl,
+        pages: StreamCallbackPages,
+        max_retained_data_bytes: usize,
+        max_construction_peak_data_bytes: usize,
+    ) -> Result<Self, Box<StreamDomainSealRefusal>> {
         let result = (|| {
             let data = storage::closed_constructor_pair_data(&control, &pages)?;
             let listed_data_bytes = data
@@ -83,11 +98,27 @@ impl ConstructorStreamDomain {
             if !pages.matches_catalog(&lease) {
                 return Err(AudioStreamStorageError::PairMismatch);
             }
+            let metadata = disposal
+                .metadata_bytes()
+                .ok_or(AudioStreamStorageError::Overflow)?;
+            let retained_data_bytes = listed_data_bytes
+                .checked_add(metadata)
+                .ok_or(AudioStreamStorageError::Overflow)?;
+            let construction_peak_data_bytes = listed_construction_peak_bytes
+                .checked_add(metadata)
+                .ok_or(AudioStreamStorageError::Overflow)?;
+            if retained_data_bytes > max_retained_data_bytes
+                || construction_peak_data_bytes > max_construction_peak_data_bytes
+            {
+                return Err(AudioStreamStorageError::ReservationExceeded);
+            }
             let summary = StreamDomainConstructorSummary {
                 data,
                 listed_data_bytes,
                 listed_construction_peak_bytes,
                 pool_pcm_bytes,
+                retained_data_bytes,
+                construction_peak_data_bytes,
                 shared_handle_bound: 19usize
                     .checked_add(data.worker.kernel_handles)
                     .ok_or(AudioStreamStorageError::Overflow)?,

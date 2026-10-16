@@ -12,6 +12,11 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+mod eligible;
+pub use eligible::{
+    AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainToken,
+    AudioCandidateDomainUsage,
+};
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +125,7 @@ struct AbandonedReturns {
 }
 struct Inner {
     root: u64,
+    eligible: eligible::Custody,
     bank: Mutex<Bank>,
     execution: Mutex<Work>,
     abandoned: AtomicBool,
@@ -206,6 +212,7 @@ impl CandidateRoot {
         slots.resize_with(capacity, Slot::vacant);
         let root = Self(Arc::new(Inner {
             root,
+            eligible: eligible::Custody::default(),
             bank: Mutex::new(Bank {
                 root,
                 closing: false,
@@ -233,6 +240,13 @@ impl CandidateRoot {
         domains: Vec<CandidateDomain>,
         enqueue: impl FnOnce(QueuedCandidate) -> Result<R, QueuedCandidate>,
     ) -> Result<(R, AudioCandidateTicket), AudioCandidateStageRefusal> {
+        if self.0.eligible.enabled() {
+            return Err(AudioCandidateStageRefusal {
+                reason: "constructor Root requires scoped eligible claims",
+                owner,
+                domains,
+            });
+        }
         let catalog = match CatalogCustody::prepare(&owner, domains) {
             Ok(catalog) => catalog,
             Err(domains) => {
@@ -310,7 +324,52 @@ impl CandidateRoot {
     }
     pub(crate) fn close(&self) {
         lock(&self.0.bank).closing = true;
+        self.0.eligible.close();
     }
+    pub(crate) fn configure_domains(
+        &self,
+        reservation: AudioCandidateDomainReservation,
+    ) -> Result<(), &'static str> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring || bank.slots.iter().any(|s| s.phase != Phase::Vacant) {
+            return Err("constructor Root is not vacant");
+        }
+        let bytes = bank
+            .slots
+            .capacity()
+            .checked_mul(std::mem::size_of::<Slot>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .ok_or("constructor Root metadata overflow")?;
+        self.0
+            .eligible
+            .configure(self.root_id(), reservation, bytes)
+    }
+    pub(crate) fn domains_configured(&self) -> bool {
+        self.0.eligible.enabled()
+    }
+    pub(crate) fn register_domain(
+        &self,
+        domain: CandidateDomain,
+    ) -> Result<AudioCandidateDomainToken, Box<AudioCandidateDomainRefusal>> {
+        let result = self.0.eligible.register_domain(domain);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
+        let result = self.0.eligible.retire_domain(token);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn recover_domain(
+        &self,
+        token: AudioCandidateDomainToken,
+    ) -> Option<hex_stream::PagePoolReport> {
+        self.0.eligible.recover_domain(token)
+    }
+    pub(crate) fn domain_usage(&self) -> Option<AudioCandidateDomainUsage> {
+        self.0.eligible.usage()
+    }
+
     pub(crate) fn abandon_control(
         &self,
         receiver: Option<rtrb::Consumer<crate::prepared::ReturnedPublication>>,
@@ -327,6 +386,7 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
         drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
@@ -406,6 +466,9 @@ impl CandidateRoot {
     /// Called only by the existing lifecycle executor (and owning-module tests).
     /// Persistent Work outlives every control-side destructor/join unwind.
     pub(crate) fn advance_on_control(&self) {
+        self.0
+            .eligible
+            .advance_on_control(self.0.abandoned.load(Ordering::Acquire));
         if !self.drain_abandoned_on_control() {
             return;
         }
@@ -604,6 +667,7 @@ impl CandidateRoot {
             .slots
             .iter()
             .all(|s| s.phase == Phase::Vacant)
+            && self.0.eligible.complete()
     }
     pub(crate) fn same_root(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -625,13 +689,16 @@ impl CandidateRoot {
         }
     }
     fn has_work(&self, bank: &Bank) -> bool {
-        bank.slots.iter().any(|slot| {
-            matches!(
-                slot.phase,
-                Phase::Returned | Phase::Cleaning | Phase::Failed
-            ) || (self.0.abandoned.load(Ordering::Acquire)
-                && matches!(slot.phase, Phase::Accepted | Phase::Complete))
-        })
+        self.0
+            .eligible
+            .has_work(self.0.abandoned.load(Ordering::Acquire))
+            || bank.slots.iter().any(|slot| {
+                matches!(
+                    slot.phase,
+                    Phase::Returned | Phase::Cleaning | Phase::Failed
+                ) || (self.0.abandoned.load(Ordering::Acquire)
+                    && matches!(slot.phase, Phase::Accepted | Phase::Complete))
+            })
     }
     /// Idle decision and flag clearing share the ingest/scheduling lock.
     pub(crate) fn job_idle(&self) -> bool {
