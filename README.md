@@ -110,6 +110,13 @@ these are intentional system interfaces. `rtrb` 0.3.4 provides a bounded SPSC
 control queue. `hex-project` uses only the standard library; `hex-engine` depends on that model and std-only `hex-devices` DSP. All workspace
 code forbids unsafe Rust; native dependencies may use FFI internally.
 
+The toolbar keyboard toggle or M enables live computer MIDI audition on the selected
+instrument track. A/W/S/E/D/F/T/G/Y/H/U/J/K/O/L/P/; span seventeen semitones from
+MIDI60; Z/X shift octave and C/V change velocity. It works stopped and playing,
+preserves text entry, and adds no recorded notes/history. Release/repress after
+focus, Stop or graph changes. Positive-latency layouts currently refuse monitoring;
+see [computer MIDI keyboard](docs/midi.md#computer-midi-keyboard--2642--pr257).
+
 Desktop shortcuts: Space plays/pauses; Escape cancels an active clip drag, otherwise
 stops and returns to start; the Stop icon always stops transport;
 Command-I imports a WAV; Command-O opens a project; Command-S saves its associated

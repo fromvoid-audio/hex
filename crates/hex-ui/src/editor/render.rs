@@ -462,6 +462,14 @@ impl Render for EditorView {
                     }
                 }),
             )
+            .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                view.computer_keyboard_down(event, window, cx);
+            }))
+            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                if view.computer_keyboard_up(&event.keystroke.key) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && view.cancel_active_native_device_drag() {
                     cx.stop_active_drag(window);
