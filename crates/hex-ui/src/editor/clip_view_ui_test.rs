@@ -123,6 +123,7 @@ fn audio_detail_fixture(
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(project),
             waveforms,
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(Default::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 384_000,
@@ -575,6 +576,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&project_after_remove),
             waveforms: previous.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&previous.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: previous.timeline_frames,
@@ -690,8 +692,9 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,
@@ -709,8 +712,9 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: old.gain_preview.clone(),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,
@@ -722,5 +726,41 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
     });
     visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+}
+
+#[gpui::test]
+fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut TestAppContext) {
+    let (handle, editor, _, clip) = audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual
+        .debug_bounds("audio-clip-gain-1")
+        .expect("gain control");
+    let click = point(bounds.center().x, bounds.center().y);
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(view.last_enqueued_edit, Some(Command::SetAudioClipGain { clip: id, millidb: 1_000 }) if id == clip));
+    });
+    editor.update(cx, |view, _| {
+        view.last_enqueued_edit = None;
+        let old = view.state.as_ref().expect("state");
+        view.state = Some(Arc::new(ViewState {
+            project: Arc::clone(&old.project),
+            waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            midi_preview: Arc::clone(&old.midi_preview),
+            gain_preview: old.gain_preview.clone(),
+            timeline_frames: old.timeline_frames,
+            can_undo: old.can_undo,
+            can_redo: old.can_redo,
+            revision: old.revision + 1,
+            unsaved: old.unsaved,
+            document_path: old.document_path.clone(),
+        }));
+    });
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
 }

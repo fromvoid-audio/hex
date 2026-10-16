@@ -154,7 +154,8 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
         ) => true,
         PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::Pause)
         | PlaybackAction::Session(_)
-        | PlaybackAction::LaunchAndPlay(_) => false,
+        | PlaybackAction::LaunchAndPlay(_)
+        | PlaybackAction::SetMetronome(_) => false,
     }
 }
 
@@ -310,6 +311,8 @@ pub struct Status {
     pub gain_recording_fault: AtomicBool,
     pub gain_recording_ready: AtomicBool,
     pub playing: AtomicBool,
+    /// Last callback-admitted interactive click state.
+    pub metronome_enabled: AtomicBool,
     pub session_capability: AtomicU32,
     pub shutdown_complete: AtomicBool,
     route_sequence: AtomicU64,
@@ -355,6 +358,7 @@ impl Status {
             gain_recording_fault: AtomicBool::new(false),
             gain_recording_ready: AtomicBool::new(false),
             playing: AtomicBool::new(false),
+            metronome_enabled: AtomicBool::new(false),
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             shutdown_complete: AtomicBool::new(false),
             route_sequence: AtomicU64::new(0),
@@ -498,6 +502,7 @@ impl Status {
     }
 
     fn publish_empty_routes(&self) {
+        self.metronome_enabled.store(false, Relaxed);
         self.begin_route_snapshot();
         for slot in self.route_slots.iter() {
             slot.clear();
@@ -970,7 +975,9 @@ impl Control {
         self.action_with_ticket(PlaybackAction::Transport(command))
             .map_err(|action| match action {
                 PlaybackAction::Transport(command) => command,
-                PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_) => command,
+                PlaybackAction::Session(_)
+                | PlaybackAction::LaunchAndPlay(_)
+                | PlaybackAction::SetMetronome(_) => command,
             })
     }
 
@@ -983,7 +990,9 @@ impl Control {
         self.action_with_ticket(PlaybackAction::Session(command))
             .map_err(|action| match action {
                 PlaybackAction::Session(command) => command,
-                PlaybackAction::Transport(_) | PlaybackAction::LaunchAndPlay(_) => command,
+                PlaybackAction::Transport(_)
+                | PlaybackAction::LaunchAndPlay(_)
+                | PlaybackAction::SetMetronome(_) => command,
             })
     }
 
@@ -997,7 +1006,7 @@ impl Control {
                 PlaybackAction::LaunchAndPlay(command) | PlaybackAction::Session(command) => {
                     command
                 }
-                PlaybackAction::Transport(_) => command,
+                PlaybackAction::Transport(_) | PlaybackAction::SetMetronome(_) => command,
             })
     }
 
@@ -1252,6 +1261,18 @@ impl Callback {
                     {
                         barrier.wait();
                         barrier.wait();
+                    }
+                    // A fresh seek keeps its reconstructed transport/DSP
+                    // history. Carry only the transient click toggle after
+                    // every fence/cancellation refusal has been excluded.
+                    if matches!(
+                        next.policy,
+                        PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                    ) && let Some(previous) = self.active.as_ref()
+                        && next.control_context_generation == previous.control_context_generation
+                    {
+                        next.playback
+                            .inherit_metronome_for_fresh_seek(&previous.playback);
                     }
                     let revision = next.revision;
                     // A held EQ8 selector normally follows the current pair
@@ -1743,6 +1764,9 @@ impl Callback {
             self.status
                 .playing
                 .store(active.playback.playing(), Relaxed);
+            self.status
+                .metronome_enabled
+                .store(active.playback.metronome_enabled(), Relaxed);
         }
     }
 }
@@ -1891,6 +1915,8 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -2018,6 +2044,8 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -2133,6 +2161,8 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -2260,6 +2290,8 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -2368,6 +2400,365 @@ mod tests {
     struct CompressorReferenceHistory {
         envelope: f64,
         gain_db: f64,
+    }
+
+    fn metronome_graph() -> Playback {
+        let mut project = hex_project::Project::new(8_000).unwrap().snapshot();
+        project.loop_region = Some(hex_project::LoopRegion::new(0, 4_050, true).unwrap());
+        let revision = hex_engine::PreparedRevision::prepare(
+            &hex_project::Project::from_snapshot(project).unwrap(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        Playback::from_prepared(Arc::new(revision))
+    }
+
+    #[test]
+    fn metronome_admission_is_reported_and_priority_stop_discards_older_toggle() {
+        let (mut control, mut callback) = channel(8_000).unwrap();
+        control.publish(metronome_graph()).unwrap();
+        callback.begin_block();
+        let ticket = control
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        assert!(!control.status.metronome_enabled.load(Relaxed));
+        callback.begin_block();
+        assert!(control.status.metronome_enabled.load(Relaxed));
+        assert!(control.status.consumed_command.load(Acquire) >= ticket);
+        control
+            .action_with_ticket(PlaybackAction::SetMetronome(false))
+            .unwrap();
+        control.stop();
+        callback.begin_block();
+        assert!(control.status.metronome_enabled.load(Relaxed));
+        assert!(!control.status.playing.load(Relaxed));
+        control
+            .action_with_ticket(PlaybackAction::SetMetronome(false))
+            .unwrap();
+        callback.begin_block();
+        assert!(!control.status.metronome_enabled.load(Relaxed));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    fn metronome_prerolled_seek(
+        revision: Arc<hex_engine::PreparedRevision>,
+        destination: u64,
+    ) -> Playback {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                    revision, destination, destination, true, &AtomicBool::new(false),
+                ).unwrap();
+                Playback::from_interactive_arrangement_preroll(runtime).unwrap()
+            }).unwrap().join().unwrap()
+    }
+
+    #[test]
+    fn metronome_fresh_seek_preserves_only_monitoring_after_accepted_exact_source_fence() {
+        for (same_source, same_context, conditional, enabled) in [
+            (true, true, true, true),
+            (false, true, true, false),
+            (true, false, true, false),
+            (true, true, false, false),
+        ] {
+            let (old, _) = fresh_spectrum_eq8_graph();
+            let old_source = Arc::clone(old.prepared_revision().unwrap());
+            assert!(old_source.arrangement_seek_requires_preroll());
+            let source = if same_source {
+                Arc::clone(&old_source)
+            } else {
+                Arc::clone(fresh_spectrum_eq8_graph().0.prepared_revision().unwrap())
+            };
+            let mut oracle = metronome_prerolled_seek(Arc::clone(&source), 200);
+            let mut expected = [[0.0; 2]; 128];
+            oracle.render(&mut expected).unwrap();
+            let candidate = metronome_prerolled_seek(source, 200);
+            assert_eq!(
+                Arc::ptr_eq(candidate.prepared_revision().unwrap(), &old_source),
+                same_source
+            );
+            assert!(!candidate.metronome_enabled());
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            control
+                .publish_with_policy_and_context_generation(
+                    old,
+                    PublicationPolicy::InstallFreshRuntime,
+                    12,
+                )
+                .unwrap();
+            control
+                .action_with_ticket(PlaybackAction::SetMetronome(true))
+                .unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 37]).unwrap();
+            assert!(control.status.metronome_enabled.load(Relaxed));
+            let fence = control.capture_fresh_runtime_fence().unwrap();
+            let policy = if conditional {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence)
+            } else {
+                PublicationPolicy::InstallFreshRuntime
+            };
+            let revision = control
+                .publish_with_policy_and_context_generation(
+                    candidate,
+                    policy,
+                    if same_context { 12 } else { 13 },
+                )
+                .unwrap();
+            let mut output = [[0.0; 2]; 128];
+            let render = || {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let allocations = allocation_counter::measure(render);
+                assert_eq!(
+                    (
+                        allocations.count_total,
+                        allocations.bytes_total,
+                        allocations.count_current,
+                        allocations.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                let mut render = render;
+                render();
+            }
+            assert_eq!(control.status.applied_revision.load(Acquire), revision);
+            assert_eq!(control.status.metronome_enabled.load(Relaxed), enabled);
+            assert_eq!(control.status.position.load(Relaxed), 328);
+            assert_eq!(control.status.performance_frame.load(Relaxed), 328);
+            assert_eq!(
+                output, expected,
+                "fresh DSP/transport history and a reset click tail must match the preroll oracle"
+            );
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
+    #[test]
+    fn metronome_rejected_fresh_seek_keeps_active_toggle_and_position() {
+        for cancelled in [false, true] {
+            let (old, _) = fresh_spectrum_eq8_graph();
+            let source = Arc::clone(old.prepared_revision().unwrap());
+            let candidate = metronome_prerolled_seek(source, 200);
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let active_revision = control
+                .publish_with_policy_and_context_generation(
+                    old,
+                    PublicationPolicy::InstallFreshRuntime,
+                    12,
+                )
+                .unwrap();
+            control
+                .action_with_ticket(PlaybackAction::SetMetronome(true))
+                .unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            callback.begin_block();
+            callback.render(&mut [[0.0; 2]; 37]).unwrap();
+            let fence = control.capture_fresh_runtime_fence().unwrap();
+            let rejected = control
+                .publish_with_policy_and_context_generation(
+                    candidate,
+                    PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                    12,
+                )
+                .unwrap();
+            if cancelled {
+                assert_eq!(
+                    control.cancel_fresh_runtime_publication(rejected),
+                    FreshRuntimeCancellationResult::Cancelled
+                );
+            } else {
+                control.command(PlaybackCommand::Pause).unwrap();
+            }
+            callback.begin_block();
+            assert_eq!(
+                control.status.applied_revision.load(Acquire),
+                active_revision
+            );
+            assert_eq!(
+                control.status.rejected_revision(),
+                Some((
+                    rejected,
+                    if cancelled {
+                        PlaybackHandoffRejection::FreshRuntimeCancelled
+                    } else {
+                        PlaybackHandoffRejection::RuntimeFenceChanged
+                    }
+                ))
+            );
+            assert!(control.status.metronome_enabled.load(Relaxed));
+            assert_eq!(control.status.position.load(Relaxed), 37);
+            assert_eq!(control.status.playing.load(Relaxed), cancelled);
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn clip_gain_with_fades_and_replacement_allocates_and_frees_nothing_in_callback() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { asset, clip, .. } = editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: "clip gain".into(),
+                path: "gain.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_024,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        editor
+            .execute(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 64,
+                fade_out: 64,
+            })
+            .unwrap();
+        let audio = hex_engine::Audio::new(48_000, vec![[0.5, -0.25]; 1_024]).unwrap();
+        let media = std::collections::BTreeMap::from([(asset, audio)]);
+        let prepare = |editor: &hex_project::Editor| {
+            let revision = hex_engine::PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap();
+            Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap()
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            })
+            .unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(prepare(&editor)).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut prefix).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let gain = hex_project::ClipGain::new(-6_000).unwrap().linear();
+        assert_eq!(prefix[0], [0.0; 2]);
+        assert_eq!(prefix[64], [0.5 * gain, -0.25 * gain]);
+        editor
+            .execute(hex_project::Command::SetAudioClipGain {
+                clip,
+                millidb: 6_000,
+            })
+            .unwrap();
+        control.publish(prepare(&editor)).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let gain = hex_project::ClipGain::new(6_000).unwrap().linear();
+        assert_eq!(output, [[0.5 * gain, -0.25 * gain]; 128]);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn metronome_commands_loops_and_handoff_allocate_and_free_nothing_in_callback() {
+        let (mut control, mut callback) = channel(8_000).unwrap();
+        control.publish(metronome_graph()).unwrap();
+        callback.begin_block();
+        control
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            for _ in 0..65 {
+                callback.render(&mut output).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(control.status.metronome_enabled.load(Relaxed));
+        control.publish(metronome_graph()).unwrap();
+        control.command(PlaybackCommand::Seek(0)).unwrap();
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output[0], [0.16; 2]);
+        control.command(PlaybackCommand::Pause).unwrap();
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output, [[0.0; 2]; 128]);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
     }
 
     #[cfg(feature = "allocation-probe")]
@@ -4172,6 +4563,123 @@ mod tests {
         control.reclaim();
     }
 
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn derived_pcm_render_replace_and_retire_never_allocate_or_drop_on_callback() {
+        fn transformed(cents: i16) -> (Playback, Weak<hex_engine::PreparedRevision>) {
+            use hex_project::{Command, Created, Editor, Project};
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Imported { clip, asset, track } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "audio".into(),
+                    path: "derived.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 2_048,
+                })
+                .unwrap()
+            else {
+                panic!("import")
+            };
+            editor
+                .execute(Command::SetAudioClipPitch { clip, cents })
+                .unwrap();
+            let Created::Track(target) = editor
+                .execute(Command::AddTrack {
+                    name: "routed".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor
+                .execute(Command::SetAudioFeed {
+                    source: hex_project::RoutingOwner::Track(track),
+                    destination: target,
+                    gain: 0.5,
+                })
+                .unwrap();
+            editor
+                .execute(Command::ReplaceTrackGainEnvelope {
+                    track,
+                    points: vec![hex_project::GainPoint {
+                        beat: hex_project::BeatTime::ZERO,
+                        gain: 0.5,
+                        outgoing: hex_project::GainInterpolation::Step,
+                    }],
+                })
+                .unwrap();
+            let audio = hex_engine::Audio::new(
+                48_000,
+                (0..2_048)
+                    .map(|i| {
+                        let x = (i as f32 * 0.173).sin() * 0.2;
+                        [x, -x]
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            // The temporary default preparation cache is destroyed here. Only the
+            // returned graph owns derived Audio; no UI/source/cache masks retirement.
+            let revision = Arc::new(
+                hex_engine::PreparedRevision::prepare(
+                    editor.project(),
+                    &std::collections::BTreeMap::from([(asset, audio)]),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let weak = Arc::downgrade(&revision);
+            (
+                Playback::try_from_prepared_with_session(revision).unwrap(),
+                weak,
+            )
+        }
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut roots = Vec::new();
+        let mut output = [[0.0; 2]; 31];
+        for cents in [137, 211, 337, 411] {
+            let (graph, weak) = transformed(cents);
+            roots.push(weak);
+            control.publish(graph).unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            let allocation = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    allocation.count_total,
+                    allocation.bytes_total,
+                    allocation.count_current,
+                    allocation.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(
+                roots.iter().all(|root| root.strong_count() > 0),
+                "retired derived roots remain owned until control reclamation"
+            );
+        }
+        control.request_shutdown();
+        for _ in 0..3 {
+            let allocation = allocation_counter::measure(|| {
+                callback.begin_block();
+            });
+            assert_eq!(
+                (
+                    allocation.count_total,
+                    allocation.bytes_total,
+                    allocation.count_current,
+                    allocation.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            control.reclaim();
+        }
+        assert!(roots.iter().all(|root| root.strong_count() == 0));
+    }
+
     fn graph() -> (Playback, Weak<hex_engine::Project>) {
         graph_with_frame([0.25; 2])
     }
@@ -4236,6 +4744,7 @@ mod tests {
                     track: 1,
                     scene: 2,
                     content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                        gain: hex_project::ClipGain::UNITY,
                         id: 3,
                         name: "one shot".into(),
                         asset: 4,

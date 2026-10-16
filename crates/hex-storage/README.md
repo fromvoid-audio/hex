@@ -145,7 +145,7 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema24, the complete envelope for device input/output host gains,
+New saves use schema25, the complete envelope for device input/output host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
 and recording epochs. All playback consumers share the admitted lane model. The
 ordinary writer does not select formats based on which fields happen to be empty.
@@ -175,3 +175,21 @@ cycles and oversized lists before admitting a Project. Schemas1–23 migrate wit
 empty typed inputs; schema23 retains host trims, provenance, Return feeds and
 gain-touch metadata. Explicit schema20/22 writers refuse playable routing rather
 than discarding it. Historical schema18/19 shape dispatch remains unchanged.
+
+
+Schema25 retains the complete routed schema24 envelope and adds required bounded
+`audio_clip_state`: exactly one ID-keyed entry for every Arrangement and Session
+audio clip, with validated integer `gain_millidb` and required-nullable
+`audio_edit`. Session edits must be null. Arrangement state preserves pitch,
+beat placement, root/crop, all six warp settings/markers, source gain envelopes
+and frozen fades. Missing/duplicate/unknown bindings, malformed state and unknown
+fields refuse admission. Historical nested DTOs remain unchanged and strict;
+PCM, analysis and caches are not serialized. Explicit schema20/22 writers refuse
+nonunity clip gain or any retained edit instead of dropping it.
+
+Unpublished issue27 development schemas20/21 are selected only when both root
+`import_provenance` and `routing` keys are absent; exactly one key is invalid.
+Their strict reader requires gain on every audio clip, requires `audio_edit` on
+every Arrangement clip in21 and forbids it in20. No-audio envelopes are rejected
+as ambiguous. Root keys both present select only main's historical20/21 reader,
+including when null/malformed; errors never retry another format.

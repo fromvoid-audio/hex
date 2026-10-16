@@ -175,6 +175,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             content: TrackContentSnapshot::Audio(
                 (0..MAX_CLIPS)
                     .map(|index| ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: 3 + index as u64,
                         asset: 1,
                         start: 0,
@@ -262,6 +264,8 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: 3,
                 asset: 1,
                 start: 0,

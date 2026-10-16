@@ -19,6 +19,7 @@ mod device_gesture;
 mod device_panel;
 mod dialogs;
 mod drag;
+mod drag_autoscroll;
 mod duplicate;
 mod edit_cursor;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -44,6 +45,7 @@ mod midi_source_controls;
 mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
+mod musical_audio_controls;
 mod musical_time;
 mod overview;
 mod play_intent;
@@ -56,6 +58,7 @@ mod render;
 mod return_tracks;
 mod routing_controls;
 mod save;
+mod scrub;
 mod seek;
 mod selection;
 mod session_audio_panel;
@@ -64,6 +67,8 @@ mod session_navigation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod session_navigation_ui_test;
 mod session_route_view;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod snap_nudge_ui_test;
 mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
@@ -449,6 +454,7 @@ pub(super) struct EditorView {
     pending_playback: Option<PendingPlayback>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
     pending_seek_ticket: Option<u64>,
+    pending_metronome_ticket: Option<u64>,
     pending_session_ticket: Option<(u64, u64)>,
     viewport: Option<Viewport>,
     playback_candidates: VecDeque<PlaybackCandidate>,
@@ -478,6 +484,7 @@ pub(super) struct EditorView {
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
+    _scrub_focus_lifecycle: gpui::Subscription,
     track_scroll: gpui::UniformListScrollHandle,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
@@ -497,8 +504,10 @@ pub(super) struct EditorView {
     main_track_lane_epoch: u64,
     drag_layout_generation: u64,
     arrangement_pan: Option<ArrangementPan>,
+    scrub: scrub::ScrubState,
     zoom_wheel_accum: f32,
     overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
+    audio_point_page: usize,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
@@ -646,6 +655,11 @@ impl EditorView {
         })
         .detach();
         let focus = cx.focus_handle();
+        let scrub_focus_blur = cx.on_blur(&focus, window, |view, _, cx| {
+            if view.cancel_scrub() {
+                cx.notify();
+            }
+        });
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
             let midi_cancelled = view.cancel_midi_note_gesture();
@@ -656,17 +670,18 @@ impl EditorView {
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 let midi_cancelled = view.cancel_midi_note_gesture();
+                let scrub_cancelled = view.cancel_scrub();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.processor_audition.cancel_immediately();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
-                if midi_cancelled {
+                if midi_cancelled || scrub_cancelled {
                     cx.notify();
                 }
             }
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
-            if view.cancel_midi_note_gesture() {
+            if view.cancel_midi_note_gesture() | view.cancel_scrub() {
                 cx.notify();
             }
         });
@@ -718,6 +733,7 @@ impl EditorView {
             pending_playback: None,
             pending_audio_commands: VecDeque::new(),
             pending_seek_ticket: None,
+            pending_metronome_ticket: None,
             pending_session_ticket: None,
             viewport: None,
             playback_candidates: VecDeque::new(),
@@ -747,6 +763,7 @@ impl EditorView {
             focus,
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
+            _scrub_focus_lifecycle: scrub_focus_blur,
             track_scroll: gpui::UniformListScrollHandle::new(),
             focused_return: None,
             send_menu_track: None,
@@ -766,8 +783,10 @@ impl EditorView {
             main_track_lane_epoch: 0,
             drag_layout_generation: 0,
             arrangement_pan: None,
+            scrub: scrub::ScrubState::default(),
             zoom_wheel_accum: 0.0,
             overview_cache: std::cell::RefCell::new(None),
+            audio_point_page: 0,
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),

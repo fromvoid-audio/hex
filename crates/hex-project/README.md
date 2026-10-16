@@ -9,6 +9,10 @@ are transactional; failed edits leave state and history unchanged. No PCM is
 stored in history. Each asset records its original source rate/frame count and
 its prepared project-rate playback frame count plus conversion version. Clip
 source intervals use playback frames.
+Optional musical audio edits use shared immutable ownership with copy-on-write
+for crop, placement and processing changes. Neutral clips retain only an optional
+pointer; public read-only edit access and owned snapshots keep the same contract.
+See [musical editing](../../docs/musical-editing.md) for retained-domain semantics.
 Track solo state is canonical metadata. Exclusive solo clears other solo states
 when enabling; additive solo preserves them, and toggling off only clears the
 selected track. The optional half-open loop region has validated positive length,

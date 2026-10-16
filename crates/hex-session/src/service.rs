@@ -31,10 +31,19 @@ const IMPORT_FRAME_LIMIT: usize = 8_000_000;
 const BROWSER_PREVIEW_BINS: usize = 48;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
+#[derive(Clone)]
+pub struct AudioClipWaveform {
+    pub waveform: Arc<Waveform>,
+    pub offset: u64,
+    pub length: u64,
+}
+
 /// Read-only model and cached summaries for a single committed project revision.
 pub struct ViewState {
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
+    /// Worker-built transformed root peaks and exact audible crop coordinates.
+    pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
     /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
@@ -318,9 +327,16 @@ pub struct Service {
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
     arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
     _export_worker: JoinHandle<()>,
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+    }
 }
 
 type Exporter = Arc<
@@ -398,8 +414,10 @@ impl Service {
         recovery: Option<PathBuf>,
         exporter: Exporter,
     ) -> Result<Self, ServiceError> {
+        let shutdown = Arc::new(AtomicBool::new(false));
         let session = Session::new(sample_rate, history_capacity, max_resident_frames)
-            .map_err(ServiceError::Session)?;
+            .map_err(ServiceError::Session)?
+            .with_shutdown(Arc::clone(&shutdown));
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -430,6 +448,7 @@ impl Service {
             events: event_rx,
             export_events: export_event_rx,
             export_busy,
+            shutdown,
             arrangement_seek: Some(arrangement_seek),
             _worker: worker,
             _export_worker: export_worker,
@@ -560,6 +579,7 @@ fn view_state(
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
+        audio_clip_waveforms: session.audio_clip_waveforms().unwrap_or_default(),
         midi_preview,
         timeline_frames: latest_content_end
             .saturating_add(rate.saturating_mul(2))
@@ -588,6 +608,7 @@ fn preview_view_state(
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
+        audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(prepared.midi_preview()),
         timeline_frames: content_end
             .saturating_add(rate.saturating_mul(2))
@@ -4635,6 +4656,7 @@ mod service_tests {
             events,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
             arrangement_seek: None,
             _worker: thread::spawn(|| {}),
             _export_worker: thread::spawn(|| {}),

@@ -31,8 +31,12 @@ clip/scene launch-and-play, ticketed rapid launch/toggle intent, ordered priorit
 Stop, and accepted-revision active/queued route indicators. Native Session
 interaction remains unverified.
 
+Arrangement musical audio includes pitch, beat anchoring, source gain envelopes
+and six distinct bounded warp modes, with prepared output waveforms; see
+[musical editing](docs/musical-editing.md) for limits and native gaps.
+
 This is an early working foundation. Audio input recording, MIDI hardware I/O/expression,
-warp, device selection, plugin hosting and Live-set compatibility remain planned.
+device selection, plugin hosting and Live-set compatibility remain planned.
 Typed stereo/MIDI routing, track-gain editing/touch recording and declared-latency
 compensation are described in [routing](docs/routing.md); native interaction and
 physical device acceptance remain separate. A bounded
@@ -80,6 +84,7 @@ WAV export clamps to the 16-bit range. Listening acceptance remains pending.
 ## Project map
 
 - `crates/hex-project`: canonical editable metadata, stable IDs, validated commands and history.
+- `crates/hex-warp`: pure bounded control-side stereo transformation.
 - `crates/hex-media`: bounded WAV decoding and cached stereo peak summaries.
 - `crates/hex-stream`: verified WAV worker, fixed page pool/cache and ownership queues; headless streamed engine rendering, with native integration pending.
 - `crates/hex-session`: canonical controller, retained media and bounded background operations.

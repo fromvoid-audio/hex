@@ -7,28 +7,28 @@ use std::fmt;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentV24 {
-    format: String,
-    version: u32,
-    sample_rate: u32,
-    next_id: u64,
-    assets: Vec<AssetV2>,
+    pub(super) format: String,
+    pub(super) version: u32,
+    pub(super) sample_rate: u32,
+    pub(super) next_id: u64,
+    pub(super) assets: Vec<AssetV2>,
     #[serde(deserialize_with = "gain_touch::bounded_tracks")]
-    tracks: Vec<gain_touch::TrackV22>,
-    return_tracks: Vec<ReturnTrackDtoV17>,
+    pub(super) tracks: Vec<gain_touch::TrackV22>,
+    pub(super) return_tracks: Vec<ReturnTrackDtoV17>,
     #[serde(deserialize_with = "deserialize_required_loop_region")]
-    loop_region: Option<LoopRegionDto>,
-    master_gain: f32,
-    tempo_points: Vec<TempoPointDto>,
-    meter_points: Vec<MeterPointDto>,
-    session: SessionDtoV12,
+    pub(super) loop_region: Option<LoopRegionDto>,
+    pub(super) master_gain: f32,
+    pub(super) tempo_points: Vec<TempoPointDto>,
+    pub(super) meter_points: Vec<MeterPointDto>,
+    pub(super) session: SessionDtoV12,
     #[serde(deserialize_with = "provenance::required_provenance")]
-    import_provenance: Option<provenance::ProvenanceDto>,
+    pub(super) import_provenance: Option<provenance::ProvenanceDto>,
     #[serde(deserialize_with = "return_feeds::bounded_feeds")]
-    routing: Vec<return_feeds::FeedDto>,
+    pub(super) routing: Vec<return_feeds::FeedDto>,
     #[serde(deserialize_with = "bounded_audio")]
-    audio_feeds: Vec<AudioDto>,
+    pub(super) audio_feeds: Vec<AudioDto>,
     #[serde(deserialize_with = "bounded_midi")]
-    midi_routes: Vec<MidiDto>,
+    pub(super) midi_routes: Vec<MidiDto>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -38,7 +38,7 @@ enum SourceDto {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AudioDto {
+pub(super) struct AudioDto {
     id: u64,
     source: SourceDto,
     destination: u64,
@@ -46,7 +46,7 @@ struct AudioDto {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MidiDto {
+pub(super) struct MidiDto {
     id: u64,
     source: u64,
     destination: u64,
@@ -83,10 +83,14 @@ where
         marker: std::marker::PhantomData,
     })
 }
-fn bounded_audio<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<AudioDto>, D::Error> {
+pub(super) fn bounded_audio<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<AudioDto>, D::Error> {
     bounded(d, hex_project::MAX_AUDIO_FEEDS)
 }
-fn bounded_midi<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<MidiDto>, D::Error> {
+pub(super) fn bounded_midi<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<MidiDto>, D::Error> {
     bounded(d, hex_project::MAX_MIDI_ROUTES)
 }
 
@@ -145,6 +149,11 @@ impl DocumentV24 {
                 "unsupported project format or version",
             ));
         }
+        Self::into_snapshot(doc).and_then(|snapshot| {
+            Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        })
+    }
+    pub(super) fn into_snapshot(doc: Self) -> Result<Snapshot, StorageError> {
         let base = gain_touch::DocumentV22 {
             format: doc.format,
             version: 22,
@@ -202,6 +211,6 @@ impl DocumentV24 {
                 destination: route.destination,
             })
             .collect();
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
+        Ok(snapshot)
     }
 }

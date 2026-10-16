@@ -14,6 +14,7 @@ pub mod compensation;
 
 use std::{fmt, sync::Arc};
 
+pub mod audio_transform;
 mod native_device_view;
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
@@ -78,6 +79,7 @@ pub(crate) struct StreamedPageSpan<'a> {
     pub timeline_frame: u64,
     pub output_offset: usize,
     pub count: usize,
+    pub gain: f32,
     pub fade: Option<(&'a hex_project::ClipFade, u64)>,
 }
 
@@ -105,6 +107,7 @@ pub(crate) fn render_streamed_page_span_captured(
         output_offset,
         count: requested_count,
         fade,
+        gain: clip_gain,
     } = span;
     if requested_count == 0 {
         return 0;
@@ -135,6 +138,10 @@ pub(crate) fn render_streamed_page_span_captured(
                     sample[1] *= gain;
                 }
             }
+            if clip_gain != 1.0 {
+                sample[0] *= clip_gain;
+                sample[1] *= clip_gain;
+            }
             mix.add_captured(
                 destination,
                 sample,
@@ -159,6 +166,11 @@ impl fmt::Display for Invalid {
     }
 }
 impl std::error::Error for Invalid {}
+impl From<hex_project::Invalid> for Invalid {
+    fn from(error: hex_project::Invalid) -> Self {
+        Self(error.0)
+    }
+}
 
 pub fn default_native_device_state(
     type_id: hex_lattice_contract::DeviceTypeId,
@@ -286,9 +298,36 @@ impl Tempo {
 #[derive(Debug, Clone)]
 pub struct Audio {
     sample_rate: u32,
-    frames: Arc<[Frame]>,
+    frames: Arc<AudioData>,
+}
+#[derive(Debug)]
+struct AudioData {
+    values: Vec<Frame>,
+    _derived: Option<audio_transform::Reservation>,
+}
+impl std::ops::Deref for AudioData {
+    type Target = [Frame];
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
 }
 impl Audio {
+    pub(crate) fn from_derived(
+        sample_rate: u32,
+        frames: Vec<Frame>,
+        reservation: audio_transform::Reservation,
+    ) -> Result<Self, Invalid> {
+        if frames.is_empty() || frames.iter().flatten().any(|sample| !sample.is_finite()) {
+            return Err(Invalid("prepared audio must contain finite samples"));
+        }
+        Ok(Self {
+            sample_rate,
+            frames: Arc::new(AudioData {
+                values: frames,
+                _derived: Some(reservation),
+            }),
+        })
+    }
     /// Source rate; compilation currently requires an exact project-rate match.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -298,7 +337,8 @@ impl Audio {
         &self.frames
     }
     /// True when two audio handles retain the same immutable PCM allocation.
-    pub(crate) fn shares_pcm_with(&self, other: &Self) -> bool {
+    /// Exact retained PCM identity for control-side cache/summary reuse.
+    pub fn shares_pcm_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.frames, &other.frames)
     }
     pub fn new(sample_rate: u32, frames: Vec<Frame>) -> Result<Self, Invalid> {
@@ -310,7 +350,10 @@ impl Audio {
         }
         Ok(Self {
             sample_rate,
-            frames: frames.into(),
+            frames: Arc::new(AudioData {
+                values: frames,
+                _derived: None,
+            }),
         })
     }
 }
@@ -329,6 +372,7 @@ pub struct Clip {
 /// Control-owned uncommon playback state; neutral clips keep their compact stride.
 #[derive(Debug, Clone)]
 struct ClipMetadata {
+    gain: f32,
     source_phase: u64,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
@@ -402,6 +446,7 @@ impl Clip {
             None
         } else {
             Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: 0,
                 fade: Some(fade),
                 streamed: None,
@@ -426,11 +471,16 @@ impl Clip {
         }
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.source_phase = phase;
-            if phase == 0 && metadata.fade.is_none() && metadata.streamed.is_none() {
+            if phase == 0
+                && metadata.fade.is_none()
+                && metadata.streamed.is_none()
+                && metadata.gain == 1.0
+            {
                 self.metadata = None;
             }
         } else if phase != 0 {
             self.metadata = Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: phase,
                 fade: None,
                 streamed: None,
@@ -438,6 +488,29 @@ impl Clip {
         }
         Ok(self)
     }
+    /// Control-side clip gain preparation, preserving the compact unity path.
+    pub fn with_gain(mut self, gain: hex_project::ClipGain) -> Self {
+        let linear = gain.linear();
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.gain = linear;
+            if linear == 1.0
+                && metadata.source_phase == 0
+                && metadata.fade.is_none()
+                && metadata.streamed.is_none()
+            {
+                self.metadata = None;
+            }
+        } else if linear != 1.0 {
+            self.metadata = Some(Box::new(ClipMetadata {
+                gain: linear,
+                source_phase: 0,
+                fade: None,
+                streamed: None,
+            }));
+        }
+        self
+    }
+
     fn at(&self, position: u64, source_phase: u64) -> Frame {
         if position < self.start || position >= self.end {
             return [0.0; 2];
@@ -522,6 +595,7 @@ impl Clip {
             source_length: usize::try_from(source_length)
                 .map_err(|_| Invalid("source length exceeds addressable range"))?,
             metadata: Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: 0,
                 fade: (fade.fade_in() != 0 || fade.fade_out() != 0).then_some(fade),
                 streamed: Some(source),
@@ -1371,6 +1445,7 @@ impl Track {
                         timeline_frame: position,
                         output_offset,
                         count,
+                        gain: metadata.gain,
                         fade: metadata.fade.as_ref().map(|fade| (fade, clip.start)),
                     },
                     output,
@@ -1405,13 +1480,21 @@ impl Track {
         let output_end = (span_end - start_frame) as usize;
         let metadata = clip.metadata.as_deref();
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
-        if let Some(fade) = metadata.and_then(|metadata| metadata.fade.as_ref()) {
+        let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
+        let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if fade.is_some() || clip_gain != 1.0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
                 let position = span_start + offset as u64;
                 let mut sample = clip.at(position, source_phase);
-                let gain = fade.gain_at(position - clip.start);
-                sample[0] *= gain;
-                sample[1] *= gain;
+                if let Some(fade) = fade {
+                    let gain = fade.gain_at(position - clip.start);
+                    sample[0] *= gain;
+                    sample[1] *= gain;
+                }
+                if clip_gain != 1.0 {
+                    sample[0] *= clip_gain;
+                    sample[1] *= clip_gain;
+                }
                 self.source_mix.add_captured(
                     frame,
                     sample,
@@ -1572,8 +1655,19 @@ pub(crate) struct InstrumentTrack {
     pub(crate) mutable: bool,
 }
 
+/// Immutable control-side root/crop view for worker waveform preparation.
+/// Audio retains the same PCM reservation as playback; never build summaries in render.
+#[derive(Debug, Clone)]
+pub struct PreparedAudioClipView {
+    pub clip: hex_project::ClipId,
+    pub audio: Audio,
+    pub offset: u64,
+    pub length: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Project {
+    audio_clip_views: Vec<PreparedAudioClipView>,
     sample_rate: u32,
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
@@ -1588,6 +1682,11 @@ pub struct Project {
     shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
+    /// Worker-only observation of accepted transformed PCM, independent of cache residency.
+    pub fn audio_clip_views(&self) -> &[PreparedAudioClipView] {
+        &self.audio_clip_views
+    }
+
     /// Accounted Arrangement note-bank bytes, including each bank's entry
     /// allocation and fixed bank/Arc owner overhead.
     pub fn midi_note_bank_storage_bytes(&self) -> Result<usize, Invalid> {
@@ -1661,6 +1760,7 @@ impl Project {
             ));
         }
         Ok(Self {
+            audio_clip_views: Vec::new(),
             audible_end_frame: tracks
                 .iter()
                 .flat_map(|track| track.clips.iter().map(|clip| clip.end))

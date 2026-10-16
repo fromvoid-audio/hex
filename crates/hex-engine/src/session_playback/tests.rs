@@ -967,6 +967,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 track: 1,
                 scene: 2,
                 content: SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: 3,
                     name: "one shot".into(),
                     asset: asset_id,
@@ -1103,6 +1104,8 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: 15,
             asset: 4,
             start: 0,
@@ -1772,6 +1775,8 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
         id: 6,
         asset: 4,
         start: 0,
@@ -1972,6 +1977,8 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
         id: 6,
         asset: 4,
         start: 0,
@@ -3590,6 +3597,8 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     });
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: audio_clip,
             asset,
             start: 0,
@@ -4766,6 +4775,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     });
     source.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: audio_clip,
             asset,
             start: 0,

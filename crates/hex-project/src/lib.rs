@@ -1,5 +1,12 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+mod audio_edit;
+pub use audio_edit::{
+    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
+    BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
+    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
+    audio_projection_frame, default_audio_warp,
+};
 mod clip_copy;
 mod clip_fragment;
 mod conversion;
@@ -9,7 +16,7 @@ pub use device::{
     default_instrument_state,
 };
 mod edit;
-pub use clip_fragment::preview_clip_fragment;
+pub use clip_fragment::{preview_clip_fragment, preview_clip_fragment_with_tempo};
 pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
@@ -62,10 +69,10 @@ pub use snapshot::{
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
-    BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterPoint, MeterPosition,
-    Tempo, TempoMap, TempoPoint,
+    BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterPoint,
+    MeterPosition, Tempo, TempoMap, TempoPoint, query_beat_pulses,
 };
 
 pub const MAX_TRACKS: usize = 256;
@@ -276,6 +283,34 @@ impl ClipFade {
     }
 }
 
+/// Saved audio-clip gain in integer millidecibels, before track processing.
+/// The finite -60..=24 dB range does not imply normalization or output limiting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClipGain(i32);
+impl ClipGain {
+    pub const MIN_MILLIDB: i32 = -60_000;
+    pub const MAX_MILLIDB: i32 = 24_000;
+    pub const UNITY: Self = Self(0);
+
+    pub fn new(millidb: i32) -> Result<Self, Invalid> {
+        if !(Self::MIN_MILLIDB..=Self::MAX_MILLIDB).contains(&millidb) {
+            return Err(Invalid("clip gain must be within -60..24 db"));
+        }
+        Ok(Self(millidb))
+    }
+    pub fn millidb(self) -> i32 {
+        self.0
+    }
+    /// Control-side coefficient conversion; prepare once, never per audio sample.
+    pub fn linear(self) -> f32 {
+        if self == Self::UNITY {
+            1.0
+        } else {
+            10.0_f64.powf(f64::from(self.0) / 20_000.0) as f32
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
     pub(crate) id: ClipId,
@@ -287,6 +322,8 @@ pub struct Clip {
     pub(crate) looping: bool,
     pub(crate) source_phase: u64,
     pub(crate) fade: ClipFade,
+    pub(crate) gain: ClipGain,
+    pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
     pub fn id(&self) -> ClipId {
@@ -316,6 +353,38 @@ impl Clip {
     }
     pub fn fade(&self) -> ClipFade {
         self.fade
+    }
+    pub fn gain(&self) -> ClipGain {
+        self.gain
+    }
+    /// Authored fade in its retained reference-frame domain. A musical fade is
+    /// not a newly linear frame fade; use its read-only projected gain for geometry.
+    pub fn retained_fade(&self) -> ClipFade {
+        self.edit
+            .as_ref()
+            .map_or(self.fade, |edit| edit.domain.fade)
+    }
+
+    pub fn audio_edit(&self) -> Option<&AudioClipEdit> {
+        self.edit.as_deref()
+    }
+
+    pub(crate) fn audio_edit_mut(&mut self) -> Option<&mut AudioClipEdit> {
+        self.edit.as_mut().map(Arc::make_mut)
+    }
+
+    pub fn preview_edge_trim_with_tempo(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        if self.edit.is_some() {
+            crate::audio_edit::trim_view(self, edge, frame, tempo)
+        } else {
+            self.preview_edge_trim(edge, frame, asset_playback_frames)
+        }
     }
 
     /// Return canonical edge-trim metadata for UI preview without cloning the project.
