@@ -274,9 +274,12 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             })
             .expect("external loop edit");
         view.state = Some(Arc::new(hex_session::service::ViewState {
+            canonical_audio_source: None,
             project: Arc::new(history.project().clone()),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,
@@ -306,9 +309,12 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
     editor.update(cx, |view, window_cx| {
         let old = view.state.as_ref().unwrap();
         view.state = Some(Arc::new(hex_session::service::ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,

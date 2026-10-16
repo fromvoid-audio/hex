@@ -29,9 +29,11 @@ mod resample_plan_tests;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 pub use resample::{ResampleLimits, ResamplePlan, resample};
-pub use resample_kernel::ResampleKernel;
+pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
 pub use stream::{WavFrameReader, WavReaderLimits};
-pub use verified_stream::{VERIFIED_WAV_PAGE_BYTES, VerifiedWavReader, VerifiedWavReaderLimits};
+pub use verified_stream::{
+    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavReader, VerifiedWavReaderLimits,
+};
 
 /// Caller-owned resource ceilings for a single import operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

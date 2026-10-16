@@ -23,7 +23,12 @@ return-bus retirement remains separate. See [native effect
 tails](../../docs/native-effect-tails.md). Mutable instrument event
 batches are caller-owned and preflighted before scratch-state processing; their
 separate runtime factory declares a finite release-tail bound and exposes
-committed-state quiescence for later retirement.
+committed-state quiescence for later retirement. Borrowed native clocks expose
+optional exact performance origins and actual transport state; unavailable
+observations remain explicit `None`, including stopped audition performance time.
+The runtime pair also exposes immutable event-only preflight for control-side
+pitch/capacity admission without a fabricated clock. Success never bypasses the
+complete event and clock validation required by real processing.
 Analytic instruments may also prepare an immutable shared context and compact
 copyable note payloads; the host enforces per-context and per-revision byte
 bounds, while the engine owns revision and release leases.
@@ -48,8 +53,27 @@ state. See [configuration comparison](../../docs/configuration-comparison.md)
 for fixture bounds, invocation, and interpretation. It does not construct
 deployable effects or measure an audio callback deadline.
 
+The optional `PreparedAnalyticContinuation` capability validates a bounded opaque
+parameter frame, provider format, compact note and source/target compatibility.
+Its immutable five-millisecond clock is sampled at absolute performance frames;
+the engine owns current-device versus detached-tail provenance, leases and
+retirement. Unsupported providers default to no continuation capability. Invalid
+admitted frames or clocks return explicit errors rather than silently changing
+musical state. See [enable continuation](../../docs/operator-enable-continuation.md).
+
 ## Does not own
 
 This crate does not own device algorithms, graph scheduling, project state,
 audio I/O, plugin hosting, UI, sample storage, authored musical event generation,
 or discontinuity chase policy.
+
+
+Prepared analytic instruments and mutable factories declare known algorithmic
+latency or explicitly unknown, using the same fixed-buffering definition as
+effects. `NativeInstrumentClock` can expose exact performance beats, arrangement
+frame and loop pass at the node's delayed input. Clock-aware effect range methods
+preserve older processors' default behavior, including their bespoke bypass
+handling. `zero_input_drain_for_range` charges checked intrinsic latency plus
+residual tail; `output_tail_for_range` continues to report residual tail alone.
+Graph timing, transport history, compensation buffers and handoff policy remain
+engine responsibilities.

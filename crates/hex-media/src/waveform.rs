@@ -20,6 +20,13 @@ pub struct Waveform {
 }
 
 impl Waveform {
+    /// Exact retained PCM identity, for control-side summary reuse across revisions.
+    pub fn shares_audio_with(&self, audio: &Audio) -> bool {
+        self.samples
+            .as_ref()
+            .is_some_and(|samples| samples.shares_pcm_with(audio))
+    }
+
     /// Construct immutable cached peaks without resident PCM (e.g. fixtures).
     pub fn from_peaks(source_frames: usize, bins: Vec<[Peak; 2]>) -> Result<Self, ImportError> {
         if source_frames == 0

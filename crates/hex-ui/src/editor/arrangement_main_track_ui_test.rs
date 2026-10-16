@@ -39,9 +39,12 @@ fn project_with_returns(count: usize) -> (Project, Vec<ReturnId>) {
 fn completed_event(state: &ViewState) -> Event {
     Event {
         state: Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: Arc::clone(&state.midi_preview),
+            gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
             can_undo: state.can_undo,
             can_redo: state.can_redo,
@@ -53,9 +56,12 @@ fn completed_event(state: &ViewState) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        computer_keyboard_complete: None,
+        audio_batch_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,
@@ -152,9 +158,12 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
     for count in [0, 2, 40] {
         editor.update(cx, |view, cx| {
             view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::default(),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 384_000,
                 can_undo: false,
                 can_redo: false,

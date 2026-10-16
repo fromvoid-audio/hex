@@ -129,3 +129,30 @@ diff/hashes preserve the verified upstream baseline and license. Rendered cursor
 and lifecycle tests pass. On 11 October 2026 the user reported native cursor
 appearance/restoration, typing and Undo passed and requested merging PR155.
 See device-controls.md for the supplied native checklist.
+
+## rounded device layout scene evidence — 16 october 2026
+
+The existing GPUI test-support patch now skips transparent border-only fills in
+`rendered_background` and exposes `rendered_surface_geometry` (filled quad corner
+radii and ancestor mask, in scaled pixels). This corrects background inspection
+when `Style::paint` appends an outline quad after content. Only
+`src/app/test_context.rs` changes; published archive/license/original hashes stay
+pinned, and patched hash/cumulative diff are refreshed. Rendered widget tests
+exercise filled surfaces with structural borders and oversized content. Scene
+geometry and hit masks are evidence of GPUI containment; GPU antialiasing,
+physical display pixels and native visual acceptance remain separate.
+
+
+## disposable native profiler input adapter — 16 october 2026
+
+Primary boundary decision for issue #14's supplementary timing harness: add a
+safe public `Window::dispatch_input(PlatformInput, &mut App) -> ()` adapter. The
+existing public `dispatch_event` returns private propagation metadata and cannot
+be called from Hex. The adapter forwards to exactly that existing dispatch path
+and discards the private return value; `DispatchEventResult` remains private.
+There is no native-handler, FFI, scheduling or OS input injection change and no
+unsafe Hex code. Only the explicit disposable profiler calls the adapter; normal
+editing and event delivery are unchanged. Provenance and cumulative diff retain
+the verified 0.2.2 archive and existing patch scope. The optimized native build
+and source guards compile/check this boundary; measured scene paint/submission
+observations do not establish physical input or physical display latency.

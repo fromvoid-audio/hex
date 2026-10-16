@@ -7,6 +7,19 @@ pub struct DeviceMeter {
     output: AtomicU32,
 }
 impl DeviceMeter {
+    /// CONTROL ONLY: complete exclusive payload declaration for this value.
+    /// The containing Arc allocation/header and each owning handle are separate.
+    /// No heap/shared/Weak children exist; new fields require owning-module audit.
+    pub fn control_storage_declaration(&self) -> crate::PreparedStorageDeclaration {
+        let Self {
+            input: _,
+            output: _,
+        } = self;
+        crate::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<Self>(),
+        }
+    }
+
     /// Accumulate every block until the UI drains it, retaining short transients.
     pub fn observe_input(&self, frames: &[[f32; 2]]) {
         Self::observe(&self.input, frames);

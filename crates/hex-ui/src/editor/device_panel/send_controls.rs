@@ -78,6 +78,7 @@ pub fn return_send_numeric_control(
             _ => None,
         });
     control.entity.update(cx, |numeric, cx| {
+        let _ = numeric.set_external_style(control_style(), cx);
         let _ = numeric.set_external_value(active.unwrap_or(f64::from(gain)), cx);
     });
     // NumericControl renders its own slider and value field. Render the entity
@@ -201,6 +202,9 @@ pub fn commit_owned_numeric_edit(
             },
             GestureTarget::DeviceParameterPair { .. } => {
                 return Err("paired parameter edits use the graph gesture");
+            }
+            GestureTarget::DeviceParameterSnapshot { .. } => {
+                return Err("snapshot parameter edits use the harmonic gesture");
             }
             GestureTarget::ReturnSend {
                 track,

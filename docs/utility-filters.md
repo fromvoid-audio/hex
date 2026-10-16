@@ -1,11 +1,10 @@
 # original Utility filters
 
-Pulse ticket 18's next DSP prerequisite is an independently testable, fixed-size
-processor in `hex-devices::utility_filters`. It is **not admitted to the native
-device registry or desktop playback yet**. Canonical settings, state migration,
-summed-track processing, captured-release ownership, panel controls and measured
-Live filter equivalence remain dependencies. The first linear Utility codec and
-its registered processing stay unchanged.
+Utility's independently testable, fixed-size processor lives in
+`hex-devices::utility_filters` and is admitted through the version 2 native
+registry. Canonical settings, state migration, shared playback and panel controls
+are implemented. Native acceptance and measured Live filter equivalence remain
+open; see [the finite acceptance checklist](utility-acceptance.md).
 
 ## finite contract
 

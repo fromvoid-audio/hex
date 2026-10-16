@@ -32,9 +32,11 @@ pub(super) fn render(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
+    super::snapshot::retire_invalid_owner(view, &alive);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -201,29 +203,21 @@ pub(super) fn render_return_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let bypassed = device.bypassed();
-    let action_size = if matches!(
-        device.state().type_id().as_str(),
-        Ok("hex.utility" | "hex.saturator" | "hex.compressor" | "hex.gate" | "hex.auto-pan")
-    ) {
-        12.0
-    } else {
-        14.0
-    };
     let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
     let after_down = devices.get(index + 2).map(|device| device.id());
     let has_down = index + 1 < devices.len();
     let mut actions = div().flex().items_center().gap(px(2.0));
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("device-bypass-{}", id.value()),
             if bypassed { "⊘" } else { "●" },
             "toggle device bypass",
             if bypassed {
-                theme::color(theme::PaletteRole::Muted)
+                theme::DeviceActionRole::Muted
             } else {
-                theme::color(theme::PaletteRole::SecondaryText)
+                theme::DeviceActionRole::Normal
             },
-            action_size,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -237,12 +231,12 @@ pub(super) fn render_return_effect(
     );
     if let Some(before) = before_up {
         actions = actions.child(
-            action_button_sized(
+            action_button(
                 format!("return-device-up-{}", id.value()),
                 "‹",
                 "move effect left",
-                theme::color(theme::PaletteRole::Text),
-                action_size,
+                theme::DeviceActionRole::Normal,
+                selected,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 if finalize_controls(view, cx) {
@@ -257,12 +251,12 @@ pub(super) fn render_return_effect(
     }
     if has_down {
         actions = actions.child(
-            action_button_sized(
+            action_button(
                 format!("return-device-down-{}", id.value()),
                 "›",
                 "move effect right",
-                theme::color(theme::PaletteRole::Text),
-                action_size,
+                theme::DeviceActionRole::Normal,
+                selected,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 if finalize_controls(view, cx) {
@@ -276,12 +270,12 @@ pub(super) fn render_return_effect(
         );
     }
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("return-device-remove-{}", id.value()),
             "×",
             "remove effect",
-            theme::color(theme::PaletteRole::Primary),
-            action_size,
+            theme::DeviceActionRole::Destructive,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -290,6 +284,14 @@ pub(super) fn render_return_effect(
             cx.notify();
         })),
     );
+    if device_view.is_ok() {
+        actions = actions.child(super::super::device_preset::actions(
+            id,
+            NativeDeviceClass::Effect,
+            selected,
+            cx,
+        ));
+    }
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -315,22 +317,8 @@ pub(super) fn render_return_effect(
                         .map_or(48_000, |state| state.project.sample_rate()),
                 )
             } else {
-                let mut body = div()
-                    .id(ElementId::Name(
-                        format!("device-body-{}", id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(2.0))
-                    .p(px(3.0));
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
+                let controls = device_view.parameters.iter().map(|parameter| {
+                    parameter_control(
                         view,
                         cx,
                         id,
@@ -339,47 +327,28 @@ pub(super) fn render_return_effect(
                             type_id: device_view.type_id,
                         },
                         parameter,
-                    ));
-                }
-                body
+                    )
+                });
+                crate::device_composition::wrapped_body(controls)
+                    .id(ElementId::Name(
+                        format!("device-body-{}", id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", id.value()))
+                    .overflow_y_scroll()
             };
-            if matches!(
-                device_view.type_id.as_str(),
-                Ok("hex.utility"
-                    | "hex.eq8"
-                    | "hex.saturator"
-                    | "hex.compressor"
-                    | "hex.gate"
-                    | "hex.auto-pan")
-            ) {
-                compact_device_frame(
-                    device_drag_title(
-                        view,
-                        cx,
-                        device,
-                        NativeDeviceClass::Effect,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            } else {
-                device_frame(
-                    device_drag_title(
-                        view,
-                        cx,
-                        device,
-                        NativeDeviceClass::Effect,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            }
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text(device_view.name.clone()),
+                ),
+                theme::device_frame_style(selected),
+                actions,
+                body,
+            )
+            .into_any_element()
         }
         Err(error) => {
             let title = theme::text(
@@ -389,50 +358,20 @@ pub(super) fn render_return_effect(
                     .as_str()
                     .unwrap_or("unknown device"),
             );
-            let body = div()
-                .h(px(
-                    if matches!(
-                        device.state().type_id().as_str(),
-                        Ok("hex.utility"
-                            | "hex.eq8"
-                            | "hex.saturator"
-                            | "hex.compressor"
-                            | "hex.gate"
-                            | "hex.auto-pan")
-                    ) {
-                        UTILITY_FRAME_BODY_HEIGHT
-                    } else {
-                        DEVICE_FRAME_BODY_HEIGHT
-                    },
-                ))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .child(theme::text(format!("unsupported device state · {error}")));
-            if matches!(
-                device.state().type_id().as_str(),
-                Ok("hex.utility"
-                    | "hex.eq8"
-                    | "hex.saturator"
-                    | "hex.compressor"
-                    | "hex.gate"
-                    | "hex.auto-pan")
-            ) {
-                compact_device_frame(
-                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            } else {
-                device_frame(
-                    device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                    control_style().with_device_selection(selected),
-                    actions,
-                    body,
-                )
-                .into_any_element()
-            }
+            let body = crate::device_composition::unsupported_body(theme::text(format!(
+                "unsupported device state · {error}"
+            )))
+            .id(ElementId::Name(
+                format!("device-body-{}", id.value()).into(),
+            ))
+            .debug_selector(move || format!("device-body-{}", id.value()));
+            device_frame(
+                device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
+                theme::device_frame_style(selected),
+                actions,
+                body,
+            )
+            .into_any_element()
         }
     };
     view.device_panel.views.insert(
