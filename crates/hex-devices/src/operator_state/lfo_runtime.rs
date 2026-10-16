@@ -793,18 +793,42 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
 #[path = "lfo_enable_tests.rs"]
 mod enable_tests;
 
+impl<const N: usize> super::harmonic_runtime::VoiceHistory for Runtime<N> {
+    fn voice(&self, index: usize) -> Option<super::harmonic_runtime::Voice> {
+        use super::harmonic_runtime::Voice;
+        let old = self.voices.get(index)?;
+        Some(Voice {
+            note: old.note,
+            phases: old.phases,
+            previous: old.previous,
+            age: old.age,
+            gate: (old.gate != u64::MAX).then_some(old.gate),
+            id: old.id,
+            filters: self
+                .filter
+                .as_ref()
+                .map_or([crate::operator_filter::Carrier::default(); 4], |b| {
+                    b.carriers[index]
+                }),
+            lfo_fraction: old.lfo.fraction,
+            lfo_cycle: old.lfo.cycle,
+            machines: [None; 4],
+        })
+    }
+}
+
 pub(super) fn export_harmonic_history(
     runtime: &dyn MutableInstrumentRuntime,
-) -> Option<super::harmonic_runtime::Legacy> {
+) -> Option<super::harmonic_runtime::Legacy<'_>> {
     if let Some(runtime) = runtime.as_any().downcast_ref::<Runtime<64>>() {
         return export(runtime);
     }
     let runtime = runtime.as_any().downcast_ref::<Runtime>()?;
     export(runtime)
 }
-fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtime::Legacy> {
+fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtime::Legacy<'_>> {
     use super::harmonic_runtime::{
-        FilterTrajectory, Legacy, ParameterRamp, Voice, builtin_spectrum, parameter_words,
+        FilterTrajectory, Legacy, ParameterRamp, builtin_spectrum, parameter_words,
     };
     let mut base = [0; super::ENABLE_PAYLOAD_BYTES];
     base[..FEEDBACK_PAYLOAD_BYTES].copy_from_slice(&runtime.factory.base);
@@ -845,32 +869,12 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
             armed: true,
         };
     }
-    let mut voices = [Voice::default(); 64];
-    for (index, (target, old)) in voices.iter_mut().zip(runtime.voices).enumerate() {
-        *target = Voice {
-            note: old.note,
-            phases: old.phases,
-            previous: old.previous,
-            age: old.age,
-            gate: (old.gate != u64::MAX).then_some(old.gate),
-            id: old.id,
-            filters: runtime
-                .filter
-                .as_ref()
-                .map_or([crate::operator_filter::Carrier::default(); 4], |b| {
-                    b.carriers[index]
-                }),
-            lfo_fraction: old.lfo.fraction,
-            lfo_cycle: old.lfo.cycle,
-            machines: [None; 4],
-        };
-    }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
         companion: super::companion::Settings::default(),
         local_frame: 0,
         base,
-        voices,
+        voices: runtime,
         parameters,
         ramp,
         phase: (runtime.phase.fraction, runtime.phase.cycle),

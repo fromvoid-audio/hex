@@ -59,6 +59,58 @@ impl Factory {
             parameters,
         })
     }
+    fn prepare_voice(
+        &self,
+        pitch: u8,
+        velocity: u8,
+        origin: u64,
+        beat: Option<u64>,
+        running: Option<bool>,
+    ) -> Result<Voice, Error> {
+        let note = if self.settings.lfo.active() {
+            self.configuration.prepare_lfo_note(pitch, velocity)
+        } else {
+            self.configuration.prepare_note(pitch, velocity)
+        }
+        .map_err(|_| Error::InvalidEventBatch)?;
+        let settings = self.settings;
+        let machines = if settings.companion.requires_runtime() {
+            let envelopes = settings
+                .companion
+                .envelopes(&settings.fields, velocity)
+                .map_err(|_| Error::InvalidEventBatch)?;
+            let machines = std::array::from_fn(|i| {
+                let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
+                companion::Machine::prepare(
+                    settings.companion,
+                    i,
+                    envelopes[i],
+                    std::array::from_fn(|j| f64::from(settings.fields[base + j])),
+                    self.rate,
+                    beat,
+                    running,
+                )
+                .map(Some)
+            });
+            let [a, b, c, d] = machines;
+            [a?, b?, c?, d?]
+        } else {
+            [None; 4]
+        };
+        let phases = std::array::from_fn(|i| {
+            if settings.companion.words[i][0] == 0 {
+                PreparedOperatorConfiguration::lfo_steps(&note)[i].wrapping_mul(origin)
+            } else {
+                0
+            }
+        });
+        Ok(Voice {
+            note,
+            phases,
+            machines,
+            ..Voice::default()
+        })
+    }
     fn capacity(&self) -> usize {
         if self.settings.lfo.active() || self.settings.effective_feedback() != [0.0; 4] {
             16
@@ -119,7 +171,6 @@ impl ParameterRamp {
         })
     }
 }
-#[derive(Clone)]
 pub(super) struct Runtime {
     factory: Factory,
     voices: [Voice; VOICES],
@@ -130,6 +181,120 @@ pub(super) struct Runtime {
     filter: FilterTrajectory,
     phase: (f64, u64),
     local_frame: u64,
+}
+// Admission needs identity, age and completion bounds, not oscillator/filter history.
+// Keeping the proof separate prevents full 64-voice machine banks on callback stacks.
+#[derive(Clone, Copy, Default)]
+struct EventVoice {
+    id: u64,
+    age: u64,
+    gate: Option<u64>,
+    completion: Option<(u64, u64)>,
+}
+impl EventVoice {
+    fn read(voice: &Voice, factory: &Factory) -> Self {
+        let completion = if factory.companion_active {
+            voice
+                .machines
+                .iter()
+                .try_fold((0, 0), |(relative, absolute), machine| {
+                    let (r, a) = machine.as_ref()?.completion_bounds();
+                    Some((relative.max(r), absolute.max(a)))
+                })
+        } else {
+            Some((factory.configuration.release_frames(), 0))
+        };
+        Self {
+            id: voice.id,
+            age: voice.age,
+            gate: voice.gate,
+            completion,
+        }
+    }
+    fn expire(&mut self) {
+        if self.id != 0
+            && self
+                .gate
+                .zip(self.completion)
+                .is_some_and(|(gate, (relative, absolute))| {
+                    self.age >= gate.saturating_add(relative).max(absolute)
+                })
+        {
+            *self = Self::default();
+        }
+    }
+}
+struct EventProof {
+    voices: [EventVoice; VOICES],
+    local_frame: u64,
+}
+impl EventProof {
+    fn new(runtime: &Runtime) -> Self {
+        Self {
+            voices: std::array::from_fn(|i| EventVoice::read(&runtime.voices[i], &runtime.factory)),
+            local_frame: runtime.local_frame,
+        }
+    }
+    fn advance(&mut self, frames: usize) -> Result<(), Error> {
+        self.local_frame = self
+            .local_frame
+            .checked_add(frames as u64)
+            .ok_or(Error::InvalidEventBatch)?;
+        for voice in &mut self.voices {
+            if voice.id != 0 {
+                voice.age = voice
+                    .age
+                    .checked_add(frames as u64)
+                    .ok_or(Error::InvalidEventBatch)?;
+                voice.expire();
+            }
+        }
+        Ok(())
+    }
+    fn apply(&mut self, factory: &Factory, event: NativeInstrumentEvent) -> Result<(), Error> {
+        match event {
+            NativeInstrumentEvent::NoteOn {
+                occurrence_id,
+                pitch,
+                velocity,
+                ..
+            } => {
+                if occurrence_id == 0 || self.voices.iter().any(|v| v.id == occurrence_id) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                // Musical clock validation remains separate; this proves all note
+                // preparation plus identity/capacity without mutating live history.
+                let prepared = factory.prepare_voice(
+                    pitch,
+                    velocity,
+                    self.local_frame,
+                    Some(0),
+                    Some(false),
+                )?;
+                let voice = self.voices[..factory.capacity()]
+                    .iter_mut()
+                    .find(|v| v.id == 0)
+                    .ok_or(Error::EventCapacityExceeded)?;
+                *voice = EventVoice {
+                    id: occurrence_id,
+                    ..EventVoice::read(&prepared, factory)
+                };
+            }
+            NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
+                let voice = self
+                    .voices
+                    .iter_mut()
+                    .find(|v| v.id == occurrence_id)
+                    .ok_or(Error::InvalidEventBatch)?;
+                if voice.gate.is_some() {
+                    return Err(Error::InvalidEventBatch);
+                }
+                voice.gate = Some(voice.age);
+                voice.expire();
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy)]
 struct Target(u64);
@@ -224,22 +389,6 @@ impl Runtime {
             }
         }
     }
-    fn advance(&mut self, n: usize) -> Result<(), Error> {
-        self.local_frame = self
-            .local_frame
-            .checked_add(n as u64)
-            .ok_or(Error::InvalidEventBatch)?;
-        for voice in &mut self.voices {
-            if voice.id != 0 {
-                voice.age = voice
-                    .age
-                    .checked_add(n as u64)
-                    .ok_or(Error::InvalidEventBatch)?;
-            }
-        }
-        self.expire();
-        Ok(())
-    }
     fn apply(
         &mut self,
         event: NativeInstrumentEvent,
@@ -257,54 +406,17 @@ impl Runtime {
                 if occurrence_id == 0 || self.voices.iter().any(|v| v.id == occurrence_id) {
                     return Err(Error::InvalidEventBatch);
                 }
-                let note = if self.factory.settings.lfo.active() {
-                    self.factory.configuration.prepare_lfo_note(pitch, velocity)
-                } else {
-                    self.factory.configuration.prepare_note(pitch, velocity)
-                }
-                .map_err(|_| Error::InvalidEventBatch)?;
-                let settings = self.factory.settings;
-                let machines = if settings.companion.requires_runtime() {
-                    let envelopes = settings
-                        .companion
-                        .envelopes(&settings.fields, velocity)
-                        .map_err(|_| Error::InvalidEventBatch)?;
-                    let machines = std::array::from_fn(|i| {
-                        let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
-                        companion::Machine::prepare(
-                            settings.companion,
-                            i,
-                            envelopes[i],
-                            std::array::from_fn(|j| f64::from(settings.fields[base + j])),
-                            self.factory.rate,
-                            beat,
-                            running,
-                        )
-                        .map(Some)
-                    });
-                    let [a, b, c, d] = machines;
-                    [a?, b?, c?, d?]
-                } else {
-                    [None; 4]
-                };
-                let phases = std::array::from_fn(|i| {
-                    if settings.companion.words[i][0] == 0 {
-                        PreparedOperatorConfiguration::lfo_steps(&note)[i].wrapping_mul(origin)
-                    } else {
-                        0
-                    }
-                });
+                let prepared = self
+                    .factory
+                    .prepare_voice(pitch, velocity, origin, beat, running)?;
                 let capacity = self.factory.capacity();
                 let voice = self.voices[..capacity]
                     .iter_mut()
                     .find(|v| v.id == 0)
                     .ok_or(Error::EventCapacityExceeded)?;
                 *voice = Voice {
-                    note,
-                    phases,
-                    machines,
                     id: occurrence_id,
-                    ..Voice::default()
+                    ..prepared
                 };
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
@@ -405,7 +517,7 @@ impl MutableInstrumentRuntime for Runtime {
         let Some(spectrum) = builtin_spectrum(base) else {
             return;
         };
-        self.voices = [Voice::default(); VOICES];
+        self.voices.fill(Voice::default());
         self.local_frame = history.performance_frame;
         for (target, voice) in self.voices.iter_mut().zip(history.voices) {
             let Ok(note) = source.continuation_note(&voice.note) else {
@@ -472,7 +584,7 @@ impl MutableInstrumentRuntime for Runtime {
         if events.len() > 256 {
             return Err(Error::EventCapacityExceeded);
         }
-        let mut proof = self.clone();
+        let mut proof = EventProof::new(self);
         let mut offset = 0;
         for event in events {
             let at = match *event {
@@ -483,13 +595,12 @@ impl MutableInstrumentRuntime for Runtime {
                 return Err(Error::InvalidEventBatch);
             }
             proof.advance(at - offset)?;
-            // Event-only admission proves identity/capacity using a private
-            // clone; actual musical clock observations are validated separately.
-            proof.apply(*event, proof.local_frame, Some(0), Some(false))?;
+            proof.apply(&self.factory, *event)?;
             offset = at;
         }
         proof.advance(frames - offset)
     }
+
     fn preflight_clock(
         &self,
         clock: Option<&dyn NativeInstrumentClock>,
@@ -668,7 +779,7 @@ impl MutableInstrumentRuntime for Runtime {
         }
     }
     fn reset(&mut self) {
-        self.voices = [Voice::default(); VOICES];
+        self.voices.fill(Voice::default());
         self.source = self.factory.target;
         self.elapsed = 1;
         self.frames = 1;
@@ -689,7 +800,7 @@ impl MutableInstrumentRuntime for Runtime {
         if let Some(p) = previous.as_any().downcast_ref::<Self>()
             && self.can_copy_history_from(p)
         {
-            self.voices = p.voices;
+            self.voices.copy_from_slice(&p.voices);
             self.source = p.source;
             self.elapsed = p.elapsed;
             self.frames = p.frames;
@@ -709,12 +820,12 @@ impl MutableInstrumentRuntime for Runtime {
             .downcast_ref::<Target>()
             .is_some_and(|t| t.0 == self.factory.configuration.configuration_id())
             && Legacy::read(previous).is_some_and(|p| {
-                (p.voices.iter().all(|voice| voice.id == 0)
+                (p.voices().all(|voice| voice.id == 0)
                     || self.factory.settings.companion == p.companion)
                     && compatible_base(&self.factory.base, &p.base)
-                    && p.voices.iter().filter(|v| v.id != 0).count() <= self.factory.capacity()
+                    && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
                     && (!self.factory.settings.lfo.active()
-                        || p.voices.iter().filter(|v| v.id != 0).all(|v| {
+                        || p.voices().filter(|v| v.id != 0).all(|v| {
                             PreparedOperatorConfiguration::lfo_steps(&v.note)
                                 .iter()
                                 .all(|step| *step < (1u64 << 62))
@@ -729,13 +840,13 @@ impl MutableInstrumentRuntime for Runtime {
         if self.can_retarget_history_from(previous, proof)
             && let Some(p) = Legacy::read(previous)
         {
-            self.voices = [Voice::default(); VOICES];
+            self.voices.fill(Voice::default());
             for (target, source) in self
                 .voices
                 .iter_mut()
-                .zip(p.voices.iter().filter(|voice| voice.id != 0))
+                .zip(p.voices().filter(|voice| voice.id != 0))
             {
-                *target = *source;
+                *target = source;
             }
             self.phase = p.phase;
             self.local_frame = p.local_frame;
@@ -773,9 +884,20 @@ impl MutableInstrumentRuntime for Runtime {
     }
 }
 
-pub(super) struct Legacy {
+// Borrow the source bank through validation/retargeting. Legacy runtimes convert
+// one voice at a time, so no adapter materializes a 64-machine-bank temporary.
+pub(super) trait VoiceHistory {
+    fn voice(&self, index: usize) -> Option<Voice>;
+}
+impl VoiceHistory for Runtime {
+    fn voice(&self, index: usize) -> Option<Voice> {
+        self.voices.get(index).copied()
+    }
+}
+
+pub(super) struct Legacy<'a> {
     pub base: [u8; ENABLE_PAYLOAD_BYTES],
-    pub voices: [Voice; 64],
+    pub voices: &'a dyn VoiceHistory,
     pub parameters: [f64; 12],
     pub ramp: Option<ParameterRamp>,
     pub phase: (f64, u64),
@@ -810,12 +932,15 @@ pub(super) fn parameter_words(p: crate::fm4::OperatorFeedbackParameters) -> [f64
         _ => p.feedback_turns()[i - 8],
     })
 }
-impl Legacy {
-    fn read(previous: &dyn MutableInstrumentRuntime) -> Option<Self> {
+impl<'a> Legacy<'a> {
+    fn voices(&self) -> impl Iterator<Item = Voice> + '_ {
+        (0..VOICES).filter_map(|index| self.voices.voice(index))
+    }
+    fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
             return Some(Self {
                 base: p.factory.base,
-                voices: p.voices,
+                voices: p,
                 parameters: p.factory.parameters(),
                 ramp: p.parameters,
                 phase: p.phase,

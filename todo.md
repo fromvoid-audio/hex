@@ -3483,3 +3483,13 @@ Native confirmation and dense high-rate/FM CPU acceptance remain open; exact
 Live transfer laws, noise algorithms and active companion-law history changes
 are not claimed as parity. The user's explicit candidate confirmation remains
 a merge requirement for both PRs.
+
+
+Companion integration found and reproduced a default-stack routed Session
+overflow. Borrowed per-voice legacy export and a compact event proof remove
+whole-runtime temporary copies without allocations, public API changes or cap
+reductions. The original reproducer, six engine harmonic-history tests, 261
+device unit plus 26 integration tests (two existing ignored) and nine existing
+Operator/EQ allocation fixtures pass. Mixed one-shot/release expiry and failed
+admission atomicity have focused coverage. Full exact-source CI must run again
+after this repair; previous failed reports remain history.

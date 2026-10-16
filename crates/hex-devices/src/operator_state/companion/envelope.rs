@@ -132,14 +132,27 @@ impl Machine {
         let elapsed = age.saturating_sub(gate);
         self.envelope.released_level(level, elapsed)
     }
-    pub fn finished(&self, age: u64) -> bool {
+    // Completion is independent of oscillator history and held/release levels.
+    // The event admission proof uses the same bounds without cloning machines.
+    pub fn completion_bounds(&self) -> (u64, u64) {
         if self.mode == 4 {
-            age >= self.envelope.attack_frames()
-                + self.envelope.decay_frames()
-                + self.envelope.release_frames()
+            (
+                0,
+                self.envelope.attack_frames()
+                    + self.envelope.decay_frames()
+                    + self.envelope.release_frames(),
+            )
+        } else {
+            (self.envelope.release_frames(), 0)
+        }
+    }
+    pub fn finished(&self, age: u64) -> bool {
+        let (relative, absolute) = self.completion_bounds();
+        if self.mode == 4 {
+            age >= absolute
         } else {
             self.release
-                .is_some_and(|(gate, _)| age >= gate.saturating_add(self.envelope.release_frames()))
+                .is_some_and(|(gate, _)| age >= gate.saturating_add(relative))
         }
     }
 }

@@ -692,12 +692,30 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
     }
 }
 
+impl super::harmonic_runtime::VoiceHistory for OperatorFeedbackRuntime {
+    fn voice(&self, index: usize) -> Option<super::harmonic_runtime::Voice> {
+        use super::harmonic_runtime::Voice;
+        let old = self.voices.get(index)?;
+        let Some(voice) = old.voice else {
+            return Some(Voice::default());
+        };
+        let (note, age, gate, previous) = voice.harmonic_snapshot();
+        Some(Voice {
+            note,
+            phases: PreparedOperatorConfiguration::harmonic_initial_phases(&note, age),
+            previous,
+            age,
+            gate,
+            id: old.occurrence_id,
+            ..Voice::default()
+        })
+    }
+}
+
 pub(super) fn export_harmonic_history(
     runtime: &dyn MutableInstrumentRuntime,
-) -> Option<super::harmonic_runtime::Legacy> {
-    use super::harmonic_runtime::{
-        Legacy, ParameterRamp, Voice, builtin_spectrum, parameter_words,
-    };
+) -> Option<super::harmonic_runtime::Legacy<'_>> {
+    use super::harmonic_runtime::{Legacy, ParameterRamp, builtin_spectrum, parameter_words};
     let runtime = runtime.as_any().downcast_ref::<OperatorFeedbackRuntime>()?;
     let mut base = [0; super::ENABLE_PAYLOAD_BYTES];
     base[..FEEDBACK_PAYLOAD_BYTES].copy_from_slice(&runtime.compatibility_state);
@@ -724,27 +742,12 @@ pub(super) fn export_harmonic_history(
     } else {
         None
     };
-    let mut voices = [Voice::default(); 64];
-    for (target, old) in voices.iter_mut().zip(runtime.voices) {
-        if let Some(voice) = old.voice {
-            let (note, age, gate, previous) = voice.harmonic_snapshot();
-            *target = Voice {
-                note,
-                phases: PreparedOperatorConfiguration::harmonic_initial_phases(&note, age),
-                previous,
-                age,
-                gate,
-                id: old.occurrence_id,
-                ..Voice::default()
-            };
-        }
-    }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
         companion: super::companion::Settings::default(),
         local_frame: 0,
         base,
-        voices,
+        voices: runtime,
         parameters,
         ramp,
         phase: (0.0, 0),

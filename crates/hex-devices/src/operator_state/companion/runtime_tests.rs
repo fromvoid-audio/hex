@@ -241,3 +241,52 @@ fn changed_companion_law_refuses_active_history_and_leaves_source_pcm_untouched(
         render(oracle.as_mut(), &[], 32, None)
     );
 }
+
+#[test]
+fn mixed_trigger_and_loop_release_admission_reuses_capacity_at_the_exact_finish_frame() {
+    for (ordinary_release, gate, finish) in [(0.001, 1, 48), (0.01, 1, 81), (0.001, 64, 72)] {
+        let mut settings = settings();
+        settings.companion.words[0][5] = 4;
+        for i in 1..4 {
+            settings.companion.words[i][5] = 1;
+            settings.fields[CORE_FIELDS + i * ENVELOPE_FIELDS + 5] = ordinary_release;
+        }
+        let factory = factory(settings);
+        let mut runtime = factory.create_runtime();
+        let notes: Vec<_> = (1..=64).map(|id| on(id, 0)).collect();
+        render(runtime.as_mut(), &notes, gate, None);
+        let mut oracle = factory.create_runtime();
+        oracle.copy_history_from(runtime.as_ref());
+        let mut events: Vec<_> = (1..=64).map(|id| off(id, 0)).collect();
+        events.push(on(65, finish - gate - 1));
+        assert_eq!(
+            runtime.preflight_events(&events, finish - gate + 1),
+            Err(hex_lattice::NativeInstrumentRuntimeError::EventCapacityExceeded),
+            "a silent Trigger and a releasing loop must both retain their ids until completion"
+        );
+        events[64] = on(65, finish - gate);
+        let mut duplicate = events.clone();
+        duplicate.push(events[64]);
+        assert_eq!(
+            runtime.preflight_events(&duplicate, finish - gate + 1),
+            Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        // Both failed proofs and repeated successful proofs must leave all live
+        // oscillator/filter/envelope history untouched.
+        runtime
+            .preflight_events(&events, finish - gate + 1)
+            .unwrap();
+        runtime
+            .preflight_events(&events, finish - gate + 1)
+            .unwrap();
+        let mut expected = vec![[0.0; 2]; finish - gate + 1];
+        oracle.process_block(&events, &mut expected);
+        assert_eq!(
+            render(runtime.as_mut(), &events, expected.len(), None),
+            expected
+        );
+        assert!(!runtime.is_quiescent());
+        render(runtime.as_mut(), &[off(65, 0)], 128, None);
+        assert!(runtime.is_quiescent());
+    }
+}

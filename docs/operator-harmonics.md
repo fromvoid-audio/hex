@@ -257,3 +257,19 @@ strict device Clippy pass. Final full local CI, optimized delivery and native
 user confirmation are recorded separately for the immutable candidate. The older
 CPU results above do not measure the larger companion runtime; dense high-rate
 FM performance remains unresolved.
+
+
+The integrated default-stack routed Session test exposed excessive temporary
+history copies after the inline envelope expansion. Legacy exporters now borrow
+the source and return one voice at a time; history import/reset/copy do not
+materialize a full temporary bank. Event admission uses a compact identity/age/
+completion proof instead of cloning the runtime. Mixed Trigger and ordinary
+release completion retains occurrence IDs until NoteOff and expires at the
+maximum of one-shot completion and gate-relative release. A focused regression
+checks exact expiry/reuse and atomic refusal. The original overflow reproducer,
+all six engine harmonic-history tests, 261 device unit plus 26 integration tests
+(two existing ignored), and nine Operator/EQ allocation fixtures pass. No test
+stack increase, heap-layout change or memory/voice/precision cap reduction was
+needed. ARM64 debug frame inspection reduced legacy read from over 256 KiB to
+about 19 KiB and preflight to about 4 KiB; control construction remains about
+177 KiB. These are compiler-frame observations, not physical audio timing proof.
