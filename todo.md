@@ -3493,3 +3493,10 @@ device unit plus 26 integration tests (two existing ignored) and nine existing
 Operator/EQ allocation fixtures pass. Mixed one-shot/release expiry and failed
 admission atomicity have focused coverage. Full exact-source CI must run again
 after this repair; previous failed reports remain history.
+
+The next full run passed 471 engine tests, including the old stack reproducer,
+but found a stale retained-recipe fixture expecting 430 contexts. The larger
+v14 context admits 426 under the unchanged 2 MiB ceiling; the exact accounting
+fixture and historical README qualification now reflect that size. No
+production admission or budget was changed. Final full CI is rerun after this
+fixture repair.
