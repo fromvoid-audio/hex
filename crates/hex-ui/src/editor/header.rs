@@ -246,6 +246,7 @@ mod ui_tests {
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
                 midi_preview: Arc::clone(&current.midi_preview),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: current.timeline_frames,
                 can_undo: false,
                 can_redo: false,

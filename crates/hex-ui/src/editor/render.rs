@@ -21,7 +21,7 @@ impl EditorView {
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
     }
 
-    fn status_bar(&self) -> gpui::Div {
+    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let mut bar = div()
             .h(px(22.0))
             .flex_shrink_0()
@@ -230,7 +230,7 @@ impl EditorView {
                     .child(theme::text("offline")),
             );
         }
-        bar
+        bar.child(super::device_panel::bottom_bar(self, cx))
     }
 }
 
@@ -265,6 +265,15 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.clip_view_open && self.gain_lane.track.is_some() {
+            self.cancel_gain_draft(cx);
+            self.gain_lane.track = None;
+        }
+        if let Some(state) = self.state.as_ref() {
+            if let Some(track) = self.selected_track {
+                self.gain_lane.change_owner(track, &state.project);
+            }
+        }
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
@@ -276,6 +285,7 @@ impl Render for EditorView {
                 .child(self.session_grid(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, true))
+                .child(self.routing_controls(cx))
         } else {
             div()
                 .flex_1()
@@ -285,6 +295,7 @@ impl Render for EditorView {
                 .child(self.arrangement(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, false))
+                .child(self.routing_controls(cx))
         };
         let workspace = div()
             .flex_1()
@@ -306,9 +317,14 @@ impl Render for EditorView {
                 "hex_theme_settings"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
+            } else if self.gain_numeric_editing(cx) {
+                "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
             })
+            .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
+                super::device_panel::capture_navigation_pointer_down(view, event, cx);
+            }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, _, cx| {
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_trim_drag.clone()
@@ -419,6 +435,10 @@ impl Render for EditorView {
                     if view.theme_settings.open {
                         view.cancel_theme_settings(window, cx);
                         cx.stop_propagation();
+                    } else if view.cancel_gain_draft(cx) {
+                        view.focus.focus(window);
+                        cx.stop_propagation();
+                        cx.notify();
                     }
                 }),
             )
@@ -431,10 +451,12 @@ impl Render for EditorView {
                 view.active_clip_drag = None;
                 view.cancel_active_native_device_drag();
                 view.cancel_arrangement_pan();
+                view.device_panel.navigation.cancel();
                 view.stop();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
@@ -445,11 +467,13 @@ impl Render for EditorView {
                 };
                 let drag_stopped = cx.stop_active_drag(window);
                 let device_drag_stopped = view.cancel_active_native_device_drag();
-                let pan_canceled = view.cancel_arrangement_pan();
+                let pan_canceled =
+                    view.cancel_arrangement_pan() | view.device_panel.navigation.cancel();
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
-                if !midi_canceled
+                if !gain_canceled
+                    && !midi_canceled
                     && !selection_cleared
                     && !time_selection_canceled
                     && !drag_stopped
@@ -512,7 +536,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
@@ -792,13 +816,27 @@ impl Render for EditorView {
                 view.pan_timeline(true);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &ToggleSolo, _, cx| {
+            .on_action(cx.listener(|view, _: &ToggleSolo, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, true);
                 }
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &AdditiveSolo, _, cx| {
+            .on_action(cx.listener(|view, _: &AdditiveSolo, window, cx| {
+                if window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains("hex_text_editing"))
+                {
+                    return;
+                }
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, false);
                 }
@@ -876,7 +914,7 @@ impl Render for EditorView {
             .child(self.title_bar(cx))
             .child(self.transport(cx))
             .child(workspace)
-            .child(self.status_bar())
+            .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())

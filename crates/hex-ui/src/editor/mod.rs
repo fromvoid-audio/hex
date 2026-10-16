@@ -25,6 +25,8 @@ mod edit_cursor;
 mod edit_cursor_ui_test;
 mod export;
 mod fades;
+mod gain_lane;
+mod gain_recording;
 mod header;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -52,6 +54,7 @@ mod recovery_state;
 mod refresh;
 mod render;
 mod return_tracks;
+mod routing_controls;
 mod save;
 mod seek;
 mod selection;
@@ -218,14 +221,17 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+// Text drafts own printable keys; modified commands retain their finalization paths.
+const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
+
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     cx.bind_keys([
-        KeyBinding::new("space", TogglePlay, Some("hex_editor")),
+        KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),
-        KeyBinding::new("s", ToggleSolo, Some("hex_editor")),
-        KeyBinding::new("shift-s", AdditiveSolo, Some("hex_editor")),
+        KeyBinding::new("s", ToggleSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("shift-s", AdditiveSolo, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("up", PreviousTrack, Some("hex_editor")),
         KeyBinding::new("down", NextTrack, Some("hex_editor")),
         KeyBinding::new("enter", LaunchSessionSelection, Some("hex_editor")),
@@ -303,6 +309,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-e", ExportProject, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
+        KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
         KeyBinding::new("left", MoveLeft, Some("hex_editor")),
         KeyBinding::new("right", MoveRight, Some("hex_editor")),
@@ -320,7 +327,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new("l", ToggleLoop, Some("hex_editor")),
+        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
@@ -408,6 +415,10 @@ pub(super) struct EditorView {
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
+    gain_lane: gain_lane::GainLane,
+    gain_recorder: gain_recording::Recorder,
+    routing_open: bool,
+    routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -672,6 +683,10 @@ impl EditorView {
             recovery: RecoveryState::default(),
             offline_cursor: 0,
             selected_track: None,
+            gain_lane: gain_lane::GainLane::default(),
+            gain_recorder: gain_recording::Recorder::default(),
+            routing_open: false,
+            routing_page: 0,
             selected_clip: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -826,6 +841,9 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
+        if let Some(state) = self.state.as_ref() {
+            self.gain_lane.change_owner(track, &state.project);
+        }
         self.focused_return = None;
         self.selected_clip = None;
         self.midi_selection.clear();
@@ -910,6 +928,19 @@ impl EditorView {
     }
 
     pub(super) fn gain_by(&mut self, track: TrackId, amount: f32) {
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.track(track))
+            .is_some_and(|track| {
+                !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
+            })
+        {
+            self.error = Some(
+                "automation owns gain · edit the gain lane or clear it for static fallback".into(),
+            );
+            return;
+        }
         self.enqueue(Request::Edit(Command::GainBy { track, amount }));
     }
 
@@ -948,6 +979,24 @@ impl EditorView {
     }
 
     fn visible_viewport(&self, horizon: u64) -> Viewport {
+        // Display all authored points while this editor is open. Canonical content/export
+        // extent stays unchanged; a held gain endpoint is not an audible source duration.
+        let gain_end = self.state.as_ref().and_then(|state| {
+            self.gain_lane
+                .track
+                .and_then(|id| state.project.track(id))
+                .and_then(|track| {
+                    track
+                        .gain_envelope()
+                        .last()
+                        .map(|point| point.beat)
+                        .into_iter()
+                        .chain(track.gain_lane().spans().last().map(|span| span.end))
+                        .max()
+                })
+                .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
+        });
+        let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)

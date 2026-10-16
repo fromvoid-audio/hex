@@ -122,8 +122,56 @@ attributes. Sidecar names must fit a 255-byte
 filesystem component; long names that would exceed that limit are refused
 before publication.
 
+The bounded project-level import provenance envelope is independent of
+native device state: exact original input bytes (1 MiB maximum), source kind and
+version, and adapter version. Clones/snapshots/history share immutable evidence;
+normal edits retain it unchanged. Debug output excludes contents and private
+paths. This is unchanged-input pass-through, not editable Ableton export or
+proof of valid/importable Live XML. See [import provenance](../../docs/live-set-import.md).
+
+Schema 18 requires nullable `import_provenance`. Schemas 1–17 migrate to absent
+provenance; their strict readers reject the new field. Unknown envelope kinds or
+versions, empty input and oversized arrays are rejected. Schema-18 JSON is compact
+and retains the 8 MiB document ceiling, including provenance. Serialization stops
+at that ceiling; saving never drops evidence to fit. The envelope does not
+interpret the source format or provide a musical importer.
 Automatic journal checkpoints are independent of previous-save recovery. The
 strict journal envelope retains one current snapshot, uses a stable generation
 lock to serialize cooperating publication, refuses unknown files, and clears
 only the exact owned generation. No untitled history is retained. Native
 composition, ownership and tested limits: [project recovery](../../docs/project-recovery.md).
+
+Unsaved projects use that same latest-untitled checkpoint path. Recovery
+retains original-document provenance and prepares the complete media and playback
+candidate before adoption, without acquiring an overwrite association.
+
+New saves use schema24, the complete envelope for device input/output host gains,
+exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
+and recording epochs. All playback consumers share the admitted lane model. The
+ordinary writer does not select formats based on which fields happen to be empty.
+
+Historical versions18 and19 have two recorded shapes from independent branches.
+Decoding selects an envelope by top-level key presence, then applies its strict
+reader: main's legacy envelope has neither `import_provenance` nor `routing`;
+branch18 has provenance only; branch19 has both. A null or malformed present
+field still selects that reader. Inconsistent shapes and unknown/duplicate
+fields refuse; decoding never retries a different format after an error.
+Schemas20–22 retain explicit readers and their bounded migration contracts.
+The explicit schema20/22 writers preserve supported host trims through the shared
+device DTO; their output requires this integrated reader for those trims. They
+still refuse state they cannot represent instead of discarding it.
+
+See [routing](../../docs/routing.md),
+[track gain automation](../../docs/track-gain-automation.md) and
+[gain touch metadata](../../docs/gain-touch-spans.md). This persistence integration
+owns metadata preservation; audible routing, recording and latency compensation
+remain engine/audio/session responsibilities.
+
+Schema24 adds required bounded `audio_feeds` and `midi_routes` arrays to the
+complete schema23 envelope. Each audio source is explicitly tagged as Track or
+Return; destinations and MIDI endpoints use canonical stable IDs. The strict
+reader rejects unknown/duplicate fields, unsupported ports, invalid gain/identity,
+cycles and oversized lists before admitting a Project. Schemas1–23 migrate with
+empty typed inputs; schema23 retains host trims, provenance, Return feeds and
+gain-touch metadata. Explicit schema20/22 writers refuse playable routing rather
+than discarding it. Historical schema18/19 shape dispatch remains unchanged.

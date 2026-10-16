@@ -4,7 +4,7 @@ use crate::theme;
 use gpui::{
     AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px, rgb,
 };
-use hex_widgets::{ControlStyle, compact_device_frame, device_frame, panel_tab};
+use hex_widgets::{ControlStyle, device_frame, panel_tab};
 
 const BACKGROUND: u32 = 0x474747;
 const DARK: u32 = 0x363636;
@@ -287,17 +287,10 @@ impl Gallery {
                         .p(px(3.0))
                         .child(theme::text("layout section · no audio")),
                 );
-                let frame = if self.family == Family::Device {
-                    device_frame(theme::text("device header"), frame_style, div(), contents)
-                } else {
-                    compact_device_frame(theme::text("device header"), frame_style, div(), contents)
-                };
+                let frame =
+                    device_frame(theme::text("device header"), frame_style, div(), contents);
                 // Transparent overlay owns only the header hitbox; body clicks do not select.
-                let header_height = if self.family == Family::Device {
-                    hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
-                } else {
-                    hex_widgets::COMPACT_DEVICE_FRAME_HEADER_HEIGHT
-                };
+                let header_height = hex_widgets::DEVICE_FRAME_HEADER_HEIGHT;
                 let hit = div()
                     .border_1()
                     .border_color(gpui::rgba(0))

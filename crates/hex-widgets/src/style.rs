@@ -1,5 +1,5 @@
 /// Shared native device outline radius, in logical pixels.
-/// Standard and compact frames both inherit this token.
+/// All device frames inherit this token.
 pub const DEVICE_CORNER_RADIUS: f32 = 4.0;
 
 /// Shared numeric readout corner radius, in logical pixels.
@@ -31,6 +31,7 @@ impl ControlStyle {
         if selected {
             self.border = self.accent;
             self.raised = self.accent;
+            self.surface = self.accent;
             self.text = self.background;
         }
         self

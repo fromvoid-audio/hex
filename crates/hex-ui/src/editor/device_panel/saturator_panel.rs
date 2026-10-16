@@ -145,17 +145,17 @@ pub(super) fn render_body(
             "".to_owned()
         }
     };
-    div()
+    hex_widgets::device_body(super::device_layout_style())
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
         .w_full()
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
+        .h(px(super::DEVICE_FRAME_BODY_HEIGHT))
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .p(px(3.0))
+        .py(px(3.0))
         .child(div().h(px(14.0)).flex_shrink_0().child(chooser))
         .child(graph)
         .child(

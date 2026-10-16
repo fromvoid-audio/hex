@@ -124,6 +124,7 @@ fn audio_detail_fixture(
             project: Arc::new(project),
             waveforms,
             midi_preview: Arc::new(Default::default()),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 384_000,
             can_undo: false,
             can_redo: false,
@@ -365,8 +366,8 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         .expect("effect card");
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
-    assert_eq!(instrument_card.size.width, px(286.0));
-    assert_eq!(effect_card.size.width, px(144.0));
+    assert_eq!(instrument_card.size.width, px(286.0 + 25.0));
+    assert_eq!(effect_card.size.width, px(144.0 + 25.0));
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
@@ -395,8 +396,8 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     );
     editor.read_with(cx, |view, _| {
         assert!(
-            !view.device_panel.has_control_for(instrument_id),
-            "the analytic sine instrument exposes no fabricated parameter controls"
+            view.device_panel.has_only_host_control_for(instrument_id),
+            "the analytic sine instrument exposes only its host output trim"
         );
     });
     let parameter_selector = Box::leak(
@@ -575,6 +576,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
             project: Arc::clone(&project_after_remove),
             waveforms: previous.waveforms.clone(),
             midi_preview: Arc::clone(&previous.midi_preview),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: previous.timeline_frames,
             can_undo: true,
             can_redo: previous.can_redo,
@@ -689,6 +691,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             midi_preview: Arc::clone(&old.midi_preview),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,
@@ -707,6 +710,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             midi_preview: Arc::clone(&old.midi_preview),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
             can_redo: old.can_redo,

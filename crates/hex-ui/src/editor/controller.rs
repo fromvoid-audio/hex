@@ -45,6 +45,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.tick_gain_recording();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -82,7 +83,7 @@ impl EditorView {
                         self.saving_project = false;
                     }
                     visible_change |= replace_error(&mut self.error, "project worker stopped");
-                    if matches!(request, Request::Open(_) | Request::OpenWith { .. }) {
+                    if request.is_project_open() {
                         self.opening_project = false;
                     }
                     clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
@@ -173,6 +174,12 @@ impl EditorView {
                 pending.project_generation,
             ) {
                 Ok(audio_revision) => {
+                    self.gain_recorder.published(
+                        prepared_revision
+                            .as_ref()
+                            .and_then(|prepared| prepared.gain_recording_track()),
+                        audio_revision,
+                    );
                     let project_revision = super::audio_admission::ProjectRevision {
                         generation: pending.project_generation,
                         revision: pending.project_revision,
@@ -299,25 +306,20 @@ impl EditorView {
             rejected_revision.map(|(revision, _)| revision),
         );
         if let Some(candidate) = audible {
-            let preview_source_is_valid =
-                candidate.device_preview_identity.is_none_or(|identity| {
-                    preview_source_is_current(
-                        identity,
-                        candidate.project_generation,
-                        candidate.state.revision,
-                        self.project_generation,
-                        self.state.as_ref().map(|state| state.revision),
-                        active_gesture,
-                    )
-                });
-            if preview_source_is_valid {
+            let source = applied_candidate_source(
+                &candidate,
+                self.project_generation,
+                self.state.as_ref().map(|state| state.revision),
+                active_gesture,
+            );
+            if source == AppliedCandidateSource::Current {
                 if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
                 }
                 self.audible_playback = Some(candidate);
-            } else {
+            } else if source == AppliedCandidateSource::InvalidPreview {
                 visible_change |= replace_error(
                     &mut self.error,
                     "device preview source did not match its prepared revision",
@@ -632,6 +634,9 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        if event.request_complete && event.error.is_some() && event.playback.is_none() {
+            self.gain_recorder.arm_failed();
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -713,6 +718,12 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.gain_lane.reconcile(
+            self.project_generation,
+            revision,
+            &event.state.project,
+            event.project_replaced,
+        );
         self.state = Some(event.state);
         if event.project_replaced {
             self.loop_rail_gesture = None;
@@ -1077,6 +1088,11 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        if self.gain_recorder.blocks_edits() {
+            self.error =
+                Some("finish or cancel gain recording before another project action".into());
+            return false;
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
@@ -1184,6 +1200,7 @@ impl EditorView {
                 | Request::ImportToSession { .. }
                 | Request::Open(_)
                 | Request::OpenWith { .. }
+                | Request::GainLane { .. }
                 | Request::Edit(_)
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
@@ -1800,6 +1817,44 @@ fn preview_source_is_current(
         && active_gesture == Some((identity.key, identity.sequence))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppliedCandidateSource {
+    Current,
+    SupersededPreview,
+    InvalidPreview,
+}
+
+fn applied_candidate_source(
+    candidate: &PlaybackCandidate,
+    generation: u64,
+    revision: Option<u64>,
+    active: Option<(GestureKey, u64)>,
+) -> AppliedCandidateSource {
+    let Some(identity) = candidate.device_preview_identity else {
+        return AppliedCandidateSource::Current;
+    };
+    // A terminal gesture or newer owner/sequence can overtake callback receipt.
+    // Keep such notifications out of current state and error reporting.
+    if identity.project_generation != generation
+        || Some(identity.canonical_revision) != revision
+        || active != Some((identity.key, identity.sequence))
+    {
+        return AppliedCandidateSource::SupersededPreview;
+    }
+    if preview_source_is_current(
+        identity,
+        candidate.project_generation,
+        candidate.state.revision,
+        generation,
+        revision,
+        active,
+    ) {
+        AppliedCandidateSource::Current
+    } else {
+        AppliedCandidateSource::InvalidPreview
+    }
+}
+
 fn pending_playback_for_state(
     state: Arc<hex_session::service::ViewState>,
     project_generation: u64,
@@ -1947,6 +2002,60 @@ mod tests {
     use hex_engine::{PlaybackAction, PlaybackCommand, SessionPlaybackCommand};
     use hex_project::{ClipId, Command, Created, Editor, Project};
     use hex_session::device_gesture::GestureKey;
+
+    #[test]
+    fn delayed_preview_application_distinguishes_superseded_and_invalid_current_sources() {
+        use super::{AppliedCandidateSource, applied_candidate_source};
+        let preview = preview_candidate(17, 40, 3);
+        let identity = preview.device_preview_identity.unwrap();
+        let active = Some((identity.key, identity.sequence));
+        let mut queued = VecDeque::from([candidate(16, 40, 3), preview.clone()]);
+        let applied = promote_playback_candidates(&mut queued, 17, None).unwrap();
+        assert_eq!(
+            applied_candidate_source(&applied, 3, Some(40), active),
+            AppliedCandidateSource::Current
+        );
+        for (generation, revision, active) in [
+            (3, Some(40), None),   // cancel/commit terminal retired the gesture
+            (3, Some(41), active), // canonical commit overtook callback receipt
+            (4, Some(40), active), // project/owner replaced
+            (3, Some(40), Some((identity.key, identity.sequence + 1))),
+            (
+                3,
+                Some(40),
+                Some((
+                    GestureKey {
+                        generation: 3,
+                        token: identity.key.token + 1,
+                    },
+                    identity.sequence,
+                )),
+            ),
+        ] {
+            assert_eq!(
+                applied_candidate_source(&applied, generation, revision, active),
+                AppliedCandidateSource::SupersededPreview
+            );
+        }
+        let mut wrong_generation = preview.clone();
+        wrong_generation.project_generation = 2;
+        assert_eq!(
+            applied_candidate_source(&wrong_generation, 3, Some(40), active),
+            AppliedCandidateSource::InvalidPreview
+        );
+        let mut wrong_revision = preview_candidate(18, 39, 3);
+        wrong_revision.device_preview_identity = Some(identity);
+        assert_eq!(
+            applied_candidate_source(&wrong_revision, 3, Some(40), active),
+            AppliedCandidateSource::InvalidPreview
+        );
+        let mut rejected = VecDeque::from([preview]);
+        assert!(promote_playback_candidates(&mut rejected, 17, Some(17)).is_none());
+        assert_eq!(
+            applied_candidate_source(&candidate(18, 40, 3), 3, Some(40), None),
+            AppliedCandidateSource::Current
+        );
+    }
     use hex_session::service::{DevicePreviewIdentity, Request, ViewState};
     use std::{collections::VecDeque, sync::Arc};
 
@@ -2199,6 +2308,7 @@ mod tests {
                 project,
                 waveforms: Default::default(),
                 midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 0,
                 can_undo: false,
                 can_redo: false,

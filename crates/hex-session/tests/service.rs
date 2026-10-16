@@ -1338,7 +1338,10 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(saved.error.is_none());
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
-    assert!(json.contains("\"version\": 17"));
+    let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
+    assert_eq!(document["version"], 24);
+    assert_eq!(document["routing"], serde_json::json!([]));
+    assert!(document["import_provenance"].is_null());
     service
         .submit(Request::Open(project_path.clone()))
         .expect("open");
