@@ -20,8 +20,10 @@ pub(crate) use eligible::publication::{
     StreamInstall, StreamOutcome, StreamProgress,
 };
 pub use eligible::{
-    AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,
-    AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidateCancellationResult, AudioCandidateDomainPreparationFailure,
+    AudioCandidateDomainPreparationProgress, AudioCandidateDomainRefusal,
+    AudioCandidateDomainReservation, AudioCandidateDomainStartError, AudioCandidateDomainToken,
+    AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
     AudioCandidatePublicationReservation,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -505,6 +507,47 @@ impl CandidateRoot {
         drop(bank);
         crate::lifecycle::request_candidate_cleanup(self);
         Ok(token)
+    }
+    pub(crate) fn begin_domain_preparation(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        {
+            let bank = lock(&self.0.bank);
+            if bank.closing || bank.retiring {
+                return Err(AudioCandidateDomainStartError::Busy(
+                    "candidate terminal custody closing",
+                ));
+            }
+        }
+        let result = self
+            .0
+            .eligible
+            .begin_preparation(config, definitions, readiness);
+        // The eligible bank itself retains successful late construction. Its
+        // Starting cell was already occupied when terminal closure could win.
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn poll_domain_preparation(
+        &self,
+        token: AudioCandidateDomainToken,
+        enqueue: impl FnOnce(DomainEnvelope),
+    ) -> Result<AudioCandidateDomainPreparationProgress, &'static str> {
+        let (progress, pages) = self.0.eligible.poll_preparation(token)?;
+        let bank = lock(&self.0.bank);
+        if let Some(pages) = pages {
+            if bank.closing || bank.retiring {
+                self.0.eligible.retain_closed_pages(pages);
+            } else {
+                enqueue(pages);
+            }
+        }
+        drop(bank);
+        crate::lifecycle::request_candidate_cleanup(self);
+        Ok(progress)
     }
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)

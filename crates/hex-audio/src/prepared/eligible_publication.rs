@@ -45,6 +45,38 @@ impl PublicationControl {
             })
     }
 
+    /// Reserve an existing N2 cell and its construction allowance before any
+    /// source worker starts. Success means accepted custody even if close won;
+    /// it does not mean the catalog is verified or pages can be rendered.
+    pub fn begin_audio_candidate_domain_preparation(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root
+            .begin_domain_preparation(config, definitions, readiness)
+    }
+    /// Poll on the publication worker. Reserve the actual queue entry before
+    /// sealing; a ready endpoint cannot escape or be dropped on queue refusal.
+    pub fn poll_audio_candidate_domain_preparation(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> Result<crate::AudioCandidateDomainPreparationProgress, &'static str> {
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "candidate publication queue is full")?;
+        self.candidate_root.poll_domain_preparation(token, |pages| {
+            chunk.fill_from_iter(std::iter::once(QueuedPublication::Domain(pages)));
+        })
+    }
+
     /// Reserve the opted-in constructor Root before its first accepted owner.
     /// The existing channel must be vacant; legacy publication stays unchanged
     /// on channels that do not opt in.

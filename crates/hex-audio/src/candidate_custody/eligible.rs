@@ -3,6 +3,11 @@
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
 pub(super) mod pages;
+mod preparation;
+pub use preparation::{
+    AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
+    AudioCandidateDomainStartError,
+};
 pub(super) mod publication;
 pub(crate) use pages::DomainEnvelope;
 pub use publication::{
@@ -35,6 +40,10 @@ pub struct AudioCandidateDomainUsage {
 struct DomainSlot {
     incarnation: u64,
     owner: Option<ConstructorStreamDomain>,
+    preparing: Option<hex_stream::PendingStreamDomain>,
+    preparation_bound: Option<hex_stream::StreamPreparationBound>,
+    preparation_failure: Option<AudioCandidateDomainPreparationFailure>,
+    starting: bool,
     phase: Phase,
     uses: usize,
     retiring: bool,
@@ -51,6 +60,10 @@ impl DomainSlot {
         Self {
             incarnation: 0,
             owner: None,
+            preparing: None,
+            preparation_bound: None,
+            preparation_failure: None,
+            starting: false,
             phase: Phase::Vacant,
             uses: 0,
             retiring: false,
@@ -94,6 +107,7 @@ impl Default for NativeBank {
 }
 struct DomainExecution {
     owner: Option<ConstructorStreamDomain>,
+    preparing: Option<hex_stream::PendingStreamDomain>,
     returned_pages: Option<DomainEnvelope>,
     pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -262,6 +276,7 @@ impl Custody {
                 .ok_or("domain incarnation exhausted")?;
             slot.incarnation = incarnation;
             slot.phase = Phase::Reserved;
+            slot.starting = true;
             slot.signal.return_requested.store(false, Ordering::Relaxed);
             Ok((
                 AudioCandidateDomainToken {
@@ -295,6 +310,7 @@ impl Custody {
                 let slot = &mut guard.domains[token.slot];
                 if slot.matches(token) && slot.phase == Phase::Reserved {
                     slot.phase = Phase::Vacant;
+                    slot.starting = false;
                 }
                 return Err(Box::new(AudioCandidateDomainRefusal {
                     reason: "stream constructor ownership or caller DATA reservation refused",
@@ -326,6 +342,7 @@ impl Custody {
             let bank = &mut *guard;
             let slot = &mut bank.domains[token.slot];
             slot.owner = Some(owner);
+            slot.starting = false;
             slot.phase = Phase::Accepted;
             slot.retiring = bank.closing;
             // Both additions were preflighted by the remaining-reservation
@@ -350,7 +367,7 @@ impl Custody {
         else {
             return false;
         };
-        if slot.phase != Phase::Accepted {
+        if !matches!(slot.phase, Phase::Accepted | Phase::Reserved) {
             return false;
         }
         slot.retiring = true;
@@ -375,7 +392,9 @@ impl Custody {
                 s.phase == Phase::Failed
                     || s.phase == Phase::Cleaning
                     || (abandoned && s.phase == Phase::Complete)
-                    || (s.phase == Phase::Accepted && s.retiring && s.uses == 0)
+                    || (matches!(s.phase, Phase::Accepted | Phase::Reserved)
+                        && s.retiring
+                        && s.uses == 0)
             })
     }
     pub(super) fn occupied_publications(&self) -> Option<usize> {
@@ -403,17 +422,21 @@ impl Custody {
                     slot.data = 0;
                     slot.peak = 0;
                     slot.resources = None;
+                    slot.preparation_bound = None;
+                    slot.preparation_failure = None;
                 }
                 if slot.retiring && slot.uses == 0 {
                     slot.signal.return_requested.store(true, Ordering::Release);
                 }
                 if work.domains[index].is_none()
-                    && slot.phase == Phase::Accepted
+                    && matches!(slot.phase, Phase::Accepted | Phase::Reserved)
+                    && !slot.starting
                     && slot.retiring
                     && slot.uses == 0
                 {
                     work.domains[index] = Some(DomainExecution {
                         owner: slot.owner.take(),
+                        preparing: slot.preparing.take(),
                         returned_pages: None,
                         pending: false,
                         first_panic: None,
@@ -448,12 +471,16 @@ impl Custody {
                     execution.pending = false;
                     lock(&self.bank).domains[index].loan_outstanding = false;
                 }
-                execution
-                    .owner
-                    .as_mut()
-                    .ok_or(())?
-                    .advance_disposal_on_control()
-                    .map_err(|_| ())
+                if let Some(pending) = execution.preparing.as_mut() {
+                    pending.advance_disposal_on_control().map_err(|_| ())
+                } else {
+                    execution
+                        .owner
+                        .as_mut()
+                        .ok_or(())?
+                        .advance_disposal_on_control()
+                        .map_err(|_| ())
+                }
             }));
             let report = match result {
                 Ok(Ok(Some(report))) => report,
@@ -473,7 +500,10 @@ impl Custody {
             // The actual pair/capsule already completed normal destruction. The
             // enclosing domain metadata must also finish before publishing READY.
             execution.pending = true;
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(execution.owner.take()))) {
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+                drop(execution.owner.take());
+                drop(execution.preparing.take());
+            })) {
                 execution.first_panic = Some(payload);
                 self.fail(index);
                 continue;
@@ -508,6 +538,8 @@ impl Custody {
         slot.data = 0;
         slot.peak = 0;
         slot.resources = None;
+        slot.preparation_bound = None;
+        slot.preparation_failure = None;
         Some(report)
     }
     pub(super) fn usage(&self) -> Option<AudioCandidateDomainUsage> {
@@ -546,7 +578,7 @@ mod tests {
             .unwrap();
         runtime.split().ok().unwrap()
     }
-    fn configured(bytes: usize) -> Custody {
+    pub(super) fn configured(bytes: usize) -> Custody {
         let root = Custody::default();
         root.configure(
             31,
@@ -634,7 +666,12 @@ mod tests {
     fn closing_after_reservation_keeps_successful_pair_in_accepted_persistent_cleanup() {
         let root = configured(4 * 1024 * 1024);
         let token = root
-            .register_between(pair(), None, || root.close())
+            .register_between(pair(), None, || {
+                root.close();
+                root.advance_on_control(false);
+                assert!(lock(&root.bank).domains[0].starting);
+                assert!(lock(&root.work).domains[0].is_none());
+            })
             .ok()
             .unwrap()
             .0;

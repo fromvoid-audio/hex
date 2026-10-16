@@ -50,6 +50,8 @@ fn occupied_handles(bank: &NativeBank) -> Option<usize> {
     for domain in &bank.domains {
         if let Some(resources) = domain.resources {
             handles = handles.checked_add(resources.shared_handle_bound)?;
+        } else if let Some(bound) = domain.preparation_bound {
+            handles = handles.checked_add(bound.shared_handle_bound)?;
         }
     }
     for slot in &bank.publication.slots {
@@ -71,6 +73,13 @@ pub(super) fn for_candidate(
     bank: &NativeBank,
     summary: AudioCandidateConstructorSummary,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
+    if bank
+        .domains
+        .iter()
+        .any(|slot| slot.phase != Phase::Vacant && slot.resources.is_none())
+    {
+        return Err("source construction is not sealed");
+    }
     if summary.shared_resource_handles
         > remaining_handle_reservation(bank).ok_or("constructor handle reservation exceeded")?
     {

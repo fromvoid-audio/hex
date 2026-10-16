@@ -168,5 +168,16 @@ The same cleanup backing moves into the sealed domain; cancellation or changed
 file refusal conserves the original pool through normal join and destruction.
 An actual worker panic retains its first payload and remaining custody. The
 quote is a conservative allowance, not scalar completeness or page authority.
-The host must hold its normal N2 cell throughout this phase; Root slot and
-desktop/UI integration remain outstanding at this source checkpoint.
+The native Root now reserves one of its existing two domain cells before this
+factory runs. Starting, verification, sealing and cleanup retain that same
+incarnation and its conservative DATA/resource allowance. Close during startup
+cannot take the cell or drop a successful live result. Actual catalog refusal
+enters normal lifecycle cleanup; first-panic failure stays charged. A sealed
+endpoint enters the existing publication ring only after reserving its actual
+entry and checking the terminal barrier; late closure retains it in Root custody
+instead. Full queue pressure leaves the pending owner untouched. Pool/metadata
+closure does not free the cell until the scalar report is consumed. All new
+inline slots and execution destinations are included by the existing actual Root
+size visitor; opaque synchronization/worker costs remain resource obligations.
+A pending unsealed domain cannot satisfy a new complete native claim. Desktop/UI
+composition remains outstanding at this source checkpoint.

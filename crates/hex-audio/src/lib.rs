@@ -14,11 +14,12 @@ mod lifecycle;
 mod native_callback_owner;
 pub use candidate_catalog::CandidateDomain;
 pub use candidate_custody::{
-    AudioCandidateCancellationResult, AudioCandidateCustodyReport, AudioCandidateDomainRefusal,
-    AudioCandidateDomainReservation, AudioCandidateDomainToken, AudioCandidateDomainUsage,
-    AudioCandidateEligibleStageRefusal, AudioCandidatePublicationReservation,
-    AudioCandidateRecovery, AudioCandidateReturnKind, AudioCandidateStageRefusal,
-    AudioCandidateTicket,
+    AudioCandidateCancellationResult, AudioCandidateCustodyReport,
+    AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
+    AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainStartError,
+    AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePublicationReservation, AudioCandidateRecovery, AudioCandidateReturnKind,
+    AudioCandidateStageRefusal, AudioCandidateTicket,
 };
 pub mod processor_audition;
 pub mod spectrum;

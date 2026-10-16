@@ -21,8 +21,13 @@ The strict capture-enabled factory also measures actual analysis buffers and
 capture capacity, keeps Reader inside Client, binds the actual Reaper, and uses
 persistent normal-join/first-panic custody. Native analysis is fixed to device rate;
 generic dynamic workers remain unchanged and cannot mint its native receipt.
-Session sink/desktop/UI wiring is still unfinished; no full-CI, native UI or
-delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+The pending source constructor now reserves one existing N2 Root cell before
+factory work, keeps Starting occupied through close, seals the exact same pair
+in place, and transfers its endpoint only through the real reserved publication
+ring/terminal barrier. Verification refusal conserves the pool until normal
+lifecycle cleanup and report consumption; the real first-play readiness fixture
+uses this path. Session sink/desktop/UI wiring is still unfinished; no full-CI,
+native UI or delivery claim. See [source plan](docs/streamed-session-source-plan.md).
 
 ## unsnapped main cursor — #2647 / PR263, 16 october 2026
 

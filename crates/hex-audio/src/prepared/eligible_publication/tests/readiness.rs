@@ -29,14 +29,45 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
         .unwrap();
     control.configure_audio_candidate_streaming(3).unwrap();
     let domain = control
-        .register_audio_candidate_domain_with_readiness(
-            stream_fixture::pair(definition),
+        .begin_audio_candidate_domain_preparation(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            vec![definition],
             hex_stream::StreamReadinessReservation {
                 extents_per_role: 3,
             },
         )
-        .ok()
         .unwrap();
+    assert_eq!(
+        control
+            .audio_candidate_domain_usage()
+            .unwrap()
+            .occupied_domains,
+        1
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected source preparation: {other:?}"),
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        control.poll_audio_candidate_domain_preparation(domain),
+        Err("candidate publication queue is full")
+    );
+    assert_eq!(
+        control
+            .audio_candidate_domain_usage()
+            .unwrap()
+            .occupied_domains,
+        1
+    );
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block()); // only exact loan transfer
@@ -714,6 +745,85 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
         std::thread::yield_now();
     }
     drop(ready_a);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_report() {
+    let _serial = serial();
+    let Some(mut owner) = candidate() else { return };
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    let (project, _) = utility_fixture::project();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::new();
+    let definition = wav.definition(asset, 11);
+    std::fs::write(&definition.path, b"changed source bytes").unwrap();
+    let token = control
+        .begin_audio_candidate_domain_preparation(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            vec![definition],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 2,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(token)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Refused(
+                crate::AudioCandidateDomainPreparationFailure::Verification(_),
+            ) => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected preparation: {other:?}"),
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    // A normal verification refusal is accepted cleanup, not a poisoned Root
+    // or a fabricated page/installation success. The real pool stays charged.
+    assert!(control.candidate_root.eligible_claims_open());
+    assert_eq!(
+        control
+            .audio_candidate_domain_usage()
+            .unwrap()
+            .occupied_domains,
+        1
+    );
+    let measured = allocation_counter::measure(|| {
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    loop {
+        if let Some(report) = control.recover_audio_candidate_domain(token) {
+            assert!(report.worker_joined && report.accounting_complete);
+            assert_eq!(report.page_buffers, 4);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(owner);
+    drop(data);
+    drop(errors);
     drop(control);
     finish(&mut retirement);
 }

@@ -25,6 +25,13 @@ client remains live; final native resource/lease release waits for its actual
 endpoint Drop. Session/desktop integration of this factory is still in progress;
 see [source/service integration](../../docs/streamed-session-source-plan.md).
 
+Worker publication can reserve and start a pending source constructor directly
+inside one of the same two Root domain slots, then poll complete verification and
+in-place sealing. It returns only a nonowning slot/incarnation token. Cancellation
+and close preserve its actual pair and prebound cleanup capsule for lifecycle
+join/destruction; reuse waits for the final report. No page endpoint is exposed
+before sealing, and queue refusal/terminal closure cannot discard a live owner.
+
 `prepared::Control` publishes a fixed-size `Playback` wrapper through a one-slot
 queue and keeps publication admission closed until the callback accepts or
 returns that candidate. Session route commands share the bounded command queue
