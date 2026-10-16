@@ -176,6 +176,15 @@ impl EditorView {
                 pending.project_generation,
             ) {
                 Ok(audio_revision) => {
+                    if self.stopped_playback_restore
+                        == Some(super::audio_admission::StoppedPlaybackRestore::Ready)
+                        && pending.install_fresh_runtime
+                    {
+                        self.stopped_playback_restore =
+                            Some(super::audio_admission::StoppedPlaybackRestore::Published(
+                                audio_revision,
+                            ));
+                    }
                     self.gain_recorder.published(
                         prepared_revision
                             .as_ref()
@@ -276,6 +285,13 @@ impl EditorView {
             if let Some(project) =
                 rejected_candidate_project(&self.playback_candidates, audio_revision)
             {
+                if self.stopped_playback_restore
+                    == Some(super::audio_admission::StoppedPlaybackRestore::Published(
+                        audio_revision,
+                    ))
+                {
+                    self.stopped_playback_restore = None;
+                }
                 visible_change |=
                     self.audio_admission
                         .rejected(project, audio_revision, reason.message());
@@ -319,6 +335,13 @@ impl EditorView {
                     && candidate.seek_request_id.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
+                    if matches!(
+                        self.stopped_playback_restore,
+                        Some(super::audio_admission::StoppedPlaybackRestore::Published(required))
+                            if candidate.audio_revision >= required
+                    ) {
+                        self.stopped_playback_restore = None;
+                    }
                 }
                 self.audible_playback = Some(candidate);
             } else if source == AppliedCandidateSource::InvalidPreview {
@@ -656,6 +679,15 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        if event.stopped_playback_restore_complete
+            && event.error.is_some()
+            && event.playback.is_none()
+        {
+            self.stopped_playback_restore = None;
+        }
+        if event.project_replaced {
+            self.stopped_playback_restore = None;
+        }
         if event.request_complete && event.error.is_some() && event.playback.is_none() {
             self.gain_recorder.arm_failed();
         }
@@ -1040,7 +1072,19 @@ impl EditorView {
                     }
                     _ => None,
                 });
-        if let Some(playback) = event.playback {
+        let mut stopped_restore_error = None;
+        if let Some(mut playback) = event.playback {
+            if event.stopped_playback_restore_complete {
+                self.stopped_playback_restore =
+                    Some(super::audio_admission::StoppedPlaybackRestore::Ready);
+                // Preserve the transient click toggle across the stopped reset.
+                // Voice/filter histories and the transport still start fresh.
+                if let Err(reason) = playback
+                    .try_apply_action(PlaybackAction::SetMetronome(self.metronome_enabled()))
+                {
+                    stopped_restore_error = Some(reason.message().to_owned());
+                }
+            }
             let previous_reset = self
                 .pending_playback
                 .as_ref()
@@ -1070,7 +1114,7 @@ impl EditorView {
             pending.prepared_revision = prepared_revision;
             pending.device_preview_identity = preview_identity;
             pending.install_fresh_runtime = retained_install_fresh_policy(
-                event.project_replaced,
+                event.project_replaced || event.stopped_playback_restore_complete,
                 self.project_generation,
                 previous_reset,
             );
@@ -1081,6 +1125,8 @@ impl EditorView {
             self.error = None;
         }
         if let Some(error) = event.error {
+            self.error = Some(error);
+        } else if let Some(error) = stopped_restore_error {
             self.error = Some(error);
         }
         if let Some(message) = playback_capability {
@@ -1238,6 +1284,7 @@ impl EditorView {
                 | Request::Undo
                 | Request::Redo
                 | Request::RestorePlayback { .. }
+                | Request::RestoreStoppedPlayback
         ) {
             self.invalidate_prepared_seek();
         }
@@ -1314,6 +1361,10 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        if self.stopped_playback_restore.is_some() {
+            self.error = Some("restoring stopped playback · wait before seeking".into());
+            return;
+        }
         if self.recovery.generation().is_some() {
             self.error = Some("audio recovery pending · cannot seek yet".into());
             return;
@@ -1498,6 +1549,7 @@ impl EditorView {
             return;
         };
         if self.recovery.generation().is_some()
+            || self.stopped_playback_restore.is_some()
             || self.opening_project
             || self.close_prompt_open
             || self.edit_pending()
@@ -1546,6 +1598,7 @@ impl EditorView {
             return;
         };
         if self.recovery.generation().is_some()
+            || self.stopped_playback_restore.is_some()
             || self.opening_project
             || self.close_prompt_open
             || self.edit_pending()
@@ -1626,6 +1679,10 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
+            self.error = Some("restoring stopped playback · wait before playing".into());
+            return;
+        }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.invalidate_prepared_seek();
         }
@@ -1767,6 +1824,23 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        // Stop explicitly discards voice histories. A previously refused edit
+        // or restoration can now install the canonical sound without inheriting
+        // an incompatible preview's history. Keep construction on the worker.
+        let restore = self.stopped_playback_restore.is_none()
+            && !self.edit_pending()
+            && self.device_gesture.snapshot().is_none()
+            && self.recovery.generation().is_none()
+            && self.audio.as_ref().is_some_and(|audio| {
+                self.state.as_ref().is_some_and(|state| {
+                    self.applied_project_revision != Some(state.revision)
+                        || self.audible_playback.as_ref().is_none_or(|audible| {
+                            audible.audio_revision
+                                != audio.control.status.applied_revision.load(Acquire)
+                                || audible.device_preview_identity.is_some()
+                        })
+                })
+            });
         self.cancel_scrub();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
@@ -1780,6 +1854,12 @@ impl EditorView {
             audio.control.stop();
         }
         self.status = "stopped · returned to start".into();
+        if restore && self.enqueue(Request::RestoreStoppedPlayback) {
+            self.stopped_playback_restore =
+                Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
+            self.status = "stopped · restoring current sound".into();
+            self.error = None;
+        }
     }
 }
 

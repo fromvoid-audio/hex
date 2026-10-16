@@ -1299,6 +1299,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         save_complete: false,
         open_complete: false,
         project_replaced: false,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,

@@ -33,6 +33,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         save_complete: false,
         open_complete: replaced,
         project_replaced: replaced,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,
@@ -520,4 +521,54 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
             );
         })
         .expect("run viewport growth assertions");
+}
+
+#[gpui::test]
+fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_later_edits(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).unwrap();
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    window
+        .update(cx, |view, _, _| {
+            let project = Arc::new(Project::new(48_000).unwrap());
+            view.receive(event(Arc::clone(&project), 2, false));
+            view.pending_playback = None;
+            let generation = view.project_generation;
+            view.stopped_playback_restore =
+                Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
+            let mut restored = event(Arc::clone(&project), 2, false);
+            restored.stopped_playback_restore_complete = true;
+            view.receive(restored);
+            assert_eq!(view.project_generation, generation);
+            assert_eq!(view.state.as_ref().unwrap().project, project);
+            assert!(
+                view.pending_playback
+                    .as_ref()
+                    .unwrap()
+                    .install_fresh_runtime
+            );
+            // The reset belongs to the explicit Stop even if a newer canonical edit
+            // coalesces before publication. Ordinary edits alone retain histories.
+            view.receive(event(Arc::clone(&project), 3, false));
+            assert!(
+                view.pending_playback
+                    .as_ref()
+                    .unwrap()
+                    .install_fresh_runtime
+            );
+            view.pending_playback = None;
+            view.stopped_playback_restore = None;
+            view.receive(event(project, 4, false));
+            assert!(
+                !view
+                    .pending_playback
+                    .as_ref()
+                    .unwrap()
+                    .install_fresh_runtime
+            );
+        })
+        .unwrap();
 }
