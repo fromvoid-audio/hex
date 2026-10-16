@@ -511,7 +511,9 @@ impl EditorView {
             && !audio.control.status.render_fault.load(Relaxed)
             && !audio.control.status.shutdown_complete.load(Acquire)
         {
-            visible_change |= self.session_routes.poll(Arc::clone(&audio.control.status));
+            if let Some(identity) = audio.control.output_identity() {
+                visible_change |= self.session_routes.poll(identity, &audio.control.status);
+            }
         } else {
             self.session_routes.clear();
         }

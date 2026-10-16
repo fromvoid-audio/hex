@@ -11,6 +11,7 @@ pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
+    output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
@@ -42,10 +43,12 @@ impl Control {
             mut publication,
         } = self;
         publication.status.split_endpoints.store(true, Release);
+        let output_identity = publication.candidate_root.root_id();
         let status = Arc::clone(&publication.status);
         let resident_forwarding = resident_forwarding::ResidentForwarding::new();
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (endpoints, client) = reserve(ClientEndpoints {
+            output_identity,
             sample_preview,
             resident_forwarding,
             spectrum_reader,
@@ -121,6 +124,13 @@ impl Client {
     /// A borrowed observation, with no cloneable Status/endpoint owner escape.
     pub fn status(&self) -> Option<&Status> {
         self.endpoints.owner_ref().map(|e| e.status.as_ref())
+    }
+    /// Actual channel incarnation for view/request correlation only.
+    pub fn output_identity(&self) -> Option<u64> {
+        self.endpoints.owner_ref().map(|e| e.output_identity)
+    }
+    pub fn capture_fresh_runtime_fence(&self) -> Option<FreshRuntimeFence> {
+        capture_runtime_fence(self.status()?)
     }
     pub fn close(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {

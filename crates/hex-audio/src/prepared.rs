@@ -1046,18 +1046,26 @@ impl SpectrumStage {
     }
 }
 
+fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
+    let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
+    let snapshot = status.session_routes(&mut routes)?;
+    Some(FreshRuntimeFence {
+        expected_active_revision: snapshot.audio_revision,
+        route_state_generation: snapshot.route_state_generation,
+        admitted_command_ticket: status.admitted_ticket.load(Acquire),
+    })
+}
+
 impl PublicationControl {
+    /// Correlation for nonowning client/view metadata, never custody authority.
+    pub fn output_identity(&self) -> Option<u64> {
+        Some(self.candidate_root.root_id())
+    }
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
     /// invalid route snapshot so callers can retry before preparing a graph.
     pub fn capture_fresh_runtime_fence(&self) -> Option<FreshRuntimeFence> {
-        let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
-        let snapshot = self.status.session_routes(&mut routes)?;
-        Some(FreshRuntimeFence {
-            expected_active_revision: snapshot.audio_revision,
-            route_state_generation: snapshot.route_state_generation,
-            admitted_command_ticket: self.status.admitted_ticket.load(Acquire),
-        })
+        capture_runtime_fence(&self.status)
     }
 
     pub fn publish(&mut self, playback: Playback) -> Result<u64, PublishError> {
