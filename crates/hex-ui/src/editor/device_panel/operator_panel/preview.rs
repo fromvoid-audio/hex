@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // Preserve selector-column space while accepting the wider shared dial tile.
-pub(super) const PANEL_WIDTH: f32 = 2.0 * FIELD_WIDTH + 148.0;
+pub(super) const PANEL_WIDTH: f32 = crate::device_composition::VECTOR_PREVIEW_WIDTH;
 const FIELD_WIDTH: f32 = hex_widgets::MICRO_DIAL_WIDTH;
 const ROW_HEIGHT: f32 = 40.0;
 
@@ -181,11 +181,13 @@ pub(super) fn render(
             &[Field::Time, Field::Tone, Field::Volume],
         ),
     ];
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(2.0));
+    let mut content = hex_widgets::device_rail(super::super::device_layout_style())
+        .w_full()
+        .h_full();
     for row in rows {
         content = content.child(row);
     }
-    div()
+    hex_widgets::device_rail(super::super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-preview-{}", device.value()).into(),
         ))
@@ -193,7 +195,6 @@ pub(super) fn render(
         .w(px(PANEL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(super::RAIL_GUTTER))
         .pl(px(2.0))
         .child(content)
 }
@@ -209,7 +210,7 @@ fn row(
     let owner = super::context::Owner::capture(view, device);
     let section = super::Section::Preview(title);
     let (section_focus, focused) = super::context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::super::device_layout_style(), focused)
         .on_children_prepainted(super::context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-{title}", device.value()).into(),
@@ -218,7 +219,6 @@ fn row(
         .track_focus(&section_focus)
         .w_full()
         .h(px(ROW_HEIGHT))
-        .px(px(4.0))
         .flex()
         .items_center()
         .gap(px(1.0));
@@ -245,13 +245,6 @@ fn row(
         dials = dials.child(control(view, cx, device, *field));
     }
     row = row.child(dials);
-    row = row
-        .bg(rgb(if focused {
-            super::RAIL_GUTTER
-        } else {
-            super::RAIL_BACKGROUND
-        }))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS));
     if title == "global" {
         row = row.capture_any_mouse_down(cx.listener(
             move |view, event: &gpui::MouseDownEvent, _, cx| {
@@ -280,7 +273,7 @@ fn routing_link(
         .routing_focus
         .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
         .clone();
-    let colors = [0xf18428, 0x6374e8, 0x22bcb5, 0xe2cf25];
+    let colors = (0..4).rev().filter_map(theme::oscillator_identity_color);
     let mut icon = div()
         .w(px(12.0))
         .h(px(30.0))
@@ -288,18 +281,14 @@ fn routing_link(
         .flex_col()
         .items_center()
         .justify_between();
-    for (index, color) in colors.into_iter().enumerate() {
+    for (index, color) in colors.enumerate() {
         icon = icon.child(
-            div()
-                .id(ElementId::Name(
-                    format!("operator-route-icon-{}-{index}", device.value()).into(),
-                ))
-                .w(px(5.0))
-                .h(px(5.0))
-                .bg(rgb(color)),
+            hex_widgets::device_identity_marker(color).id(ElementId::Name(
+                format!("operator-route-icon-{}-{index}", device.value()).into(),
+            )),
         );
     }
-    div()
+    hex_widgets::device_focus_target(super::super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-preview-{}-route-link", device.value()).into(),
         ))
@@ -312,9 +301,6 @@ fn routing_link(
             })
             .into()
         })
-        .border_1()
-        .border_color(rgb(super::RAIL_GUTTER))
-        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .w(px(18.0))
         .h(px(34.0))
         .flex()
@@ -466,6 +452,7 @@ pub(super) fn control(
         .get(&device)
         .map_or(spec.default, |state| state.value(field));
     control.entity.update(cx, |control, cx| {
+        let _ = control.set_external_style(control_style(), cx);
         control.set_tab_navigation(true, cx);
         let _ = control.set_external_value(value, cx);
     });
@@ -554,6 +541,9 @@ fn toggle(
     else {
         return control_error("toggle unavailable");
     };
+    toggle.entity.update(cx, |control, cx| {
+        let _ = control.set_external_style(control_style(), cx);
+    });
     div()
         .id(ElementId::Name(
             format!(

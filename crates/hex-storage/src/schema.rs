@@ -1,3 +1,12 @@
+pub(crate) mod branch_audio;
+pub(crate) mod combined;
+pub(crate) mod gain_envelopes;
+pub(crate) mod gain_touch;
+pub(crate) mod musical_audio;
+pub(crate) mod playable_routing;
+pub(crate) mod provenance;
+pub(crate) mod return_feeds;
+pub(crate) mod routing;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
@@ -1050,6 +1059,9 @@ impl DocumentV19 {
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
+        Self::into_project(doc)
+    }
+    fn into_project(doc: Self) -> Result<Project, StorageError> {
         if doc.format != "hex-project" || !matches!(doc.version, 17..=19) {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
@@ -1236,6 +1248,10 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1267,6 +1283,10 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1298,6 +1318,10 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1336,6 +1360,10 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1374,6 +1402,10 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1412,6 +1444,10 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1450,6 +1486,10 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1506,6 +1546,10 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
                     assets: document
@@ -1748,6 +1792,7 @@ impl DocumentV12 {
                         SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
                             hex_project::SessionAudioClipSnapshot {
+                                gain: hex_project::ClipGain::UNITY,
                                 id: clip.id,
                                 name: clip.name,
                                 asset: clip.asset,
@@ -1905,6 +1950,9 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    gain_envelope: Vec::new(),
+                    gain_touch_spans: Vec::new(),
+                    gain_touch_epoch: 0,
                     id: track.id,
                     name: track.name,
                     gain: track.gain,
@@ -1927,6 +1975,10 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            return_feeds: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
+            import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
             assets: doc
@@ -1953,6 +2005,19 @@ impl DocumentV13 {
     }
 }
 
+#[derive(Deserialize)]
+struct HistoricalShape {
+    #[serde(default, deserialize_with = "present_field")]
+    import_provenance: Option<serde::de::IgnoredAny>,
+    #[serde(default, deserialize_with = "present_field")]
+    routing: Option<serde::de::IgnoredAny>,
+}
+fn present_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde::de::IgnoredAny>, D::Error> {
+    serde::de::IgnoredAny::deserialize(deserializer).map(Some)
+}
+
 impl DocumentV11 {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let header: Header = serde_json::from_slice(bytes)?;
@@ -1961,7 +2026,56 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
-        if matches!(header.version, 17..=19) {
+        if header.version == 25 {
+            return musical_audio::DocumentV25::decode(bytes);
+        }
+        if matches!(header.version, 20 | 21) {
+            let shape: HistoricalShape = serde_json::from_slice(bytes)?;
+            match (shape.import_provenance.is_some(), shape.routing.is_some()) {
+                (false, false) => return branch_audio::decode(bytes),
+                (true, true) => {}
+                _ => {
+                    return Err(StorageError::Invalid(
+                        "inconsistent historical project envelope",
+                    ));
+                }
+            }
+        }
+        if header.version == 24 {
+            return playable_routing::DocumentV24::decode(bytes);
+        }
+        if header.version == 23 {
+            return combined::decode(bytes);
+        }
+        if header.version == 22 {
+            return gain_touch::DocumentV22::decode(bytes);
+        }
+        if header.version == 21 {
+            return gain_envelopes::DocumentV21::decode(bytes);
+        }
+        if header.version == 20 {
+            return return_feeds::DocumentV20::decode(bytes);
+        }
+        if matches!(header.version, 18 | 19) {
+            // These versions were written by independent development branches.
+            // Select by explicit field presence, never by catching a parse error.
+            let shape: HistoricalShape = serde_json::from_slice(bytes)?;
+            match (shape.import_provenance.is_some(), shape.routing.is_some()) {
+                (false, false) => return DocumentV19::decode(bytes),
+                (true, false) if header.version == 18 => {
+                    return provenance::DocumentV18::decode(bytes);
+                }
+                (true, true) if header.version == 19 => {
+                    return routing::DocumentV19::decode(bytes);
+                }
+                _ => {
+                    return Err(StorageError::Invalid(
+                        "inconsistent historical project envelope",
+                    ));
+                }
+            }
+        }
+        if header.version == 17 {
             return DocumentV19::decode(bytes);
         }
         if header.version == 16 {
@@ -2151,6 +2265,9 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            gain_envelope: Vec::new(),
+                            gain_touch_spans: Vec::new(),
+                            gain_touch_epoch: 0,
                             id: t.id,
                             name: t.name,
                             gain: t.gain,
@@ -2166,6 +2283,10 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
+                    import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
                     assets: doc
@@ -2277,6 +2398,9 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    gain_envelope: Vec::new(),
+                    gain_touch_spans: Vec::new(),
+                    gain_touch_epoch: 0,
                     id: t.id,
                     name: t.name,
                     gain: t.gain,
@@ -2292,6 +2416,10 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            return_feeds: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
+            import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
             assets: doc
@@ -2447,6 +2575,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                     SessionContentDtoV12::Audio { clip } => {
                         SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                            gain: hex_project::ClipGain::UNITY,
                             id: clip.id,
                             name: clip.name,
                             asset: clip.asset,
@@ -2524,6 +2653,8 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
         .into_iter()
         .map(|clip| {
             Ok(ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
                 asset: clip.asset,
                 start: clip.start,
@@ -2551,6 +2682,9 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2572,6 +2706,9 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2593,6 +2730,9 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2625,6 +2765,8 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
                         asset: clip.asset,
                         start: clip.start,
@@ -2638,6 +2780,9 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2670,6 +2815,8 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
                         asset: clip.asset,
                         start: clip.start,
@@ -2683,6 +2830,9 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: track.id,
                 name: track.name,
                 gain: track.gain,
@@ -2706,6 +2856,8 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             let fade = ClipFade::neutral(clip.duration.max(1))
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
                 asset: clip.asset,
                 start: clip.start,

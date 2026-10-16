@@ -13,6 +13,26 @@ const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 4;
 
+pub(super) fn prepared_waveform_view_cached(
+    prepared: &hex_session::service::AudioClipWaveform,
+    clip: &Clip,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+) -> Div {
+    waveform_canvas(
+        Arc::clone(&prepared.waveform),
+        WaveformMapping::Prepared {
+            timeline_origin: clip.start(),
+            root_offset: prepared.offset,
+            gain: clip.gain(),
+        },
+        visible_start,
+        visible_end,
+        Some(cache),
+    )
+}
+
 pub(super) fn waveform_view_at(
     waveform: &Arc<CachedWaveform>,
     clip: &Clip,
@@ -66,16 +86,20 @@ pub(super) fn waveform_source_segment_view(
     )
 }
 
-pub(super) fn waveform_source_segment_view_cached(
+pub(super) fn waveform_source_segment_gain_view_cached(
     waveform: Arc<CachedWaveform>,
     timeline_origin: u64,
     visible_start: u64,
     visible_end: u64,
+    gain: hex_project::ClipGain,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
 ) -> Div {
     waveform_canvas(
         waveform,
-        WaveformMapping::Source { timeline_origin },
+        WaveformMapping::GainedSource {
+            timeline_origin,
+            gain,
+        },
         visible_start,
         visible_end,
         Some(cache),
@@ -162,6 +186,63 @@ pub(super) fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32
 /// Return a viewport-clipped, bounded preview of the canonical fade gain law.
 /// X and gain are normalized to [0, 1]; sample phases stay in clip timeline
 /// frames, independent of looping source-media phase.
+pub(super) fn projected_fade_envelope_samples(
+    clip: &Clip,
+    tempo: &hex_project::TempoMap,
+    visible_start: u64,
+    visible_end: u64,
+) -> Result<Vec<(f32, f32)>, hex_project::Invalid> {
+    let edit = clip
+        .audio_edit()
+        .ok_or(hex_project::Invalid("audio clip has no projected fade"))?;
+    let fade = edit.projected_fade(tempo)?;
+    let (_, _, view_start, _) = edit.projected_domain(tempo)?;
+    if visible_start < clip.start()
+        || visible_start >= visible_end
+        || visible_end > clip.start().saturating_add(clip.duration())
+    {
+        return Ok(Vec::new());
+    }
+    let length = visible_end - visible_start;
+    let count = length.min(FADE_ENVELOPE_SAMPLES as u64) as usize;
+    let root_start = view_start
+        .checked_add(visible_start - clip.start())
+        .ok_or(hex_project::Invalid("fade geometry frame overflow"))?;
+    let root_end = root_start
+        .checked_add(length - 1)
+        .ok_or(hex_project::Invalid("fade geometry frame overflow"))?;
+    let capacity = count + 12;
+    let mut positions = Vec::new();
+    positions
+        .try_reserve_exact(capacity)
+        .map_err(|_| hex_project::Invalid("fade geometry allocation failed"))?;
+    for index in 0..count {
+        positions.push(root_start + fraction_u64(length - 1, index, count.saturating_sub(1)));
+    }
+    for frame in fade.breakpoints()?.into_iter().flatten() {
+        for frame in [frame.saturating_sub(1), frame, frame.saturating_add(1)] {
+            if frame >= root_start && frame <= root_end {
+                positions.push(frame);
+            }
+        }
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(positions.len())
+        .map_err(|_| hex_project::Invalid("fade geometry allocation failed"))?;
+    for frame in positions {
+        let x = if length == 1 {
+            0.0
+        } else {
+            (frame - root_start) as f32 / (length - 1) as f32
+        };
+        result.push((x, fade.gain_at(frame)?));
+    }
+    Ok(result)
+}
+
 pub(super) fn fade_envelope_samples(
     fade: ClipFade,
     clip_start: u64,
@@ -269,6 +350,11 @@ pub(super) fn timeline_source_ranges_at(
     visible: Range<u64>,
     available_frames: usize,
 ) -> SourceRanges {
+    // Transformed audio has a prepared root projection. An original asset peak
+    // map cannot describe it, including not-yet-prepared drag/trim previews.
+    if clip.audio_edit().is_some() {
+        return SourceRanges::default();
+    }
     let Some(clip_end) = timeline_origin.checked_add(clip.duration()) else {
         return SourceRanges::default();
     };

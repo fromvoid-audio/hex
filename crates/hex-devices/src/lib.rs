@@ -127,6 +127,10 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
 }
 
 impl PreparedNativeInstrument for PreparedSineInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         pitch: u8,

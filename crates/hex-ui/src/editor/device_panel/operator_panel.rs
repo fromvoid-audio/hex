@@ -13,27 +13,10 @@ pub(super) mod context;
 pub(super) mod envelope;
 pub(super) mod preview;
 
-pub(super) const OPERATOR_FRAME_WIDTH: f32 =
-    SHELL_WIDTH + DETAIL_WIDTH + preview::PANEL_WIDTH + 30.0;
-const BODY_HEIGHT: f32 = 168.0;
+pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
-const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
-const DETAIL_WIDTH: f32 = 292.0;
+const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
-// Neutral colors based on the user-supplied Operator reference crops.
-const DISPLAY_BACKGROUND: u32 = 0x191919;
-const RAIL_BACKGROUND: u32 = 0x363636;
-const RAIL_GUTTER: u32 = 0x474747;
-
-pub(super) fn frame_style() -> hex_widgets::ControlStyle {
-    hex_widgets::ControlStyle {
-        background: RAIL_GUTTER,
-        surface: RAIL_GUTTER,
-        raised: RAIL_GUTTER,
-        border: RAIL_GUTTER,
-        ..super::control_style()
-    }
-}
 
 gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 
@@ -114,7 +97,7 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Instrument,
         type_id: device_view.type_id,
     };
-    let mut shell = div()
+    let mut shell = hex_widgets::device_rail(super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-shell-{}", device.value()).into(),
         ))
@@ -122,10 +105,6 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(RAIL_GUTTER))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
         .pr(px(4.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
@@ -167,60 +146,22 @@ pub(super) fn render_body(
         OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
-    div()
+    let detail =
+        crate::device_composition::tabbed_detail(detail, page_tabs(view, cx, device, owner, state))
+            .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
+            .id(ElementId::Name(
+                format!("operator-detail-{}", device.value()).into(),
+            ))
+            .debug_selector(move || format!("operator-detail-{}", device.value()))
+            .track_focus(&detail_focus);
+    let preview = preview::render(view, cx, device, device_view);
+    crate::device_composition::three_pane(shell, detail, preview)
         .tab_group()
         .on_children_prepainted(context::focus_listener(view, cx, device))
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-body-{}", device.value()))
-        .w_full()
-        .h(px(BODY_HEIGHT))
-        .min_h_0()
-        .overflow_hidden()
-        .flex()
-        .gap(px(4.0))
-        .bg(rgb(RAIL_GUTTER))
-        .px(px(3.0))
-        .py(px(1.0))
-        .child(shell)
-        .child(
-            div()
-                .on_children_prepainted(context::section_listener(
-                    view,
-                    cx,
-                    device,
-                    Section::Detail,
-                ))
-                .id(ElementId::Name(
-                    format!("operator-detail-{}", device.value()).into(),
-                ))
-                .debug_selector(move || format!("operator-detail-{}", device.value()))
-                .flex_1()
-                .w(px(DETAIL_WIDTH))
-                .min_w_0()
-                .track_focus(&detail_focus)
-                .bg(rgb(DISPLAY_BACKGROUND))
-                .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-                .overflow_hidden()
-                .relative()
-                .px(px(4.0))
-                .h_full()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
-                .child(detail)
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(86.0))
-                        .left_0()
-                        .w_full()
-                        .px(px(4.0))
-                        .child(page_tabs(view, cx, device, owner, state)),
-                ),
-        )
-        .child(preview::render(view, cx, device, device_view))
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "tab"
@@ -346,7 +287,7 @@ fn operator_row(
     );
     let (section_focus, focused) =
         context::section_focus(view, cx, device, Section::Oscillator(operator));
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(
             view,
             cx,
@@ -363,16 +304,9 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .pl(px(4.0))
-        .pr(px(18.0))
+        .pr(px(14.0))
         .relative()
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .track_focus(&section_focus)
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -420,45 +354,34 @@ fn operator_label(
         Some(ParameterValue::Bool(true))
     );
     let focus = navigation_focus(view, cx, device, NavigationTarget::Oscillator(operator));
-    div()
-        .id(ElementId::Name(
-            format!("operator-select-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
-        .track_focus(&focus)
-        .key_context("hex_operator_section")
-        .focus(|style| {
-            style
-                .border_2()
-                .border_color(rgb(theme::color(theme::PaletteRole::Text)))
-        })
-        .w(px(12.0))
-        .h(px(12.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(8.0))
-        .rounded(px(1.0))
-        .border_1()
-        .border_color(rgb(theme::color(if selected {
-            theme::PaletteRole::Text
-        } else {
-            theme::PaletteRole::Border
-        })))
-        .bg(rgb(if enabled {
-            [0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]
-        } else {
-            0x191919
-        }))
-        .text_color(rgb(if enabled { 0x15171b } else { 0xb8b8b8 }))
-        .cursor(gpui::CursorStyle::PointingHand)
-        .child(theme::text(["a", "b", "c", "d"][operator]))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view))
-                && finalize_controls(view, cx)
-                && toggle_enable(view, device, operator)
-            {
-                focus.focus(window);
+    hex_widgets::device_badge(
+        theme::text(["a", "b", "c", "d"][operator]),
+        theme::device_identity_style(operator, enabled, selected),
+    )
+    .id(ElementId::Name(
+        format!("operator-select-{}-{operator}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
+    .track_focus(&focus)
+    .key_context("hex_operator_section")
+    .cursor(gpui::CursorStyle::PointingHand)
+    .on_click(cx.listener(move |view, _, window, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view))
+            && finalize_controls(view, cx)
+            && toggle_enable(view, device, operator)
+        {
+            focus.focus(window);
+            let state = view.device_panel.operator_pages.entry(device).or_default();
+            state.selected_operator = operator;
+            if state.page != OperatorPage::Envelope {
+                state.page = OperatorPage::Oscillator;
+            }
+            cx.notify();
+        }
+    }))
+    .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view)) {
+            if finalize_controls(view, cx) {
                 let state = view.device_panel.operator_pages.entry(device).or_default();
                 state.selected_operator = operator;
                 if state.page != OperatorPage::Envelope {
@@ -466,20 +389,9 @@ fn operator_label(
                 }
                 cx.notify();
             }
-        }))
-        .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) {
-                if finalize_controls(view, cx) {
-                    let state = view.device_panel.operator_pages.entry(device).or_default();
-                    state.selected_operator = operator;
-                    if state.page != OperatorPage::Envelope {
-                        state.page = OperatorPage::Oscillator;
-                    }
-                    cx.notify();
-                }
-                cx.stop_propagation();
-            }
-        }))
+            cx.stop_propagation();
+        }
+    }))
 }
 
 /// One ordinary canonical Boolean edit, with pending state retained on queue
@@ -546,7 +458,6 @@ fn page_tab(
         .debug_selector(move || format!("operator-page-{}-{label}", device.value()))
         .track_focus(&focus)
         .key_context("hex_operator_section")
-        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .cursor(gpui::CursorStyle::PointingHand)
         .on_click(cx.listener(move |view, _, window, cx| {
             if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
@@ -1087,17 +998,11 @@ fn value(
 }
 
 pub(super) fn display_style() -> hex_widgets::ControlStyle {
-    let mut style = super::control_style();
-    style.background = DISPLAY_BACKGROUND;
-    style.rail = 0x242424;
-    style
+    theme::device_style(theme::DeviceStyleRole::Display)
 }
 
 fn section_title(label: &'static str) -> Div {
-    div()
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text(label))
+    hex_widgets::device_inline_caption(theme::text(label), super::control_style())
 }
 
 fn lfo_detail(
@@ -1171,21 +1076,14 @@ pub(super) fn lfo_summary(
     );
     let section = Section::Preview("lfo");
     let (focus, focused) = context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-lfo", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
-        .px(px(4.0))
         .track_focus(&focus)
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
         .flex()
         .items_center()
@@ -1282,7 +1180,7 @@ pub(super) fn filter_summary(
     };
     let section = Section::Preview("filter");
     let (focus, focused) = context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-filter", device.value()).into(),
@@ -1291,15 +1189,9 @@ pub(super) fn filter_summary(
         .track_focus(&focus)
         .w_full()
         .h(px(40.0))
-        .px(px(4.0))
         .flex()
         .items_center()
-        .gap(px(2.0))
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }));
+        .gap(px(2.0));
     for (parameter, label) in [
         (20_001, "filter"),
         (20_002, "type"),
