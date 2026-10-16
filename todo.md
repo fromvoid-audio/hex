@@ -1,3 +1,14 @@
+## controlled CLAP fixture tooling — PR199 / #20, 16 october 2026
+
+Integrated the isolated format-owned supervisor/native helpers and preserved
+scoped dependency/process boundaries. Official pinned CLAP headers/MIT notice and
+compiler/header/runtime closure are verified. All53 explicit Linux native cases,
+default protocol/unit tests and strict crate Clippy pass. Final exact-head native
+rerun/full CI are recorded with PR199. Mac's8 tests, SDK/toolchain/enrollment
+acceptance and production third-party/application hosting remain open. No guards
+were weakened or Linux results relabeled as Darwin evidence. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
 ## controlled VST3 fixture tooling — PR193 / #21, 16 october 2026
 
 Integrated the isolated Linux scanner/offline helper crate and scoped hash,

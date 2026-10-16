@@ -2556,6 +2556,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-clap-scan"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "signal-hook",
+]
+
+[[package]]
 name = "hex-cli"
 version = "0.1.0"
 dependencies = [
