@@ -68,6 +68,7 @@ pub struct Event {
     pub status: Option<String>,
     pub error: Option<String>,
     pub request_complete: bool,
+    pub computer_keyboard_complete: Option<u64>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
     pub open_complete: bool,
@@ -207,6 +208,14 @@ impl GainLaneEdit {
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    /// Ephemeral same-revision audition graph; no project/history mutation.
+    PrepareComputerKeyboard {
+        project_generation: u64,
+        revision: u64,
+        request_id: u64,
+        track: hex_project::TrackId,
+        input: Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
+    },
     SaveDevicePreset {
         owner: preset::Owner,
         path: PathBuf,
@@ -767,6 +776,7 @@ fn run_worker(
                 status: Some("project ready".into()),
                 error: None,
                 request_complete: false,
+                computer_keyboard_complete: None,
                 save_complete: false,
                 open_complete: false,
                 project_replaced: false,
@@ -786,6 +796,7 @@ fn run_worker(
             status: None,
             error: Some(error),
             request_complete: false,
+            computer_keyboard_complete: None,
             save_complete: false,
             open_complete: false,
             project_replaced: false,
@@ -804,6 +815,8 @@ fn run_worker(
     }
 
     while let Ok(request) = requests.recv() {
+        let mut computer_keyboard_complete = None;
+        let mut computer_keyboard_playback = None;
         let mut open_complete = false;
         let mut save_complete = false;
         let mut project_replaced = false;
@@ -1656,6 +1669,33 @@ fn run_worker(
                         }
                     }
                 }
+                Request::PrepareComputerKeyboard {
+                    project_generation: generation,
+                    revision: expected_revision,
+                    request_id,
+                    track,
+                    input,
+                } => {
+                    computer_keyboard_complete = Some(request_id);
+                    if generation != project_generation
+                        || expected_revision != revision
+                        || input.is_cancelled()
+                    {
+                        error = Some("computer keyboard preparation is stale".into());
+                    } else if let Some((_, prepared)) = compiled
+                        .as_ref()
+                        .filter(|(compiled_revision, _)| *compiled_revision == revision)
+                    {
+                        let mut playback = native_playback(Arc::clone(prepared));
+                        match playback.prepare_computer_keyboard(session.project(), track, input) {
+                            Ok(()) => computer_keyboard_playback = Some(playback),
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    } else {
+                        error =
+                            Some("computer keyboard requires a compiled project revision".into());
+                    }
+                }
                 Request::RestorePlayback { generation } => {
                     restore_complete = Some(generation);
                     match compiled.as_ref() {
@@ -1769,7 +1809,9 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback = if let Some(prepared) = canonical_prepared {
+        let playback = if computer_keyboard_playback.is_some() {
+            computer_keyboard_playback
+        } else if let Some(prepared) = canonical_prepared {
             Some(native_playback(prepared))
         } else if let Some(prepared) = preview_prepared {
             Some(native_playback(prepared))
@@ -1784,6 +1826,7 @@ fn run_worker(
                 status,
                 error,
                 request_complete: true,
+                computer_keyboard_complete,
                 save_complete,
                 open_complete,
                 project_replaced,
@@ -5840,5 +5883,51 @@ mod service_tests {
             .recv_timeout(Duration::from_secs(3))
             .expect("detached export worker should finish after release");
         drop_thread.join().expect("drop thread");
+    }
+    #[test]
+    fn computer_keyboard_worker_preserves_revision_history_and_rejects_stale_activation() {
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        let _ = next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "keys".into(),
+            }))
+            .unwrap();
+        let edited = next_event(&service);
+        let track = edited.state.project.tracks()[0].id();
+        let state = Arc::clone(&edited.state);
+        let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        service
+            .submit(Request::PrepareComputerKeyboard {
+                project_generation: 0,
+                revision: state.revision,
+                request_id: 7,
+                track,
+                input: Arc::clone(&input),
+            })
+            .unwrap();
+        let event = next_event(&service);
+        assert_eq!(event.computer_keyboard_complete, Some(7));
+        assert!(event.error.is_none());
+        assert!(event.playback.is_some());
+        assert!(Arc::ptr_eq(&event.state, &state));
+        assert_eq!(event.state.revision, state.revision);
+        assert_eq!(event.state.can_undo, state.can_undo);
+        assert_eq!(event.state.unsaved, state.unsaved);
+        input.cancel();
+        service
+            .submit(Request::PrepareComputerKeyboard {
+                project_generation: 0,
+                revision: state.revision,
+                request_id: 8,
+                track,
+                input,
+            })
+            .unwrap();
+        let event = next_event(&service);
+        assert_eq!(event.computer_keyboard_complete, Some(8));
+        assert!(event.error.is_some());
+        assert!(event.playback.is_none());
+        assert!(Arc::ptr_eq(&event.state, &state));
     }
 }

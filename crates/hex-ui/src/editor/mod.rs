@@ -16,6 +16,7 @@ mod clip_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_view_ui_test;
 mod close;
+mod computer_keyboard;
 mod context_menu;
 mod controller;
 mod device_gesture;
@@ -496,6 +497,8 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<String>,
+    computer_keyboard: computer_keyboard::ComputerKeyboard,
+    _computer_keyboard_keys: gpui::Subscription,
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
@@ -673,14 +676,33 @@ impl EditorView {
             }
         })
         .detach();
+        let keyboard_window_id = window.window_handle().window_id();
+        let keyboard_entity = cx.entity().downgrade();
+        let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle().window_id() == keyboard_window_id
+                && let Some(entity) = keyboard_entity.upgrade()
+                && entity.read(cx).computer_keyboard_accepts(
+                    &event.keystroke.key,
+                    event.keystroke.modifiers,
+                    window,
+                    cx,
+                )
+            {
+                cx.stop_propagation();
+            }
+        });
         let focus = cx.focus_handle();
         let scrub_focus_blur = cx.on_blur(&focus, window, |view, _, cx| {
+            view.cancel_computer_keyboard();
+            view.computer_keyboard.suspended = true;
             if view.cancel_scrub() {
                 cx.notify();
             }
         });
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
+            view.cancel_computer_keyboard();
+            view.computer_keyboard.suspended = true;
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
                 cx.notify();
@@ -688,6 +710,8 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_computer_keyboard();
+                view.computer_keyboard.suspended = true;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 if let Some(audio) = view.audio.as_mut() {
@@ -783,6 +807,8 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
+            _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],

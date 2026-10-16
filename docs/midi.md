@@ -486,3 +486,78 @@ schema-12 fields persist the result without a schema change. Audio trim and
 MIDI resize preserve their current neighboring-overlap behavior; overwrite
 editing remains specific to drop commands. Native resize acceptance is pending;
 see clip-resizing.md. Exact Live source-boundary parity remains unverified.
+
+## computer midi keyboard — #2642 / PR257
+
+The toolbar keyboard toggle and unmodified M enable a transient computer MIDI
+keyboard, off at startup. Select a track with an enabled native instrument.
+The physical keys `a w s e d f t g y h u j k o l p ;` play seventeen chromatic
+semitones from MIDI60 (Live's c3). Z/X shift the base by one octave, bounded to
+MIDI0–120; keys above127 are silent. C/V step through velocities20,40,60,80,100,
+120,127, initially100. Held notes retain their original pitch/velocity when these
+settings change. The toolbar tooltip shows the current base and velocity.
+These documented controls follow [Live12's computer MIDI keyboard](https://www.ableton.com/en/live-manual/12/routing-and-i-o/#playing-midi-with-the-computer-keyboard).
+The octave labels are Live's convention; exact musical response parity is not claimed.
+
+Audition works with transport stopped or playing, adds polyphonic notes at the
+selected instrument output, and uses the existing suffix, track mix, sends,
+Returns and Main routing. It creates no notes, history, dirty state, saved toggle,
+recording or external MIDI output. Unmodified note keys take precedence over
+single-letter editing shortcuts only in main-editor/piano focus. Shift and other
+modifiers retain editing shortcuts, and text/numeric focus retains typing.
+Auto-repeat never retriggers; physical key-up releases its original note even
+if modifiers or octave changed. Disable, Stop/seek, focus loss, track/project
+change and successful graph replacement cancel the current audition lease.
+After a cancellation, release and press a key again to rearm. Device previews and
+prepared seeks suspend audition so a same-revision canonical bank cannot override
+their graph. Native input delivery and physical listening remain user checks.
+
+Preparation runs on the existing session worker and publishes an ephemeral graph
+for the exact canonical revision through ordinary graph custody. It does not
+publish a canonical edit. The selected bank prepares128 pitches at the seven
+finite velocities, using existing inline/shared analytic samplers or a separate
+mutable native runtime pair. Unsupported pitches and capacity refusals surface
+an error. All-unsupported configurations refuse preparation. Selected-bank owned
+storage is capped at3MiB and charged to the graph runtime budget; owners retire
+with that graph on control. Mutable audition has its own bounded pool, so
+instrument-global modulation is independent from authored voices; it does not
+establish a shared authored/live mutable voice contract.
+
+Seventeen independent atomic desired-key tokens and a terminal cancellation
+lease bypass the transport ring and cannot lose NoteOff under queue pressure.
+The callback has64 fixed live voice slots and128 fixed event slots; device
+capacity declarations still apply. Capacity pressure cancels the live pool,
+requiring a new activation, without stealing authored voices. Block rollback
+covers live voices, note identities and the independent monitor clock. Stopped
+monitoring freezes Arrangement and Session performance clocks and consumes no
+authored source/launch events. Existing shared effect tails may ring while
+monitoring. Voice age is independent; musical modulation follows the effective
+performance clock while playing, and an anchored constant-current-tempo clock
+while stopped. Positive-latency graph preparation explicitly refuses keyboard
+monitoring to preserve paused authored delay history; support is deferred to
+Pulse#2644 / PR260. Zero-latency typed audio routing is supported.
+
+Source checks cover independent sine PCM/polyphony/release across block sizes,
+authored continuity, mutable Operator release, typed routing and one suffix,
+nonzero/anchored tempo clocks, invalid inputs, late cancelled preparation,
+voice pressure, worker revision/history preservation and positive-latency refusal.
+GPUI dispatch checks cover M, reserved S/L, repeat, modified key-up, text entry,
+focus cancellation and held-repeat suppression after focus reset. Callback probes
+cover publication, live notes/release, a full transport queue plus priority Stop
+and graph retirement with zero total and signed-net allocations/bytes. These are
+headless checks, not native deadlines or listening acceptance.
+
+Finite native checklist for the optimized exact-source test build:
+
+1. Select an enabled sine, FM4 or Vector instrument; enable the toolbar keyboard,
+   play chords while stopped, and confirm the cursor stays still.
+2. Play the same keys during authored playback, release them, and confirm authored
+   notes continue. Check track gain/mute, a suffix effect and a Return send.
+3. Hold A, use X/V, release A, then press A again; check the changed octave/velocity.
+   Verify C from127 returns120, and M switches the toggle off/on.
+4. Hold notes, then separately disable, Stop, change track, focus search/numeric
+   input, and switch away from the app. Confirm no stuck notes; release/repress
+   rearms. Type normally in text fields and exercise Shift+S/edit shortcuts.
+5. Change an instrument parameter or project during a held chord. Confirm the old
+   audition stops without retriggering; release/repress after preparation. Confirm
+   undo/save data has no performed notes and no audition-only dirty change.

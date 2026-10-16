@@ -1563,6 +1563,11 @@ impl Callback {
                         next.playback
                             .inherit_metronome_for_fresh_seek(&previous.playback);
                     }
+                    if let Some(previous) =
+                        self.active.as_mut().and_then(ActivePublication::legacy_mut)
+                    {
+                        previous.playback.cancel_computer_keyboard();
+                    }
                     let revision = next.revision;
                     // A held EQ8 selector normally follows the current pair
                     // through certified parameter retargets. If an active
@@ -5763,5 +5768,155 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn computer_keyboard_callback_publication_polyphony_release_pressure_stop_and_retirement_allocate_nothing()
+     {
+        use hex_engine::computer_keyboard::ComputerKeyboardInput;
+        use hex_project::{Command, Created, Editor, Project};
+        for (routed, mutable) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "keys".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            if mutable {
+                let class = hex_engine::NativeDeviceClass::Instrument;
+                let state = hex_engine::default_native_device_state_for_class(
+                    class,
+                    hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+                )
+                .unwrap();
+                let state = hex_engine::patch_native_device_parameter_for_class(
+                    class,
+                    &state,
+                    hex_lattice_contract::ParameterId::from_static(78),
+                    hex_lattice_contract::ParameterValue::Float(0.4),
+                )
+                .unwrap();
+                let device = editor
+                    .project()
+                    .track(track)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .id();
+                editor
+                    .execute(Command::ReplaceDeviceState { device, state })
+                    .unwrap();
+            }
+            if routed {
+                let Created::Track(bus) = editor
+                    .execute(Command::AddTrack { name: "bus".into() })
+                    .unwrap()
+                else {
+                    panic!("bus")
+                };
+                editor
+                    .execute(Command::SetAudioFeed {
+                        source: hex_project::RoutingOwner::Track(track),
+                        destination: bus,
+                        gain: 0.5,
+                    })
+                    .unwrap();
+            }
+            let revision = Arc::new(
+                hex_engine::PreparedRevision::prepare(
+                    editor.project(),
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let input = Arc::new(ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            input.set_key(1, Some((64, 80, 2))).unwrap();
+            let mut playback = Playback::from_prepared(Arc::clone(&revision));
+            playback
+                .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+                .unwrap();
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            control.publish(playback).unwrap();
+            let mut output = [[0.0; 2]; 256];
+            let measure = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    measure.count_total,
+                    measure.bytes_total,
+                    measure.count_current,
+                    measure.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            input.set_key(0, None).unwrap();
+            input.set_key(1, None).unwrap();
+            let measure = allocation_counter::measure(|| {
+                for _ in 0..if mutable { 2000 } else { 12 } {
+                    callback.begin_block();
+                    callback.render(&mut output).unwrap();
+                }
+            });
+            assert_eq!(
+                (
+                    measure.count_total,
+                    measure.bytes_total,
+                    measure.count_current,
+                    measure.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(output, [[0.0; 2]; 256]);
+            input.set_key(0, Some((60, 100, 3))).unwrap();
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            for _ in 0..COMMANDS {
+                control.command(PlaybackCommand::Pause).unwrap();
+            }
+            assert!(control.command(PlaybackCommand::Pause).is_err());
+            control.stop();
+            let measure = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    measure.count_total,
+                    measure.bytes_total,
+                    measure.count_current,
+                    measure.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(input.is_cancelled());
+            assert_eq!(output, [[0.0; 2]; 256]);
+            control.publish(Playback::from_prepared(revision)).unwrap();
+            let measure = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    measure.count_total,
+                    measure.bytes_total,
+                    measure.count_current,
+                    measure.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            control.reclaim();
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
     }
 }
