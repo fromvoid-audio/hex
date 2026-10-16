@@ -214,6 +214,14 @@ impl SpectrumTargetControl {
 }
 
 impl SpectrumTargetCallback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        ChannelStorage::ring(self.consumer.buffer())?
+            .plus(ChannelStorage::paired_payload(self.desired_epoch.as_ref()))
+    }
+
     /// Apply at most eight queued target changes at a render-block boundary.
     /// A future-epoch command is retained until the matching epoch becomes
     /// visible, covering the load-epoch/enqueue-command race without blocking.

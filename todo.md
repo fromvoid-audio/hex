@@ -7,8 +7,13 @@ canonical snapshots share verified path backing and pair actual worker context.
 Resident defaults remain. Verified events omit legacy Playback; offline export
 refuses explicitly (separate Pulse2650 / PR266). All163 Session tests, three
 focused real-reader/worker controls, strict Session Clippy and the UI compatibility
-check passed at this source checkpoint. Native facade/unique UI client/output
-ownership and actual service publication remain unfinished in PR239; no full-CI,
+check passed at this source checkpoint. The next accounting checkpoint enumerates actual auxiliary queue/atomic payload
+DATA and bounded opaque resource handles, with a never-used preview seal and
+owning refusals (including sentinel request0). All164 audio feature unit tests and
+76 integration tests plus strict feature Clippy pass; the handle-budget and
+sentinel-token negative controls fail with their guards disabled. Native
+facade/unique UI client/output ownership and actual service publication remain
+unfinished in PR239; no full-CI,
 manual UI or native delivery claim. See [source plan](docs/streamed-session-source-plan.md).
 
 ## unsnapped main cursor — #2647 / PR263, 16 october 2026

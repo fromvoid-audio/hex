@@ -235,6 +235,18 @@ impl ProcessorAuditionTargetControl {
 }
 
 impl ProcessorAuditionTargetCallback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        ChannelStorage::ring(self.consumer.buffer())?
+            .plus(ChannelStorage::paired_payload(self.desired_intent.as_ref()))?
+            .plus(ChannelStorage::paired_payload(
+                self.hard_cancel_epoch.as_ref(),
+            ))?
+            .plus(ChannelStorage::paired_payload(self.rejected_epoch.as_ref()))
+    }
+
     /// Apply at most eight queued target changes at a callback block boundary.
     /// Atomic epochs invalidate old Begin requests immediately, even when a
     /// release command cannot enter the bounded queue.

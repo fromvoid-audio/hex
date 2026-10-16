@@ -1300,6 +1300,27 @@ impl Drop for Control {
 }
 
 impl Callback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        self.sample_preview
+            .constructor_channel_storage()?
+            .plus(self.gain_recording.constructor_channel_storage()?)?
+            .plus(self.spectrum_target.constructor_channel_storage()?)?
+            .plus(self.processor_audition.constructor_channel_storage()?)?
+            .plus(ChannelStorage::paired_payload(
+                self.pending_stop_marker.as_ref(),
+            ))?
+            .plus(ChannelStorage::paired_payload(
+                self.admitted_ticket.as_ref(),
+            ))?
+            .plus(ChannelStorage::paired_payload(self.closing.as_ref()))?
+            .plus(ChannelStorage::paired_payload(
+                self.publication_pending.as_ref(),
+            ))
+    }
+
     fn install_candidate(
         &mut self,
         value: crate::candidate_custody::QueuedCandidate,

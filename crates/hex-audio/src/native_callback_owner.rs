@@ -3,7 +3,7 @@
 //! destroys its contents. Receiving a carrier is not final-active quiescence.
 use crate::prepared::{Callback, Status};
 mod resources;
-pub(crate) use resources::NativeCandidateBoundary;
+pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS

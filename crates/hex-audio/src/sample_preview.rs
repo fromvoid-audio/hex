@@ -17,6 +17,24 @@ struct Preview {
     position: usize,
 }
 
+/// A synchronous refusal retains the caller's exact PCM owner.
+pub struct PublishRefusal {
+    pub reason: Invalid,
+    pub audio: Audio,
+}
+impl std::fmt::Debug for PublishRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishRefusal")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for PublishRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.reason.fmt(f)
+    }
+}
+impl std::error::Error for PublishRefusal {}
 pub struct Control {
     incoming: Producer<Preview>,
     retired: Consumer<Preview>,
@@ -58,6 +76,14 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
 }
 
 impl Control {
+    pub(crate) fn constructor_virgin(&self) -> bool {
+        self.last_generation == 0
+            && self.pending.is_none()
+            && self.retired.is_empty()
+            && self.incoming.slots() == self.incoming.buffer().capacity()
+            && !self.closing
+    }
+
     /// Silence the previous request, including queued PCM, before decode starts.
     /// The returned token is scoped to this output instance.
     pub fn request(&mut self) -> Result<u64, Invalid> {
@@ -76,15 +102,27 @@ impl Control {
     }
 
     /// Admit immutable, validated PCM. Stale completions are disposed on control.
-    pub fn publish(&mut self, generation: u64, audio: Audio) -> Result<(), Invalid> {
+    pub fn publish(&mut self, generation: u64, audio: Audio) -> Result<(), PublishRefusal> {
         if self.closing {
-            return Err(Invalid("sample preview output is closing"));
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview output is closing"),
+                audio,
+            });
+        }
+        if generation == 0 {
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview requires a valid request"),
+                audio,
+            });
         }
         if generation != self.generation.load(Acquire) {
             return Ok(());
         }
         if audio.sample_rate() != self.rate {
-            return Err(Invalid("sample preview rate does not match audio output"));
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview rate does not match audio output"),
+                audio,
+            });
         }
         self.pending = Some(Preview {
             generation,
@@ -123,6 +161,15 @@ impl Control {
 }
 
 impl Callback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        ChannelStorage::ring(self.incoming.buffer())?
+            .plus(ChannelStorage::ring(self.retired.buffer())?)?
+            .plus(ChannelStorage::paired_payload(self.generation.as_ref()))
+    }
+
     pub(crate) fn begin_block(&mut self, closing: bool) {
         let generation = self.generation.load(Acquire);
         let retire_active = self.active.as_ref().is_some_and(|preview| {

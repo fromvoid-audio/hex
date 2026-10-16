@@ -53,6 +53,7 @@ impl Control {
     ) -> Result<(), &'static str> {
         if !self.native_custody
             || self.revision != 0
+            || !self.sample_preview.constructor_virgin()
             || self.closing.load(Acquire)
             || self.publication_pending.load(Acquire)
             || self.held_control_return.is_some()
@@ -91,7 +92,11 @@ impl Control {
         .try_fold(native_bytes, |n, value| n.checked_add(value?))
         .ok_or("constructor queue DATA overflow")?;
         self.candidate_root
-            .configure_publications(reservation, queue_bytes)
+            .configure_publications(reservation, queue_bytes)?;
+        // Closed constructor claims never adopt the independent owning browser
+        // preview lane. The virgin predicate proves shutdown drops no PCM here.
+        self.sample_preview.shutdown();
+        Ok(())
     }
     /// Cancel this exact retained slot/incarnation before its callback apply
     /// decision. No owning handle or per-call allocation escapes the Root.

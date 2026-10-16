@@ -25,16 +25,27 @@ impl RootResourceWitness {
             && self.source_readers.checked_add(self.kernel_handles).is_some()
     }
 }
-fn root_handle_bound(bank: &Bank) -> Option<usize> {
+fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     // Root handles: 2 per accepted State + at most8 control/callback/terminal,
     // queue/lifecycle/construction handles in this private factory. Life:3 per
     // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:4; two domain signals:4.
+    // Six auxiliary rings and private channel atomic payload handles come from
+    // the actual callback constructor visitor, independently of queue occupancy.
     // Observer Status handles outside this publication Root own no graph or
     // source lease; no process-wide Arc/RSS bound is claimed.
-    bank.slots.len().checked_mul(5)?.checked_add(26)
+    bank.publication
+        .slots
+        .len()
+        .checked_mul(5)?
+        .checked_add(26)?
+        .checked_add(
+            bank.native
+                .as_ref()
+                .map_or(0, |native| native.channel_resources().1),
+        )
 }
 fn occupied_handles(bank: &NativeBank) -> Option<usize> {
-    let mut handles = root_handle_bound(&bank.publication)?;
+    let mut handles = root_handle_bound(bank)?;
     for domain in &bank.domains {
         if let Some(resources) = domain.resources {
             handles = handles.checked_add(resources.shared_handle_bound)?;
@@ -85,6 +96,7 @@ pub(super) fn for_candidate(
             .slots
             .len()
             .checked_add(9)
+            .and_then(|n| n.checked_add(native.channel_resources().0))
             .ok_or("resource count overflow")?,
         shared_handle_bound: occupied_handles(bank)
             .and_then(|n| n.checked_add(summary.shared_resource_handles))

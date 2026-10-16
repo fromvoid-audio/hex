@@ -242,6 +242,14 @@ fn validate_gain(gain: f32) -> Result<(), &'static str> {
     }
 }
 impl Callback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        ChannelStorage::ring(self.commands.buffer())?
+            .plus(ChannelStorage::ring(self.receipts.buffer())?)
+    }
+
     fn emit(&mut self, receipt: Receipt) {
         if self.receipts.push(receipt).is_err() {
             self.receipt_fault = true;
