@@ -635,6 +635,7 @@ impl std::fmt::Debug for PublishError {
 }
 
 pub struct Control {
+    pub sample_preview: crate::sample_preview::Control,
     publications: Producer<Publication>,
     retired: Consumer<Publication>,
     commands: Producer<QueuedCommand>,
@@ -653,6 +654,7 @@ pub struct Control {
 }
 
 pub struct Callback {
+    sample_preview: crate::sample_preview::Callback,
     publications: Consumer<Publication>,
     retired: Producer<Publication>,
     commands: Consumer<QueuedCommand>,
@@ -703,6 +705,7 @@ pub fn channel_with_spectrum(
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
+    let (sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
@@ -716,6 +719,7 @@ pub fn channel_with_spectrum(
     let (gain_recording, callback_gain_recording) = crate::gain_recording::channel();
     Ok((
         Control {
+            sample_preview,
             publications,
             retired,
             commands,
@@ -733,6 +737,7 @@ pub fn channel_with_spectrum(
             latest_fresh_runtime_cancellation: None,
         },
         Callback {
+            sample_preview: callback_preview,
             publications: incoming,
             retired: returning,
             commands: events,
@@ -1040,6 +1045,7 @@ impl Control {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        self.sample_preview.reclaim();
         let mut count = 0;
         for _ in 0..RETIRED {
             let Ok(publication) = self.retired.pop() else {
@@ -1054,6 +1060,7 @@ impl Control {
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
         self.closing.store(true, Release);
+        self.sample_preview.shutdown();
         self.stop();
     }
 }
@@ -1066,6 +1073,7 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.sample_preview.begin_block(self.closing.load(Acquire));
         if self.closing.load(Acquire) {
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::Cancelled);
         }
@@ -1140,6 +1148,7 @@ impl Callback {
                 && self.deferred.is_none()
                 && self.publications.is_empty()
                 && self.held_retirement.is_none()
+                && self.sample_preview.is_empty()
             {
                 self.status.shutdown_complete.store(true, Release);
             }
@@ -1524,6 +1533,14 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.render_project(output)?;
+        if !self.closing.load(Acquire) {
+            self.sample_preview.mix(output);
+        }
+        Ok(())
+    }
+
+    fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if !output.is_empty() {
             self.prepare_gain_recording_quantum();
         }

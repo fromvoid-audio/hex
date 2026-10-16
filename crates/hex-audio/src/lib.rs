@@ -1,5 +1,6 @@
 mod device;
 mod render_fault;
+pub mod sample_preview;
 pub use device::PreparedOutput;
 pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
 pub use render_fault::RenderFaultSnapshot;

@@ -482,6 +482,11 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::BrowserNext, window, cx| {
                 view.browser_next(window, cx);
             }))
+            .on_action(
+                cx.listener(|view, _: &super::BrowserPreviewSelected, window, cx| {
+                    view.browser_preview_selected(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::BrowserActivate, window, cx| {
                 view.browser_activate(window, cx);
             }))
