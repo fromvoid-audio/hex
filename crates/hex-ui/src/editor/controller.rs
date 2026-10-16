@@ -57,7 +57,7 @@ impl EditorView {
                 Err(_) => break,
             }
         }
-        visible_change |= self.poll_export();
+        visible_change |= self.poll_export(cx);
         while let Some(request) = self.pending_requests.pop_front() {
             match self.service.submit(request) {
                 Ok(()) => {
@@ -787,6 +787,7 @@ impl EditorView {
             self.duplicate_intent.reject();
             self.pending_scene_duplicate = None;
             self.selected_track = None;
+            self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
             self.selected_scene = None;
             self.selected_cell = None;
@@ -805,6 +806,7 @@ impl EditorView {
             }) {
                 self.session_copy_source = None;
             }
+            self.track_selection.reconcile(&state.project);
             (self.selected_track, self.selected_clip) =
                 selection::reconcile(&state.project, self.selected_track, self.selected_clip);
             if let Some(clip) = self.selected_clip
@@ -1219,6 +1221,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
                 | Request::ImportToTrack { .. }
@@ -1246,6 +1249,8 @@ impl EditorView {
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
         ) && self.device_gesture.snapshot().is_some()
         {

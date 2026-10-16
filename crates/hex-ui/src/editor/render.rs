@@ -482,6 +482,11 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::BrowserNext, window, cx| {
                 view.browser_next(window, cx);
             }))
+            .on_action(
+                cx.listener(|view, _: &super::BrowserPreviewSelected, window, cx| {
+                    view.browser_preview_selected(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::BrowserActivate, window, cx| {
                 view.browser_activate(window, cx);
             }))
@@ -850,8 +855,8 @@ impl Render for EditorView {
                 view.split_at_edit_cursor();
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &ExportProject, _, cx| {
-                view.export_dialog(cx);
+            .on_action(cx.listener(|view, _: &ExportProject, window, cx| {
+                view.export_dialog(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {

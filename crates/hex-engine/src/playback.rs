@@ -286,6 +286,53 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    pub(crate) fn new_audio_candidate(
+        revision: Arc<PreparedRevision>,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let runtime = SessionPlayback::new_audio_candidate(Arc::clone(&revision))?;
+        Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
+    }
+    pub(crate) fn validate_candidate_runtime_storage(
+        &self,
+        metadata: usize,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?
+            .validate_candidate_runtime_storage(metadata)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_populate_unsupported_tail(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.test_populate_unsupported_tail();
+        }
+    }
+    pub(crate) fn visit_candidate_groups(
+        &self,
+        visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            metronome,
+            project: _,
+            prepared_revision,
+            session_runtime,
+            linear_runtime,
+            session_unavailable: _,
+            position: _,
+            performance_frame: _,
+            performance_clock_exhausted: _,
+            playing: _,
+        } = self;
+        visit(9, 0, true)?; // actual Project handle
+        visit(10, 0, prepared_revision.is_some())?;
+        visit(11, 0, metronome.is_some())?;
+        visit(12, 0, session_runtime.is_some())?;
+        visit(13, 0, linear_runtime.is_some())?;
+        session_runtime
+            .as_ref()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?
+            .visit_candidate_groups(visit)
+    }
     pub fn new(project: Project) -> Self {
         Self::from_shared(Arc::new(project))
     }

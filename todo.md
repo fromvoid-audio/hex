@@ -13,6 +13,95 @@ The harmonic tool row now occupies the graph area above the stationary tabs;
 rendered overlap coverage accompanies the integration. Native/listening results
 and exact-source validation are recorded with the candidate PR/build evidence.
 
+## eq8 response measurement tooling — PR198 / #2251, 16 october 2026
+
+Reviewed actual prepared-response export and the bounded uncertainty comparator.
+Reproduced/fixed parser-recursion traceback and wrong-caller-checkout source
+attribution. All14 comparator and4 exporter tests pass, plus direct wrong-checkout
+provenance probes. Full exact-source checks are recorded with PR198. No measured
+Live dataset, adaptive-Q law/toggle or reference/native acceptance is claimed;
+parent acceptance remains open. Pulse requires reauthentication here; no ticket
+completion is claimed.
+
+## isolated eq8 oversampling study — PR191 / #2252, 16 october 2026
+
+Private test-only halfband processing, independent response/convolution oracles,
+allocation sensitivity and actual EQ runtime layout/admission refusal are reviewed.
+The proposed wrapper exceeds the unchanged effect runtime cap; no production
+oversampling processor/toggle or latency policy is introduced. Final exact-source
+checks are recorded with PR191. Storage/actual EQ integration, native/reference
+and physical deadline acceptance remain open. Pulse requires reauthentication
+here; no parent completion or ticket update is claimed.
+
+## private pitch-envelope math proofs — PR189 / #2327, 16 october 2026
+
+Reviewed the isolated signed normalized linear envelope and checked semitone
+frequency multiplier proofs, imported only by tests. They add no production
+codec/provider/runtime/UI or parameter domain. Source and allocation tests cover
+boundaries, partitions, independent frequency/phase oracles and atomic refusals.
+Final exact-source checks are recorded in PR189; the production pitch-envelope
+feature and native/reference acceptance remain open. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
+## retire completed active analytic ramps — 16 october 2026
+
+An existing generic coefficient regression reproduced active transition entries
+remaining after their five-millisecond endpoint, retaining an extra render path.
+Retirement now follows successful whole-render commit; ordinary current-context
+PCM stays exact, refused blocks retain clock/ramp and detached owners retain their
+captured transition. Focused continuation tests pass; full exact-source CI is
+recorded with the repair PR. Physical performance/native acceptance remain open.
+Pulse requires reauthentication here; no ticket write is claimed.
+
+## device preset integration — PR187 / #2375, 16 october 2026
+
+Restored focused preset service/storage/native-dialog/header wiring against current
+main, preserving current DSP/capture/shared-widget behavior and the version-11
+Operator payload. Nonzero host input trim now survives preset load alongside output
+trim; the save/load/one-Undo/Redo fixture reproduced its previous reset. Deferred
+preset requests are discarded after failed device finalization; the actual worker
+compile-refusal fixture reproduced their old retention. Errors retain diagnostic
+sources with lowercase app messages and consistent early/late collision guidance.
+Focused rendered save/load/cancel/stale/Return/Operator tests pass. Final exact-source
+full checks are recorded with PR187; native interaction/listening remain open.
+Pulse requires reauthentication here; no ticket state update is claimed.
+
+## export finalization refusal — follow-up to PR152, 16 october 2026
+
+The new range/stem request now follows the legacy export refusal contract when a
+device gesture fails to finalize: cancel/discard before service submission and
+clear pending control/window state. Extending the existing queue regression
+reproduced a retained third request before the repair. The actual compile-refusal
+fixture now uses range export and checks cancellation, UI cleanup, no file and no
+export event. Focused feature tests pass; final full CI is recorded with the fix PR.
+Native interaction acceptance remains separate. Pulse is unavailable in this
+workspace because its connector requires reauthentication; no ticket write is claimed.
+
+## Operator held-note retest preparation — #2372 / PR247, 16 october 2026
+
+The supported retest route is an authored sustained Arrangement MIDI note with
+scheduled NoteOff, leaving the pointer free for Operator a–d enable changes.
+A narrow native-project fixture helper and [finite listening checklist](docs/operator-enable-retest.md)
+cover parallel analytic, serial modulation, feedback and free/synced-LFO patches.
+No live input/recording implementation or listening acceptance is claimed.
+Exact candidate checks, optimized delivery and user results are recorded with the
+PR and Pulse issue; held/releasing-note correctness remains open until tested.
+
+## browser sample playback — #2637 / PR254, 16 october 2026
+
+Click and result-focused Right restart one-shot WAV audition on the existing
+output. Search arrows, result selection, folder navigation and Enter import
+retain their own behavior. Background decode is bounded and latest request wins;
+output recovery and accepted close invalidate old work. Audition mixes after the
+project master, independent of project/history and transport Stop. PCM returns
+through fixed queues for control-side reclamation, including completion/shutdown.
+See [runtime](docs/runtime.md#browser-sample-playback--pulse2637--pr254) for bounds,
+queue ownership and test coverage. Exact-candidate local CI/optimized delivery
+are recorded with PR254. Native acceptance remains: click/reclick a WAV, select
+another and press Right, rapidly change samples including an invalid file, verify
+search caret/folders/Enter, and listen with project stopped and playing. No native
+listening or physical deadline claim is made by source tests.
+
 ## combined mutable loop acceptance — #2165 / PR251, 16 october 2026
 
 Source-loop PR98/#2214 and transport-loop PR100/#2215 remain the original
@@ -60,6 +149,21 @@ PR250/Pulse18; no native acceptance or measured Live filter parity is claimed.
 - Parent #16 remains open for its separately recorded acceptance. This focused
   metadata stage supplies no new native listening, physical deadline, broad
   scalability or device-parity evidence.
+
+## never-installed constructor disposal — #2539 / PR234, 16 october 2026
+
+The real publication queue now carries an opaque constructor-owned candidate in
+non-admitting custody and rejects it before inheritance/active rendering. Exact
+root/runtime/slot identities, actual catalog leases/pairs and original-bank
+recovery stay retained through return pressure and control abandonment. Coupled
+native terminal guards are anchored before backend exposure; physical disposal
+requires both final releases and normal control-side destructor/pool completion.
+The narrow borrowed stream cleanup retains actual worker panic payloads and
+failed pool custody. Existing shutdown, DATA completeness refusals and all caps
+remain unchanged. New runtime/opaque costs stay Unknown. See
+[the owning contract](docs/never-installed-audio-disposal.md). PR234 records targeted and
+full exact-source verification status/evidence; PR235/236 and original24/177 native,
+performance and full-review acceptance remain outstanding.
 
 ## device lane drops integration — #2333 / PR183, 16 october 2026
 
@@ -521,6 +625,26 @@ versions change. See [dependency boundary and evidence](docs/xattr-compatibility
 Full exact-commit local CI and final PR review are delivery gates; cross checks
 do not prove a complete Linux desktop or native Linux syscall execution.
 
+## dependency compiler compatibility — pulse2143 / pr153
+
+Pinned block0.1.6 and proc-macro-error2 2.0.1 now have excluded, checksum-verified
+external patches: inhabited opaque Class address marker and public proc_macro
+import. Published files/licenses and exact patch provenance are retained; the
+new guard joins local CI. The guard supports documented Python3.9 without
+tomllib; the Python Cargo regression step declares target use so a normal fresh
+target is claimed before fixture compilation, without automatic adoption. [Rationale and native scratch evidence](docs/dependency-warnings.md)
+record the bounded arm64 macOS proof and other-target limits. Cloud regression
+results belong to Pulse2143/PR153; full final-commit Mac CI and a warning-free
+release build remain pending for the current candidate. Existing GPUI literal fix is unchanged.
+
+13 October: coordinator authorized routine integration of current main into the
+existing PR153 branch. The manifest retains all excluded pinned vendor paths;
+local CI retains both native delivery regressions and dependency future-lint
+checks. Operator and other main history is preserved. Exact previous ed7986b
+passed a fresh unchanged 18-step Linux CI before integration. Previous Mac
+whole-candidate CI/release evidence is now stale; vendor patch bytes and its
+bounded ABI provenance remain unchanged. New integrated-source Linux CI and
+release results belong to Pulse2143/PR153; renewed Mac checks remain pending.
 
 ## 100-track Lattice effects profile — pulse2317
 
@@ -2616,6 +2740,22 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   listening and physical throughput remain manual gaps; no export UI/preroll or
   publication is included. Active Pulse30 prerequisite linking remains blocked.
 
+### export — pulse30 / pr152
+
+- Controlled Main, selected-track mix, shared Returns and stable-ID stems consume
+  the canonical capture prerequisite, with sample ranges and cancellable preroll.
+- Concrete overwrite consent uses a narrow pinned safe filesystem boundary;
+  old files survive cancellation, confirmed replacements remove routine backups,
+  new batches publish exclusively, and unexpected races return
+  truthful recovery errors. The finite behavior is documented in docs/export.md.
+- Final exact-source local checks and PR review remain gates. Native macOS,
+  listening and sustained throughput acceptance remain unverified.
+- User feedback11October: picker should start in home, read-only destinations
+  need a clear error, native overwrite confirmation is sufficient, no normal
+  export backup. Revised source needs fresh checks/build/user confirmation.
+  Finder drops2385, persistent selection2386 and multi-track selection2387 are
+  separate tickets; Return listening2388 and realistic long export2389 deferred.
+
 ### operator enable controls — pulse2335 / pr164
 
 - Strict version-8 state appends four canonical enable bools after the frozen
@@ -3204,3 +3344,17 @@ wave preview beside its selector below the stationary tabs, retaining Hex's them
 Targeted/full CI and a fresh optimized stable-path candidate are required; native
 painting, appearance and listening must be retested. No new native acceptance or
 merge is claimed, and the dense high-rate/FM CPU limitation remains open.
+
+
+## 16 October 2026 — final-active audio-only custody (#2540 / PR235)
+
+The same constructor-owned candidate/Stamp now has a private single active-slot
+variant and distinct coupled-terminal FinalActiveReturn. Production admission
+still refuses it; cfg(test) actual-slot controls cover real Session audio,
+Pause/Stop and bounded command/render paths. Persistent extracted custody lasts
+through both actual carrier destructors, then original runtime/group/catalog/pool
+cleanup precedes READY/reuse. Missing handle/releases, Busy and failed destruction
+retain ownership and charges. Exhaustive present/absent location coverage refuses
+unsupported tail/context population; broader transfer fanout remains #24/177.
+Exact-source CI and remaining native evidence are recorded with PR235; no native
+admission, OS-stop success, deadline, listening or complete-cost claim is made.

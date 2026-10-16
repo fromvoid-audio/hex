@@ -244,6 +244,20 @@ pub struct AudioPreparationCustody {
     panic_after: Option<usize>,
 }
 impl AudioPreparationCustody {
+    pub(crate) fn candidate_sources(&self) -> impl Iterator<Item = &crate::StreamedSourceMetadata> {
+        self.revision.candidate_sources()
+    }
+    pub(crate) fn candidate_root(
+        &self,
+        token: &AudioPreparationToken,
+    ) -> Result<(u64, u64, std::sync::Arc<crate::PreparedRevision>), AudioStorageError> {
+        if !self.matches(token) || self.phase != AudioPreparationPhase::ArrangementAndSessionSources
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        Ok((self.root, self.incarnation, self.revision.candidate_root()?))
+    }
+
     pub fn begin_input_on_control(
         &mut self,
         input: AudioArrangementInput<'_>,
@@ -1173,6 +1187,26 @@ impl AudioPreparationCustody {
             })
             .count()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn candidate_test_fixture(
+    streamed: bool,
+) -> Option<(AudioPreparationCustody, AudioPreparationToken, usize, usize)> {
+    if !session_source_tests::supported("actual_candidate_disposal") {
+        return None;
+    }
+    let (project, bank, _) = arrangement_clip_tests::fixture(streamed, false, 2);
+    let pointer = bank.sources.as_ptr() as usize;
+    let capacity = bank.sources.capacity();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = custody
+        .begin_input_on_control(
+            AudioArrangementInput::new(&project, 11, bank).with_audio_prepared_revision(),
+        )
+        .ok()
+        .unwrap();
+    Some((custody, token, pointer, capacity))
 }
 
 #[cfg(test)]

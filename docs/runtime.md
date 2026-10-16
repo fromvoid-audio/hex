@@ -723,3 +723,41 @@ or owning drop. The isolated extraction still requires original default-stack
 Darwin regressions, allocation probes and full exact-source local CI. Selected
 stack-frame reservations from the source PR are not a measured peak-stack result.
 User testing and explicit correctness confirmation remain required before merge.
+
+## browser sample playback — Pulse2637 / PR254
+
+Clicking a WAV result auditions it from frame zero. Right arrow auditions or
+restarts the selected WAV while results have keyboard focus; on a folder it
+opens that folder. Search-field arrows retain text-caret behavior, Up/Down only
+select results, and Enter/double-click preserve the existing import action.
+The preview is independent of canonical project edits/history and transport:
+it plays with the project stopped, paused or playing; project Stop leaves it
+running. It is a one-shot at unity added after project master processing on the
+existing output stream, with no device inserts, sends, stretching or new stream.
+Project node spectrum taps exclude preview; final output meters include it.
+
+The session media boundary reuses bounded WAV decoding/resampling: 64 MiB input,
+8,000,000 source and converted stereo frames, finite PCM at the actual output
+rate. UI background work holds at most one active decode and one latest pending
+path; requesting another sample invalidates old audio before decode, including
+when the new file fails. The prior decode cannot reinstall old audio. Output
+instance/rate guards reject completions after recovery; accepted close/quit
+invalidates pending work. Decode/output failures surface through normal UI errors.
+Existing drag-waveform metadata preparation remains separate and bounded.
+
+The audio preview channel has one incoming PCM slot, two retirement slots, one
+active callback owner and one latest control-side pending owner. Each callback
+boundary considers at most one incoming item and returns at most two owners;
+retirement pressure retains/silences stale ownership until control reclaims.
+No callback allocation, lock or final PCM disposal is introduced. Natural end
+retains the exhausted owner until the next boundary. Shutdown completion also
+waits for active/queued preview ownership to return to control; the existing
+stream lifecycle worker disposes abandoned output closures off the callback.
+The host's existing complete-output finite/conversion validation applies after
+mixing. There is no added preview limiter or volume control.
+
+Automated evidence covers one-shot/end/restart, newest request and full queues,
+rate refusal/cancel, stopped/playing/paused/Stop mixing, background decode errors
+and rate conversion, actual GPUI click/right/search-caret/up-down/Enter routing,
+and zero allocation/deallocation for callback replacement/end/shutdown fixtures.
+Native listening, focus and actual output-device timing remain user checks.

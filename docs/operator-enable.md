@@ -80,3 +80,8 @@ No native input or compilation begins while another chat owns its lease.
   checklist remains separate evidence. No Live numerical or CPU parity claim.
 
 Reference scope and unknowns: [bounded enable evidence](../research/observations/operator-enable-2335.md).
+
+The outstanding held-note listening follow-up is Pulse2372 / PR247; use the
+[Arrangement fixture and finite retest checklist](operator-enable-retest.md).
+Authored gates may supply this check without completing broad live MIDI input.
+No native result follows from the fixture or its source tests.

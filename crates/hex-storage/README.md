@@ -6,6 +6,12 @@ Versioned native project metadata serialization, create-new saves, and recoverab
 replacement of an existing project. Only validated canonical project snapshots
 enter or leave this boundary.
 
+The independent `preset` module also owns schema-1 native device-preset envelopes,
+bounded opaque payload persistence and create-new publication. It does not change
+project schema versions or interpret device codecs. Session provider validation,
+ownership and prepared admission govern applying a preset. See
+[device presets](../../docs/device-presets.md).
+
 ## Dependencies
 
 hex-project for model validation, hex-lattice-contract for bounded device state,

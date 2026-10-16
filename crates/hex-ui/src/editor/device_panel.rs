@@ -1341,7 +1341,15 @@ fn render_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let header_actions = device_actions(track, effects, index, selected, cx);
+    let mut header_actions = device_actions(track, effects, index, selected, cx);
+    if device_view.is_ok() {
+        header_actions = header_actions.child(super::device_preset::actions(
+            device_id,
+            NativeDeviceClass::Effect,
+            selected,
+            cx,
+        ));
+    }
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -1838,7 +1846,15 @@ fn render_instrument(
             .map_err(|error| error.to_string().to_lowercase())
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
-    let header_actions = instrument_actions(track, device, selected, cx);
+    let mut header_actions = instrument_actions(track, device, selected, cx);
+    if device_view.is_ok() {
+        header_actions = header_actions.child(super::device_preset::actions(
+            device_id,
+            NativeDeviceClass::Instrument,
+            selected,
+            cx,
+        ));
+    }
     let rendered = match &device_view {
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
@@ -2196,7 +2212,7 @@ fn device_actions(
     )
 }
 
-fn action_button(
+pub(super) fn action_button(
     id: String,
     icon: &'static str,
     tooltip: &'static str,

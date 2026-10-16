@@ -1,6 +1,7 @@
 //! Versioned, bounded persistence of canonical metadata; no media or callback work.
 mod files;
 mod journal;
+pub mod preset;
 pub use journal::{Journal, journal_path, load_journal};
 mod audio_edit;
 mod replacement;
