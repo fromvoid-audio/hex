@@ -246,11 +246,10 @@ struct TransitionMoment {
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
-    track_index: usize,
+    location: ReleaseLocation,
     track_id: TrackId,
     order: u64,
     mix: crate::PreparedTrackMix,
-    tail_group: Option<u16>,
     continuation: Option<SessionContinuation>,
     voice: MidiReleaseVoice,
 }
@@ -1260,6 +1259,8 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+mod release_location;
+use release_location::ReleaseLocation;
 /// These tables never grow, shrink, swap ownership or allocate in handoff or
 /// rendering. Refusal/destruction of their storage belongs to control.
 fn reserve_analytic_continuations()
@@ -1275,8 +1276,10 @@ fn reserve_analytic_continuations()
     Ok(slots)
 }
 
+mod analytic_import;
 mod commands;
 mod handoff;
+mod harmonic_import;
 mod preroll;
 mod render;
 pub use capture::{
@@ -1288,6 +1291,8 @@ pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
+#[cfg(test)]
+mod harmonic_accounting;
 #[cfg(test)]
 mod tests;
 
@@ -1361,8 +1366,6 @@ mod render_diagnostic_tests {
         );
     }
 }
-
-mod analytic_import;
 mod gain_recording;
 #[cfg(test)]
 mod return_feed_tests;

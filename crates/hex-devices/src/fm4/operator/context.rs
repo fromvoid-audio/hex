@@ -26,6 +26,9 @@ pub struct PreparedOperatorConfiguration {
     waveforms: [OperatorWaveform; OPERATORS],
     amplitude_velocity: [f32; OPERATORS],
     waveform_bank: Option<&'static OperatorWaveformBank>,
+    key_amounts: [f32; OPERATORS],
+    oscillator_velocity: [f32; OPERATORS],
+    oscillator_quantize: [bool; OPERATORS],
 }
 
 /// Compact pitch/velocity data. Sample only against its preparing configuration.
@@ -37,6 +40,7 @@ pub struct PreparedOperatorNote {
     harmonic_caps: u32,
     amplitude_velocity_scales: [f32; OPERATORS],
     amplitude_velocity_active: bool,
+    key_scaling: bool,
 }
 
 impl PreparedOperatorConfiguration {
@@ -145,7 +149,96 @@ impl PreparedOperatorConfiguration {
             waveforms,
             amplitude_velocity,
             waveform_bank,
+            key_amounts: [0.0; OPERATORS],
+            oscillator_velocity: [0.0; OPERATORS],
+            oscillator_quantize: [false; OPERATORS],
         })
+    }
+
+    /// Control-prepared modifiers retain the existing compact note payload.
+    pub(crate) fn with_note_modifiers(
+        mut self,
+        key: [f32; 4],
+        oscillator_velocity: [f32; 4],
+        quantize: [bool; 4],
+    ) -> Result<Self, Invalid> {
+        if key
+            .iter()
+            .chain(&oscillator_velocity)
+            .any(|v| !v.is_finite() || !(-1.0..=1.0).contains(v))
+        {
+            return Err(Invalid("invalid operator note modifier"));
+        }
+        self.key_amounts = key;
+        self.oscillator_velocity = oscillator_velocity;
+        self.oscillator_quantize = quantize;
+        Ok(self)
+    }
+    pub(crate) fn standalone_note(
+        &self,
+        pitch: u8,
+        velocity: u8,
+        envelopes: [OperatorEnvelope; 4],
+    ) -> Result<PreparedOperatorFm4, Invalid> {
+        let note = self.prepare_note(pitch, velocity)?;
+        Ok(PreparedOperatorFm4 {
+            core: PreparedFmCore {
+                configuration: self.configuration,
+                steps: note.steps,
+            },
+            envelopes: PreparedOperatorEnvelopes::new(self.sample_rate, envelopes)?,
+            velocity: note.velocity,
+            waveforms: self.waveforms,
+            waveform_bank: self.waveform_bank,
+            harmonic_caps: unpack_caps(note.harmonic_caps),
+            amplitude_velocity_scales: note.amplitude_velocity_scales,
+            amplitude_velocity_active: note.amplitude_velocity_active,
+        })
+    }
+    fn modified_steps(&self, pitch: u8, velocity: u8) -> Result<[u64; 4], Invalid> {
+        if self.oscillator_velocity == [0.0; 4] {
+            return super::tuning::prepared_steps(
+                self.sample_rate,
+                pitch,
+                &self.ratios,
+                &self.tuning,
+            );
+        }
+        if pitch > 127 {
+            return Err(Invalid("invalid operator pitch"));
+        }
+        let note_hz = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+        let mut steps = [0; 4];
+        for (i, step) in steps.iter_mut().enumerate() {
+            let amount = f64::from(self.oscillator_velocity[i]);
+            let factor = if amount == 0.0 {
+                1.0
+            } else {
+                2.0_f64.powf(4.0 * amount * f64::from(velocity) / 127.0)
+            };
+            let (base, multiplier) = match self.tuning[i] {
+                OperatorTuning::Ratio => (note_hz, self.ratios[i]),
+                OperatorTuning::Fixed {
+                    frequency_hz,
+                    multiplier,
+                } => (frequency_hz, multiplier),
+            };
+            let mut multiplier = multiplier * factor;
+            if amount != 0.0 && self.oscillator_quantize[i] {
+                multiplier = multiplier.round().max(1.0);
+            }
+            let frequency = base * multiplier;
+            if !frequency.is_finite()
+                || frequency <= 0.0
+                || frequency >= f64::from(self.sample_rate) * 0.5
+            {
+                return Err(Invalid(
+                    "velocity-modulated operator frequency must be below nyquist",
+                ));
+            }
+            *step = (frequency / f64::from(self.sample_rate) * crate::PHASE_SCALE).round() as u64;
+        }
+        Ok(steps)
     }
 
     /// Validate every oscillator's Nyquist limit and compute pitch on control.
@@ -153,8 +246,7 @@ impl PreparedOperatorConfiguration {
         if !(1..=127).contains(&velocity) {
             return Err(Invalid("invalid operator note-on velocity"));
         }
-        let steps =
-            super::tuning::prepared_steps(self.sample_rate, pitch, &self.ratios, &self.tuning)?;
+        let steps = self.modified_steps(pitch, velocity)?;
         let mut caps = [0_u8; OPERATORS];
         for index in 0..OPERATORS {
             if self.waveforms[index] != OperatorWaveform::Sine {
@@ -163,9 +255,19 @@ impl PreparedOperatorConfiguration {
                 ))?;
             }
         }
-        let amplitude_velocity_scales =
+        let mut amplitude_velocity_scales =
             super::amplitude_velocity_scales(self.amplitude_velocity, f64::from(velocity) / 127.0);
+        let key_scaling = self.key_amounts.iter().any(|amount| *amount != 0.0);
+        if key_scaling {
+            for (i, scale) in amplitude_velocity_scales.iter_mut().enumerate() {
+                let gain = 2.0_f64
+                    .powf(f64::from(self.key_amounts[i]) * (f64::from(pitch) - 60.0) / 12.0)
+                    .clamp(1.0 / 64.0, 8.0);
+                *scale = (f64::from(*scale) * gain) as f32;
+            }
+        }
         Ok(PreparedOperatorNote {
+            key_scaling,
             steps,
             velocity: f64::from(velocity) / 127.0,
             harmonic_caps: pack_caps(caps),
@@ -294,7 +396,85 @@ impl PreparedOperatorConfiguration {
         ((routed * note.velocity) as f32, signals)
     }
 
+    /// Borrow a provider-owned waveform law while preserving original routing,
+    /// envelope, velocity and phase arithmetic. No preparation occurs here.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sample_with_waveform_sampler(
+        &self,
+        note: &PreparedOperatorNote,
+        age: u64,
+        gate: u64,
+        envelope_override: Option<[f64; 4]>,
+        phases: &[u64; 4],
+        previous: [f64; 4],
+        levels: [f64; 4],
+        carriers: [f64; 4],
+        feedback: [f64; 4],
+        filter: Option<(
+            &mut [crate::operator_filter::Carrier; 4],
+            crate::operator_filter::Frame,
+        )>,
+        mut sample: impl FnMut(usize, u64, u64) -> f32,
+    ) -> (f32, [f64; 4]) {
+        let mut amplitudes = envelope_override.unwrap_or_else(|| self.envelopes.levels(age, gate));
+        if note.amplitude_velocity_active {
+            super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
+        }
+        let mut signals = [0.0; 4];
+        let mut raw = [0.0; 4];
+        for &target in &self.configuration.routing.order {
+            if levels[target] == 0.0 {
+                continue;
+            }
+            let mut modulation: f64 = signals
+                .iter()
+                .enumerate()
+                .map(|(source, signal)| {
+                    signal * self.configuration.routing.modulation[source][target]
+                })
+                .sum();
+            if feedback[target] != 0.0 {
+                modulation += feedback[target] * previous[target];
+            }
+            let modulation_phase = if modulation == 0.0 {
+                0
+            } else {
+                crate::fm4::phase_from_turns(modulation)
+            };
+            let phase = phases[target]
+                .wrapping_add(self.configuration.phases[target])
+                .wrapping_add(modulation_phase);
+            raw[target] = f64::from(sample(target, phase, note.steps[target])) * levels[target];
+            signals[target] = raw[target] * amplitudes[target];
+        }
+        let output: f64 = if let Some((filters, frame)) = filter {
+            (0..4)
+                .map(|i| filters[i].process(raw[i], frame) * amplitudes[i] * carriers[i])
+                .sum()
+        } else {
+            signals
+                .iter()
+                .zip(carriers)
+                .map(|(signal, weight)| signal * weight)
+                .sum()
+        };
+        ((output * note.velocity) as f32, signals)
+    }
+
+    pub(crate) fn harmonic_initial_phases(note: &PreparedOperatorNote, age: u64) -> [u64; 4] {
+        note.steps.map(|step| step.wrapping_mul(age))
+    }
+
     pub(crate) fn note_matches_configuration(&self, note: &PreparedOperatorNote) -> bool {
+        if note.key_scaling != self.key_amounts.iter().any(|amount| *amount != 0.0)
+            || note
+                .amplitude_velocity_scales
+                .iter()
+                .enumerate()
+                .any(|(i, scale)| *scale > if self.key_amounts[i] == 0.0 { 1.0 } else { 8.0 })
+        {
+            return false;
+        }
         if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
             return note.harmonic_caps == 0;
         }
@@ -386,6 +566,9 @@ impl PreparedOperatorConfiguration {
             && self.envelopes == target.envelopes
             && self.waveforms == target.waveforms
             && self.amplitude_velocity == target.amplitude_velocity
+            && self.key_amounts == target.key_amounts
+            && self.oscillator_velocity == target.oscillator_velocity
+            && self.oscillator_quantize == target.oscillator_quantize
     }
 
     pub(crate) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
@@ -495,6 +678,7 @@ impl PreparedOperatorNote {
         payload[OPERATORS] = self.velocity.to_bits();
         payload[5] = u64::from(
             self.harmonic_caps
+                | if self.key_scaling { 1 << 30 } else { 0 }
                 | if self.amplitude_velocity_active {
                     1 << 31
                 } else {
@@ -517,7 +701,8 @@ impl PreparedOperatorNote {
         let steps = std::array::from_fn(|index| payload[index]);
         let encoded_caps = u32::try_from(payload[5]).ok()?;
         let amplitude_velocity_active = encoded_caps & (1 << 31) != 0;
-        let harmonic_caps = encoded_caps & !(1 << 31);
+        let key_scaling = encoded_caps & (1 << 30) != 0;
+        let harmonic_caps = encoded_caps & !((1 << 31) | (1 << 30));
         if steps.contains(&0) || unpack_caps(harmonic_caps).iter().any(|cap| *cap >= 10) {
             return None;
         }
@@ -540,14 +725,14 @@ impl PreparedOperatorNote {
                 let [c, d] = unpack(payload[7]);
                 [a, b, c, d]
             };
-        if amplitude_velocity_scales
-            .iter()
-            .any(|scale| !scale.is_finite() || !(0.0..=1.0).contains(scale))
-            || amplitude_velocity_active != (amplitude_velocity_scales != [1.0; OPERATORS])
+        if amplitude_velocity_scales.iter().any(|scale| {
+            !scale.is_finite() || !(0.0..=if key_scaling { 8.0 } else { 1.0 }).contains(scale)
+        }) || amplitude_velocity_active != (amplitude_velocity_scales != [1.0; OPERATORS])
         {
             return None;
         }
         Some(Self {
+            key_scaling,
             steps,
             velocity,
             harmonic_caps,

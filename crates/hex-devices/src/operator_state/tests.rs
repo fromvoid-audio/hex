@@ -72,7 +72,7 @@ fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
                 if descriptor.id == parameter::routing_preset() {
                     assert_eq!(labels, &ROUTING_PRESET_LABELS);
                 } else if descriptor.id.value() < 82 {
-                    assert_eq!(labels, OperatorWaveform::labels());
+                    assert_eq!(labels, &harmonics::WAVE_LABELS);
                 }
                 for choice in 0..labels.len() as u32 {
                     let changed = OPERATOR_METADATA
@@ -776,7 +776,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(93),
+        ParameterId::from_static(389),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());

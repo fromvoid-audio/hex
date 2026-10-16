@@ -16,12 +16,19 @@ widgets = (
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
     # `theme::text` at their component boundary.
+    'detail_caption(', 'detail_field(', 'upper_display)', 'envelope_fields)',
+    # Companion inspector children are typed controls or already-themed rows.
+    'harmonics::tools(', 'restart)', 'oscillator_velocity)', 'quantize)',
+    'row.child(', 'loop_cell)',
+    'tools)', 'oscillator_fields)', 'link)', 'enabled)', 'hex_widgets::device_segment(',
+    'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
+    'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
     'dials)', 'icon)', 'toggle.entity.clone())', 'selector.entity.clone())',
-    'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
+    'waveform)', 'waveform_preview)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',

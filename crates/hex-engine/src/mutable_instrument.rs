@@ -102,6 +102,16 @@ impl MutableOccurrenceSignature {
     pub(crate) const fn key(self) -> MutableOccurrenceKey {
         self.key
     }
+
+    pub(crate) const fn details(self) -> (BeatTime, BeatTime, u8, u8, u8) {
+        (
+            self.onset_beat,
+            self.gate_end_beat,
+            self.pitch,
+            self.channel,
+            self.velocity,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,6 +280,40 @@ impl MutableInstrumentTrackRuntime {
             next_id: 0,
             next_id_scratch: 0,
         })
+    }
+
+    pub(crate) fn can_import_harmonics(
+        &self,
+        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
+        occurrences: &[Option<MutableOccurrence>],
+    ) -> bool {
+        occurrences.len() == history.voices.len()
+            && occurrences.len() <= self.primary.capacity()
+            && occurrences
+                .iter()
+                .zip(history.voices)
+                .all(|(occurrence, voice)| occurrence.is_some_and(|o| o.id == voice.occurrence_id))
+            && self.primary.is_empty()
+            && self.pair.can_import_analytic_history(history)
+    }
+    pub(crate) fn import_harmonics(
+        &mut self,
+        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
+        occurrences: &[Option<MutableOccurrence>],
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if !self.can_import_harmonics(history, occurrences) {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        self.pair
+            .import_analytic_history(history)
+            .map_err(map_runtime_error)?;
+        self.primary.clear();
+        self.primary.extend(occurrences.iter().flatten().copied());
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.primary);
+        self.next_id = self.primary.iter().map(|o| o.id).max().unwrap_or(0);
+        self.next_id_scratch = self.next_id;
+        Ok(())
     }
 
     pub(crate) fn begin_block(&mut self) {
@@ -814,7 +858,7 @@ fn has_mutable_suppression(
             ) == target
         });
     suppressions[start..end]
-        .binary_search_by_key(&Some(signature), |entry| entry.mutable_signature)
+        .binary_search_by_key(&Some(signature), |entry| entry.mutable_signature())
         .ok()
         .and_then(|offset| suppressions.get(start + offset))
         .is_some_and(|entry| entry.until_frame > onset_frame)

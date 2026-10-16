@@ -1,4 +1,6 @@
 //! Small reusable GPUI controls for compact native audio-device interfaces.
+mod bar_editor;
+pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
 mod color_picker;
 mod curve;
 mod device_meters;

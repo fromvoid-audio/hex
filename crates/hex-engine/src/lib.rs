@@ -4,6 +4,7 @@ pub use hex_devices::SineTable;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };
@@ -277,6 +278,23 @@ pub fn patch_native_device_parameter_for_class(
         NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?
             .patch_parameter(state, parameter, value),
+    };
+    result.map_err(map_device_contract_error)
+}
+
+/// A bounded control-side transaction; publication happens only after preparation.
+pub fn patch_native_device_snapshot_for_class(
+    class: NativeDeviceClass,
+    state: &hex_lattice_contract::NativeDeviceState,
+    snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    let result = match class {
+        NativeDeviceClass::Effect => hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?
+            .patch_parameters(state, snapshot),
+        NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?
+            .patch_parameters(state, snapshot),
     };
     result.map_err(map_device_contract_error)
 }

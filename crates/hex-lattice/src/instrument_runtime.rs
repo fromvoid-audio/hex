@@ -175,6 +175,16 @@ pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
 
+/// Actual source context and independent transition boundary, together with
+/// sounding notes. Providers validate this before either candidate twin changes.
+pub struct AnalyticInstrumentHistory<'a> {
+    pub source: &'a dyn super::PreparedSharedAnalyticContext,
+    pub source_id: crate::AnalyticContinuationId,
+    pub transition: Option<crate::AnalyticContinuation>,
+    pub performance_frame: u64,
+    pub voices: &'a [NativeInstrumentAnalyticSeed],
+}
+
 /// Mutable per-note state. Compatibility must include every immutable law
 /// parameter that affects future samples, as well as runtime version and any
 /// implementation-specific rate/configuration key. Compatibility must be
@@ -186,6 +196,12 @@ pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    fn can_import_analytic_history(&self, _history: &AnalyticInstrumentHistory<'_>) -> bool {
+        false
+    }
+    /// Inactive candidate only, after both twins and the whole graph preflight.
+    fn import_analytic_history(&mut self, _history: &AnalyticInstrumentHistory<'_>) {}
+
     fn can_import_analytic(&self, _notes: &[NativeInstrumentAnalyticSeed]) -> bool {
         false
     }
@@ -507,6 +523,25 @@ impl NativeInstrumentRuntimePair {
         Ok(())
     }
 
+    pub fn can_import_analytic_history(&self, history: &AnalyticInstrumentHistory<'_>) -> bool {
+        !self.block_started
+            && self.primary.is_quiescent()
+            && self.scratch.is_quiescent()
+            && history.voices.len() <= self.max_active_occurrences
+            && self.primary.can_import_analytic_history(history)
+            && self.scratch.can_import_analytic_history(history)
+    }
+    pub fn import_analytic_history(
+        &mut self,
+        history: &AnalyticInstrumentHistory<'_>,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.can_import_analytic_history(history) {
+            return Err(NativeInstrumentRuntimeError::IncompatibleHistory);
+        }
+        self.primary.import_analytic_history(history);
+        self.scratch.import_analytic_history(history);
+        Ok(())
+    }
     pub fn can_import_analytic(&self, notes: &[NativeInstrumentAnalyticSeed]) -> bool {
         !self.block_started
             && notes.len() <= self.max_active_occurrences
@@ -563,7 +598,7 @@ impl NativeInstrumentRuntimePair {
     }
 }
 
-fn validate_event_batch(
+pub(super) fn validate_event_batch(
     events: &[NativeInstrumentEvent],
     frame_count: usize,
     max_events: usize,
