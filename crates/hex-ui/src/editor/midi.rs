@@ -143,7 +143,7 @@ impl EditorView {
         }));
     }
 
-    pub(super) fn nudge_midi_clip(&mut self, clip: ClipId, right: bool) {
+    pub(super) fn nudge_midi_clip(&mut self, clip: ClipId, right: bool, platform: bool) {
         if self.edit_pending() {
             return;
         }
@@ -153,15 +153,29 @@ impl EditorView {
         let Some(item) = state.project.midi_clip(clip) else {
             return;
         };
-        let start = if right {
-            item.start().raw().checked_add(BeatTime::ONE.raw())
-        } else {
-            Some(item.start().raw().saturating_sub(BeatTime::ONE.raw()))
-        };
-        let Some(start) = start else {
-            self.error = Some("midi clip move exceeds the beat range".into());
+        let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
             return;
         };
+        let start = if grid == super::musical_time::SnapGrid::Off {
+            if right {
+                item.start().raw().checked_add(BeatTime::ONE.raw())
+            } else {
+                Some(item.start().raw().saturating_sub(BeatTime::ONE.raw()))
+            }
+        } else {
+            grid.adjacent_beat(&state.project, item.start(), viewport, width, right)
+                .map(BeatTime::raw)
+        };
+        let Some(start) = start else {
+            if grid == super::musical_time::SnapGrid::Off {
+                self.error = Some("midi clip move exceeds the beat range".into());
+            }
+            return;
+        };
+        if start.checked_add(item.length().raw()).is_none() {
+            self.error = Some("midi clip move exceeds the beat range".into());
+            return;
+        }
         let Some(track) = state
             .project
             .tracks()
@@ -471,7 +485,8 @@ impl EditorView {
     }
 
     pub(super) fn edit_pending(&self) -> bool {
-        self.opening_project
+        self.gain_recorder.blocks_edits()
+            || self.opening_project
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()

@@ -31,15 +31,17 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery, "activate") as activate, redirect_stderr(errors):
             self.assertEqual(delivery.main(), 1)
         self.assertIn("release ownership is pending", errors.getvalue())
-        self.assertIn("staged artifacts retained", errors.getvalue())
+        self.assertIn("temporary publication files preserved", errors.getvalue())
         activate.assert_not_called()
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.app = self.root / "hex.app"
-        self.stage = self.root / ".hex-stage-test.app"
-        self.backup = self.root / ".hex-rollback-test.app"
+        self.workspace = delivery.install_workspace(self.app)
+        self.workspace.mkdir()
+        self.stage = self.workspace / "stage.app"
+        self.backup = self.workspace / "previous.app"
         self.journal = self.root / ".hex-test-build-transaction.json"
         self.mock = patch.object(delivery, "run", return_value="")
         self.mock.start()
@@ -58,17 +60,27 @@ class DeliveryTests(unittest.TestCase):
             plistlib.dump({"CFBundleIdentifier": delivery.IDENTITY, "CFBundleExecutable": "hex"}, output)
         delivery.write_json(path / "Contents/Resources/test-build.json", {"files": delivery.inventory(path)})
 
-    def test_replacement_retains_old_bundle_and_user_files(self):
+    def test_replacement_removes_temporary_custody_and_preserves_history_and_user_files(self):
         self.bundle(self.app, b"old")
         self.bundle(self.stage)
         user = self.root / "project.hex"
         user.write_bytes(b"user project")
-        backup = delivery.activate(self.app, self.stage)
-        self.assertEqual((backup / "Contents/MacOS/hex").read_bytes(), b"old")
+        historical = self.root / ".hex-rollback-historical.app"
+        self.bundle(historical, b"historical")
+        delivery.activate(self.app, self.stage)
+        self.assertEqual((historical / "Contents/MacOS/hex").read_bytes(), b"historical")
+        self.assertFalse(self.workspace.exists())
+        self.assertEqual(list(self.root.glob(".hex-rollback-*.app")), [historical])
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"new")
         self.assertEqual(user.read_bytes(), b"user project")
         self.assertFalse(self.journal.exists())
         delivery.verify(self.app)
+
+    def test_first_install_publishes_complete_bundle_without_temporary_custody(self):
+        self.bundle(self.stage)
+        delivery.activate(self.app, self.stage)
+        delivery.verify(self.app)
+        self.assertFalse(self.workspace.exists())
 
     def test_running_case_alias_refuses_before_mutation(self):
         self.bundle(self.app, b"old")
@@ -111,18 +123,21 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 delivery.activate(self.app, self.stage)
         self.assertFalse(self.app.exists())
-        delivery.recover(self.app, self.journal)
+        delivery.recover(self.app)
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
-        self.assertTrue(self.stage.exists())
+        self.assertFalse(self.workspace.exists())
+        self.workspace.mkdir()
+        self.bundle(self.stage, b"retry")
+        delivery.activate(self.app, self.stage)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"retry")
 
     def test_recovery_restores_backup_when_new_artifact_is_corrupt(self):
         self.bundle(self.backup, b"old")
         self.bundle(self.app)
         (self.app / "Contents/MacOS/hex").write_bytes(b"broken")
-        delivery.write_json(self.journal, {"stage": str(self.stage), "backup": str(self.backup)})
-        delivery.recover(self.app, self.journal)
+        delivery.recover(self.app)
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
-        self.assertEqual((self.stage / "Contents/MacOS/hex").read_bytes(), b"broken")
+        self.assertFalse(self.workspace.exists())
 
     def test_signature_failure_after_rename_restores_previous_app(self):
         self.bundle(self.app, b"old")
@@ -138,6 +153,79 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
         self.assertEqual((self.stage / "Contents/MacOS/hex").read_bytes(), b"new")
 
+    def test_publication_failure_restores_last_app_and_retry_discards_failed_stage(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        rename = Path.rename
+        def fail_publish(path, destination):
+            if path == self.stage:
+                raise OSError("publication failed")
+            return rename(path, destination)
+        with patch.object(Path, "rename", fail_publish):
+            with self.assertRaisesRegex(OSError, "publication failed"):
+                delivery.activate(self.app, self.stage)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        delivery.recover(self.app)
+        self.assertFalse(self.workspace.exists())
+
+    def test_interruption_after_publication_finishes_cleanup(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        original = delivery.verify
+        def interrupted(path):
+            if path == self.app:
+                raise KeyboardInterrupt
+            return original(path)
+        with patch.object(delivery, "verify", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                delivery.activate(self.app, self.stage)
+        self.assertTrue(self.backup.exists())
+        delivery.recover(self.app)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"new")
+        self.assertFalse(self.workspace.exists())
+
+    def test_interrupted_old_custody_cleanup_can_finish_without_old_metadata(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        remove = shutil.rmtree
+        def interrupted(path):
+            if path == self.backup:
+                (path / "Contents/Info.plist").unlink()
+                raise KeyboardInterrupt
+            remove(path)
+        with patch.object(delivery.shutil, "rmtree", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                delivery.activate(self.app, self.stage)
+        delivery.recover(self.app)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"new")
+        self.assertFalse(self.workspace.exists())
+
+    def test_partial_stage_cleanup_and_legacy_journal_preservation(self):
+        self.bundle(self.app, b"old")
+        self.stage.mkdir()
+        (self.stage / "partial").write_bytes(b"incomplete")
+        delivery.recover(self.app)
+        self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertFalse(self.workspace.exists())
+        self.journal.write_text("historical uncertain installation")
+        with self.assertRaisesRegex(delivery.DeliveryError, "legacy"):
+            delivery.recover(self.app)
+        self.assertEqual(self.journal.read_text(), "historical uncertain installation")
+
+    def test_workspace_symlink_and_unexpected_contents_are_preserved(self):
+        foreign = self.root / "foreign"
+        foreign.mkdir()
+        self.workspace.rmdir()
+        self.workspace.symlink_to(foreign, target_is_directory=True)
+        with self.assertRaisesRegex(delivery.DeliveryError, "symlink"):
+            delivery.recover(self.app)
+        self.workspace.unlink()
+        self.workspace.mkdir()
+        (self.workspace / "unknown").write_text("preserve")
+        with self.assertRaisesRegex(delivery.DeliveryError, "unexpected"):
+            delivery.recover(self.app)
+        self.assertEqual((self.workspace / "unknown").read_text(), "preserve")
+
     def test_activation_is_serialized(self):
         with delivery.activation_lock(self.app):
             with self.assertRaisesRegex(delivery.DeliveryError, "another"):
@@ -148,6 +236,7 @@ class DeliveryTests(unittest.TestCase):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
+        self.workspace.rmdir()
         source = self.root / "repo"
         source.mkdir()
         for relative in ("scripts", "assets/fonts/ioskeley-mono", "third_party/gpui"):
@@ -165,8 +254,7 @@ class DeliveryTests(unittest.TestCase):
         report = self.root / "ci.json"
         report.write_text('{"status":"passed"}')
         included = self.root / "included.json"
-        included.write_text(json.dumps([{"ticket":2411, "ticket_revision":9,
-                                         "pr":"https://github.com/PORTALSURFER/hex/pull/168",
+        included.write_text(json.dumps([{"pr":"https://github.com/PORTALSURFER/hex/pull/168",
                                          "head":candidate}]))
         checklist = self.root / "USER-TEST.md"
         checklist.write_text("1. launch stable app\n2. inspect source identity\n")
@@ -213,7 +301,9 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual((self.app / "Contents/Resources/USER-TEST.md").read_text(), checklist.read_text())
         self.assertEqual((self.app / "Contents/Resources/local-ci-summary.json").read_bytes(), report.read_bytes())
         self.assertEqual((self.app / "Contents/Resources/licenses/ioskeley-mono-OFL.txt").read_text(), "font license")
-        self.assertEqual((Path(receipt["rollback_path"]) / "Contents/MacOS/hex").read_bytes(), b"old")
+        self.assertNotIn("rollback_path", receipt)
+        self.assertFalse(self.workspace.exists())
+        self.assertEqual(list(self.root.glob(".hex-rollback-*.app")), [])
         self.assertEqual(json.loads((self.root / "hex-test-build-receipt.json").read_text()), receipt)
         runner.target_lock.release.assert_called_once()
 

@@ -31,8 +31,15 @@ clip/scene launch-and-play, ticketed rapid launch/toggle intent, ordered priorit
 Stop, and accepted-revision active/queued route indicators. Native Session
 interaction remains unverified.
 
-This is an early working foundation. Recording, MIDI I/O/expression, warp, routing, device
-selection, plugin hosting and Live-set compatibility remain planned. A bounded
+Arrangement musical audio includes pitch, beat anchoring, source gain envelopes
+and six distinct bounded warp modes, with prepared output waveforms; see
+[musical editing](docs/musical-editing.md) for limits and native gaps.
+
+This is an early working foundation. Audio input recording, MIDI hardware I/O/expression,
+device selection, plugin hosting and Live-set compatibility remain planned.
+Typed stereo/MIDI routing, track-gain editing/touch recording and declared-latency
+compensation are described in [routing](docs/routing.md); native interaction and
+physical device acceptance remain separate. A bounded
 fade-controller callback/target has been decompiled into private research storage;
 its types/control-flow warnings remain unresolved and no audio behavior is matched. Project-open validation and
 schema migration pass source tests; final native replacement acceptance remains open.
@@ -63,11 +70,11 @@ cargo run -p hex-cli -- recover-project artifacts/project.hex artifacts/recovere
 ```
 
 User-test builds use the optimized stable development app at `artifacts/hex.app`,
-with exact-source CI, provenance, guarded replacement and retained rollback. The
-bundle script refuses to overwrite a running app, including macOS case-insensitive
+with exact-source CI, provenance and verified replacement without retained
+rollback copies. The bundle script refuses to overwrite a running app, including macOS case-insensitive
 `Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
 delivery. See [native test builds](docs/test-builds.md) for the required arguments
-and shared merge → delivery → user approval sequence.
+and repository-owned build/install process. Pulse manages tickets only.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by
 seven repetitions of an enveloped 220 Hz tone. Output creation refuses to
@@ -77,6 +84,7 @@ WAV export clamps to the 16-bit range. Listening acceptance remains pending.
 ## Project map
 
 - `crates/hex-project`: canonical editable metadata, stable IDs, validated commands and history.
+- `crates/hex-warp`: pure bounded control-side stereo transformation.
 - `crates/hex-media`: bounded WAV decoding and cached stereo peak summaries.
 - `crates/hex-stream`: verified WAV worker, fixed page pool/cache and ownership queues; headless streamed engine rendering, with native integration pending.
 - `crates/hex-session`: canonical controller, retained media and bounded background operations.
@@ -292,8 +300,9 @@ Schema-17 return buses render regular-track post-fader sends through registered
 zero-algorithmic-latency effects before the Main master gain in Arrangement,
 SessionPlayback and prepared export. Fixed return scratch and effect runtimes
 are built on control; compatible history survives prepared revision handoff,
-with callback allocation probes. General latency compensation, feedback, native
-pinned return rows and physical listening/deadline acceptance remain open. See
+with callback allocation probes. Typed track inputs and cumulative latency alignment
+extend this topology; feedback remains refused. Native pinned return rows and
+physical listening/deadline acceptance remain separate. See
 [return tracks](docs/return-tracks.md).
 
 ## Source repository

@@ -1,6 +1,8 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 #![cfg(feature = "allocation-probe")]
 
+#[path = "callback_allocations/output_capture.rs"]
+mod output_capture;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
@@ -132,6 +134,9 @@ impl hex_lattice::NativeInstrumentDefinition for SharedContextFixtureDefinition 
 }
 
 impl hex_lattice::PreparedNativeInstrument for SharedContextFixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(
         &self,
         _: u8,
@@ -190,6 +195,9 @@ struct MutableFixtureRuntime {
     key: u32,
     level: f32,
     voices: [MutableFixtureVoice; 64],
+    // Real inline state above the former 4 KiB instrument cap. All mutable
+    // publication/render/rollback/tail probes below exercise its full copy.
+    history: [u8; 8192],
 }
 
 impl hex_lattice_contract::NativeDeviceMetadata for MutableFixtureDefinition {
@@ -262,6 +270,9 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFixtureDefinition {
 }
 
 impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(
         &self,
         _: u8,
@@ -280,6 +291,9 @@ impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
 }
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -300,6 +314,7 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
             key: self.level.to_bits(),
             level: self.level,
             voices: [MutableFixtureVoice::default(); 64],
+            history: [0; 8192],
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -313,6 +328,9 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        if output_capture::refuse_gateoff(events) {
+            return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
         for event in events {
             let (offset, id, on) = match *event {
                 hex_lattice::NativeInstrumentEvent::NoteOn {
@@ -408,6 +426,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
+            self.history = old.history;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
