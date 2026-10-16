@@ -87,6 +87,34 @@ fn linear(revision: Arc<PreparedRevision>) -> SessionPlayback {
 }
 
 #[test]
+fn metered_analytic_capture_applies_track_gain_once_and_preserves_main_pcm() {
+    let mut snapshot = project(0.375, 0, 1 << 26).snapshot();
+    snapshot.tracks[0].balance = 0.4;
+    snapshot.master_gain = 0.5;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let mut reference = linear(Arc::clone(&prepared));
+    let mut metered = linear(prepared);
+    metered.set_device_metering(true);
+    let id = OutputCaptureId::Track(project.tracks()[0].id());
+    let plan = metered.output_capture_plan(&[id], 512).unwrap();
+    let mut main = [[0.0; 2]; 512];
+    let mut expected = main;
+    let mut captured = main;
+    let mut buffers: [&mut [Frame]; 1] = [&mut captured];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    metered
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(main, expected, "metering and capture preserve main PCM");
+    assert!(main[..375].iter().flatten().any(|sample| *sample != 0.0));
+    for (frame, output) in capture.output(0).unwrap().iter().zip(main) {
+        assert_eq!(frame.map(|sample| sample * 0.5), output);
+    }
+}
+
+#[test]
 fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
     for metered in [false, true] {
         use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};

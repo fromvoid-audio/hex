@@ -7,7 +7,9 @@ instrument and settings. Internal Operator module names and reference research
 still use the historical name.
 
 Pulse2172 registers `hex.instrument.operator` in the existing native instrument
-catalog. The control codec exposes99 descriptors and opaque version11 state.
+catalog. The control codec exposes363 descriptors and opaque version12 state.
+The [harmonic editor](operator-harmonics.md) adds User banks, persistent painting
+and live continuation while preserving the earlier builtin/filter routes.
 Versions1–4 migrate with neutral feedback; versions1–3 also receive neutral
 amplitude velocity. Storage, history and UI use generic native-device contracts.
 
@@ -52,6 +54,31 @@ waveform, tuning, envelope, modulation, sample-rate and velocity-law edits are
 refused while history is active and may use a fresh runtime only after
 committed voices and feedback tails are quiescent. See [the feedback contract](operator-feedback.md)
 for the exact transfer and acceptance limits.
+
+After a supported edit is refused by the active runtime, **Stop** now requests
+another canonical graph from the session worker and installs it with fresh
+histories. This is an explicit stopped reset at frame zero, preserving the
+project, accepted settings and undo history. Play and Seek wait for the exact
+recovery publication to be acknowledged. Ordinary live edits still inherit
+history and retain the existing refusal policy; Stop does not admit tuning that
+fails note compilation. A refused compile leaves the previous canonical state
+intact. Pulse #2643 / PR259 tracks this recovery and native acceptance.
+
+The default custom topology has only oscillator A as a carrier and no modulation
+edges. B/C/D levels therefore have no audible effect until connected. Select
+`serial` for D → C → B → A FM, `parallel` for four carriers, or author a custom
+matrix. A 48 kHz A4 regression confirms all three connected B/C/D levels change
+PCM, a B ratio of128 refuses atomically, an active-filter B ratio change to3
+refuses live history transfer, and stopped recovery restarts the accepted graph
+with the same PCM as a fresh render.
+
+Native checklist for the optimized candidate: play a held Vector note with the
+filter enabled; change B ratio within its supported range; after a handoff refusal,
+press Stop, wait for graph application, then Play and seek. Confirm audible
+playback resumes and settings/Undo remain intact. With serial routing, change
+B/C/D levels and confirm timbre changes. Try an excessive B ratio, then a valid
+value; confirm refusal preserves the last accepted value and Stop/Play recover.
+Linux headless evidence does not establish Mac listening or physical deadlines.
 
 The original [Clean carrier filter](operator-filter.md) supports LP/HP/BP/notch/
 morph, 12/24 slopes, frequency, resonance and morph through saved shared controls.

@@ -5,6 +5,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod candidate_storage;
 mod metronome;
 use metronome::Metronome;
 
@@ -193,6 +194,8 @@ pub enum PlaybackHandoffRejection {
     ActiveArrangementStateCannotBeDropped = 5,
     RuntimeFenceChanged = 6,
     FreshRuntimeCancelled = 7,
+    ConstructorClaimsUnavailable = 8,
+    StreamedPagesNotReady = 9,
 }
 
 impl PlaybackHandoffRejection {
@@ -226,6 +229,8 @@ impl PlaybackHandoffRejection {
             5 => Some(Self::ActiveArrangementStateCannotBeDropped),
             6 => Some(Self::RuntimeFenceChanged),
             7 => Some(Self::FreshRuntimeCancelled),
+            8 => Some(Self::ConstructorClaimsUnavailable),
+            9 => Some(Self::StreamedPagesNotReady),
             _ => None,
         }
     }
@@ -250,7 +255,9 @@ impl PlaybackHandoffRejection {
             Self::RuntimeFenceChanged => {
                 "fresh playback was rejected because the active runtime changed"
             }
-            Self::FreshRuntimeCancelled => "fresh playback was cancelled before it became active",
+            Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
+            Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
+            Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
         }
     }
 }
@@ -355,6 +362,24 @@ impl Playback {
             .as_ref()
             .ok_or(crate::AudioStorageError::UnsupportedGraph)?
             .validate_candidate_runtime_storage(metadata)
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_track_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        self.session_runtime.as_ref()?.test_track_boxes(track)
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        self.session_runtime.as_ref()?.test_tail_boxes(track)
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
+        self.session_runtime.as_ref()?.test_tail_activity(track)
     }
     #[cfg(test)]
     pub(crate) fn test_populate_unsupported_tail(&mut self) {
@@ -943,6 +968,25 @@ impl Playback {
         }
     }
 
+    pub(crate) fn inherit_candidate_groups(
+        &mut self,
+        previous: &mut Self,
+        groups: crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<(), PlaybackHandoffError> {
+        let next = self
+            .session_runtime
+            .as_mut()
+            .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
+        let old = previous
+            .session_runtime
+            .as_mut()
+            .ok_or(PlaybackHandoffError::ActiveSessionStateCannotBeDropped)?;
+        next.inherit_candidate_groups(old, groups)
+            .map_err(PlaybackHandoffError::Session)?;
+        self.inherit_metronome(previous);
+        Ok(())
+    }
+
     /// Inherit graph-local state at a publication boundary without allocating
     /// or retaining ownership of the previous graph.
     pub fn try_inherit_runtime_from(
@@ -1075,6 +1119,30 @@ impl Playback {
         Ok(())
     }
 
+    pub(crate) fn visit_next_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("candidate session runtime unavailable"))?
+            .visit_next_stream_chunk(maximum_frames, playing, visit)
+    }
+    pub(crate) fn preview_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
+        next.preview_stream_handoff(old, maximum_frames, playing, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
     pub fn render_with_pages<P: MediaPages>(

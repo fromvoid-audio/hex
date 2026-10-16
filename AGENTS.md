@@ -169,7 +169,7 @@ in the same change. Keep APIs narrow, module sizes readable, errors explicit,
 public responsibilities documented, and dependencies acyclic. Put related behavior
 and tests with their owning crate; don't duplicate state across boundaries.
 
-Explicit test-only edges are allowed: `hex-audio` may use `hex-project` and
+Explicit test-only edges are allowed: `hex-audio` may use `hex-project`, `hex-media` and
 `hex-lattice-contract` as dev-dependencies for canonical prepared-publication and
 active-device allocation fixtures. Under the non-default `allocation-probe`
 feature, `hex-audio` may also use `hex-lattice` as a dev-dependency and enable

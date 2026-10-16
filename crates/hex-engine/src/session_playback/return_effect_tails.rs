@@ -46,6 +46,16 @@ pub(super) struct ReturnEffectTailBank {
 }
 
 impl ReturnEffectTailBank {
+    pub(super) fn visit_empty_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self { slots, scratch: _ } = self;
+        if slots.iter().any(Option::is_some) {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        ledger.vec(slots)
+    }
     pub(super) fn new() -> Result<Self, SessionPlaybackError> {
         let mut slots = Vec::new();
         slots

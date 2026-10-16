@@ -46,7 +46,7 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
-    let tab = tab_bounds(&mut visual, device, "lfo", "lfo");
+    let tab = lfo_link_bounds(&mut visual, device);
     visual.simulate_click(tab.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
@@ -64,7 +64,7 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
                 device.value()
             )))
             .unwrap();
-        let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+        let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
         let detail = visual
             .debug_bounds(selector(format!("operator-detail-{}", device.value())))
             .unwrap();
@@ -128,7 +128,7 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
     let depth = visual
         .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
         .unwrap();
-    let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+    let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
     assert!(
         depth.bottom() <= rail.top(),
         "pitch-depth explanation overlaps navigation: {depth:?} rail={rail:?}"
@@ -158,7 +158,7 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
             let depth = visual
                 .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
                 .unwrap();
-            let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+            let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
             assert!(
                 depth.bottom() <= rail.top(),
                 "depth overlaps navigation at width={width}, sync={sync}: {depth:?} rail={rail:?}"
@@ -218,6 +218,12 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
         &mapped
     );
     std::fs::remove_file(path).unwrap();
+}
+
+fn lfo_link_bounds(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pixels> {
+    visual
+        .debug_bounds(selector(format!("operator-lfo-link-{}", device.value())))
+        .unwrap()
 }
 
 // The legacy fallback lets this exact regression execute on the unfixed source:
@@ -288,7 +294,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             device.value()
         )))
         .unwrap();
-    let lfo = tab_bounds(&mut visual, device, "lfo", "lfo");
+    let lfo = lfo_link_bounds(&mut visual, device);
     visual.simulate_click(lfo.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -305,7 +311,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(tab_bounds(&mut visual, device, "lfo", "lfo"), lfo);
+    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
     for parameter in 82..=92 {
         assert!(
             visual

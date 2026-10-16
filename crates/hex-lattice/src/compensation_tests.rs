@@ -252,6 +252,12 @@ impl NativeInstrumentClock for Clock {
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         Some(10 + offset as u64)
     }
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        Some(1000 + offset as u64)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        Some(false)
+    }
     fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
         Some(offset as u64 % 2)
     }
@@ -336,4 +342,30 @@ fn bypass_private_clock_uses_offsets_while_audible_samples_are_preserved() {
             .unwrap();
         assert_eq!(runtime.last_beat, 99);
     }
+}
+
+#[test]
+fn offset_clock_preserves_host_origin_state_and_explicit_unknowns() {
+    let clock = OffsetClock {
+        clock: &Clock,
+        offset: 3,
+    };
+    assert_eq!(clock.performance_frame_at_offset(4), Some(1007));
+    assert_eq!(clock.beat_at_offset(4), Some(17));
+    assert_eq!(clock.arrangement_frame_at_offset(4), Some(1));
+    assert_eq!(clock.loop_pass_at_offset(4), Some(3));
+    assert_eq!(clock.transport_is_running(), Some(false));
+    assert_eq!(clock.performance_frame_at_offset(usize::MAX), None);
+    struct Unknown;
+    impl NativeInstrumentClock for Unknown {
+        fn beat_at_offset(&self, _: usize) -> Option<u64> {
+            None
+        }
+    }
+    let unknown = OffsetClock {
+        clock: &Unknown,
+        offset: 3,
+    };
+    assert_eq!(unknown.performance_frame_at_offset(4), None);
+    assert_eq!(unknown.transport_is_running(), None);
 }

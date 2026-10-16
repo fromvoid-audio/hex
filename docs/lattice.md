@@ -23,7 +23,8 @@ Parameter descriptors are validated before either the effect or instrument
 registry admits a definition. Labels, optional units and choice labels must be
 nonempty, contain no Unicode uppercase or control characters, and occupy at most
 128 UTF-8 bytes each. A choice parameter exposes at most 256 alternatives;
-per-device parameter and registry type limits remain 256. These are static
+per-device parameter descriptors are bounded at 512 (supporting atomic harmonic
+banks), while registry types remain bounded at 256. These are static
 metadata admission limits, not a change to authored state or DSP processing.
 
 Type IDs are bounded lowercase namespace strings such as `hex.utility`;

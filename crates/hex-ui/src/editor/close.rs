@@ -87,8 +87,8 @@ impl EditorView {
         if self.device_gesture.has_pending_terminal() {
             return;
         }
-        if let Some(snapshot) = self.device_gesture.snapshot()
-            && let Err(error) = self.finish_device_gesture(snapshot.value)
+        if self.device_gesture.snapshot().is_some()
+            && let Err(error) = self.device_gesture.finish_current()
         {
             self.error = Some(error.into());
         }
@@ -235,6 +235,7 @@ mod window_tests {
                 super::super::install_close_guard(window, cx, editor.downgrade());
                 editor.update(cx, |view, cx| {
                     view.state = Some(Arc::new(ViewState {
+                        canonical_audio_source: None,
                         project: Arc::new(hex_project::Project::new(48_000).expect("test project")),
                         waveforms: Default::default(),
                         audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -287,6 +288,7 @@ mod window_tests {
         editor.update(cx, |view, cx| {
             if let Some(state) = view.state.as_ref() {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::clone(&state.project),
                     waveforms: state.waveforms.clone(),
                     audio_clip_waveforms: state.audio_clip_waveforms.clone(),
@@ -433,6 +435,7 @@ mod window_tests {
                 editor.update(cx, |view, cx| {
                     let state = &device_event.state;
                     view.state = Some(Arc::new(ViewState {
+                        canonical_audio_source: None,
                         project: Arc::clone(&state.project),
                         waveforms: state.waveforms.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),

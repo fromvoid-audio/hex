@@ -20,7 +20,13 @@ pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 /// be audible. The runtime's `max_active_occurrences` declaration is
 /// implementation-defined and does not specify how released voices count.
 pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
-const MAX_MUTABLE_TAIL_SECONDS: u64 = 10;
+/// Finite duration admission only: voice/query/storage/replay ceilings remain
+/// independent and may refuse dense sources or long prerolls at this horizon.
+const MAX_MUTABLE_TAIL_SECONDS: u64 = 140;
+
+pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
+    u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
+}
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
@@ -96,6 +102,16 @@ impl MutableOccurrenceSignature {
     pub(crate) const fn key(self) -> MutableOccurrenceKey {
         self.key
     }
+
+    pub(crate) const fn details(self) -> (BeatTime, BeatTime, u8, u8, u8) {
+        (
+            self.onset_beat,
+            self.gate_end_beat,
+            self.pitch,
+            self.channel,
+            self.velocity,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +142,10 @@ impl Default for MutableOnsetBuffer {
 }
 
 impl MutableOnsetBuffer {
+    pub(crate) fn candidate_storage_empty(&self) -> bool {
+        let Self { spans, len } = self;
+        *len == 0 && spans.iter().all(Option::is_none)
+    }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
     }
@@ -203,7 +223,7 @@ impl MutableInstrumentTrackRuntime {
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
     ) -> Option<usize> {
-        let max_tail_frames = u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)?;
+        let max_tail_frames = max_mutable_tail_frames(sample_rate)?;
         let pair_bytes = prepared.declared_twin_bytes().checked_mul(2)?;
         if prepared.runtime_version() == 0
             || prepared.declared_twin_bytes() == 0
@@ -226,9 +246,8 @@ impl MutableInstrumentTrackRuntime {
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
     ) -> Result<Self, MutableInstrumentRuntimeError> {
-        let max_tail_frames = u64::from(sample_rate)
-            .checked_mul(MAX_MUTABLE_TAIL_SECONDS)
-            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        let max_tail_frames =
+            max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
@@ -265,6 +284,40 @@ impl MutableInstrumentTrackRuntime {
             next_id: 0,
             next_id_scratch: 0,
         })
+    }
+
+    pub(crate) fn can_import_harmonics(
+        &self,
+        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
+        occurrences: &[Option<MutableOccurrence>],
+    ) -> bool {
+        occurrences.len() == history.voices.len()
+            && occurrences.len() <= self.primary.capacity()
+            && occurrences
+                .iter()
+                .zip(history.voices)
+                .all(|(occurrence, voice)| occurrence.is_some_and(|o| o.id == voice.occurrence_id))
+            && self.primary.is_empty()
+            && self.pair.can_import_analytic_history(history)
+    }
+    pub(crate) fn import_harmonics(
+        &mut self,
+        history: &hex_lattice::AnalyticInstrumentHistory<'_>,
+        occurrences: &[Option<MutableOccurrence>],
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if !self.can_import_harmonics(history, occurrences) {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        self.pair
+            .import_analytic_history(history)
+            .map_err(map_runtime_error)?;
+        self.primary.clear();
+        self.primary.extend(occurrences.iter().flatten().copied());
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.primary);
+        self.next_id = self.primary.iter().map(|o| o.id).max().unwrap_or(0);
+        self.next_id_scratch = self.next_id;
+        Ok(())
     }
 
     pub(crate) fn begin_block(&mut self) {
@@ -809,7 +862,7 @@ fn has_mutable_suppression(
             ) == target
         });
     suppressions[start..end]
-        .binary_search_by_key(&Some(signature), |entry| entry.mutable_signature)
+        .binary_search_by_key(&Some(signature), |entry| entry.mutable_signature())
         .ok()
         .and_then(|offset| suppressions.get(start + offset))
         .is_some_and(|entry| entry.until_frame > onset_frame)

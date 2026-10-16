@@ -2,6 +2,8 @@
 //! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
 //! destroys its contents. Receiving a carrier is not final-active quiescence.
 use crate::prepared::{Callback, Status};
+mod resources;
+pub(crate) use resources::NativeCandidateBoundary;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS
@@ -131,17 +133,23 @@ pub(crate) fn reserve_native(
     Guard<ErrorCallbackOwner>,
     NativeTerminals,
 ) {
-    let (data_guard, data) = reserve(NativeCallbackOwner {
+    let root = callback.candidate_root_for_native_boundary();
+    let (mut data_guard, data) = reserve(NativeCallbackOwner {
         callback,
         status: Arc::clone(&status),
         #[cfg(test)]
         probe: None,
     });
-    let (error_guard, errors) = reserve(ErrorCallbackOwner {
+    let (mut error_guard, errors) = reserve(ErrorCallbackOwner {
         status,
         #[cfg(test)]
         probe: None,
     });
+    if let Some(boundary) =
+        NativeCandidateBoundary::from_reserved(&root, &mut data_guard, &mut error_guard)
+    {
+        root.record_native_boundary(boundary);
+    }
     (data_guard, error_guard, NativeTerminals { data, errors })
 }
 
@@ -281,6 +289,7 @@ pub(crate) struct NativeRetirement {
     errors: Option<Box<ErrorCallbackOwner>>,
     states: [Disposal; 2],
     completed_stream_handle: bool,
+    domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
     final_active: Option<crate::candidate_custody::FinalActiveReturn>,
     root: crate::candidate_custody::CandidateRoot,
 }
@@ -289,12 +298,14 @@ impl NativeRetirement {
         terminals: NativeTerminals,
         root: crate::candidate_custody::CandidateRoot,
     ) -> Self {
+        root.anchor_native_boundary(&terminals);
         Self {
             terminals: Some(terminals),
             data: None,
             errors: None,
             states: [Disposal::Unreceived; 2],
             completed_stream_handle: false,
+            domain_pages: std::array::from_fn(|_| None),
             final_active: None,
             root,
         }
@@ -302,6 +313,13 @@ impl NativeRetirement {
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_extracted_identity(&self) -> Option<hex_engine::AudioCandidateIdentity> {
         self.final_active.as_ref().map(|value| value.identity())
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_terminal_domain_count(&self) -> usize {
+        self.domain_pages
+            .iter()
+            .filter(|pages| pages.is_some())
+            .count()
     }
     pub(crate) fn root(&self) -> crate::candidate_custody::CandidateRoot {
         self.root.clone()
@@ -345,6 +363,17 @@ impl NativeRetirement {
             if !data.callback.drain_candidate_custody_on_control() {
                 return Ok(false);
             }
+            if data.callback.has_domain_pages() {
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data
+                    .callback
+                    .extract_domain_pages_on_control(&mut self.domain_pages)
+                {
+                    return Err(());
+                }
+            }
             if data.callback.has_active_candidate() {
                 // Exact carrier extraction plus completed stream-handle custody
                 // closes every valid application callback path under CPAL's safe
@@ -375,6 +404,14 @@ impl NativeRetirement {
         }
         if self.states != [Disposal::Complete; 2] {
             return Err(());
+        }
+        for index in 0..self.domain_pages.len() {
+            if let Some(pages) = self.domain_pages[index].take()
+                && let Err(pages) = self.root.ingest_pages(pages)
+            {
+                self.domain_pages[index] = Some(pages);
+                return Err(());
+            }
         }
         // The constructor owner stays here through both actual carrier
         // destructors. A failure before this point cannot publish READY/reuse.

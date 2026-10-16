@@ -86,6 +86,14 @@ struct Stages {
     assemble_project: bool,
     assemble_revision: bool,
 }
+/// Canonical source correlation captured with the actual control-side project.
+/// These numbers are not ownership or publication authority. Source-catalog
+/// generation is a separate identity and may differ from document generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioSourceContext {
+    pub project_generation: u64,
+    pub editor_revision: u64,
+}
 /// Borrowed canonical metadata plus consumed bank; no audio/stream dependency
 /// enters the engine. A host need not depend on hex-project to accept this input.
 pub struct AudioArrangementInput<'a> {
@@ -93,6 +101,7 @@ pub struct AudioArrangementInput<'a> {
     generation: u64,
     inputs: OwnedAudioInputs,
     stages: Stages,
+    source_context: Option<AudioSourceContext>,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -108,7 +117,15 @@ impl<'a> AudioArrangementInput<'a> {
             generation,
             inputs,
             stages: Stages::default(),
+            source_context: None,
         }
+    }
+    /// Low-level correlation bridge. Prefer a Session-owned immutable snapshot
+    /// that derives the Project and these counters together; this grants no
+    /// constructor, source lease, readiness or native ownership authority.
+    pub fn with_source_context(mut self, context: AudioSourceContext) -> Self {
+        self.source_context = Some(context);
+        self
     }
     /// Explicitly add the new persistent Session audio source/name stage.
     /// Previous legacy inventories are never adopted; cache aliases originate
@@ -223,6 +240,7 @@ impl Drop for DropProbe {
 /// callers must not detach it to a UI handle. No public raw owner getter exists.
 pub struct AudioPreparationCustody {
     root: u64,
+    source_context: Option<AudioSourceContext>,
     incarnation: u64,
     phase: AudioPreparationPhase,
     bank: Option<OwnedAudioInputs>,
@@ -258,15 +276,38 @@ impl AudioPreparationCustody {
         Ok((self.root, self.incarnation, self.revision.candidate_root()?))
     }
 
+    pub(crate) fn candidate_root_view(
+        &self,
+        token: &AudioPreparationToken,
+    ) -> Result<&std::sync::Arc<crate::PreparedRevision>, AudioStorageError> {
+        if !self.matches(token) || self.phase != AudioPreparationPhase::ArrangementAndSessionSources
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.revision.candidate_root_view()
+    }
     pub fn begin_input_on_control(
         &mut self,
         input: AudioArrangementInput<'_>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(input.project, input.generation, input.inputs, input.stages)
+        let result = self.begin_stages_on_control(
+            input.project,
+            input.generation,
+            input.inputs,
+            input.stages,
+        );
+        if result.is_ok() {
+            self.source_context = input.source_context;
+        }
+        result
+    }
+    pub(crate) fn source_context(&self) -> Option<AudioSourceContext> {
+        self.source_context
     }
     pub fn try_new_on_control() -> Result<Self, AudioStorageError> {
         Ok(Self {
             root: handle()?,
+            source_context: None,
             incarnation: 0,
             phase: AudioPreparationPhase::Vacant,
             bank: None,
@@ -345,6 +386,7 @@ impl AudioPreparationCustody {
                 }));
             }
         };
+        self.source_context = None;
         if include_session {
             let previous_session_bytes = capacity.session.bytes().and_then(|n| {
                 capacity
@@ -383,6 +425,17 @@ impl AudioPreparationCustody {
                 } else {
                     0
                 };
+                let device_handles = if assemble_tracks {
+                    project
+                        .tracks()
+                        .iter()
+                        .try_fold(0usize, |n, t| {
+                            n.checked_add(t.devices().len().checked_mul(4)?)
+                        })
+                        .ok_or(AudioStorageError::Overflow)?
+                } else {
+                    0
+                };
                 let return_handles = if assemble_returns {
                     project.return_tracks().len()
                 } else {
@@ -393,6 +446,7 @@ impl AudioPreparationCustody {
                     .checked_add(slots.len())
                     .and_then(|n| n.checked_add(self.session.capacity.reserved_handle_destinations))
                     .and_then(|n| n.checked_add(track_handles))
+                    .and_then(|n| n.checked_add(device_handles))
                     .and_then(|n| n.checked_add(return_handles))
                     .and_then(|n| n.checked_add(usize::from(assemble_preview)))
                     .and_then(|n| n.checked_add(if assemble_revision { 4 } else { 0 }))
@@ -669,7 +723,11 @@ impl AudioPreparationCustody {
         // This first compiler stage has no Session inventory output. Unsupported
         // instruments/effects/MIDI refuse; Session stage is deliberately separate.
         if project.tracks().iter().any(|t| {
-            !t.devices().is_empty() || t.instrument().is_some() || !t.midi_clips().is_empty()
+            t.devices()
+                .iter()
+                .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                || t.instrument().is_some()
+                || !t.midi_clips().is_empty()
         }) || project
             .return_tracks()
             .iter()
@@ -1187,6 +1245,11 @@ impl AudioPreparationCustody {
             })
             .count()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn candidate_test_project() -> hex_project::Project {
+    tests::fixture(1).0
 }
 
 #[cfg(test)]

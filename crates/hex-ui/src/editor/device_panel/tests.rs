@@ -14,6 +14,8 @@ mod device_theme_tests;
 mod gate_ui_tests;
 mod navigation_ui_tests;
 mod operator_enable_ui_tests;
+#[path = "operator_harmonic_ui_tests.rs"]
+mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
 mod operator_tab_tests;
@@ -1193,12 +1195,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(control.origin.x - preview.origin.x >= px(40.0));
         assert!(control.origin.x - preview.origin.x < px(54.0));
     }
+    // Keep the narrow-window geometry checks above, then expose the right rail
+    // before testing a mouse click on the wider companion inspector.
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),
     );
     let route_bounds = visual
         .debug_bounds(route_link)
         .expect("global routing link");
+    assert!(route_bounds.origin.x + route_bounds.size.width <= px(1440.0));
     visual.simulate_click(route_bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -2457,6 +2464,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 ))
                 .expect("preview row");
             for field in fields {
+                let field = field as usize;
                 let control = visual
                     .debug_bounds(Box::leak(
                         format!("operator-preview-{}-{field}", instrument_id.value())
@@ -3552,6 +3560,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
     editor.update(cx, |view, cx| {
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -3865,6 +3874,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     editor.update(cx, |view, cx| {
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4024,6 +4034,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             });
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4164,6 +4175,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         );
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -5057,6 +5069,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         })
         .expect("first acknowledged edit");
     let changed_state = Arc::new(ViewState {
+        canonical_audio_source: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),

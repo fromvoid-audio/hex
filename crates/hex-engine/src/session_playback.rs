@@ -17,6 +17,7 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod candidate_storage;
 mod mutable_checkpoint;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
@@ -246,11 +247,10 @@ struct TransitionMoment {
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
-    track_index: usize,
+    location: ReleaseLocation,
     track_id: TrackId,
     order: u64,
     mix: crate::PreparedTrackMix,
-    tail_group: Option<u16>,
     continuation: Option<SessionContinuation>,
     voice: MidiReleaseVoice,
 }
@@ -419,14 +419,62 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_track_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        let index = self.routes.iter().position(|r| r.id == track)?;
+        self.device_chains
+            .get(index)?
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| {
+                let (a, b) = entry.runtime_box_identities();
+                if a > b { (b, a) } else { (a, b) }
+            })
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        let index = self
+            .tail_track_ids
+            .iter()
+            .position(|id| *id == Some(track))?;
+        self.tail_groups
+            .get(index)?
+            .as_ref()?
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| {
+                let (a, b) = entry.runtime_box_identities();
+                if a > b { (b, a) } else { (a, b) }
+            })
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
+        let slot = self
+            .tail_track_ids
+            .iter()
+            .position(|id| *id == Some(track))?;
+        let chain = self.tail_groups.get(slot)?.as_ref()?;
+        Some((
+            !chain.committed_range_is_quiescent(0..chain.len()),
+            self.tail_output_active[slot],
+        ))
+    }
     #[cfg(test)]
     pub(crate) fn test_populate_unsupported_tail(&mut self) {
         self.tail_groups[0] = Some(hex_lattice::NativeRuntimeChain::empty());
     }
     /// Constructor-bound inventory of independently movable runtime owner
     /// locations, adapted from original177 owner_groups.rs. No callback visitor
-    /// or byte/handle completeness claim. The closed constructor class cannot
-    /// transfer child owners; vacant tail/context locations remain classified.
+    /// or byte/handle completeness claim. The closed constructor class permits
+    /// Utility Track/Tail transfers; other owning locations remain classified.
     pub(crate) fn visit_candidate_groups(
         &self,
         visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
@@ -434,7 +482,7 @@ impl SessionPlayback {
         // Exhaustive owning-field match: other buffers belong to the Session
         // container group, not independent transferable device/context groups.
         let Self {
-            computer_keyboard: _,
+            computer_keyboard,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -483,6 +531,9 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
+        if computer_keyboard.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
         for index in 0..device_chains.len() {
             visit(0, index, true)?;
         }
@@ -1187,6 +1238,18 @@ impl SessionPlayback {
         self.inherit_state(previous)
     }
 
+    pub(crate) fn inherit_candidate_groups(
+        &mut self,
+        previous: &mut Self,
+        groups: crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.linear_arrangement_export || previous.linear_arrangement_export {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_with_groups(previous, Some(groups))
+    }
+
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {
         if self.candidate_admission_open {
             Ok(())
@@ -1257,6 +1320,8 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+mod release_location;
+use release_location::ReleaseLocation;
 /// These tables never grow, shrink, swap ownership or allocate in handoff or
 /// rendering. Refusal/destruction of their storage belongs to control.
 fn reserve_analytic_continuations()
@@ -1272,10 +1337,13 @@ fn reserve_analytic_continuations()
     Ok(slots)
 }
 
+mod analytic_import;
 mod commands;
 mod handoff;
+mod harmonic_import;
 mod preroll;
 mod render;
+mod stream_demand;
 pub use capture::{
     MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
     OutputCaptureId, OutputCapturePlan,
@@ -1285,6 +1353,8 @@ pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
+#[cfg(test)]
+mod harmonic_accounting;
 #[cfg(test)]
 mod tests;
 
@@ -1358,8 +1428,6 @@ mod render_diagnostic_tests {
         );
     }
 }
-
-mod analytic_import;
 mod gain_recording;
 #[cfg(test)]
 mod return_feed_tests;

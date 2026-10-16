@@ -32,6 +32,9 @@ pub(super) fn prepare_factory(
     sample_rate: u32,
     sine_table: &'static SineTable,
 ) -> Result<Option<OperatorFeedbackFactory>, DeviceContractError> {
+    if settings.companion.requires_runtime() {
+        return Ok(None);
+    }
     let effective = settings.effective_feedback();
     if effective == [0.0; FEEDBACK_COUNT] {
         return Ok(None);
@@ -689,6 +692,73 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
     }
 }
 
+impl super::harmonic_runtime::VoiceHistory for OperatorFeedbackRuntime {
+    fn voice(&self, index: usize) -> Option<super::harmonic_runtime::Voice> {
+        use super::harmonic_runtime::Voice;
+        let old = self.voices.get(index)?;
+        let Some(voice) = old.voice else {
+            return Some(Voice::default());
+        };
+        let (note, age, gate, previous) = voice.harmonic_snapshot();
+        Some(Voice {
+            note,
+            phases: PreparedOperatorConfiguration::harmonic_initial_phases(&note, age),
+            previous,
+            age,
+            gate,
+            id: old.occurrence_id,
+            ..Voice::default()
+        })
+    }
+}
+
+pub(super) fn export_harmonic_history(
+    runtime: &dyn MutableInstrumentRuntime,
+) -> Option<super::harmonic_runtime::Legacy<'_>> {
+    use super::harmonic_runtime::{Legacy, ParameterRamp, builtin_spectrum, parameter_words};
+    let runtime = runtime.as_any().downcast_ref::<OperatorFeedbackRuntime>()?;
+    let mut base = [0; super::ENABLE_PAYLOAD_BYTES];
+    base[..FEEDBACK_PAYLOAD_BYTES].copy_from_slice(&runtime.compatibility_state);
+    for (i, word) in super::lfo::LfoSettings::default().0.iter().enumerate() {
+        base[FEEDBACK_PAYLOAD_BYTES + i * 4..FEEDBACK_PAYLOAD_BYTES + i * 4 + 4]
+            .copy_from_slice(&word.to_le_bytes());
+    }
+    for i in 0..4 {
+        base[super::LFO_PAYLOAD_BYTES + i * 4..super::LFO_PAYLOAD_BYTES + i * 4 + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+    }
+    let parameters = parameter_words(
+        runtime
+            .configuration
+            .feedback_parameters(runtime.feedback_turns)
+            .ok()?,
+    );
+    let ramp = if let Some(r) = runtime.retarget {
+        Some(ParameterRamp {
+            source: parameter_words(r.values_at(0).ok()?),
+            elapsed: runtime.retarget_elapsed,
+            frames: r.frames(),
+        })
+    } else {
+        None
+    };
+    let spectrum = builtin_spectrum(&base)?;
+    Some(Legacy {
+        companion: super::companion::Settings::default(),
+        local_frame: 0,
+        base,
+        voices: runtime,
+        parameters,
+        ramp,
+        phase: (0.0, 0),
+        source: spectrum,
+        target: spectrum,
+        elapsed: 1,
+        frames: 1,
+        filter: super::harmonic_runtime::FilterTrajectory::inactive(runtime.sample_rate),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,13 +868,13 @@ mod tests {
         let factory = factory(0.4);
         let declared = factory.declared_twin_bytes();
         assert_eq!(declared, size_of::<OperatorFeedbackRuntime>());
-        assert_eq!(declared, 4_032, "actual twin storage {declared}");
+        assert_eq!(declared, 4_072, "actual twin storage {declared}");
         assert!(
             2 * declared <= 8_192,
             "paired runtime storage {}",
             2 * declared
         );
-        assert_eq!(2 * declared, 8_064, "actual paired runtime storage");
+        assert_eq!(2 * declared, 8_144, "actual paired runtime storage");
         let pair = NativeInstrumentRuntimePair::new(
             &factory,
             NativeInstrumentRuntimeLimits {
@@ -815,7 +885,7 @@ mod tests {
             },
         )
         .expect("actual prepared pair remains within the fixed ceiling");
-        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_064));
+        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_144));
         let runtime = factory.create_runtime();
         let mut events = Vec::with_capacity(17);
         for occurrence_id in 1..=17 {

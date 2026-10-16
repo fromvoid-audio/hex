@@ -45,6 +45,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 }
 
 mod instrument;
+mod instrument_pair;
 mod instrument_runtime;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
@@ -52,11 +53,14 @@ pub use instrument::{
     PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, PreparedStorageDeclaration,
     SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
+pub use instrument_pair::{
+    NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
+};
 pub use instrument_runtime::{
-    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentAnalyticSeed,
-    NativeInstrumentClock, NativeInstrumentEvent, NativeInstrumentRuntimeError,
-    NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
-    PreparedMutableInstrumentRuntime,
+    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
+    NativeInstrumentAnalyticSeed, NativeInstrumentClock, NativeInstrumentEvent,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
 
 /// Immutable, control-prepared configuration for one stateful native effect.
@@ -322,6 +326,14 @@ impl NativeInstrumentClock for OffsetClock<'_> {
         self.clock
             .loop_pass_at_offset(self.offset.checked_add(offset)?)
     }
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .performance_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn transport_is_running(&self) -> Option<bool> {
+        self.clock.transport_is_running()
+    }
 }
 
 /// Paired audio-owned runtime state. `primary` is committed state; processing
@@ -334,7 +346,108 @@ pub struct NativeRuntimeChain {
     declared_runtime_bytes: usize,
 }
 
+/// Borrowed physical storage observations, never a provider declaration or
+/// ownership/retirement capability. Private chain fields remain inaccessible.
+pub struct NativeRuntimeStorage<'a> {
+    chain: &'a NativeRuntimeChain,
+}
+pub struct NativeRuntimeEntryStorage<'a> {
+    entry: &'a RuntimeEntry,
+}
+impl NativeRuntimeStorage<'_> {
+    pub fn entry_capacity_bytes(&self) -> Option<usize> {
+        self.chain
+            .entries
+            .capacity()
+            .checked_mul(std::mem::size_of::<RuntimeEntry>())
+    }
+    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'_>> {
+        self.chain
+            .entries
+            .iter()
+            .map(NativeRuntimeEntryStorage::new)
+    }
+}
+impl NativeRuntimeEntryStorage<'_> {
+    fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
+        let RuntimeEntry {
+            meter: _,
+            metering: _,
+            input_gain: _,
+            output_gain: _,
+            owner: _,
+            device_id: _,
+            device_type: _,
+            matrix: _,
+            bypassed: _,
+            runtime_version: _,
+            sample_rate: _,
+            configuration: _,
+            output_tail: _,
+            algorithmic_latency_frames: _,
+            primary: _,
+            scratch: _,
+        } = entry;
+        NativeRuntimeEntryStorage { entry }
+    }
+    /// Only scalar addresses leave this view. They are observations, not origin
+    /// receipts; equal bytes or addresses alone never establish provenance.
+    pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
+        (
+            self.entry
+                .primary
+                .as_deref()
+                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
+            self.entry
+                .scratch
+                .as_deref()
+                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
+        )
+    }
+    pub fn primary_payload_bytes(&self) -> Option<usize> {
+        self.entry.primary.as_deref().map(std::mem::size_of_val)
+    }
+    pub fn scratch_payload_bytes(&self) -> Option<usize> {
+        self.entry.scratch.as_deref().map(std::mem::size_of_val)
+    }
+    pub fn runtime_types_are<T: NativeProcessorRuntime>(&self) -> bool {
+        self.entry
+            .primary
+            .as_ref()
+            .is_some_and(|v| v.as_any().is::<T>())
+            && self
+                .entry
+                .scratch
+                .as_ref()
+                .is_some_and(|v| v.as_any().is::<T>())
+    }
+    /// Compare against an already borrowed prepared owner. The view never
+    /// returns or clones either shared owning field.
+    pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
+        self.entry.owner == prepared.owner
+            && self.entry.device_id == prepared.device_id
+            && self.entry.device_type == prepared.device_type
+            && self.entry.sample_rate == prepared.sample_rate
+            && std::sync::Arc::ptr_eq(&self.entry.meter, &prepared.meter)
+            && match (&self.entry.configuration, &prepared.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
 impl NativeRuntimeChain {
+    /// Control-side inventory or bounded scalar test observation only. This
+    /// does not authorize concurrent access to an active runtime.
+    pub fn storage_view(&self) -> NativeRuntimeStorage<'_> {
+        let Self {
+            entries: _,
+            stateful_count: _,
+            declared_runtime_bytes: _,
+        } = self;
+        NativeRuntimeStorage { chain: self }
+    }
     pub fn empty() -> Self {
         Self {
             entries: Vec::new(),
@@ -1203,6 +1316,25 @@ impl<'a> NativeDeviceRegistry<'a> {
             .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
+    pub fn patch_parameters(
+        &self,
+        state: &NativeDeviceState,
+        snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
+        snapshot.validate(definition.descriptors())?;
+        let patched = definition.patch_parameters(&current, snapshot)?;
+        self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
+    }
+
     pub fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -1400,6 +1532,146 @@ mod compensation_tests;
 mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
+
+    const SNAPSHOT_PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);
+    const SNAPSHOT_PATCH_DESCRIPTORS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        id: SNAPSHOT_PATCH_PARAMETER,
+        label: "level",
+        kind: hex_lattice_contract::ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.25),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    }];
+    const SNAPSHOT_PATCH_INPUT_GAIN: i32 = -12_345;
+    const SNAPSHOT_PATCH_OUTPUT_GAIN: i32 = 6_789;
+
+    struct SnapshotPatchEffectDefinition;
+
+    impl NativeDeviceMetadata for SnapshotPatchEffectDefinition {
+        fn type_id(&self) -> DeviceTypeId {
+            DeviceTypeId::from_static("test.effect-snapshot-patch")
+        }
+
+        fn state_version(&self) -> u32 {
+            1
+        }
+
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            SNAPSHOT_PATCH_DESCRIPTORS
+        }
+
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(NativeDeviceMetadata::type_id(self), 1, vec![64])
+        }
+
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.type_id() != NativeDeviceMetadata::type_id(self) || state.state_version() != 1
+            {
+                return Err(DeviceContractError::MalformedState);
+            }
+            NativeDeviceState::new(
+                NativeDeviceMetadata::type_id(self),
+                1,
+                state.payload().to_vec(),
+            )
+        }
+
+        fn read_parameter(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            if parameter != SNAPSHOT_PATCH_PARAMETER {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let value = *state
+                .payload()
+                .first()
+                .ok_or(DeviceContractError::MalformedState)?;
+            Ok(ParameterValue::Float(f32::from(value) / 255.0))
+        }
+
+        fn patch_parameter(
+            &self,
+            _state: &NativeDeviceState,
+            parameter: ParameterId,
+            value: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if parameter != SNAPSHOT_PATCH_PARAMETER {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let ParameterValue::Float(value) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            NativeDeviceState::new(
+                NativeDeviceMetadata::type_id(self),
+                1,
+                vec![(value * 255.0).round() as u8],
+            )
+        }
+
+        fn patch_parameters(
+            &self,
+            state: &NativeDeviceState,
+            snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.input_gain_millidb() != SNAPSHOT_PATCH_INPUT_GAIN
+                || state.output_gain_millidb() != SNAPSHOT_PATCH_OUTPUT_GAIN
+            {
+                return Err(DeviceContractError::MalformedState);
+            }
+            let mut patched = self.migrate_state(state)?;
+            for &(parameter, value) in snapshot.entries() {
+                patched = self.patch_parameter(&patched, parameter, value)?;
+            }
+            Ok(patched)
+        }
+    }
+
+    impl NativeDeviceDefinition for SnapshotPatchEffectDefinition {
+        fn prepare_matrix(
+            &self,
+            _state: &NativeDeviceState,
+        ) -> Result<StereoMatrix, DeviceContractError> {
+            Ok(StereoMatrix::identity())
+        }
+    }
+
+    #[test]
+    fn effect_snapshot_patch_preserves_host_gains_across_migrations() {
+        let definition = SnapshotPatchEffectDefinition;
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let state = registry
+            .default_state(NativeDeviceMetadata::type_id(&definition))
+            .unwrap()
+            .with_input_gain_millidb(SNAPSHOT_PATCH_INPUT_GAIN)
+            .unwrap()
+            .with_output_gain_millidb(SNAPSHOT_PATCH_OUTPUT_GAIN)
+            .unwrap();
+        let snapshot = hex_lattice_contract::DeviceParameterSnapshot::new(&[(
+            SNAPSHOT_PATCH_PARAMETER,
+            ParameterValue::Float(1.0),
+        )])
+        .unwrap();
+
+        let patched = registry.patch_parameters(&state, &snapshot).unwrap();
+
+        assert_eq!(patched.input_gain_millidb(), SNAPSHOT_PATCH_INPUT_GAIN);
+        assert_eq!(patched.output_gain_millidb(), SNAPSHOT_PATCH_OUTPUT_GAIN);
+        assert_eq!(
+            definition
+                .read_parameter(&patched, SNAPSHOT_PATCH_PARAMETER)
+                .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+    }
 
     struct SplitAuditionPrepared(std::sync::atomic::AtomicUsize);
 

@@ -102,3 +102,48 @@ Normal completion requires conservation of every fixed pool page before
 destruction. Failed disposal stays incomplete and is never retried. This does
 not change the legacy consuming shutdown API or certify native quiescence,
 complete cost or admission. See [never-installed disposal](../../docs/never-installed-audio-disposal.md).
+
+
+## closed constructor domain custody
+
+`ConstructorStreamDomain` consumes the real control/pages pair only after
+constructor DATA and excess caller-handle checks. It retains its actual source
+lease and disposal capsule without exposing a lease or render endpoint. Listed
+DATA and constructor-bounded opaque resource lifetimes are separate: this never
+assigns zero bytes to std/channel/thread/OS internals or upgrades the public
+borrowed ledger's completeness. Normal worker join, pool conservation and final
+endpoint/channel/metadata destruction precede its report. The native host keeps
+charges until report consumption and must enforce its global two-domain limit.
+Native readiness is connected only through the opted-in audio constructor path. See
+[constructor publication](../../docs/audio-candidate-publication.md).
+
+## sealed readiness and endpoint loan (PR237 checkpoint)
+
+A constructor domain may additionally reserve a finite extent capacity for each
+of Active, Candidate and Transition. A checked requested-layout lower bound refuses insufficient caller DATA
+allowances before allocating disposal/readiness backing. Six actual Vec capacities
+and the internal readiness catalog lease's three handles are then charged before
+consuming the original pair. Its move-only `ConstructorPageLoan` carries the one actual request producer
+and callback endpoint; it cannot clone another producer or export raw endpoint
+ownership. The original control/catalog/disposal owner remains on control, and
+normal disposal cannot stop or join until the exact loan returns. Returning a
+wrong pair preserves both owners. Inline capsule storage belongs to its host;
+its backing reservation remains charged through the report barrier.
+
+Decoded buffers are not readiness. Bounded service installs complete requested
+extents, validates actual valid-frame lengths, atomically replaces only its own
+protection role, and publishes one reserved unread receipt per role. A receipt
+must be acknowledged against its exact stamp/extents before borrowing protected
+samples or replacing it. The borrowed view exposes only listed protected page
+keys and cannot schedule missing pages; it is still not an engine-demand
+certificate. Other roles survive overlapping replacement/cancellation;
+a protected PCM page cannot be replaced by a duplicate shorter decode. The union
+of protected/outstanding pages must fit the actual existing cache, with no pool
+cap increase. Stamps are correlation data, not proof of engine demand or native
+publication. Audio must bind these operations to its real constructor and engine
+window before enabling streamed installation; PR237 connects that opted-in path.
+An exclusive borrowed promotion token validates all involved roles before commit,
+then moves the actual protected Vec backing to Active without allocation or a
+fallible second-domain commit. Bounded single failure consumption releases the
+actual failed pending key for retry; the native owner retains its diagnostic.
+Legacy borrowed pages retain their established miss behavior.

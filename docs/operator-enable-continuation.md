@@ -1,3 +1,6 @@
+> State v12 appends harmonic authoring after the v11 filter and unchanged enable prefix.
+> The completed harmonic runtime is described in [operator harmonics](operator-harmonics.md).
+
 # Analytic enable continuation — Pulse2335
 
 Status: integrated source in draft PR164, awaiting validation of the final tree.

@@ -392,7 +392,13 @@ impl PreparedFmConfiguration {
                 .wrapping_add(phase_from_turns(modulation));
             let oscillator = match waveforms[target] {
                 OperatorWaveform::Sine => sine_table.sample_phase(phase),
-                waveform => waveform_bank.sample_phase(waveform, harmonic_caps[target], phase),
+                waveform => waveform_bank.sample_frame(
+                    waveform,
+                    harmonic_caps[target],
+                    phase,
+                    age_frames,
+                    crate::operator_waveform::noise_stream(steps[target], target),
+                ),
             };
             let signal = f64::from(oscillator) * self.levels[target];
             signals[target] = signal * operator_amplitudes[target];

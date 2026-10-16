@@ -37,6 +37,9 @@ pub(super) fn prepare_factory(
     rate: u32,
     table: &'static SineTable,
 ) -> Result<Option<OperatorLfoFactory>, DeviceContractError> {
+    if settings.companion.requires_runtime() {
+        return Ok(None);
+    }
     if !settings.lfo.active() && !settings.filter.armed {
         return Ok(None);
     }
@@ -789,6 +792,99 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
 #[cfg(test)]
 #[path = "lfo_enable_tests.rs"]
 mod enable_tests;
+
+impl<const N: usize> super::harmonic_runtime::VoiceHistory for Runtime<N> {
+    fn voice(&self, index: usize) -> Option<super::harmonic_runtime::Voice> {
+        use super::harmonic_runtime::Voice;
+        let old = self.voices.get(index)?;
+        Some(Voice {
+            note: old.note,
+            phases: old.phases,
+            previous: old.previous,
+            age: old.age,
+            gate: (old.gate != u64::MAX).then_some(old.gate),
+            id: old.id,
+            filters: self
+                .filter
+                .as_ref()
+                .map_or([crate::operator_filter::Carrier::default(); 4], |b| {
+                    b.carriers[index]
+                }),
+            lfo_fraction: old.lfo.fraction,
+            lfo_cycle: old.lfo.cycle,
+            machines: [None; 4],
+        })
+    }
+}
+
+pub(super) fn export_harmonic_history(
+    runtime: &dyn MutableInstrumentRuntime,
+) -> Option<super::harmonic_runtime::Legacy<'_>> {
+    if let Some(runtime) = runtime.as_any().downcast_ref::<Runtime<64>>() {
+        return export(runtime);
+    }
+    let runtime = runtime.as_any().downcast_ref::<Runtime>()?;
+    export(runtime)
+}
+fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtime::Legacy<'_>> {
+    use super::harmonic_runtime::{
+        FilterTrajectory, Legacy, ParameterRamp, builtin_spectrum, parameter_words,
+    };
+    let mut base = [0; super::ENABLE_PAYLOAD_BYTES];
+    base[..FEEDBACK_PAYLOAD_BYTES].copy_from_slice(&runtime.factory.base);
+    for (i, word) in runtime.factory.lfo.0.iter().enumerate() {
+        base[FEEDBACK_PAYLOAD_BYTES + i * 4..FEEDBACK_PAYLOAD_BYTES + i * 4 + 4]
+            .copy_from_slice(&word.to_le_bytes());
+    }
+    for (i, enabled) in runtime.factory.enabled.flags().iter().enumerate() {
+        base[super::LFO_PAYLOAD_BYTES + i * 4..super::LFO_PAYLOAD_BYTES + i * 4 + 4]
+            .copy_from_slice(&u32::from(*enabled).to_le_bytes());
+    }
+    let parameters = parameter_words(
+        runtime
+            .factory
+            .configuration
+            .feedback_parameters(runtime.factory.feedback)
+            .ok()?,
+    );
+    let mut ramp = runtime.enable_ramp.map(|r| ParameterRamp {
+        source: std::array::from_fn(|i| if i < 4 { r.start[i] } else { parameters[i] }),
+        elapsed: r.elapsed,
+        frames: r.frames,
+    });
+    if let Some(r) = runtime.filter.as_ref().and_then(|b| b.parameters) {
+        ramp = Some(ParameterRamp {
+            source: parameter_words(r.start),
+            elapsed: r.elapsed,
+            frames: r.frames,
+        });
+    }
+    let mut filter = FilterTrajectory::inactive(runtime.factory.rate);
+    if let Some(bank) = runtime.filter.as_ref() {
+        filter = FilterTrajectory {
+            from: bank.from,
+            target: bank.target,
+            elapsed: bank.elapsed,
+            frames: bank.frames,
+            armed: true,
+        };
+    }
+    let spectrum = builtin_spectrum(&base)?;
+    Some(Legacy {
+        companion: super::companion::Settings::default(),
+        local_frame: 0,
+        base,
+        voices: runtime,
+        parameters,
+        ramp,
+        phase: (runtime.phase.fraction, runtime.phase.cycle),
+        source: spectrum,
+        target: spectrum,
+        elapsed: 1,
+        frames: 1,
+        filter,
+    })
+}
 
 #[cfg(test)]
 mod tests {

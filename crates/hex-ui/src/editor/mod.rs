@@ -81,6 +81,7 @@ mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
 mod time_selection;
+pub(super) mod time_selection_profile;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -429,6 +430,7 @@ pub(super) struct EditorView {
     audio: Option<PreparedOutput>,
     recovery_open: Option<hex_audio::RecoveryOpen>,
     recovery: RecoveryState,
+    stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -464,6 +466,8 @@ pub(super) struct EditorView {
     device_gesture_barriers: VecDeque<Request>,
     device_panel: device_panel::DevicePanelState,
     worker_requests_pending: usize,
+    audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
+    audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
     pending_seek_ticket: Option<u64>,
@@ -739,6 +743,7 @@ impl EditorView {
             state: None,
             recovery_open: None,
             recovery: RecoveryState::default(),
+            stopped_playback_restore: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -774,6 +779,8 @@ impl EditorView {
             device_gesture_barriers: VecDeque::new(),
             device_panel: device_panel::DevicePanelState::default(),
             worker_requests_pending: 0,
+            audio_batch: None,
+            audio_batch_progress: None,
             pending_playback: None,
             pending_audio_commands: VecDeque::new(),
             pending_seek_ticket: None,

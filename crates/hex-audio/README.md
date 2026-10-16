@@ -127,10 +127,15 @@ headless microbenchmark, not a physical-device deadline or native UI test.
 
 ## Dependencies
 
+The narrow `hex-media` dev dependency opens real verified WAV fixtures for actual
+catalog/source association tests. Production media decoding remains in
+`hex-stream`; audio gains no media/file I/O dependency or callback decoding.
+
 hex-engine; hex-stream for exact catalog/pair custody and control-side stream
 disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow production
-stream edge does not expose pages to the renderer or admit native streamed
-candidates. Tests use
+stream edge supplies one sealed exact-domain endpoint to the opted-in constructor
+renderer under its real readiness transaction. Legacy callers remain unchanged.
+Tests use
 hex-project as a dev-dependency to build canonical prepared revisions for the
 callback boundary. The non-default `allocation-probe` feature also activates
 hex-engine's hidden `instrument-test-support` preparation seam and uses
@@ -195,11 +200,24 @@ releases; build errors after backend exposure remain uncertain. No complete-cost
 native admission or final-active quiescence claim follows. See
 [never-installed disposal](../../docs/never-installed-audio-disposal.md).
 
-The final-active constructor path retains the same private owner/Stamp in the
-single active-slot enum, and only coupled final native release plus the exact
-completed stream-handle frontier can return it for control disposal. Production
-admission stays refused; a headless cfg(test) override exercises actual playback
-without granting native publication. A final result follows normal runtime,
+The initial PR235 final-active constructor path retains the same private
+owner/Stamp in the single active-slot enum. Only coupled final native release
+plus the exact completed stream-handle frontier can return it for control
+disposal. That disposal-only path still refuses production admission; its
+headless cfg(test) override exercises actual playback. PR236's separately
+opted-in eligible constructor and PR237 readiness supply the bounded native path. A final result follows normal runtime,
 carrier, catalog and pool cleanup, never pause/ACK alone or OS-stop inference.
 See [final-active disposal](../../docs/final-active-audio-disposal.md) for the
 closed audio-only ownership class, retained Unknowns and evidence limits.
+
+
+## exact streamed chunk readiness
+
+The pre-first-accept streaming opt-in reserves finite actual per-runtime demand
+backing. Same-owner/context/predecessor/command-prefix readiness gates initial
+and replacement installs and every streamed chunk. Unready chunks BUFFER without
+clock/DSP advance, retaining prior committed PCM; real Pause/priority Stop pass
+pending Play. Both normal and observed renders share protected-page transactions.
+Mutable native runtime metadata reduces the existing 32 MiB runtime allowance as
+well as caller DATA budgets. Seek/launch and actual UI composition remain deferred.
+See [native streamed readiness](../../docs/streamed-native-readiness.md).

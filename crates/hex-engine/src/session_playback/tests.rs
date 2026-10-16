@@ -854,12 +854,12 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 480);
         assert_eq!(span_buffer_bytes, 82_952);
-        assert_eq!(current_bytes, 16_073_736);
+        assert_eq!(current_bytes, 15_811_592);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_598_024);
+        assert_eq!(scoped_bytes, 16_335_880);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)
@@ -1723,28 +1723,27 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
     let old_project = legacy_project_from_snapshot(snapshot).unwrap();
     let old_revision = revision(&old_project, Arc::clone(&table));
 
-    let render_old_tail =
-        |new_project: &Project| {
-            let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
-            previous.apply(SessionPlaybackCommand::Play).unwrap();
-            let mut prefix = [[0.0; 2]; 64];
-            previous.render(&mut prefix).unwrap();
-            assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
+    let render_old_tail = |new_project: &Project| {
+        let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 64];
+        previous.render(&mut prefix).unwrap();
+        assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
 
-            let mut next = SessionPlayback::new(revision(new_project, Arc::clone(&table))).unwrap();
-            assert!(!next.revision.arrangement().tracks()[0].instrument_enabled());
-            assert!(
-                !old_revision.arrangement().tracks()[0]
-                    .instrument_config_matches(&next.revision.arrangement().tracks()[0])
-            );
-            next.try_inherit_state_from(&mut previous).unwrap();
-            assert!(next.releases.iter().any(|entry| {
-                entry.track_id == next.routes[0].id && entry.tail_group.is_some()
-            }));
-            let mut tail = [[0.0; 2]; 64];
-            next.render(&mut tail).unwrap();
-            tail
-        };
+        let mut next = SessionPlayback::new(revision(new_project, Arc::clone(&table))).unwrap();
+        assert!(!next.revision.arrangement().tracks()[0].instrument_enabled());
+        assert!(
+            !old_revision.arrangement().tracks()[0]
+                .instrument_config_matches(&next.revision.arrangement().tracks()[0])
+        );
+        next.try_inherit_state_from(&mut previous).unwrap();
+        assert!(next.releases.iter().any(|entry| {
+            entry.track_id == next.routes[0].id && entry.location.tail_group().is_some()
+        }));
+        let mut tail = [[0.0; 2]; 64];
+        next.render(&mut tail).unwrap();
+        tail
+    };
 
     let stopped = without_session_cells(&old_project);
     let mut disabled_snapshot = stopped.snapshot();
@@ -2367,12 +2366,15 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
         for slot in 1..SESSION_TAIL_GROUP_CAPACITY {
             active.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
             let mut grouped = release;
-            grouped.tail_group = Some(u16::try_from(slot).unwrap());
+            grouped.location = ReleaseLocation::new(
+                grouped.location.track_index(),
+                Some(u16::try_from(slot).unwrap()),
+            )
+            .unwrap();
             active.releases.push(grouped);
         }
         let mut current_chain_release = release;
-        current_chain_release.tail_group = None;
-        current_chain_release.track_index = 0;
+        current_chain_release.location = ReleaseLocation::new(0, None).unwrap();
         active.releases.push(current_chain_release);
         active
     };
@@ -2539,8 +2541,7 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
         .unwrap();
     assert!(!failed.release_scratch.is_empty());
     let mut invalid_tail = failed.release_scratch[0];
-    invalid_tail.track_index = usize::MAX;
-    invalid_tail.tail_group = Some(u16::MAX);
+    invalid_tail.location = ReleaseLocation::corrupt_detached_tail_for_test();
     failed.release_scratch.clear();
     failed.release_scratch.push(invalid_tail);
     std::mem::swap(&mut failed.releases, &mut failed.release_scratch);
@@ -2988,6 +2989,7 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     assert_eq!(
         contexts.storage_bytes().unwrap(),
         std::mem::size_of_val(contexts.as_ref())
+            + hex_project::MAX_TRACKS * std::mem::size_of::<(TrackId, hex_project::DeviceId)>()
             + contexts.context_count()
                 * (std::mem::size_of::<Arc<crate::shared_analytic::SharedContextOwner>>()
                     + std::mem::size_of::<(crate::shared_analytic::SharedContextId, u16,)>())
@@ -4086,15 +4088,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     assert_eq!(proof.quiet_deadline_frame, old_deadline);
     assert!(proof.note_off_sent);
 
-    let suppression = crate::midi_template::MidiOccurrenceSuppression {
-        track: key.track,
-        clip: key.clip,
-        note: key.note,
-        iteration: key.iteration,
-        loop_pass: key.loop_pass,
-        until_frame: old_deadline,
-        mutable_signature: Some(proof.signature),
-    };
+    let suppression =
+        crate::midi_template::MidiOccurrenceSuppression::mutable(proof.signature, old_deadline);
     let mut candidate =
         crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
     candidate.begin_block();
@@ -4692,7 +4687,7 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
     let suppression = candidate
         .suppressions
         .iter()
-        .find(|entry| entry.mutable_signature == Some(proof.signature))
+        .find(|entry| entry.mutable_signature() == Some(proof.signature))
         .copied()
         .expect("exact pre-cut occurrence is suppressed for its full old/candidate tail");
     assert_eq!(suppression.track, track);
@@ -4716,7 +4711,7 @@ fn mutable_changed_configuration_suppresses_exact_candidate_occurrence_across_re
         1
     );
     assert!(next.suppressions.iter().any(|entry| {
-        entry.mutable_signature == Some(proof.signature)
+        entry.mutable_signature() == Some(proof.signature)
             && entry.until_frame >= suppression.until_frame
     }));
     let mut repeated = [[0.0; 2]; 32];
@@ -7536,7 +7531,7 @@ fn failed_instrument_handoff_stages_route_floor_atomically_and_retries_pcm() {
         .map(|entry| {
             (
                 entry.track_id,
-                entry.track_index,
+                entry.location.track_index(),
                 entry.order,
                 entry.continuation.map(|continuation| {
                     (
@@ -7576,7 +7571,7 @@ fn failed_instrument_handoff_stages_route_floor_atomically_and_retries_pcm() {
             .map(|entry| {
                 (
                     entry.track_id,
-                    entry.track_index,
+                    entry.location.track_index(),
                     entry.order,
                     entry.continuation.map(|continuation| {
                         (
@@ -10984,5 +10979,10 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
 #[path = "instrument_memory_budget_tests.rs"]
 mod instrument_memory_budget_tests;
 
+#[path = "harmonic_tests.rs"]
+mod harmonic_tests;
 #[path = "operator_filter_tests.rs"]
 mod operator_filter_tests;
+
+#[path = "mutable_long_tail_tests.rs"]
+mod mutable_long_tail_tests;

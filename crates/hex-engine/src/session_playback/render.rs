@@ -244,7 +244,11 @@ impl SessionPlayback {
             route_changed |= applied_route;
             if captured_release {
                 self.release_scratch.sort_unstable_by_key(|entry| {
-                    (entry.track_index, entry.tail_group, entry.order)
+                    (
+                        entry.location.track_index(),
+                        entry.location.tail_group(),
+                        entry.order,
+                    )
                 });
             }
             let mut chunk_frames = (output.len() - output_offset)
@@ -474,7 +478,7 @@ impl SessionPlayback {
             while self
                 .release_scratch
                 .get(release_cursor)
-                .is_some_and(|entry| entry.track_index < index)
+                .is_some_and(|entry| entry.location.track_index() < index)
             {
                 release_cursor += 1;
             }
@@ -482,13 +486,13 @@ impl SessionPlayback {
             while self
                 .release_scratch
                 .get(release_cursor)
-                .is_some_and(|entry| entry.track_index == index)
+                .is_some_and(|entry| entry.location.track_index() == index)
             {
                 release_cursor += 1;
             }
             let has_current_release = self.release_scratch[first_release..release_cursor]
                 .iter()
-                .any(|entry| entry.tail_group.is_none());
+                .any(|entry| entry.location.tail_group().is_none());
             let midi_route = effective_midi_route(&self.revision, &self.route_scratch, index)?;
             let has_current_route = live_target
                 || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
@@ -500,7 +504,10 @@ impl SessionPlayback {
                     .get(index)
                     .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()));
             if (buffered || ordered)
-                && (has_current_route || has_current_release || has_current_effect_tail)
+                && (has_current_route
+                    || has_current_release
+                    || has_current_effect_tail
+                    || live_target)
             {
                 let mut track_buffer = [[0.0; 2]; 256];
                 let render_output = &mut track_buffer[..output.len()];
@@ -513,6 +520,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: live_target,
                             timing: &timing,
                             table,
                         },
@@ -558,7 +566,7 @@ impl SessionPlayback {
                         track.instrument_meter.observe_input(render_output);
                     }
                     for release in &self.release_scratch[first_release..release_cursor] {
-                        if release.tail_group.is_none() {
+                        if release.location.tail_group().is_none() {
                             render_release_raw(
                                 release,
                                 table,
@@ -578,6 +586,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: live_target,
                             timing: &timing,
                             table,
                         },
@@ -669,7 +678,7 @@ impl SessionPlayback {
                     }
                 } else {
                     for release in &self.release_scratch[first_release..release_cursor] {
-                        if release.tail_group.is_none() {
+                        if release.location.tail_group().is_none() {
                             if already_mixed {
                                 render_release_captured(
                                     release,
@@ -705,6 +714,7 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
+                                raw: false,
                                 timing: &timing,
                                 table,
                             },
@@ -729,6 +739,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: false,
                             timing: &timing,
                             table,
                         },
@@ -780,6 +791,11 @@ impl SessionPlayback {
                     } else {
                         track.mix()
                     };
+                    let mix = if live_target {
+                        mix.without_effects()
+                    } else {
+                        mix
+                    };
                     if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
                         output[frame_index][0] += source[0];
@@ -813,7 +829,7 @@ impl SessionPlayback {
                 if selected {
                     let mut captured = [[0.0; 2]; 256];
                     for release in &self.release_scratch[first_release..release_cursor] {
-                        if release.tail_group.is_none() {
+                        if release.location.tail_group().is_none() {
                             render_release_captured(
                                 release,
                                 table,
@@ -844,7 +860,7 @@ impl SessionPlayback {
                     continue;
                 }
                 for release in &self.release_scratch[first_release..release_cursor] {
-                    if release.tail_group.is_none() {
+                    if release.location.tail_group().is_none() {
                         render_release_captured(
                             release,
                             table,
@@ -865,6 +881,7 @@ impl SessionPlayback {
                         suppressions: &self.suppression_scratch,
                         continuations: &self.analytic_continuations,
                         index,
+                        raw: false,
                         timing: &timing,
                         table,
                     },
@@ -1019,14 +1036,14 @@ impl SessionPlayback {
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut rendered_tail_suffixes = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut tail_cursor = self.release_scratch.partition_point(|entry| {
-            entry.track_index < self.revision.arrangement().tracks().len()
+            entry.location.track_index() < self.revision.arrangement().tracks().len()
         });
         while tail_cursor < self.release_scratch.len() {
             let release = self
                 .release_scratch
                 .get(tail_cursor)
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
-            let Some(group) = release.tail_group else {
+            let Some(group) = release.location.tail_group() else {
                 let mut captured = [[0.0; 2]; 256];
                 render_release_captured(
                     release,
@@ -1057,7 +1074,7 @@ impl SessionPlayback {
             while self
                 .release_scratch
                 .get(tail_cursor)
-                .is_some_and(|entry| entry.tail_group == Some(group))
+                .is_some_and(|entry| entry.location.tail_group() == Some(group))
             {
                 tail_cursor += 1;
             }
@@ -1497,6 +1514,7 @@ struct RouteSourceContext<'a, T> {
     suppressions: &'a [MidiOccurrenceSuppression],
     continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,
+    raw: bool,
     timing: &'a T,
     table: &'a hex_devices::SineTable,
 }
@@ -1524,6 +1542,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         suppressions,
         continuations,
         index,
+        raw,
         timing,
         table,
     } = context;
@@ -1532,9 +1551,29 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         .tracks()
         .get(index)
         .ok_or(SessionPlaybackError::UnknownTrack)?;
-    let source_mix = track.source_mix();
+    let source_mix = if raw {
+        crate::PreparedTrackMix::identity()
+    } else {
+        track.source_mix()
+    };
     match route.owner {
         RouteOwner::Arrangement => {
+            if raw && matches!(stage, SourceStage::Audio) {
+                return track
+                    .render_raw_audio(arrangement_frame, output, pages.as_deref_mut())
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
+            if raw && matches!(stage, SourceStage::Instrument) {
+                return track
+                    .render_raw_instrument(
+                        arrangement_frame,
+                        performance_frame,
+                        output,
+                        suppressions,
+                        continuations,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
             let has_active_suppression = suppressions
                 .iter()
                 .any(|entry| entry.track == route.id && entry.until_frame > performance_frame);
@@ -1775,7 +1814,7 @@ fn next_pending_frame(routes: &[TrackRoute]) -> Option<u64> {
         .min()
 }
 
-fn normalize_loop_cursor(
+pub(super) fn normalize_loop_cursor(
     frame: u64,
     region: LoopRegion,
     loop_pass: u64,
@@ -1806,6 +1845,12 @@ struct InstrumentClock<'a, T: ?Sized> {
     start: u64,
 }
 impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentClock<'_, T> {
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.start.checked_add(u64::try_from(offset).ok()?)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        Some(true)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         let frame = self.start.checked_add(u64::try_from(offset).ok()?)?;
         self.timing.frame_to_beat(frame).ok().map(|beat| beat.raw())
@@ -1815,6 +1860,28 @@ impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentCl
 #[cfg(test)]
 mod observed_page_tests {
     use super::*;
+    #[test]
+    fn instrument_clock_exposes_nonzero_performance_across_content_loop_positions() {
+        use hex_lattice::NativeInstrumentClock;
+        let project = hex_project::Project::new(48_000).unwrap();
+        let timing = crate::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+        let clock = InstrumentClock {
+            timing: &timing,
+            start: 96_000,
+        };
+        assert_eq!(clock.performance_frame_at_offset(256), Some(96_256));
+        assert_eq!(clock.transport_is_running(), Some(true));
+        assert_eq!(clock.arrangement_frame_at_offset(0), None);
+        assert_eq!(
+            clock.beat_at_offset(256),
+            timing.frame_to_beat(96_256).ok().map(|b| b.raw())
+        );
+        let exhausted = InstrumentClock {
+            timing: &timing,
+            start: u64::MAX,
+        };
+        assert_eq!(exhausted.performance_frame_at_offset(1), None);
+    }
     struct NoPages {
         accesses: usize,
     }

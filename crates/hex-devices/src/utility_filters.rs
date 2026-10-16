@@ -146,13 +146,34 @@ pub struct UtilityFilterProcessor {
 
 impl UtilityFilterProcessor {
     pub fn new(prepared: PreparedUtilityFilters) -> Self {
-        Self {
+        let runtime = Self {
             prepared,
             dc_input: [0.0; 2],
             dc_output: [0.0; 2],
             side_high: [BiquadHistory::default(); 2],
             mid_low: [BiquadHistory::default(); 2],
-        }
+        };
+        runtime.check_inline_ownership();
+        runtime
+    }
+
+    // The closed constructor's complete Box payload is fixed inline. Adding an
+    // owning field must fail this exhaustive, Copy-bounded review seam instead
+    // of silently making size_of_val omit a newly nested allocation/handle.
+    fn check_inline_ownership(&self) {
+        let Self {
+            prepared,
+            dc_input,
+            dc_output,
+            side_high,
+            mid_low,
+        } = self;
+        fn inline<T: Copy>(_: &T) {}
+        inline(prepared);
+        inline(dc_input);
+        inline(dc_output);
+        inline(side_high);
+        inline(mid_low);
     }
 
     pub fn reset(&mut self) {

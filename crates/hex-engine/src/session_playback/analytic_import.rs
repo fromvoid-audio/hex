@@ -12,6 +12,17 @@ pub(super) struct ImportPlan {
     pub(super) len: usize,
 }
 impl ImportPlan {
+    pub(super) fn visit_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self { seeds, proofs, len } = self;
+        if *len != 0 || proofs.iter().any(Option::is_some) {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        ledger.vec(seeds)?;
+        ledger.vec(proofs)
+    }
     // Construct on control; handoff only overwrites these fixed-length buffers.
     pub(super) fn new() -> Result<Self, SessionPlaybackError> {
         let mut seeds = Vec::new();

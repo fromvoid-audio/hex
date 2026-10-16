@@ -12,6 +12,18 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+mod eligible;
+pub(crate) use eligible::DomainEnvelope;
+pub(crate) use eligible::publication::{
+    Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
+    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StreamInstall,
+    StreamOutcome, StreamProgress,
+};
+pub use eligible::{
+    AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,
+    AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePublicationReservation,
+};
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +53,7 @@ pub struct AudioCandidateRecovery {
 pub enum AudioCandidateReturnKind {
     NeverInstalled,
     FinalActive,
+    Replaced,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -120,6 +133,7 @@ struct AbandonedReturns {
 }
 struct Inner {
     root: u64,
+    eligible: eligible::Custody,
     bank: Mutex<Bank>,
     execution: Mutex<Work>,
     abandoned: AtomicBool,
@@ -139,9 +153,12 @@ pub(crate) struct ReturnedCandidate {
 }
 /// Only the actual active-slot extraction with both native authorities can mint
 /// this distinct carrier; queue rejection cannot manufacture it.
-pub(crate) struct FinalActiveReturn {
-    stamp: Stamp,
-    owner: AudioCandidateOwner,
+pub(crate) enum FinalActiveReturn {
+    Unclaimed {
+        stamp: Stamp,
+        owner: AudioCandidateOwner,
+    },
+    Eligible(EligibleFinalReturn),
 }
 pub(crate) struct ActiveCandidate {
     stamp: Stamp,
@@ -150,7 +167,10 @@ pub(crate) struct ActiveCandidate {
 impl FinalActiveReturn {
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn identity(&self) -> AudioCandidateIdentity {
-        self.owner.identity()
+        match self {
+            Self::Unclaimed { owner, .. } => owner.identity(),
+            Self::Eligible(value) => value.identity(),
+        }
     }
 }
 impl ActiveCandidate {
@@ -176,7 +196,7 @@ impl ActiveCandidate {
         if !authority.matches(self.stamp.root) {
             return Err(self);
         }
-        Ok(FinalActiveReturn {
+        Ok(FinalActiveReturn::Unclaimed {
             stamp: self.stamp,
             owner: self.owner,
         })
@@ -206,6 +226,7 @@ impl CandidateRoot {
         slots.resize_with(capacity, Slot::vacant);
         let root = Self(Arc::new(Inner {
             root,
+            eligible: eligible::Custody::default(),
             bank: Mutex::new(Bank {
                 root,
                 closing: false,
@@ -218,11 +239,12 @@ impl CandidateRoot {
             returns: Mutex::new(None),
         }));
         // Some supported std mutex implementations allocate lazily at first
-        // lock. Initialize the actual three locks during channel construction,
+        // lock. Initialize every actual lock during channel construction,
         // never during the legacy allocation-free control reclaim contract.
         drop(lock(&root.0.bank));
         drop(lock(&root.0.execution));
         drop(lock(&root.0.returns));
+        root.0.eligible.prewarm_on_control();
         Ok(root)
     }
     /// Ordinary control lock spans reservation and queue push: terminal closure
@@ -233,6 +255,13 @@ impl CandidateRoot {
         domains: Vec<CandidateDomain>,
         enqueue: impl FnOnce(QueuedCandidate) -> Result<R, QueuedCandidate>,
     ) -> Result<(R, AudioCandidateTicket), AudioCandidateStageRefusal> {
+        if self.0.eligible.enabled() {
+            return Err(AudioCandidateStageRefusal {
+                reason: "constructor Root requires scoped eligible claims",
+                owner,
+                domains,
+            });
+        }
         let catalog = match CatalogCustody::prepare(&owner, domains) {
             Ok(catalog) => catalog,
             Err(domains) => {
@@ -310,7 +339,185 @@ impl CandidateRoot {
     }
     pub(crate) fn close(&self) {
         lock(&self.0.bank).closing = true;
+        self.0.eligible.close();
     }
+    pub(crate) fn configure_domains(
+        &self,
+        reservation: AudioCandidateDomainReservation,
+    ) -> Result<(), &'static str> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring || bank.slots.iter().any(|s| s.phase != Phase::Vacant) {
+            return Err("constructor Root is not vacant");
+        }
+        let bytes = bank
+            .slots
+            .capacity()
+            .checked_mul(std::mem::size_of::<Slot>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
+            .ok_or("constructor Root metadata overflow")?;
+        self.0
+            .eligible
+            .configure(self.root_id(), reservation, bytes)
+    }
+    pub(crate) fn record_native_boundary(
+        &self,
+        boundary: crate::native_callback_owner::NativeCandidateBoundary,
+    ) {
+        self.0.eligible.record_native_boundary(boundary);
+    }
+    pub(crate) fn anchor_native_boundary(
+        &self,
+        terminals: &crate::native_callback_owner::NativeTerminals,
+    ) {
+        self.0
+            .eligible
+            .anchor_native_boundary(self.root_id(), terminals);
+    }
+    pub(crate) fn native_boundary_bytes(&self) -> Option<usize> {
+        self.0.eligible.native_boundary_bytes(self.root_id())
+    }
+    pub(crate) fn configure_publications(
+        &self,
+        reservation: AudioCandidatePublicationReservation,
+        queue_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring || bank.slots.iter().any(|s| s.phase != Phase::Vacant) {
+            return Err("constructor Root is not vacant");
+        }
+        let bytes = bank
+            .slots
+            .capacity()
+            .checked_mul(std::mem::size_of::<Slot>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
+            .and_then(|n| n.checked_add(queue_bytes))
+            .ok_or("constructor Root metadata overflow")?;
+        self.0
+            .eligible
+            .configure_publications(self.root_id(), reservation, bytes)
+    }
+    pub(crate) fn configure_streaming(&self, limit: usize) -> Result<(), &'static str> {
+        self.0.eligible.configure_streaming(limit)
+    }
+    pub(crate) fn eligible_claims_open(&self) -> bool {
+        self.0.eligible.claims_open()
+    }
+    pub(crate) fn seal_publication(
+        &self,
+        owner: &mut AudioCandidateOwner,
+        domain_capacity: usize,
+    ) -> Result<hex_engine::AudioCandidateConstructorSummary, &'static str> {
+        self.0.eligible.seal_for_stage(owner, domain_capacity)
+    }
+    /// The caller already holds an actual ring write chunk. The same short
+    /// terminal barrier prevents a successful late push after terminal draining.
+    pub(crate) fn stage_eligible(
+        &self,
+        owner: AudioCandidateOwner,
+        domains: Vec<AudioCandidateDomainToken>,
+        header: (u64, u64, crate::prepared::PublicationPolicy),
+        summary: hex_engine::AudioCandidateConstructorSummary,
+        enqueue: impl FnOnce(QueuedEligibleCandidate),
+    ) -> Result<AudioCandidateTicket, AudioCandidateEligibleStageRefusal> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring {
+            return Err(AudioCandidateEligibleStageRefusal {
+                reason: "constructor Root is closing",
+                owner,
+                domains,
+            });
+        }
+        let (revision, context_generation, policy) = header;
+        let (queued, ticket) = self.0.eligible.stage_sealed(
+            self,
+            owner,
+            domains,
+            eligible::publication::Header {
+                revision,
+                context_generation,
+                policy,
+            },
+            summary,
+        )?;
+        enqueue(queued);
+        Ok(ticket)
+    }
+    pub(crate) fn cancel_eligible(
+        &self,
+        ticket: &AudioCandidateTicket,
+    ) -> AudioCandidateCancellationResult {
+        self.0.eligible.cancel_publication(ticket)
+    }
+    pub(crate) fn ingest_eligible(
+        &self,
+        returned: ReturnedEligibleCandidate,
+    ) -> Result<(), ReturnedEligibleCandidate> {
+        self.0.eligible.ingest_publication(self, returned)
+    }
+    pub(crate) fn domains_configured(&self) -> bool {
+        self.0.eligible.enabled()
+    }
+    pub(crate) fn register_domain(
+        &self,
+        domain: CandidateDomain,
+    ) -> Result<AudioCandidateDomainToken, Box<AudioCandidateDomainRefusal>> {
+        let result = self.0.eligible.register_domain(domain);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn register_domain_pages(
+        &self,
+        domain: CandidateDomain,
+        reservation: hex_stream::StreamReadinessReservation,
+        enqueue: impl FnOnce(DomainEnvelope),
+    ) -> Result<AudioCandidateDomainToken, Box<AudioCandidateDomainRefusal>> {
+        // Same barrier as runtime staging: terminal drain cannot pass the final
+        // accepted queue publication. Seal allocates outside the eligible bank.
+        {
+            let bank = lock(&self.0.bank);
+            if bank.closing || bank.retiring {
+                return Err(Box::new(AudioCandidateDomainRefusal {
+                    reason: "candidate terminal custody closing",
+                    domain,
+                }));
+            }
+        }
+        let (token, pages) = self.0.eligible.register_pages(domain, reservation)?;
+        let bank = lock(&self.0.bank);
+        if let Some(pages) = pages {
+            if bank.closing || bank.retiring {
+                // Sealing succeeded after closure. This is accepted cleanup,
+                // never an original-pair refusal or a late callback publication.
+                // The just-created exact envelope has a vacant persistent cell.
+                self.0.eligible.retain_closed_pages(pages);
+            } else {
+                enqueue(pages);
+            }
+        }
+        drop(bank);
+        crate::lifecycle::request_candidate_cleanup(self);
+        Ok(token)
+    }
+    pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
+        self.0.eligible.ingest_pages(pages)
+    }
+    pub(crate) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
+        let result = self.0.eligible.retire_domain(token);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn recover_domain(
+        &self,
+        token: AudioCandidateDomainToken,
+    ) -> Option<hex_stream::PagePoolReport> {
+        self.0.eligible.recover_domain(token)
+    }
+    pub(crate) fn domain_usage(&self) -> Option<AudioCandidateDomainUsage> {
+        self.0.eligible.usage()
+    }
+
     pub(crate) fn abandon_control(
         &self,
         receiver: Option<rtrb::Consumer<crate::prepared::ReturnedPublication>>,
@@ -327,6 +534,7 @@ impl CandidateRoot {
                 first_panic: None,
             });
         }
+        self.0.eligible.close();
         self.0.abandoned.store(true, Ordering::Release);
         drop(returns);
         crate::lifecycle::request_candidate_cleanup(self);
@@ -347,10 +555,22 @@ impl CandidateRoot {
                 return true;
             };
             match value {
+                crate::prepared::ReturnedPublication::Domain(pages) => {
+                    if let Err(pages) = self.ingest_pages(pages) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Domain(pages));
+                        return false;
+                    }
+                }
                 crate::prepared::ReturnedPublication::Candidate(candidate) => {
                     if let Err(candidate) = self.ingest(candidate) {
                         returns.held =
                             Some(crate::prepared::ReturnedPublication::Candidate(candidate));
+                        return false;
+                    }
+                }
+                crate::prepared::ReturnedPublication::Eligible(value) => {
+                    if let Err(value) = self.ingest_eligible(value) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Eligible(value));
                         return false;
                     }
                 }
@@ -371,15 +591,23 @@ impl CandidateRoot {
         &self,
         returned: FinalActiveReturn,
     ) -> Result<(), FinalActiveReturn> {
-        let returned = ReturnedCandidate {
-            stamp: returned.stamp,
-            owner: returned.owner,
-            return_kind: AudioCandidateReturnKind::FinalActive,
-        };
-        self.ingest(returned).map_err(|value| FinalActiveReturn {
-            stamp: value.stamp,
-            owner: value.owner,
-        })
+        match returned {
+            FinalActiveReturn::Eligible(value) => self
+                .ingest_eligible(value.into_returned())
+                .map_err(|value| {
+                    FinalActiveReturn::Eligible(EligibleFinalReturn::from_returned(value))
+                }),
+            FinalActiveReturn::Unclaimed { stamp, owner } => self
+                .ingest(ReturnedCandidate {
+                    stamp,
+                    owner,
+                    return_kind: AudioCandidateReturnKind::FinalActive,
+                })
+                .map_err(|value| FinalActiveReturn::Unclaimed {
+                    stamp: value.stamp,
+                    owner: value.owner,
+                }),
+        }
     }
     pub(crate) fn ingest(&self, returned: ReturnedCandidate) -> Result<(), ReturnedCandidate> {
         let mut bank = lock(&self.0.bank);
@@ -406,6 +634,12 @@ impl CandidateRoot {
     /// Called only by the existing lifecycle executor (and owning-module tests).
     /// Persistent Work outlives every control-side destructor/join unwind.
     pub(crate) fn advance_on_control(&self) {
+        self.0
+            .eligible
+            .advance_publications_on_control(self, self.0.abandoned.load(Ordering::Acquire));
+        self.0
+            .eligible
+            .advance_on_control(self.0.abandoned.load(Ordering::Acquire));
         if !self.drain_abandoned_on_control() {
             return;
         }
@@ -579,6 +813,10 @@ impl CandidateRoot {
     /// UI poll: only moves the already READY bank/receipt. No cleanup, owner
     /// metadata destruction, provider call, join, or blocking execution lock.
     pub(crate) fn recover(&self, ticket: &AudioCandidateTicket) -> Option<AudioCandidateRecovery> {
+        if let Some(ready) = self.0.eligible.recover_publication(ticket) {
+            crate::lifecycle::request_candidate_cleanup(self);
+            return Some(ready);
+        }
         let mut bank = self.0.bank.try_lock().ok()?;
         let a = ticket.stamp;
         if a.root != bank.root {
@@ -597,6 +835,18 @@ impl CandidateRoot {
         slot.domain_count = 0;
         Some(ready)
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_return_metadata_dropped(&self, ticket: &AudioCandidateTicket) -> bool {
+        self.0.eligible.test_return_metadata_dropped(ticket)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_strong_count(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_eligible_complete(&self) -> bool {
+        self.0.eligible.complete()
+    }
     pub(crate) fn finish_on_control(&self) -> bool {
         self.close();
         self.advance_on_control();
@@ -604,6 +854,7 @@ impl CandidateRoot {
             .slots
             .iter()
             .all(|s| s.phase == Phase::Vacant)
+            && self.0.eligible.complete()
     }
     pub(crate) fn same_root(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -625,13 +876,16 @@ impl CandidateRoot {
         }
     }
     fn has_work(&self, bank: &Bank) -> bool {
-        bank.slots.iter().any(|slot| {
-            matches!(
-                slot.phase,
-                Phase::Returned | Phase::Cleaning | Phase::Failed
-            ) || (self.0.abandoned.load(Ordering::Acquire)
-                && matches!(slot.phase, Phase::Accepted | Phase::Complete))
-        })
+        self.0
+            .eligible
+            .has_work(self.0.abandoned.load(Ordering::Acquire))
+            || bank.slots.iter().any(|slot| {
+                matches!(
+                    slot.phase,
+                    Phase::Returned | Phase::Cleaning | Phase::Failed
+                ) || (self.0.abandoned.load(Ordering::Acquire)
+                    && matches!(slot.phase, Phase::Accepted | Phase::Complete))
+            })
     }
     /// Idle decision and flag clearing share the ingest/scheduling lock.
     pub(crate) fn job_idle(&self) -> bool {
@@ -679,13 +933,23 @@ impl CandidateRoot {
         )
     }
     pub(crate) fn report(&self) -> AudioCandidateCustodyReport {
+        if let Some(occupied_slots) = self.0.eligible.occupied_publications() {
+            // This public legacy scalar is never a complete native witness.
+            // Exact private DATA/resource custody does not resolve opaque bytes.
+            return AudioCandidateCustodyReport {
+                occupied_slots,
+                metadata_bytes: None,
+                runtime_and_shared_overhead_unknown: true,
+            };
+        }
         let execution = self.0.execution.try_lock().ok();
         let bank = lock(&self.0.bank);
         let mut bytes = bank
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()));
+            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?));
         for slot in &bank.slots {
             for catalog in slot.catalog.iter() {
                 bytes = bytes.and_then(|n| n.checked_add(catalog.metadata_bytes()?));
