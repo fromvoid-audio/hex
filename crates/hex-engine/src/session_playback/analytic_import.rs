@@ -318,37 +318,3 @@ impl SessionPlayback {
         Ok(compatible)
     }
 }
-
-// Keep fixed import-plan copies out of the host's large handoff stack frame.
-#[inline(never)]
-pub(super) fn preflight<T: crate::MidiTiming + ?Sized>(
-    previous: &SessionPlayback,
-    index: usize,
-    candidate: &PreparedRevision,
-    new_index: usize,
-    clock: &T,
-    spans: &mut MidiSpanBuffer,
-    runtime: &crate::mutable_instrument::MutableInstrumentTrackRuntime,
-) -> Result<bool, SessionPlaybackError> {
-    Ok(
-        SessionPlayback::analytic_import_plan(previous, index, candidate, new_index, clock, spans)?
-            .is_some_and(|plan| runtime.can_import_analytic(&plan.seeds[..plan.len])),
-    )
-}
-#[inline(never)]
-pub(super) fn adopt<T: crate::MidiTiming + ?Sized>(
-    previous: &SessionPlayback,
-    index: usize,
-    candidate: &PreparedRevision,
-    new_index: usize,
-    clock: &T,
-    spans: &mut MidiSpanBuffer,
-    runtime: &mut crate::mutable_instrument::MutableInstrumentTrackRuntime,
-) -> Result<(), SessionPlaybackError> {
-    let plan =
-        SessionPlayback::analytic_import_plan(previous, index, candidate, new_index, clock, spans)?
-            .ok_or(SessionPlaybackError::DeviceRuntime)?;
-    runtime
-        .import_analytic(&plan.seeds[..plan.len], &plan.proofs[..plan.len])
-        .map_err(|_| SessionPlaybackError::DeviceRuntime)
-}

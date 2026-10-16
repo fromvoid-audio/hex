@@ -74,7 +74,9 @@ impl SessionPlayback {
                         SourceStage::Audio,
                     )?;
                     for release in &self.release_scratch {
-                        if release.track_index == index && release.tail_group.is_none() {
+                        if release.location.track_index() == index
+                            && release.location.tail_group().is_none()
+                        {
                             render_release_raw(
                                 release,
                                 self.revision.session().sine_table(),

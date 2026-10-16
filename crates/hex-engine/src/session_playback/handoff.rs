@@ -688,11 +688,13 @@ impl SessionPlayback {
                 else {
                     continue;
                 };
+                let old_route =
+                    effective_midi_route(&previous.revision, &previous.routes, old_index)?;
                 if previous
                     .mutable_instruments
                     .get(old_index)
                     .is_some_and(Option::is_some)
-                    || previous.routes[old_index].pending.is_some()
+                    || old_route.pending.is_some()
                     || previous
                         .revision
                         .arrangement()
@@ -702,7 +704,7 @@ impl SessionPlayback {
                 {
                     continue;
                 }
-                let same_source = match previous.routes[old_index].owner {
+                let same_source = match old_route.owner {
                     RouteOwner::Arrangement => previous
                         .revision
                         .mutable_arrangement_retarget_matches(&self.revision, new_route.id),
@@ -713,10 +715,15 @@ impl SessionPlayback {
                             && previous
                                 .revision
                                 .session()
-                                .midi_clip(clip)
-                                .zip(self.revision.session().midi_clip(clip))
+                                .midi_clip_for_track(clip, new_route.id)
+                                .zip(
+                                    self.revision
+                                        .session()
+                                        .midi_clip_for_track(clip, new_route.id),
+                                )
                                 .is_some_and(|(old, new)| {
-                                    old.track == new.track
+                                    old.track == new_route.id
+                                        && new.track == new_route.id
                                         && old.scene == new.scene
                                         && old.source_content_matches(new)
                                         && old.instrument_identity_matches(new)

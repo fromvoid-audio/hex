@@ -3,21 +3,7 @@ use super::*;
 use hex_devices::operator_state::{OPERATOR_TYPE_ID, harmonic_parameter, parameter};
 use hex_lattice_contract::{ParameterId, ParameterValue};
 
-fn set(
-    state: &hex_lattice_contract::NativeDeviceState,
-    id: ParameterId,
-    value: ParameterValue,
-) -> hex_lattice_contract::NativeDeviceState {
-    crate::patch_native_device_parameter_for_class(
-        crate::NativeDeviceClass::Instrument,
-        state,
-        id,
-        value,
-    )
-    .unwrap()
-}
-fn fixture(notes: usize, duration: u64) -> Project {
-    let mut snapshot = project(0.5, 0, duration).snapshot();
+fn carrier_state() -> hex_lattice_contract::NativeDeviceState {
     let mut state = crate::default_native_device_state_for_class(
         crate::NativeDeviceClass::Instrument,
         OPERATOR_TYPE_ID,
@@ -55,6 +41,25 @@ fn fixture(notes: usize, duration: u64) -> Project {
             );
         }
     }
+    state
+}
+
+fn set(
+    state: &hex_lattice_contract::NativeDeviceState,
+    id: ParameterId,
+    value: ParameterValue,
+) -> hex_lattice_contract::NativeDeviceState {
+    crate::patch_native_device_parameter_for_class(
+        crate::NativeDeviceClass::Instrument,
+        state,
+        id,
+        value,
+    )
+    .unwrap()
+}
+fn fixture(notes: usize, duration: u64) -> Project {
+    let mut snapshot = project(0.5, 0, duration).snapshot();
+    let state = carrier_state();
     snapshot.tracks[0].instrument.as_mut().unwrap().state = state;
     let authored = |first: u64| {
         (0..notes)
@@ -80,7 +85,14 @@ fn fixture(notes: usize, duration: u64) -> Project {
     Project::from_snapshot(snapshot).unwrap()
 }
 fn edit(project: &Project, changes: &[(ParameterId, ParameterValue)]) -> Project {
-    let device = project.tracks()[0].instrument().unwrap();
+    edit_track(project, project.tracks()[0].id(), changes)
+}
+fn edit_track(
+    project: &Project,
+    track: hex_project::TrackId,
+    changes: &[(ParameterId, ParameterValue)],
+) -> Project {
+    let device = project.track(track).unwrap().instrument().unwrap();
     let mut state = device.state().clone();
     for (id, value) in changes {
         state = set(&state, *id, *value);
@@ -93,6 +105,99 @@ fn edit(project: &Project, changes: &[(ParameterId, ParameterValue)]) -> Project
         })
         .unwrap();
     editor.project().clone()
+}
+
+fn routed_session_fixture() -> (
+    Project,
+    hex_project::TrackId,
+    hex_project::TrackId,
+    hex_project::ClipId,
+) {
+    use hex_project::{Command, Created, Editor};
+
+    let beat = |raw| hex_project::BeatTime::from_raw(raw);
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::AddMidiTrack {
+            name: "source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("source track")
+    };
+    let Created::Track(destination) = editor
+        .execute(Command::AddMidiTrack {
+            name: "destination".into(),
+        })
+        .unwrap()
+    else {
+        panic!("destination track")
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let mut clips = Vec::new();
+    for track in [source, destination] {
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "notes".into(),
+                source_length: beat(8 << 32),
+            })
+            .unwrap()
+        else {
+            panic!("session clip")
+        };
+        clips.push(clip);
+        for (duration, pitch) in [(1 << 26, 60), (8 << 32, 64)] {
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: beat(0),
+                    duration: beat(duration),
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+    }
+    editor
+        .execute(Command::RemoveInstrument { track: source })
+        .unwrap();
+    let device = editor
+        .project()
+        .track(destination)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: carrier_state(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiSource {
+            destination,
+            source: Some(source),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 64,
+            enabled: true,
+        })
+        .unwrap();
+    (editor.project().clone(), source, destination, clips[0])
 }
 fn prepared(
     project: &Project,
@@ -179,6 +284,109 @@ fn first_paint_preserves_all_64_held_or_released_analytic_voices_and_undo_stays_
             undone.render(&mut [[0.0; 2]; 257]).unwrap();
         }
     }
+}
+
+#[test]
+fn routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and_undo() {
+    let (original, source, destination, source_clip) = routed_session_fixture();
+    let revision = prepared(&original, None);
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut old_reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut analytic_oracle = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut old, &mut old_reference, &mut analytic_oracle] {
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: source_clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    let mut old_pcm = [[0.0; 2]; 512];
+    old.render(&mut old_pcm).unwrap();
+    old_reference.render(&mut [[0.0; 2]; 512]).unwrap();
+    analytic_oracle.render(&mut [[0.0; 2]; 512]).unwrap();
+    assert!(old.arrangement_loop_pass > 0);
+    assert!(old_pcm.iter().flatten().any(|sample| sample.abs() > 0.01));
+
+    let custom = edit_track(
+        &original,
+        destination,
+        &[
+            (harmonic_parameter(1, 1), ParameterValue::Float(0.0)),
+            (harmonic_parameter(1, 2), ParameterValue::Float(1.0)),
+        ],
+    );
+    let candidate = prepared(&custom, Some(old.revision.session()));
+    let mut painted = SessionPlayback::new(Arc::clone(&candidate)).unwrap();
+    painted.try_inherit_state_from(&mut old).unwrap();
+    let mut painted_reference = SessionPlayback::new(candidate).unwrap();
+    painted_reference
+        .try_inherit_state_from(&mut old_reference)
+        .unwrap();
+    assert_eq!(
+        painted.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .count(),
+        2,
+        "the destination imports its effective Session owner's held and releasing notes"
+    );
+    assert!(
+        painted.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .all(|proof| proof.signature.key().loop_pass == 0)
+    );
+    let mut actual = [[0.0; 2]; 1];
+    let mut expected = actual;
+    painted.render(&mut actual).unwrap();
+    analytic_oracle.render(&mut expected).unwrap();
+    for (a, b) in actual[0].iter().zip(expected[0]) {
+        assert!((a - b).abs() < 2e-5, "routed first paint {a} != {b}");
+    }
+    painted_reference.render(&mut [[0.0; 2]; 1]).unwrap();
+
+    assert_eq!(
+        painted.apply(SessionPlaybackCommand::StopTrack {
+            track: source,
+            quantization: LaunchQuantization::Immediate,
+        }),
+        Err(SessionPlaybackError::MutableInstrumentActive),
+        "the source route cannot cut off the destination's committed mutable voices"
+    );
+    let mut actual = [[0.0; 2]; 37];
+    let mut expected = actual;
+    painted.render(&mut actual).unwrap();
+    painted_reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+
+    let mut undone =
+        SessionPlayback::new(prepared(&original, Some(painted.revision.session()))).unwrap();
+    undone.try_inherit_state_from(&mut painted).unwrap();
+    let mut undone_reference = SessionPlayback::new(prepared(
+        &original,
+        Some(painted_reference.revision.session()),
+    ))
+    .unwrap();
+    undone_reference
+        .try_inherit_state_from(&mut painted_reference)
+        .unwrap();
+    assert_eq!(
+        undone.mutable_instruments[1]
+            .as_ref()
+            .unwrap()
+            .proofs()
+            .count(),
+        2
+    );
+    let mut actual = [[0.0; 2]; 37];
+    let mut expected = actual;
+    undone.render(&mut actual).unwrap();
+    undone_reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
 }
 #[test]
 fn range_masks_cached_partial_64_and_live_reversals_are_partition_invariant() {

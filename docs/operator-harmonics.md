@@ -57,6 +57,9 @@ endpoints do not change. Undo to a builtin keeps a continuation-capable compiled
 runtime for that instrument identity; this choice is not serialized.
 
 Adoption requires unchanged source identity, timing and processor topology.
+Routed MIDI follows the effective source owner while retaining the destination
+instrument template. Session occurrence identities stay independent of the
+Arrangement loop pass; Arrangement imports honor historical floors and loop cuts.
 Unsupported histories refuse publication before changing the previous committed
 graph. Historical detached tails retain their original sampler law. Current-owner
 Session bridges are imported once and removed from the analytic release bank.

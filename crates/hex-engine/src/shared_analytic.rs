@@ -258,12 +258,15 @@ impl SharedAnalyticContextTable {
             owners,
             ids,
             payload_bytes,
+            mutable_continuations,
         } = self;
         if !owners.is_empty()
             || owners.capacity() != 0
             || !ids.is_empty()
             || ids.capacity() != 0
             || *payload_bytes != 0
+            || !mutable_continuations.is_empty()
+            || mutable_continuations.capacity() != 0
         {
             return Err(crate::AudioStorageError::UnknownStorage);
         }
@@ -583,6 +586,18 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].source, ContextLeaseSource::Retained(7));
         assert_eq!(plan[0].target, 0);
+    }
+
+    #[test]
+    fn empty_audio_only_storage_refuses_spare_continuation_backing() {
+        let mut table = SharedAnalyticContextTable::default();
+        assert!(table.require_empty_owned_storage().is_ok());
+        table.mutable_continuations.try_reserve_exact(1).unwrap();
+        assert!(table.mutable_continuations.is_empty());
+        assert_eq!(
+            table.require_empty_owned_storage(),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
     }
 
     #[test]

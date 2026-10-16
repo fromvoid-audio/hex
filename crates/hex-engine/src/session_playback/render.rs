@@ -965,7 +965,7 @@ impl SessionPlayback {
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut rendered_tail_suffixes = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut tail_cursor = self.release_scratch.partition_point(|entry| {
-            entry.track_index < self.revision.arrangement().tracks().len()
+            entry.location.track_index() < self.revision.arrangement().tracks().len()
         });
         while tail_cursor < self.release_scratch.len() {
             let release = self

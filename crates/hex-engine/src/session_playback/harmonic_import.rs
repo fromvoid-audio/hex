@@ -44,6 +44,7 @@ impl Import {
         &mut self,
         previous: &SessionPlayback,
         route: TrackRoute,
+        loop_pass: u64,
         sampler: PreparedMidiNote,
         start: u64,
         gate: u64,
@@ -117,13 +118,7 @@ impl Import {
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
         self.occurrences[self.len] = Some(MutableOccurrence {
             signature: MutableOccurrenceSignature::from_parts(
-                MutableOccurrenceKey::new(
-                    route.id,
-                    clip,
-                    note,
-                    iteration,
-                    previous.arrangement_loop_pass,
-                ),
+                MutableOccurrenceKey::new(route.id, clip, note, iteration, loop_pass),
                 onset_beat,
                 gate_end_beat,
                 pitch,
@@ -145,10 +140,7 @@ pub(super) fn at_cut(
     index: usize,
     spans: &mut MidiSpanBuffer,
 ) -> Result<Import, SessionPlaybackError> {
-    let route = *previous
-        .routes
-        .get(index)
-        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    let route = effective_midi_route(&previous.revision, &previous.routes, index)?;
     let context = previous
         .revision
         .arrangement()
@@ -180,10 +172,30 @@ pub(super) fn at_cut(
                     if failure.is_some() {
                         return;
                     }
+                    if previous
+                        .historical_floor_for(index)
+                        .is_some_and(|floor| span.onset_beat < floor)
+                    {
+                        return;
+                    }
+                    if previous.arrangement_loop_pass > 0
+                        && previous
+                            .revision
+                            .arrangement()
+                            .loop_region()
+                            .is_some_and(|region| {
+                                region.enabled()
+                                    && span.start < region.start()
+                                    && span.gate_end <= region.start()
+                            })
+                    {
+                        return;
+                    }
                     failure = out
                         .push(
                             previous,
                             route,
+                            previous.arrangement_loop_pass,
                             sampler,
                             span.start,
                             span.gate_end,
@@ -210,8 +222,11 @@ pub(super) fn at_cut(
             let clip = previous
                 .revision
                 .session()
-                .midi_clip(clip)
+                .midi_clip_for_track(clip, route.id)
                 .ok_or(SessionPlaybackError::UnknownClip)?;
+            if clip.track != route.id {
+                return Err(SessionPlaybackError::ClipTrackMismatch);
+            }
             let clock = timing_view_for(
                 previous.revision.session(),
                 previous.periodic_tempo,
@@ -236,6 +251,7 @@ pub(super) fn at_cut(
                 out.push(
                     previous,
                     route,
+                    0,
                     sampler,
                     span.start_frame,
                     span.gate_end_frame,
@@ -270,6 +286,10 @@ pub(super) fn at_cut(
         out.push(
             previous,
             route,
+            match route.owner {
+                RouteOwner::Arrangement => previous.arrangement_loop_pass,
+                _ => 0,
+            },
             entry.voice.sampler(),
             entry.voice.start_frame(),
             entry.voice.gate_end_frame(),
