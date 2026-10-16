@@ -22,7 +22,7 @@ widgets = (
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
     'dials)', 'icon)', 'toggle.entity.clone())', 'selector.entity.clone())',
-    'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
+    'waveform)', 'waveform_preview)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',
