@@ -157,7 +157,7 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
     finish(&mut retirement);
 }
 
-fn project_with_frames(frames: u64) -> hex_project::Project {
+pub(super) fn project_with_frames(frames: u64) -> hex_project::Project {
     let (project, _) = utility_fixture::project();
     let mut snapshot = project.snapshot();
     snapshot.tracks[0].devices.clear();

@@ -218,6 +218,12 @@ impl Callback {
         {
             return;
         }
+        // A new actual candidate invalidates the old owner's discontinuity;
+        // its scalar token cannot be replayed on the successor.
+        self.cancel_active_stream_action();
+        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
+            active.publication_replaces_prewarm(&mut self.domain_pages);
+        }
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {
             return;
@@ -284,6 +290,13 @@ impl Callback {
                         .active
                         .replace(ActivePublication::Eligible(next.into_active()));
                     if let Some(ActivePublication::Eligible(mut previous)) = previous {
+                        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+                            && let Some(ticket) = active.inherit_schedule_observation(&mut previous)
+                        {
+                            self.status
+                                .stream_invalidated_schedule
+                                .store(ticket, Release);
+                        }
                         previous.clear_stream_roles(&mut self.domain_pages);
                         self.return_publication(ReturnedPublication::Eligible(
                             previous.return_replaced(),

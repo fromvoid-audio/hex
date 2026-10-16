@@ -2,8 +2,28 @@
 //! returns to the reserved Root slot before normal metadata destruction.
 use super::*;
 use hex_engine::StreamPageExtent;
+mod actions;
 mod demand;
+mod prewarm;
+pub(crate) use actions::StageAction;
+#[derive(Clone, Copy)]
+struct ScheduledAction {
+    ticket: u64,
+    due: u64,
+    allow_prewarm: bool,
+    pressure_blocked: bool,
+}
+#[derive(Clone, Copy)]
+enum CandidateRole {
+    None,
+    Publication,
+    LaunchPrewarm { ticket: u64, due: u64 },
+}
 pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress};
+struct PendingAction {
+    prepared: hex_engine::PreparedStreamAction,
+    ticket: u64,
+}
 pub(super) struct Workspace {
     pub(super) extents: [Vec<StreamPageExtent>; 2],
     pub(super) limit: usize,
@@ -11,6 +31,10 @@ pub(super) struct Workspace {
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) role: Option<hex_stream::ProtectionRole>,
     pub(super) predecessor: Option<AudioCandidateIdentity>,
+    pending_action: Option<PendingAction>,
+    scheduled: Option<ScheduledAction>,
+    prewarm_stamps: [Option<hex_stream::ReadinessStamp>; 2],
+    candidate_role: CandidateRole,
 }
 impl Workspace {
     fn prepare(limit: usize) -> Result<Self, &'static str> {
@@ -26,6 +50,10 @@ impl Workspace {
             active: [None; 2],
             role: None,
             predecessor: None,
+            pending_action: None,
+            scheduled: None,
+            prewarm_stamps: [None; 2],
+            candidate_role: CandidateRole::None,
         })
     }
     pub(super) fn backing_bytes(&self) -> Option<usize> {
@@ -50,6 +78,10 @@ impl Workspace {
         self.active = [None; 2];
         self.role = None;
         self.predecessor = None;
+        self.pending_action = None;
+        self.scheduled = None;
+        self.prewarm_stamps = [None; 2];
+        self.candidate_role = CandidateRole::None;
     }
 }
 impl Custody {

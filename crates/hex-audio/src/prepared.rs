@@ -352,6 +352,13 @@ pub struct Status {
     pub stream_applied_command_prefix: AtomicU64,
     /// Best-effort render telemetry, never a readiness/ownership receipt.
     pub stream_buffering: AtomicBool,
+    /// Latest streamed launch accepted into actual PendingRoute scheduling.
+    pub stream_scheduled_command: AtomicU64,
+    /// Latest scheduled launch whose actual due route/render chunk committed.
+    pub stream_activated_command: AtomicU64,
+    /// Latest schedule observation cancelled or not retained by actual handoff.
+    /// This does not claim that an already committed musical route was undone.
+    pub stream_invalidated_schedule: AtomicU64,
     pub stream_readiness_refused: AtomicBool,
     /// Frames committed before the latest BUFFERING gap; zero when complete.
     pub stream_committed_frames: AtomicU64,
@@ -413,6 +420,9 @@ impl Status {
             consumed_command: AtomicU64::new(0),
             stream_applied_command_prefix: AtomicU64::new(0),
             stream_buffering: AtomicBool::new(false),
+            stream_scheduled_command: AtomicU64::new(0),
+            stream_activated_command: AtomicU64::new(0),
+            stream_invalidated_schedule: AtomicU64::new(0),
             stream_readiness_refused: AtomicBool::new(false),
             stream_committed_frames: AtomicU64::new(0),
             rejected_action_ticket: AtomicU64::new(0),
@@ -1225,6 +1235,8 @@ impl Control {
     ) -> Option<hex_stream::PagePoolReport> {
         self.candidate_root.recover_domain(token)
     }
+    /// Nonblocking observation. None includes temporary lifecycle contention;
+    /// it does not establish zero occupancy or release any reservation.
     pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
         self.candidate_root.domain_usage()
     }
@@ -2174,6 +2186,7 @@ impl Callback {
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
+                active.has_stream_action(),
                 outcome,
             )?;
         } else if let Some(mut active) = self
@@ -2211,6 +2224,7 @@ impl Callback {
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
+                active.has_stream_action(),
                 outcome,
             )?;
             self.publish_transport();
@@ -2228,6 +2242,7 @@ impl Callback {
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
+                false,
                 crate::candidate_custody::StreamOutcome {
                     progress: crate::candidate_custody::StreamProgress::Buffering {
                         committed_frames: 0,
@@ -2235,6 +2250,8 @@ impl Callback {
                     play_applied: false,
                     readiness_refused: false,
                     fault: None,
+                    action_rejection: None,
+                    activated: None,
                 },
             )?;
             return Ok(());

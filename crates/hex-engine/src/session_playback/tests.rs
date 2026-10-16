@@ -10986,3 +10986,6 @@ mod operator_filter_tests;
 
 #[path = "mutable_long_tail_tests.rs"]
 mod mutable_long_tail_tests;
+
+#[path = "stream_action_tests.rs"]
+mod stream_action_tests;

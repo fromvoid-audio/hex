@@ -1343,11 +1343,13 @@ mod handoff;
 mod harmonic_import;
 mod preroll;
 mod render;
+mod stream_actions;
 mod stream_demand;
 pub use capture::{
     MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
     OutputCaptureId, OutputCapturePlan,
 };
+pub use stream_actions::PreparedStreamAction;
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,

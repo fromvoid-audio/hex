@@ -16,8 +16,8 @@ mod eligible;
 pub(crate) use eligible::DomainEnvelope;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
-    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StreamInstall,
-    StreamOutcome, StreamProgress,
+    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StageAction,
+    StreamInstall, StreamOutcome, StreamProgress,
 };
 pub use eligible::{
     AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,

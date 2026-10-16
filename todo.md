@@ -3612,3 +3612,36 @@ partial/pressure behavior, observer offsets and Retry/cancel; source inspection
 and zero total/net probes retain their stated limits. Final exact full repository
 CI, PR238 seek/launch, PR239 UI composition and original #24/native acceptance remain
 open. See docs/streamed-native-readiness.md; final CI evidence is recorded externally.
+
+
+## 16 october 2026 — seek/launch projection checkpoint (pulse2543 / pr238)
+
+Recovered canonical PR238 and integrated actual PR237 merge a196631f, preserving
+its intake plan. Shared pure seek/route planning now feeds opaque move-only action
+preparation and exact projected chunk demand; existing typed commits recheck actual
+runtime/clocks/routes before reset. Two focused engine controls use warmed Utility
+history, mixed-rate source metadata, page seams, stale/Pause refusal and real
+quantized loop activation. A paused immediate launch initially projected loop
+normalization without render; its failing zero-page cursor control now passes.
+Full engine tests and strict engine Clippy pass at this checkpoint. Native stage,
+revocable prewarm, real worker pressure/allocation controls and exact final full
+repository CI remain PR238 work; broader original #24 acceptance stays open.
+
+
+## 16 october 2026 — streamed actions and revocable prewarm (pulse2543 / pr238)
+
+One scalar-only prepared Seek/PlayFrom/immediate Session action now waits in the
+actual native runtime Workspace until exact protected projected pages can commit
+the existing typed reset/route operation once. Pause/Stop/matching CancelPending
+and replacement invalidate old speculation; conflicts report Busy. Quantized
+launches retain their actual original PendingRoute due, with distinct scheduled
+and activated telemetry. Early prewarm reuses Candidate protection and existing
+extent backing; current-window pressure revokes it, retries once, and bars repin
+until real current progress. Due-page misses hold the exact due frame, preserving
+prior chunks. Fixed metadata remains in actual State/caller DATA and the existing
+32 MiB mutable runtime allowance. Three real native controls include 24k→48k worker
+conversion, loop/due hold, cancellation, pressure, shared-domain replacement and
+same-owner device/context refusal, with zero total/net callback probes. A narrow
+negative control reproduces premature speculative repin. Final source evidence
+and exact full local CI are recorded externally; PR239 UI composition and original
+#24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.

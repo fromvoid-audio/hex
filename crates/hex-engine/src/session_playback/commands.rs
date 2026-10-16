@@ -104,7 +104,10 @@ impl SessionPlayback {
         changed
     }
 
-    fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+    pub(super) fn seek_coordinates(
+        &mut self,
+        frame: u64,
+    ) -> Result<BeatTime, SessionPlaybackError> {
         if self
             .tail_mutable_instruments
             .iter()
@@ -129,6 +132,11 @@ impl SessionPlayback {
         let beat = base_timing
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        Ok(beat)
+    }
+
+    fn seek(&mut self, frame: u64) -> Result<(), SessionPlaybackError> {
+        let beat = self.seek_coordinates(frame)?;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
             changed |= route.pending.is_some();
@@ -251,6 +259,17 @@ impl SessionPlayback {
         &mut self,
         command: SessionPlaybackCommand,
     ) -> Result<(), SessionPlaybackError> {
+        self.plan_route_command(command)?;
+        self.commit_route_scratch();
+        Ok(())
+    }
+
+    /// Prepare only existing preallocated scalar/release scratch. No route,
+    /// DSP, clock, owner or generation commit occurs here.
+    pub(super) fn plan_route_command(
+        &mut self,
+        command: SessionPlaybackCommand,
+    ) -> Result<TransitionMoment, SessionPlaybackError> {
         self.route_scratch.copy_from_slice(&self.routes);
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
@@ -368,6 +387,10 @@ impl SessionPlayback {
                 entry.order,
             )
         });
+        Ok(moment)
+    }
+
+    fn commit_route_scratch(&mut self) {
         let route_changed = self.routes != self.route_scratch;
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -376,7 +399,6 @@ impl SessionPlayback {
         if route_changed {
             self.advance_route_state_generation();
         }
-        Ok(())
     }
 
     fn scheduled_at(

@@ -23,7 +23,7 @@ mod resources;
 mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
-pub(crate) use streaming::{StreamInstall, StreamOutcome, StreamProgress};
+pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
 mod disposal;
 pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
