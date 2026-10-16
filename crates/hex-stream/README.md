@@ -34,16 +34,6 @@ compares the complete metadata value, and `same_catalog` distinguishes catalogs
 even when their generation and keys match. Keep one lease with each prepared graph
 that refers to the catalog.
 
-`VerifiedStreamRevision` consumes an `Arc<PreparedRevision>` and a real ready
-`CatalogLease`, checking every Arrangement and Session stream binding against
-complete verified metadata membership. Validation borrows without allocation or
-owner cloning. Failure returns both inputs in `StreamRevisionMismatch`; successful
-bindings expose borrowed graph/catalog access and actual catalog identity.
-The wrapper has no Clone implementation. Construction, transfer and final
-reclamation belong on control; final lease release may stop/wake/join the worker.
-This first Pulse24 stage adds no callback endpoint or page-readiness proof and
-does not enable native streamed publication or lift resident import limits.
-
 Matching shutdown counts the actual owner references held by the control and page
 endpoint. If graph leases remain, it returns recoverable `ShutdownError::Busy`
 without changing the pair; `into_parts()` restores both halves for a retry after
@@ -74,13 +64,3 @@ Project editing, persistence, UI, CPAL, device callbacks, WAV parsing or hashing
 It does not replace the resident media bank or make streamed playback available
 to the native application until the `hex-audio` and project/session publication
 paths explicitly own and retain its endpoint/catalog.
-
-`VerifiedPageEndpoint` is a control-constructed, non-cloneable catalog/page
-pairing. It checks actual owner and pair identity, exposes borrowed existing
-pages, and returns owners through `into_parts` for the existing transactional
-shutdown path. It does not establish installed-page readiness or native admission.
-Its StreamAllocationFootprint reports actual endpoint-exclusive and shared
-transport/catalog reserved capacities with checked retained/construction totals.
-The legacy CatalogFootprint remains a payload/subcomponent view, not an additive
-heap total. Capacity reporting excludes opaque allocator/Arc/OS/thread machinery
-and caller graph storage; it does not establish aggregate admission policy.

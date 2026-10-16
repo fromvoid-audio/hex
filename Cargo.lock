@@ -2562,7 +2562,6 @@ version = "0.1.0"
 dependencies = [
  "hex-engine",
  "hex-export",
- "hex-live-set",
  "hex-media",
  "hex-project",
  "hex-storage",
@@ -2626,19 +2625,6 @@ name = "hex-library"
 version = "0.1.0"
 
 [[package]]
-name = "hex-live-set"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "hex-engine",
- "hex-media",
- "hex-project",
- "hex-storage",
- "quick-xml",
- "roxmltree",
-]
-
-[[package]]
 name = "hex-media"
 version = "0.1.0"
 dependencies = [
@@ -2669,7 +2655,6 @@ dependencies = [
  "hex-engine",
  "hex-export",
  "hex-lattice-contract",
- "hex-live-set",
  "hex-media",
  "hex-project",
  "hex-storage",

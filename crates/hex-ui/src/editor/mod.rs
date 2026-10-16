@@ -28,7 +28,6 @@ mod fades;
 mod gain_lane;
 mod gain_recording;
 mod header;
-mod live_set;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
@@ -160,7 +159,6 @@ actions!(
         LaunchSessionSelection,
         Stop,
         ImportAudio,
-        ImportLiveSet,
         OpenProject,
         OpenRelinkedProject,
         RecoverUntitledProject,

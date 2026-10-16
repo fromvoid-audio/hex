@@ -1,4 +1,4 @@
-//! Structural proposals; only explicit canonical Return feeds have playback support.
+//! Legacy structural proposals; playable inputs use typed AudioFeed/MidiRoute commands.
 use crate::{Created, Invalid, Project, ReturnId, TrackId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -18,7 +18,7 @@ pub enum RoutingSignal {
     Audio {
         channels: u8,
     },
-    /// Representable for explicit refusal; no current role exposes a MIDI bus.
+    /// Legacy proposal metadata only; typed MIDI routes have their own validation.
     Midi,
 }
 
@@ -32,7 +32,8 @@ pub struct RoutingEdge {
 impl Project {
     /// Structural validation is not permission to render or adopt this graph.
     /// Existing sends have one owner and are included alongside implicit Main
-    /// paths. Return-to-Return proposals can be checked, but cannot be adopted.
+    /// paths. This legacy proposal does not authorize adoption; use the canonical
+    /// typed route commands to edit supported audio inputs, MIDI sources or feeds.
     pub fn validate_routing_proposal(&self, proposed: &[RoutingEdge]) -> Result<(), Invalid> {
         if proposed.len() > MAX_AUTHORED_ROUTES {
             return Err(Invalid("authored routing edge limit reached"));

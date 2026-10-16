@@ -1,5 +1,4 @@
 //! Bounded control worker for decoding, project edits, saves, and graph compilation.
-mod live_set;
 use crate::arrangement_seek::{
     ArrangementSeekResult, ArrangementSeekSpec, ArrangementSeekSubmitError, ArrangementSeekWorker,
 };
@@ -235,12 +234,6 @@ pub enum Request {
         track: hex_project::TrackId,
         scene: hex_project::SceneId,
     },
-    ImportLiveSet {
-        path: PathBuf,
-        accept_hex_balance: bool,
-        project_generation: u64,
-        revision: u64,
-    },
     Open(PathBuf),
     /// Recovery/relink opens prepare a complete candidate before adoption.
     OpenWith {
@@ -270,10 +263,7 @@ pub enum Request {
 
 impl Request {
     pub fn is_project_open(&self) -> bool {
-        matches!(
-            self,
-            Self::Open(_) | Self::OpenWith { .. } | Self::ImportLiveSet { .. }
-        )
+        matches!(self, Self::Open(_) | Self::OpenWith { .. })
     }
 }
 
@@ -758,7 +748,6 @@ fn run_worker(
         let barrier = matches!(
             &request,
             Request::Open(_)
-                | Request::ImportLiveSet { .. }
                 | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo
@@ -1050,43 +1039,6 @@ fn run_worker(
                     }
                     Err(reason) => error = Some(reason),
                 },
-                Request::ImportLiveSet {
-                    path,
-                    accept_hex_balance,
-                    project_generation: expected_generation,
-                    revision: expected_revision,
-                } => {
-                    open_complete = true;
-                    if unsaved {
-                        error = Some("save current work and retry live-set import".into());
-                    } else if expected_generation != project_generation
-                        || expected_revision != revision
-                    {
-                        error = Some("project changed · retry live-set import".into());
-                    } else {
-                        match live_set::candidate(
-                            &session,
-                            history_capacity,
-                            &path,
-                            accept_hex_balance,
-                        )
-                        .and_then(|(candidate, diagnostics)| {
-                            compile(&candidate, None)
-                                .map(|prepared| (candidate, diagnostics, prepared))
-                        }) {
-                            Ok((candidate, diagnostics, prepared)) => {
-                                session = candidate;
-                                document = None;
-                                media_base = None;
-                                unsaved = true;
-                                project_replaced = true;
-                                replacement_revision = Some(prepared);
-                                status = Some(diagnostics);
-                            }
-                            Err(reason) => error = Some(reason),
-                        }
-                    }
-                }
                 request @ (Request::Open(_) | Request::OpenWith { .. }) => {
                     open_complete = true;
                     let (source, relinks) = match request {

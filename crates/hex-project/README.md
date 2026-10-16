@@ -195,12 +195,12 @@ Selected-row `InsertTimeRange` opens a frame-based gap and pastes a finite time
 rectangle atomically; bounded shifting/materialization lives in `time_range/insert.rs`.
 No project schema or device callback responsibility is added.
 
-Ticket 32 adds a bounded project-level import provenance envelope independent of
+The bounded project-level import provenance envelope is independent of
 native device state: exact original input bytes (1 MiB maximum), source kind and
 version, and adapter version. Clones/snapshots/history share immutable evidence;
 normal edits retain it unchanged. Debug output excludes contents and private
 paths. This is unchanged-input pass-through, not editable Ableton export or
-proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
+proof of valid/importable Live XML. See [import provenance](../../docs/live-set-import.md).
 
 Routing proposals use existing owners and validate the complete DAG, including
 implicit Main paths, canonical sends and admitted Return feeds. Generic proposals

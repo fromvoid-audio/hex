@@ -1169,14 +1169,13 @@ impl EditorView {
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }
-        if !matches!(
-            &request,
-            Request::Open(_) | Request::OpenWith { .. } | Request::ImportLiveSet { .. }
-        ) && !allows_non_open_request(
-            self.close_prompt_open,
-            self.opening_project,
-            duplicate_continuation,
-        ) {
+        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. })
+            && !allows_non_open_request(
+                self.close_prompt_open,
+                self.opening_project,
+                duplicate_continuation,
+            )
+        {
             self.error = Some(if self.opening_project {
                 "opening project · editing is paused".into()
             } else {
@@ -1184,10 +1183,7 @@ impl EditorView {
             });
             return false;
         }
-        if !matches!(
-            &request,
-            Request::Open(_) | Request::OpenWith { .. } | Request::ImportLiveSet { .. }
-        ) {
+        if !matches!(&request, Request::Open(_) | Request::OpenWith { .. }) {
             self.pending_open_path = None;
         }
         if matches!(
@@ -1202,7 +1198,6 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
-                | Request::ImportLiveSet { .. }
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::GainLane { .. }
@@ -1219,7 +1214,6 @@ impl EditorView {
         if matches!(
             &request,
             Request::Open(_)
-                | Request::ImportLiveSet { .. }
                 | Request::OpenWith { .. }
                 | Request::Undo
                 | Request::Redo

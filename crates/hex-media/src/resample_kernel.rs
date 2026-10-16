@@ -92,13 +92,6 @@ impl ResampleKernel {
     pub fn table_payload_bytes(&self) -> usize {
         self.inner.weights.capacity() * std::mem::size_of::<f64>()
     }
-
-    /// Data size of the one shared kernel object, excluding its separately
-    /// reported weight allocation and opaque standard-library Arc header.
-    /// Count once across handles; this borrowed query creates no new owner.
-    pub const fn shared_object_bytes(&self) -> usize {
-        std::mem::size_of::<KernelData>()
-    }
 }
 
 pub(crate) fn validate_rates(source_rate: u32, target_rate: u32) -> Result<(), ImportError> {

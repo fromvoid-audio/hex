@@ -361,28 +361,6 @@ impl PreparedRevision {
         self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
     }
 
-    /// Borrow every streamed binding without allocating or cloning an owner.
-    /// Arrangement bindings follow compiled track/clip order, then Session
-    /// bindings follow `audio_clips()` inventory order. Repeated references to
-    /// one source are yielded separately; resident audio and MIDI are omitted.
-    /// Metadata remains immutable and borrowed from this exact revision.
-    pub fn streamed_sources(&self) -> impl Iterator<Item = &crate::StreamedSourceMetadata> + '_ {
-        self.arrangement
-            .tracks
-            .iter()
-            .flat_map(|track| &track.clips)
-            .filter_map(|clip| clip.metadata.as_ref()?.streamed.as_deref())
-            .chain(
-                self.session
-                    .audio_clips()
-                    .iter()
-                    .filter_map(|clip| match clip.source() {
-                        PreparedAudioSource::Streamed(source) => Some(source.as_ref()),
-                        PreparedAudioSource::Resident(_) => None,
-                    }),
-            )
-    }
-
     /// Whether the compiled Arrangement owns any enabled mutable instrument.
     /// Session-only inventory must not affect linear Arrangement range policy.
     pub fn has_arrangement_mutable_instruments(&self) -> bool {

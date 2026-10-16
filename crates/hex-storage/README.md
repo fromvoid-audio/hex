@@ -122,29 +122,28 @@ attributes. Sidecar names must fit a 255-byte
 filesystem component; long names that would exceed that limit are refused
 before publication.
 
-Ticket 32 adds a bounded project-level import provenance envelope independent of
+The bounded project-level import provenance envelope is independent of
 native device state: exact original input bytes (1 MiB maximum), source kind and
 version, and adapter version. Clones/snapshots/history share immutable evidence;
 normal edits retain it unchanged. Debug output excludes contents and private
 paths. This is unchanged-input pass-through, not editable Ableton export or
-proof of valid/importable Live XML. See [live-set import](../../docs/live-set-import.md).
+proof of valid/importable Live XML. See [import provenance](../../docs/live-set-import.md).
 
 Schema 18 requires nullable `import_provenance`. Schemas 1–17 migrate to absent
 provenance; their strict readers reject the new field. Unknown envelope kinds or
 versions, empty input and oversized arrays are rejected. Schema-18 JSON is compact
 and retains the 8 MiB document ceiling, including provenance. Serialization stops
-at that ceiling; saving never drops evidence to fit. The finite musical adapter
-uses the genuine Live-authored fixture; native interaction and listening
-acceptance remain separate.
+at that ceiling; saving never drops evidence to fit. The envelope does not
+interpret the source format or provide a musical importer.
 Automatic journal checkpoints are independent of previous-save recovery. The
 strict journal envelope retains one current snapshot, uses a stable generation
 lock to serialize cooperating publication, refuses unknown files, and clears
 only the exact owned generation. No untitled history is retained. Native
 composition, ownership and tested limits: [project recovery](../../docs/project-recovery.md).
 
-Imported unsaved projects use that same latest-untitled checkpoint path. Recovery
-retains schema-18 original-document provenance and prepares the complete media
-and playback candidate before adoption, without acquiring an overwrite association.
+Unsaved projects use that same latest-untitled checkpoint path. Recovery
+retains original-document provenance and prepares the complete media and playback
+candidate before adoption, without acquiring an overwrite association.
 
 New saves use schema24, the complete envelope for device input/output host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans

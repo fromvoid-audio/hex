@@ -3872,3 +3872,9 @@ Targeted source/PCM/lifecycle/history/storage/allocation/native-widget regressio
 and strict Clippy are implemented. The final exact-source local-CI report and
 supported optimized stable delivery are PR/Pulse evidence; optional user interaction,
 listening, physical deadlines and Windows native validation remain separate.
+
+The final diff excludes the historical draft Live-set adapter and separate
+streaming wrappers. Their own canonical PR150/177 retain implementation history.
+Only neutral provenance preservation/migration and the engine's borrowed
+pages/observer seam needed for routing tests remain. Native streaming stays
+disabled and existing resident limits stay enforced.

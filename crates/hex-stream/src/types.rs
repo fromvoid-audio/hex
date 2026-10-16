@@ -154,8 +154,6 @@ pub struct CatalogFootprint {
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedCatalog {
     pub(crate) footprint: CatalogFootprint,
-    pub(crate) allocations: crate::CatalogAllocationFootprint,
-    pub(crate) construction: crate::ConstructionAllocationFootprint,
     pub(crate) sources: Vec<StreamedSourceMetadata>,
 }
 

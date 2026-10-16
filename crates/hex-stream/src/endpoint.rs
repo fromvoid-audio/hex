@@ -15,26 +15,17 @@ pub(crate) struct PageBuffer {
 }
 
 impl PageBuffer {
-    #[cfg(test)]
     pub(crate) fn new() -> Result<Box<Self>, ()> {
-        Self::new_with_capacity().map(|(page, _)| page)
-    }
-
-    pub(crate) fn new_with_capacity() -> Result<(Box<Self>, usize), ()> {
         let mut frames = Vec::new();
         frames
             .try_reserve_exact(STREAM_PAGE_FRAMES)
             .map_err(|_| ())?;
         frames.resize(STREAM_PAGE_FRAMES, [0.0; 2]);
-        let capacity = frames.capacity();
-        Ok((
-            Box::new(Self {
-                key: None,
-                frames: frames.into_boxed_slice(),
-                valid_frames: 0,
-            }),
-            capacity,
-        ))
+        Ok(Box::new(Self {
+            key: None,
+            frames: frames.into_boxed_slice(),
+            valid_frames: 0,
+        }))
     }
 }
 
@@ -90,20 +81,6 @@ pub struct EndpointStats {
 }
 
 impl Endpoint {
-    pub(crate) fn allocation_footprint(&self) -> crate::EndpointAllocationFootprint {
-        crate::EndpointAllocationFootprint {
-            cache: crate::AllocationCapacity::of::<CacheSlot>(self.cache.capacity()),
-            pending: crate::AllocationCapacity::of::<PendingSlot>(self.pending.capacity()),
-            source_keys: crate::AllocationCapacity::of::<StreamSourceKey>(
-                self.source_keys.capacity(),
-            ),
-            held_returns: crate::AllocationCapacity::of::<Box<PageBuffer>>(
-                self.held_returns.capacity(),
-            ),
-            max_cached_pages: self.max_cached_pages,
-        }
-    }
-
     pub(crate) fn new(
         cache_pages: usize,
         request_capacity: usize,
