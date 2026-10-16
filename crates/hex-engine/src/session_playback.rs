@@ -433,7 +433,7 @@ impl SessionPlayback {
         // Exhaustive owning-field match: other buffers belong to the Session
         // container group, not independent transferable device/context groups.
         let Self {
-            computer_keyboard: _,
+            computer_keyboard,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -482,6 +482,9 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
+        if computer_keyboard.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
         for index in 0..device_chains.len() {
             visit(0, index, true)?;
         }

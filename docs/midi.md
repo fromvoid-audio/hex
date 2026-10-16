@@ -561,3 +561,11 @@ Finite native checklist for the optimized exact-source test build:
 5. Change an instrument parameter or project during a held chord. Confirm the old
    audition stops without retriggering; release/repress after preparation. Confirm
    undo/save data has no performed notes and no audition-only dirty change.
+
+Keyboard review repairs: while audition is active, direct Arrangement audio and
+MIDI sources enter the instrument gap before the track fader. Authored and live
+notes receive the final track gain once, including on tracks with no effect
+chain. A silent Session route still admits live notes without restarting its
+authored source. Live keyboard owners explicitly refuse the separate closed
+audio-only candidate owner inventory. Source regressions cover these boundaries;
+native listening and deadline acceptance remain open.

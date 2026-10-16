@@ -153,7 +153,10 @@ impl super::EditorView {
         if !self.computer_keyboard.enabled || self.computer_keyboard.suspended {
             return false;
         }
-        if self.device_gesture_pending() || self.prepared_seek.is_some() {
+        if self.device_gesture_pending()
+            || self.prepared_seek.is_some()
+            || self.stopped_playback_restore.is_some()
+        {
             self.cancel_computer_keyboard();
             self.computer_keyboard.suspended = true;
             return true;
@@ -259,6 +262,7 @@ impl super::EditorView {
         } else {
             if self.device_gesture_pending()
                 || self.prepared_seek.is_some()
+                || self.stopped_playback_restore.is_some()
                 || (self.computer_keyboard.suspended && event.is_held)
             {
                 self.cancel_computer_keyboard();

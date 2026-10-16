@@ -132,6 +132,7 @@ impl EditorView {
     }
 
     fn clear_audio_accounting(&mut self) {
+        self.stopped_playback_restore = None;
         self.service.invalidate_arrangement_seek();
         self.prepared_seek = None;
         self.latched_seek_intent = None;

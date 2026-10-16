@@ -12,6 +12,20 @@ migrations and integrates current main's shared composition and stable installer
 The harmonic tool row now occupies the graph area above the stationary tabs;
 rendered overlap coverage accompanies the integration. Native/listening results
 and exact-source validation are recorded with the candidate PR/build evidence.
+## vector B edits and stopped playback recovery — #2643 / PR259, 16 october 2026
+
+Reproduced the user's compile error with an above-Nyquist B ratio and a separate
+active-filter handoff refusal with a supported B ratio. Invalid tuning leaves
+canonical state/history intact; all B/C/D levels affect serial-routed FM PCM.
+Default custom routing leaves B/C/D disconnected. Stop now requests canonical
+playback on the worker and installs fresh histories, with Play/Seek fenced until
+callback acknowledgment. Ordinary edits preserve existing history/refusal rules.
+The session suite, strict session Clippy, all491 enabled UI feature tests and
+the audio allocation-probe suite pass. A negative control disabling the recovery
+publication policy fails the focused UI regression as expected. Final-source
+full local CI is recorded separately; optimized Mac delivery and native
+listening/interaction remain open.
+See [Vector contract and checklist](docs/operator-native.md).
 
 ## computer midi keyboard — PR257 / #2642, 16 october 2026
 
