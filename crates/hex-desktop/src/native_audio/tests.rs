@@ -616,6 +616,7 @@ fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
         reservation: Some(AudioPolicy::source_reservation()),
     });
     h.open();
+    h.applied(h.context.unwrap());
     let event = h.run(Request::Import(source.clone()));
     assert!(event.playback.is_none());
     assert_eq!(event.state.project.sample_rate(), 44100);
@@ -682,6 +683,7 @@ fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
         reservation: Some(insufficient),
     });
     h.open();
+    h.applied(h.context.unwrap());
     h.run(Request::Import(source));
     let refused_context = h.context.unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -706,4 +708,194 @@ fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
             .is_some_and(|a| a.context == refused_context)
     );
     assert!(!status.render_fault.load(Acquire));
+}
+
+#[test]
+fn rapid_new_verified_import_supersession_applies_decoded_pcm() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let path = files.wav(48000, 9600);
+    let mut h = Harness::with_rate(44100);
+    h.next();
+    h.open();
+    for attempt in 0..8 {
+        h.run(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        });
+        h.open();
+        // Deliberately no empty graph ACK: actual import supersedes preparation.
+        h.run(Request::Import(path.clone()));
+        let context = h.context.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut observations = Vec::new();
+        loop {
+            h.render();
+            if h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source()
+                .is_some_and(|a| a.context == context)
+            {
+                break;
+            }
+            for event in h.events.try_iter() {
+                if let EditorAudioEvent::Publication { context, state, .. } = event {
+                    observations.push(format!("{context:?}: {state:?}"));
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "rapid attempt={attempt} context={context:?} events={observations:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        loop {
+            let output = h.render();
+            if output
+                .iter()
+                .all(|frame| frame.iter().all(|sample| (*sample - 0.25).abs() < 0.0001))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "rapid successor PCM missing at {attempt}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+#[test]
+fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reuse() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let path = files.wav(24000, 16);
+    let service = Service::new(44100, 1, 0).unwrap();
+    let next = || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    };
+    next();
+    service
+        .submit(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        })
+        .unwrap();
+    next();
+    service.submit(Request::Import(path.clone())).unwrap();
+    let event = next();
+    let snapshot = event.state.canonical_audio_source.as_ref().unwrap();
+    // Earlier fixtures transfer their terminal owners asynchronously. Wait for
+    // the real exclusive lease, exactly as the production completion adapter.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut output, _backend) = loop {
+        match hex_audio::worker_fixture::open(44100) {
+            Ok(pair) => break pair,
+            Err(error) if error == "audio output is open or still shutting down" => {}
+            Err(error) => panic!("fixture output unavailable: {error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "prior native lease never released"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let policy = AudioPolicy::new().unwrap();
+    let control = output.publication.control().unwrap();
+    policy.configure(control).unwrap();
+    let (events, _receiver) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    let mut previous = None;
+    for already_failed in [false, true] {
+        let sources = DomainSources::capture(snapshot, if already_failed { 2 } else { 1 }).unwrap();
+        let definitions = sources.definitions().unwrap();
+        if already_failed {
+            let mut bytes = fs::read(&path).unwrap();
+            *bytes.last_mut().unwrap() ^= 1;
+            fs::write(&path, bytes).unwrap();
+        }
+        let token = control
+            .begin_audio_candidate_domain_preparation(policy.stream, definitions, policy.readiness)
+            .unwrap();
+        assert_ne!(Some(token), previous);
+        let mut domain = Domain {
+            token,
+            sources,
+            ready: false,
+            retiring: false,
+        };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        if already_failed {
+            // Verification moves Root custody into retirement before the adapter
+            // has made its first explicit retirement request.
+            loop {
+                match control.poll_audio_candidate_domain_preparation(token) {
+                    Ok(hex_audio::AudioCandidateDomainPreparationProgress::Refused(_)) => break,
+                    Ok(hex_audio::AudioCandidateDomainPreparationProgress::Verifying) => {}
+                    other => panic!("unexpected failed-source state: {other:?}"),
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        } else {
+            domain.request_retirement(control);
+            assert!(domain.retiring);
+        }
+        loop {
+            control.reclaim();
+            if !control.retire_audio_candidate_domain(token) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        // False is not completion, nor a cancellation of local cleanup intent.
+        domain.request_retirement(control);
+        assert!(
+            domain.retiring,
+            "retirement intent disappeared during actual Root cleanup"
+        );
+        domain.request_retirement(control);
+        assert!(domain.retiring);
+        sink.domains[0] = Some(domain);
+        loop {
+            sink.maintain_returns(control);
+            if sink.domains[0].is_none() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "exact Root report was not recovered"
+            );
+            std::thread::yield_now();
+        }
+        assert!(control.recover_audio_candidate_domain(token).is_none()); // consumed once
+        loop {
+            if let Some(usage) = control.audio_candidate_domain_usage() {
+                assert_eq!(usage.occupied_domains, 0);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        previous = Some(token); // next accepted cell has a new actual incarnation
+    }
 }
