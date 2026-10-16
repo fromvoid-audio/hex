@@ -1,3 +1,19 @@
+## utility completion candidate — #18 / PR250, 16 october 2026
+
+The remaining focused correctness fix suppresses warmed DC/bass-filter residuals
+after Utility mute while histories continue advancing through the zeroed input.
+Canonical playback regression also reproduced an audible old tail surviving a
+mute handoff. Stateful mute now zeroes processor input/output with a stable matrix
+and strictly mute-only history retargeting. Track/Return DC, bass-side and audition
+silence/unmute continuity and actual Return callback allocation coverage protect
+the repair; broader filter-setting transitions retain existing policy.
+Service coverage edits all fourteen controls, checks per-edit undo/redo, and
+saves/reopens their canonical state and stable identity. Existing merged DSP,
+panel, shared layout and theme implementations are preserved.
+See [the native checklist and reference unknowns](docs/utility-acceptance.md).
+Exact candidate local CI, optimized delivery and native results are recorded in
+PR250/Pulse18; no native acceptance or measured Live filter parity is claimed.
+
 ## 16 October 2026 — native parameter metadata admission (#16 / PR249)
 
 - Recovered canonical issue linkage through supported Start Task; prior staged
