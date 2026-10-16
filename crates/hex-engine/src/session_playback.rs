@@ -413,9 +413,14 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    #[cfg(test)]
+    pub(crate) fn test_populate_unsupported_tail(&mut self) {
+        self.tail_groups[0] = Some(hex_lattice::NativeRuntimeChain::empty());
+    }
     /// Constructor-bound inventory of independently movable runtime owner
     /// locations, adapted from original177 owner_groups.rs. No callback visitor
-    /// or byte/handle completeness claim; this candidate cannot transfer owners.
+    /// or byte/handle completeness claim. The closed constructor class cannot
+    /// transfer child owners; vacant tail/context locations remain classified.
     pub(crate) fn visit_candidate_groups(
         &self,
         visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,

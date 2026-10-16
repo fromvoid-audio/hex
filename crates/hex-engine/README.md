@@ -560,3 +560,11 @@ anchored DATA/location/declaration rows from every physical owning handle and
 unresolved retirement; `require_complete` remains refused. Capacity pressure
 invalidates the partial ledger while original owners stay in normal custody.
 See [the bounded accounting manifest](../../docs/audio-only-storage-accounting.md).
+
+Constructor-candidate disposal inventories both occupied and vacant owning
+locations. The closed audio-only class permits dormant root and empty-chain
+handles, but rejects populated mutable/tail/retained-context/compensation owners;
+absence never certifies an owner closure or transfer fanout. Non-default
+`instrument-test-support` adds bounded candidate action/render and scalar
+transport methods for headless actual-slot tests, with no raw runtime/Arc escape
+or default admission authority. See [final-active disposal](../../docs/final-active-audio-disposal.md).

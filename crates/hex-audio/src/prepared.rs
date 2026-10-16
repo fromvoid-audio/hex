@@ -27,6 +27,8 @@ const COMMANDS: usize = 32;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod final_active_tests;
 const ROUTE_READER_ATTEMPTS: usize = 3;
 const MAX_TRACKS: usize = MAX_SESSION_ROUTE_TRACKS;
 /// Fixed number of route entries accepted by `Status::session_routes`.
@@ -169,6 +171,25 @@ pub(crate) struct Publication {
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
+}
+// Exactly one active musical runtime, including the constructor-owned path.
+enum ActivePublication {
+    Legacy(Publication),
+    Candidate(crate::candidate_custody::ActiveCandidate),
+}
+impl ActivePublication {
+    fn legacy(&self) -> Option<&Publication> {
+        match self {
+            Self::Legacy(value) => Some(value),
+            Self::Candidate(_) => None,
+        }
+    }
+    fn legacy_mut(&mut self) -> Option<&mut Publication> {
+        match self {
+            Self::Legacy(value) => Some(value),
+            Self::Candidate(_) => None,
+        }
+    }
 }
 enum QueuedPublication {
     Legacy(Publication),
@@ -697,7 +718,9 @@ pub struct Callback {
     gain_recording: crate::gain_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stage: SpectrumStage,
-    active: Option<Publication>,
+    active: Option<ActivePublication>,
+    #[cfg(test)]
+    test_admit_candidate: bool,
     deferred: Option<Publication>,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -787,6 +810,8 @@ pub fn channel_with_spectrum(
             spectrum_capture: capture,
             spectrum_stage: SpectrumStage::default(),
             active: None,
+            #[cfg(test)]
+            test_admit_candidate: false,
             deferred: None,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -1171,6 +1196,68 @@ impl Drop for Control {
 }
 
 impl Callback {
+    fn install_candidate(
+        &mut self,
+        value: crate::candidate_custody::QueuedCandidate,
+    ) -> Result<(), crate::candidate_custody::QueuedCandidate> {
+        #[cfg(test)]
+        let allowed = self.test_admit_candidate;
+        #[cfg(not(test))]
+        let allowed = false;
+        if !allowed
+            || self.active.is_some()
+            || self.deferred.is_some()
+            || self.closing.load(Acquire)
+        {
+            return Err(value);
+        }
+        let active =
+            crate::candidate_custody::ActiveCandidate::install(value, &self.candidate_root)?;
+        self.active = Some(ActivePublication::Candidate(active));
+        self.publication_pending.store(false, Release);
+        Ok(())
+    }
+    pub(crate) fn belongs_to_candidate_root(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        self.candidate_root.same_root(root)
+    }
+    pub(crate) fn has_active_candidate(&self) -> bool {
+        matches!(self.active, Some(ActivePublication::Candidate(_)))
+    }
+    pub(crate) fn extract_final_candidate_on_control(
+        &mut self,
+        authority: &crate::native_callback_owner::FinalReleaseAuthority,
+        destination: &mut Option<crate::candidate_custody::FinalActiveReturn>,
+    ) -> bool {
+        if destination.is_some() || !authority.matches(self.candidate_root.root_id()) {
+            return false;
+        }
+        if !self.has_active_candidate() {
+            return true;
+        }
+        // Prevalidated destination and authority; no provider/destructor occurs
+        // between taking the active owner and securing its persistent terminal slot.
+        if let Some(ActivePublication::Candidate(active)) = self.active.take() {
+            match active.return_final(authority) {
+                Ok(returned) => *destination = Some(returned),
+                Err(active) => {
+                    self.active = Some(ActivePublication::Candidate(active));
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    fn apply_candidate_action(&mut self, action: PlaybackAction) {
+        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
+            if active.owner.test_apply_action(action).is_err() {
+                self.status.device_fault.store(true, Relaxed);
+            }
+        }
+    }
     pub(crate) fn close_candidate_custody_on_control(&mut self) {
         self.closing.store(true, Release);
         self.candidate_root.close();
@@ -1265,10 +1352,12 @@ impl Callback {
                 }
             }
             if !self.retired.is_full() {
-                if let Some(active) = self.active.as_mut() {
+                if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
                     active.playback.cancel_all_processor_auditions();
                 }
-                if let Some(publication) = self.active.take() {
+                if matches!(self.active, Some(ActivePublication::Legacy(_)))
+                    && let Some(ActivePublication::Legacy(publication)) = self.active.take()
+                {
                     self.return_graph(publication);
                 }
             }
@@ -1319,13 +1408,22 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
-                QueuedPublication::Legacy(publication) => self.deferred = Some(publication),
+                QueuedPublication::Legacy(publication) => {
+                    if matches!(self.active, Some(ActivePublication::Candidate(_))) {
+                        self.return_graph(publication);
+                        self.consume_commands();
+                        return;
+                    }
+                    self.deferred = Some(publication);
+                }
                 QueuedPublication::Candidate(candidate) => {
-                    // Actual admission refusal, before any inheritance, active
-                    // installation, applied revision/routes or render operation.
-                    self.return_publication(ReturnedPublication::Candidate(
-                        candidate.reject_before_install(),
-                    ));
+                    if let Err(candidate) = self.install_candidate(candidate) {
+                        // Default production admission remains an unconditional
+                        // refusal before active installation or render.
+                        self.return_publication(ReturnedPublication::Candidate(
+                            candidate.reject_before_install(),
+                        ));
+                    }
                     // Rejection must not starve priority Stop or the bounded
                     // command prefix belonging to the still-active graph.
                     self.consume_commands();
@@ -1350,10 +1448,15 @@ impl Callback {
             let forced_refusal = false;
             let stale_fence = match next.policy {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence) => {
-                    let active_revision = self.active.as_ref().map_or(0, |active| active.revision);
+                    let active_revision = self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::legacy)
+                        .map_or(0, |active| active.revision);
                     let active_route_generation = self
                         .active
                         .as_ref()
+                        .and_then(ActivePublication::legacy)
                         .map_or(0, |active| active.playback.session_route_state_generation());
                     let admitted_ticket = self.admitted_ticket.load(Acquire);
                     let stop_pending = self.pending_stop_marker.load(Acquire) != 0;
@@ -1389,10 +1492,13 @@ impl Callback {
             ) {
                 None
             } else {
-                self.active.as_mut().map(|previous| {
-                    next.playback
-                        .try_inherit_runtime_from(&mut previous.playback)
-                })
+                self.active
+                    .as_mut()
+                    .and_then(ActivePublication::legacy_mut)
+                    .map(|previous| {
+                        next.playback
+                            .try_inherit_runtime_from(&mut previous.playback)
+                    })
             };
             match handoff {
                 Some(Err(error)) if error.is_transient() => {
@@ -1450,7 +1556,8 @@ impl Callback {
                     if matches!(
                         next.policy,
                         PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
-                    ) && let Some(previous) = self.active.as_ref()
+                    ) && let Some(previous) =
+                        self.active.as_ref().and_then(ActivePublication::legacy)
                         && next.control_context_generation == previous.control_context_generation
                     {
                         next.playback
@@ -1467,12 +1574,16 @@ impl Callback {
                         .processor_audition_lease
                         .filter(|target| self.processor_audition.current() == Some(*target))
                     {
-                        let previous_matches_target = self.active.as_ref().is_some_and(|active| {
-                            active.control_context_generation == target.project_generation
-                                && active.revision >= target.activation_floor
-                                && active.playback.sample_rate() == target.sample_rate_hz
-                                && active.playback.sample_rate() == self.rate
-                        });
+                        let previous_matches_target = self
+                            .active
+                            .as_ref()
+                            .and_then(ActivePublication::legacy)
+                            .is_some_and(|active| {
+                                active.control_context_generation == target.project_generation
+                                    && active.revision >= target.activation_floor
+                                    && active.playback.sample_rate() == target.sample_rate_hz
+                                    && active.playback.sample_rate() == self.rate
+                            });
                         let candidate_matches_target = next.control_context_generation
                             == target.project_generation
                             && next.revision >= target.activation_floor
@@ -1493,12 +1604,22 @@ impl Callback {
                     self.status
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
-                    if let Some(previous) = self.active.replace(next) {
+                    // Candidate ownership cannot enter this legacy replacement
+                    // path; the queue decision above retains it in the same slot.
+                    if matches!(self.active, Some(ActivePublication::Candidate(_))) {
+                        self.return_graph(next);
+                        self.consume_commands();
+                        return;
+                    }
+                    if let Some(ActivePublication::Legacy(previous)) =
+                        self.active.replace(ActivePublication::Legacy(next))
+                    {
                         self.return_graph(previous);
                     }
                     if let Some(cancellation) = self
                         .active
                         .as_ref()
+                        .and_then(ActivePublication::legacy)
                         .and_then(|active| active.fresh_runtime_cancellation.as_ref())
                     {
                         cancellation.finish();
@@ -1519,7 +1640,7 @@ impl Callback {
             return;
         };
         if let Some(previous) = boundary.previous
-            && let Some(active) = self.active.as_mut()
+            && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
         {
             if active.control_context_generation == previous.project_generation {
                 if boundary.clear_mode == processor_audition::ClearMode::Immediate {
@@ -1533,7 +1654,7 @@ impl Callback {
                 active.playback.cancel_all_processor_auditions();
             }
         } else if boundary.clear_mode == processor_audition::ClearMode::Immediate
-            && let Some(active) = self.active.as_mut()
+            && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
         {
             // A prior smooth release already cleared its lease target, but its
             // fade may still be audible. A later hard lifecycle cancel must
@@ -1552,7 +1673,7 @@ impl Callback {
         if self.processor_audition_rejected_epoch == epoch {
             return;
         }
-        let Some(active) = self.active.as_mut() else {
+        let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) else {
             return;
         };
         if active.playback.sample_rate() != target.sample_rate_hz
@@ -1610,8 +1731,10 @@ impl Callback {
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if cut.stop_through.is_some() {
+            #[cfg(all(test, feature = "allocation-probe"))]
+            self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
-            if let Some(active) = self.active.as_mut() {
+            if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
                 active.playback.apply(PlaybackCommand::Stop);
             }
             self.invalidate_processor_audition_request();
@@ -1633,8 +1756,10 @@ impl Callback {
                 .stop_through
                 .is_none_or(|stop_through| queued.ticket > stop_through)
             {
+                #[cfg(all(test, feature = "allocation-probe"))]
+                self.apply_candidate_action(queued.action);
                 let mut invalidate_audition = false;
-                if let Some(active) = self.active.as_mut() {
+                if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
                     match active.playback.try_apply_action(queued.action) {
                         Ok(()) => {
                             invalidate_audition =
@@ -1683,8 +1808,10 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        #[cfg(all(test, feature = "allocation-probe"))]
+        self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
         self.invalidate_gain_recording(crate::gain_recording::AbortReason::OutputFailed);
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
             active.playback.apply(PlaybackCommand::Stop);
         }
         self.processor_audition.invalidate_current_immediately();
@@ -1701,7 +1828,7 @@ impl Callback {
         self.processor_audition.reject_current(epoch);
         self.processor_audition_rejected_epoch = epoch;
         self.processor_audition_lease = None;
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
             active.playback.cancel_all_processor_auditions();
         }
     }
@@ -1714,6 +1841,24 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
+            if self.closing.load(Acquire) {
+                output.fill([0.0; 2]);
+                return Ok(());
+            }
+            #[cfg(all(test, feature = "allocation-probe"))]
+            {
+                active.owner.test_render(output)?;
+                self.publish_transport();
+                return Ok(());
+            }
+            #[cfg(not(all(test, feature = "allocation-probe")))]
+            {
+                let _ = active;
+                return Err(Invalid("candidate admission is unavailable"));
+            }
+        }
+
         if !output.is_empty() {
             self.prepare_gain_recording_quantum();
         }
@@ -1727,11 +1872,15 @@ impl Callback {
             return self.render_unobserved(output);
         };
         let epoch = self.spectrum_target.current_epoch();
-        let active_matches_target = self.active.as_ref().is_some_and(|active| {
-            active.control_context_generation == target.project_generation
-                && active.revision >= target.activation_floor
-                && active.playback.sample_rate() == target.sample_rate_hz
-        });
+        let active_matches_target = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::legacy)
+            .is_some_and(|active| {
+                active.control_context_generation == target.project_generation
+                    && active.revision >= target.activation_floor
+                    && active.playback.sample_rate() == target.sample_rate_hz
+            });
         if target.sample_rate_hz != self.rate || !active_matches_target {
             self.spectrum_stage.begin(target, epoch, output.len());
             self.spectrum_stage.valid = false;
@@ -1742,7 +1891,7 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
             let stage = &mut self.spectrum_stage;
             let mut observe = |identity, offset, frames: &[Frame]| {
                 stage.observe(identity, offset, frames);
@@ -1763,7 +1912,7 @@ impl Callback {
             output.fill([0.0; 2]);
             return Ok(());
         }
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
             active.playback.render(output)?;
         } else {
             output.fill([0.0; 2]);
@@ -1789,11 +1938,15 @@ impl Callback {
             && complete
             && current == Some(target)
             && current_epoch == self.spectrum_stage.epoch
-            && self.active.as_ref().is_some_and(|active| {
-                active.control_context_generation == target.project_generation
-                    && active.revision >= target.activation_floor
-                    && active.playback.sample_rate() == target.sample_rate_hz
-            })
+            && self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .is_some_and(|active| {
+                    active.control_context_generation == target.project_generation
+                        && active.revision >= target.activation_floor
+                        && active.playback.sample_rate() == target.sample_rate_hz
+                })
             && target.sample_rate_hz == self.rate;
         let outcome = if let Some(capture) = self.spectrum_capture.as_mut() {
             if valid {
@@ -1801,7 +1954,11 @@ impl Callback {
                     target: target.token,
                     generation: target.project_generation,
                     sample_rate_hz: target.sample_rate_hz,
-                    applied_revision: self.active.as_ref().map_or(0, |active| active.revision),
+                    applied_revision: self
+                        .active
+                        .as_ref()
+                        .and_then(ActivePublication::legacy)
+                        .map_or(0, |active| active.revision),
                 };
                 Some(capture.submit_at(
                     stamp,
@@ -1820,7 +1977,7 @@ impl Callback {
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
         self.gain_recording.abort(reason);
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut) {
             active.playback.clear_gain_recording_override();
         }
         if self
@@ -1835,7 +1992,7 @@ impl Callback {
     fn prepare_gain_recording_quantum(&mut self) {
         use crate::gain_recording::{AbortReason, Clock};
         let transport_epoch = self.status.transport_epoch.load(Acquire);
-        let active = self.active.as_mut();
+        let active = self.active.as_mut().and_then(ActivePublication::legacy_mut);
         let live = self.gain_recording.prepare(|target| {
             let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
             if active.revision != target.audio_revision
@@ -1878,6 +2035,7 @@ impl Callback {
         let end = self
             .active
             .as_ref()
+            .and_then(ActivePublication::legacy)
             .map_or(0, |active| active.playback.performance_frame());
         self.gain_recording.finish_quantum(end, output_valid);
         if self.gain_recording.receipt_fault {
@@ -1886,7 +2044,7 @@ impl Callback {
     }
 
     fn publish_active_routes(&mut self, force: bool) {
-        let Some(active) = self.active.as_ref() else {
+        let Some(active) = self.active.as_ref().and_then(ActivePublication::legacy) else {
             return;
         };
         let revision = active.revision;
@@ -1930,21 +2088,34 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
-        let ready = self.active.as_ref().is_some_and(|active| {
-            active.playback.playing()
-                && active
-                    .playback
-                    .prepared_revision()
-                    .and_then(|prepared| prepared.gain_recording_track())
-                    .is_some_and(|track| {
-                        active
-                            .playback
-                            .gain_recording_clock(track.value())
-                            .is_some()
-                    })
-        });
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if let Some(ActivePublication::Candidate(active)) = self.active.as_ref() {
+            if let Some((position, frame, playing)) = active.owner.test_transport() {
+                self.status.position.store(position, Relaxed);
+                self.status.performance_frame.store(frame, Relaxed);
+                self.status.playing.store(playing, Relaxed);
+            }
+            return;
+        }
+        let ready = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::legacy)
+            .is_some_and(|active| {
+                active.playback.playing()
+                    && active
+                        .playback
+                        .prepared_revision()
+                        .and_then(|prepared| prepared.gain_recording_track())
+                        .is_some_and(|track| {
+                            active
+                                .playback
+                                .gain_recording_clock(track.value())
+                                .is_some()
+                        })
+            });
         self.status.gain_recording_ready.store(ready, Release);
-        if let Some(active) = self.active.as_ref() {
+        if let Some(active) = self.active.as_ref().and_then(ActivePublication::legacy) {
             self.status
                 .position
                 .store(active.playback.position(), Relaxed);
@@ -3139,7 +3310,15 @@ mod tests {
             )
             .unwrap();
         callback.begin_block();
-        assert_eq!(callback.active.as_ref().unwrap().revision, first_revision);
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .revision,
+            first_revision
+        );
 
         let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
         control
@@ -3170,7 +3349,12 @@ mod tests {
         callback.begin_block();
         callback.render(&mut output).unwrap();
         assert_eq!(
-            callback.active.as_ref().unwrap().revision,
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .revision,
             second_revision,
             "publication rejection: {:?}",
             callback.status.rejected_revision()
@@ -3182,6 +3366,7 @@ mod tests {
             !callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3192,6 +3377,7 @@ mod tests {
             !callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3211,6 +3397,7 @@ mod tests {
             callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3233,7 +3420,15 @@ mod tests {
             )
             .unwrap();
         callback.begin_block();
-        assert_eq!(callback.active.as_ref().unwrap().revision, first_revision);
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .revision,
+            first_revision
+        );
 
         let selection = hex_engine::ProcessorAuditionSelection { index: 0, lane: 0 };
         control
@@ -3257,9 +3452,22 @@ mod tests {
             .unwrap();
         callback.begin_block();
         callback.render(&mut output).unwrap();
-        assert_eq!(callback.active.as_ref().unwrap().revision, second_revision);
         assert_eq!(
-            callback.active.as_ref().unwrap().control_context_generation,
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .revision,
+            second_revision
+        );
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .control_context_generation,
             3
         );
         assert_eq!(
@@ -3270,6 +3478,7 @@ mod tests {
             callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3305,6 +3514,7 @@ mod tests {
             callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3322,7 +3532,15 @@ mod tests {
                 .unwrap();
             callback.begin_block();
             callback.render(&mut output).unwrap();
-            assert_eq!(callback.active.as_ref().unwrap().revision, revision);
+            assert_eq!(
+                callback
+                    .active
+                    .as_ref()
+                    .and_then(ActivePublication::legacy)
+                    .unwrap()
+                    .revision,
+                revision
+            );
             assert_eq!(
                 callback.processor_audition_lease,
                 control.processor_audition.desired()
@@ -3331,6 +3549,7 @@ mod tests {
                 callback
                     .active
                     .as_mut()
+                    .and_then(ActivePublication::legacy_mut)
                     .unwrap()
                     .playback
                     .processor_audition_is_active(identity, selection)
@@ -3370,6 +3589,7 @@ mod tests {
             !callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3419,13 +3639,22 @@ mod tests {
             .unwrap();
         callback.begin_block();
         callback.render(&mut output).unwrap();
-        assert_eq!(callback.active.as_ref().unwrap().revision, second_revision);
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .revision,
+            second_revision
+        );
         assert_eq!(callback.processor_audition_lease, None);
         assert_eq!(callback.processor_audition_rejected_epoch, epoch);
         assert!(
             !callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3447,6 +3676,7 @@ mod tests {
             callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3480,7 +3710,15 @@ mod tests {
         let mut output = [[0.0; 2]; 64];
         callback.render(&mut output).unwrap();
 
-        assert!(!callback.active.as_ref().unwrap().playback.playing());
+        assert!(
+            !callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .playback
+                .playing()
+        );
         assert_eq!(
             callback.processor_audition_lease,
             control.processor_audition.desired()
@@ -3489,6 +3727,7 @@ mod tests {
             callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3593,13 +3832,22 @@ mod tests {
         callback.render(&mut output).unwrap();
 
         assert_eq!(second_revision, first_revision + 1);
-        assert_eq!(callback.active.as_ref().unwrap().revision, second_revision);
+        assert_eq!(
+            callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .revision,
+            second_revision
+        );
         assert_eq!(callback.processor_audition_lease, None);
         assert_eq!(callback.processor_audition.current(), None);
         assert!(
             !callback
                 .active
                 .as_mut()
+                .and_then(ActivePublication::legacy_mut)
                 .unwrap()
                 .playback
                 .processor_audition_is_active(identity, selection)
@@ -3698,6 +3946,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(0)
         );
@@ -3709,6 +3958,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(0)
         );
@@ -3735,6 +3985,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(generation_a)
         );
@@ -3766,6 +4017,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(generation_b)
         );
@@ -3880,6 +4132,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(generation_a)
         );
@@ -3911,6 +4164,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(generation_a)
         );
@@ -3927,6 +4181,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(generation_b)
         );
@@ -3982,6 +4237,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .map(|publication| publication.control_context_generation),
             Some(1)
         );
@@ -4327,6 +4583,7 @@ mod tests {
         callback
             .active
             .as_mut()
+            .and_then(ActivePublication::legacy_mut)
             .unwrap()
             .playback
             .try_apply_action(hex_engine::PlaybackAction::Session(
@@ -4344,6 +4601,7 @@ mod tests {
             callback
                 .active
                 .as_ref()
+                .and_then(ActivePublication::legacy)
                 .unwrap()
                 .playback
                 .session_route_state_generation(),

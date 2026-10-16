@@ -25,6 +25,74 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     #[test]
+    fn dormant_constructor_handles_and_vacant_locations_survive_supported_play_pause_stop() {
+        let Some((custody, token, pointer, capacity)) =
+            crate::audio_preparation::candidate_test_fixture(false)
+        else {
+            return;
+        };
+        let mut owner = AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        let count = owner.inner.groups.iter().filter(|g| g.present).count();
+        assert!(owner.inner.groups.iter().any(|g| !g.present));
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        owner.test_render(&mut [[0.0; 2]; 3]).unwrap();
+        for action in [crate::PlaybackCommand::Pause, crate::PlaybackCommand::Stop] {
+            owner
+                .test_apply_action(crate::PlaybackAction::Transport(action))
+                .unwrap();
+            owner.test_render(&mut [[1.0; 2]; 2]).unwrap();
+            owner.inner.validate_groups().unwrap();
+        }
+        let receipt = owner.dispose_on_control().unwrap();
+        assert_eq!(receipt.closed_owner_groups(), count);
+        assert!(
+            owner
+                .inner
+                .groups
+                .iter()
+                .filter(|g| !g.present)
+                .all(|g| !g.closed)
+        );
+        let bank = owner.recover_inputs_on_control().unwrap();
+        assert_eq!(
+            (bank.sources.as_ptr() as usize, bank.sources.capacity()),
+            (pointer, capacity)
+        );
+    }
+    #[test]
+    fn actual_unsupported_tail_population_pins_original_runtime_without_false_group_closure() {
+        let Some((custody, token, _, _)) = crate::audio_preparation::candidate_test_fixture(false)
+        else {
+            return;
+        };
+        let mut owner = AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        owner
+            .inner
+            .runtime
+            .as_mut()
+            .unwrap()
+            .playback
+            .test_populate_unsupported_tail();
+        assert_eq!(
+            owner.dispose_on_control().err(),
+            Some(AudioStorageError::UnsupportedGraph)
+        );
+        assert_eq!(owner.phase(), AudioCandidateDisposalPhase::FailedIncomplete);
+        assert!(owner.inner.runtime.is_some());
+        assert!(owner.inner.groups.iter().all(|g| !g.closed));
+        assert!(owner.recover_inputs_on_control().is_none());
+        assert!(owner.dispose_on_control().is_err());
+        // Explicit control-side fixture teardown; no disposal receipt was issued.
+    }
+    #[test]
     fn actual_candidate_normal_disposal_recovers_original_bank_without_freeing_its_pcm() {
         for streamed in [false, true] {
             let Some((custody, token, pointer, capacity)) =
@@ -36,11 +104,30 @@ mod tests {
                 .ok()
                 .unwrap();
             let identity = owner.identity();
-            let expected_groups = owner.inner.groups.len();
+            let expected_groups = owner.inner.groups.iter().filter(|g| g.present).count();
             assert!(expected_groups > 0);
             assert!(owner.inner.runtime_storage_is_unknown());
             assert!(owner.recover_inputs_on_control().is_none());
-            let disposed = owner.dispose_on_control().unwrap();
+            let original_runtime =
+                owner.inner.runtime.as_deref().unwrap() as *const RuntimeOwner as usize;
+            let observed = Arc::new(std::sync::Mutex::new(None));
+            let record = observed.clone();
+            owner.inner.runtime.as_mut().unwrap().probe =
+                Some(RuntimeDropProbe(Some(Box::new(move || {
+                    *record.lock().unwrap() = Some((original_runtime, std::thread::current().id()));
+                }))));
+            let caller = std::thread::current().id();
+            let (mut owner, disposed, destructor_thread) = std::thread::spawn(move || {
+                let disposed = owner.dispose_on_control().unwrap();
+                (owner, disposed, std::thread::current().id())
+            })
+            .join()
+            .unwrap();
+            assert_ne!(caller, destructor_thread);
+            assert_eq!(
+                *observed.lock().unwrap(),
+                Some((original_runtime, destructor_thread))
+            );
             assert_eq!(disposed.identity(), identity);
             assert_eq!(disposed.closed_owner_groups(), expected_groups);
             assert!(owner.dispose_on_control().is_err());
@@ -160,16 +247,17 @@ impl AudioCandidateDisposed {
 }
 struct Group {
     location: (u8, usize),
+    present: bool,
     closed: bool,
 }
 struct RuntimeOwner {
     playback: Playback,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     probe: Option<RuntimeDropProbe>,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "instrument-test-support"))]
 struct RuntimeDropProbe(Option<Box<dyn FnOnce() + Send>>);
-#[cfg(test)]
+#[cfg(any(test, feature = "instrument-test-support"))]
 impl Drop for RuntimeDropProbe {
     fn drop(&mut self) {
         if let Some(probe) = self.0.take() {
@@ -177,14 +265,68 @@ impl Drop for RuntimeDropProbe {
         }
     }
 }
-/// No raw Playback, Arc, render, inheritance or mutable-root escape. A host must
-/// anchor accepted owners in its persistent lifecycle custody before queueing.
+/// Default builds have no raw Playback, Arc, render, inheritance or mutable-root
+/// escape. Non-default headless support exposes only bounded actions/render and
+/// scalar transport. Accepted owners must remain in persistent host custody.
 pub struct AudioCandidateOwner {
     // One control-constructed opaque handle keeps callback queue envelopes
     // fixed and small. No public Box/Arc, Deref, Clone or mutable state escape.
     inner: Box<CandidateState>,
 }
 impl AudioCandidateOwner {
+    /// Control-only headless observer on the actual nested Runtime Box Drop.
+    /// Returns a scalar address only; no pointer, Playback or owning handle escapes.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_observe_runtime_drop(
+        &mut self,
+        observer: impl FnOnce(usize) + Send + 'static,
+    ) -> Option<usize> {
+        if self.inner.phase != AudioCandidateDisposalPhase::Owned {
+            return None;
+        }
+        let runtime = self.inner.runtime.as_mut()?;
+        if runtime.probe.is_some() {
+            return None;
+        }
+        let address = runtime.as_ref() as *const RuntimeOwner as usize;
+        runtime.probe = Some(RuntimeDropProbe(Some(Box::new(move || observer(address)))));
+        Some(address)
+    }
+    /// Narrow non-default headless test support; never yields a runtime/root.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_apply_action(
+        &mut self,
+        action: crate::PlaybackAction,
+    ) -> Result<(), crate::Invalid> {
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?;
+        runtime
+            .playback
+            .try_apply_action(action)
+            .map_err(|_| crate::Invalid("candidate action refused"))
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_render(&mut self, output: &mut [crate::Frame]) -> Result<(), crate::Invalid> {
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?;
+        runtime.playback.render(output)
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_transport(&self) -> Option<(u64, u64, bool)> {
+        self.inner.runtime.as_ref().map(|runtime| {
+            (
+                runtime.playback.position(),
+                runtime.playback.performance_frame(),
+                runtime.playback.playing(),
+            )
+        })
+    }
     pub fn try_new_on_control(
         custody: AudioPreparationCustody,
         token: AudioPreparationToken,
@@ -248,10 +390,9 @@ impl CandidateState {
             let sample_rate = revision.arrangement().sample_rate();
             let runtime = Playback::new_audio_candidate(revision)?;
             let mut count = 0_usize;
-            runtime.visit_candidate_groups(&mut |_, _, present| {
-                if present {
-                    count = count.checked_add(1).ok_or(AudioStorageError::Overflow)?;
-                }
+            runtime.visit_candidate_groups(&mut |kind, _, present| {
+                validate_supported_location(kind, present)?;
+                count = count.checked_add(1).ok_or(AudioStorageError::Overflow)?;
                 Ok(())
             })?;
             let mut groups = Vec::new();
@@ -267,12 +408,11 @@ impl CandidateState {
                     .ok_or(AudioStorageError::Overflow)?,
             )?;
             runtime.visit_candidate_groups(&mut |kind, index, present| {
-                if present {
-                    groups.push(Group {
-                        location: (kind, index),
-                        closed: false,
-                    });
-                }
+                groups.push(Group {
+                    location: (kind, index),
+                    present,
+                    closed: false,
+                });
                 Ok(())
             })?;
             Ok((
@@ -284,7 +424,7 @@ impl CandidateState {
                 sample_rate,
                 Box::new(RuntimeOwner {
                     playback: runtime,
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "instrument-test-support"))]
                     probe: None,
                 }),
                 groups,
@@ -341,16 +481,13 @@ impl CandidateState {
         runtime
             .playback
             .visit_candidate_groups(&mut |kind, member, present| {
-                if present {
-                    if self
-                        .groups
-                        .get(index)
-                        .is_none_or(|g| g.location != (kind, member) || g.closed)
-                    {
-                        return Err(AudioStorageError::SourceMismatch);
-                    }
-                    index += 1;
+                validate_supported_location(kind, present)?;
+                if self.groups.get(index).is_none_or(|g| {
+                    g.location != (kind, member) || g.present != present || g.closed
+                }) {
+                    return Err(AudioStorageError::SourceMismatch);
                 }
+                index += 1;
                 Ok(())
             })?;
         if index != self.groups.len() {
@@ -373,7 +510,12 @@ impl CandidateState {
             return Err(AudioStorageError::UnknownStorage);
         }
         if self.phase == AudioCandidateDisposalPhase::Owned {
-            self.validate_groups()?;
+            if let Err(error) = self.validate_groups() {
+                if error == AudioStorageError::UnsupportedGraph {
+                    self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+                }
+                return Err(error);
+            }
             if self.runtime.is_none() {
                 self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
                 return Err(AudioStorageError::UnknownStorage);
@@ -389,7 +531,8 @@ impl CandidateState {
             }
             self.phase = AudioCandidateDisposalPhase::RootsCleaning;
             for group in &mut self.groups {
-                group.closed = true;
+                // An absent slot never invents an owner or a closure fact.
+                group.closed = group.present;
             }
             self.custody.close_on_control();
         }
@@ -442,5 +585,17 @@ impl CandidateState {
         }
         self.inputs_disposed = true;
         Ok(())
+    }
+}
+
+// Closed constructor class: no effects/instruments/MIDI, no retained tails or
+// analytic-context fanout, and no signal-graph compensation. Enumeration includes
+// every vacant slot; absence is validated, never converted into an owner group.
+fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
+    match kind {
+        0 | 4 | 7 | 9..=12 => Ok(()),
+        1 | 2 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
+        1 | 2 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
+        _ => Err(AudioStorageError::SourceMismatch),
     }
 }

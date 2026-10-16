@@ -194,3 +194,12 @@ Coupled callback guards move their exact Boxes to control after both final
 releases; build errors after backend exposure remain uncertain. No complete-cost,
 native admission or final-active quiescence claim follows. See
 [never-installed disposal](../../docs/never-installed-audio-disposal.md).
+
+The final-active constructor path retains the same private owner/Stamp in the
+single active-slot enum, and only coupled final native release plus the exact
+completed stream-handle frontier can return it for control disposal. Production
+admission stays refused; a headless cfg(test) override exercises actual playback
+without granting native publication. A final result follows normal runtime,
+carrier, catalog and pool cleanup, never pause/ACK alone or OS-stop inference.
+See [final-active disposal](../../docs/final-active-audio-disposal.md) for the
+closed audio-only ownership class, retained Unknowns and evidence limits.

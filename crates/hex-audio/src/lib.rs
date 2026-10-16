@@ -11,8 +11,8 @@ mod lifecycle;
 mod native_callback_owner;
 pub use candidate_catalog::CandidateDomain;
 pub use candidate_custody::{
-    AudioCandidateCustodyReport, AudioCandidateRecovery, AudioCandidateStageRefusal,
-    AudioCandidateTicket,
+    AudioCandidateCustodyReport, AudioCandidateRecovery, AudioCandidateReturnKind,
+    AudioCandidateStageRefusal, AudioCandidateTicket,
 };
 pub mod processor_audition;
 pub mod spectrum;

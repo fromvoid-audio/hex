@@ -301,6 +301,12 @@ impl Playback {
             .ok_or(crate::AudioStorageError::UnsupportedGraph)?
             .validate_candidate_runtime_storage(metadata)
     }
+    #[cfg(test)]
+    pub(crate) fn test_populate_unsupported_tail(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.test_populate_unsupported_tail();
+        }
+    }
     pub(crate) fn visit_candidate_groups(
         &self,
         visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
