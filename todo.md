@@ -3376,3 +3376,11 @@ Current main4134e33b is integrated, retaining both sides of todo.md conflicts an
 upstream vendored license/patch whitespace. New exact-source local checks,
 optimized installation and user visual confirmation are required. Dense high-rate
 FM CPU and other unverified native/listening requirements remain open.
+
+
+The first fe062e54 FULL20 run stopped in workspace tests: the newly integrated
+preset fixture still asserted pre-harmonic v11/416-byte Operator state. The
+fixture now requires v12/1,488 bytes and exercises authored/hidden harmonics,
+range and Repeat through the existing complete-state load/Undo/Redo and neighbor
+identity checks. Production preset behavior is unchanged. This failed run is not
+merge or delivery evidence; the final source requires a new full run.

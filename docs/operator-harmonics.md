@@ -126,8 +126,12 @@ agreement across every cutoff from 1 through 64, fallible phase-basis reservatio
 overview cache reuse/invalidation, Repeat and normalization bounds, real snapshot/history/save/open,
 rendered painter gestures, 64 held/released voices in Arrangement and Session,
 feedback/LFO/filter recurrence, enable-clock continuity, range reversals, partition
-invariance and refusal preserving old PCM. Callback probes cover first paint,
-range changes, builtin/User reversal and release with zero total/net allocations
+invariance and refusal preserving old PCM. The preset service round-trip covers
+the complete v12/1,488-byte state,
+including hidden harmonics, range/Repeat, host gains and one-step Undo/Redo
+without changing device identity or neighboring devices. Callback probes cover
+first paint, range changes, builtin/User reversal and release with zero total/net
+allocations
 and deallocations. Existing transactional rollback/admission tests remain active.
 
 Run the production CPU fixture with:
