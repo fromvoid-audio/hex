@@ -921,11 +921,12 @@ pub(crate) fn split_clip_at_tempo(
     }
     let mut left = original.clone();
     let mut right = original.clone();
-    left.edit
-        .as_mut()
+    left.audio_edit_mut()
         .ok_or(Invalid("audio domain missing"))?
         .view_end = cut;
-    let view = right.edit.as_mut().ok_or(Invalid("audio domain missing"))?;
+    let view = right
+        .audio_edit_mut()
+        .ok_or(Invalid("audio domain missing"))?;
     view.view_start = cut;
     if view.musical_start.is_some() {
         view.musical_start = Some(tempo.frame_to_beat(frame)?);

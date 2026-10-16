@@ -47,7 +47,7 @@ pub use snapshot::{
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
     BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterPoint,
     MeterPosition, Tempo, TempoMap, TempoPoint, query_beat_pulses,
@@ -300,7 +300,7 @@ pub struct Clip {
     pub(crate) source_phase: u64,
     pub(crate) fade: ClipFade,
     pub(crate) gain: ClipGain,
-    pub(crate) edit: Option<AudioClipEdit>,
+    pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
     pub fn id(&self) -> ClipId {
@@ -343,7 +343,11 @@ impl Clip {
     }
 
     pub fn audio_edit(&self) -> Option<&AudioClipEdit> {
-        self.edit.as_ref()
+        self.edit.as_deref()
+    }
+
+    pub(crate) fn audio_edit_mut(&mut self) -> Option<&mut AudioClipEdit> {
+        self.edit.as_mut().map(Arc::make_mut)
     }
 
     pub fn preview_edge_trim_with_tempo(

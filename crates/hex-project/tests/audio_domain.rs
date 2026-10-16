@@ -298,3 +298,99 @@ fn invalid_pitch_markers_envelope_and_domain_caps_do_not_change_project_or_histo
     );
     assert_eq!(editor.project(), &before);
 }
+
+#[test]
+fn copied_musical_edits_isolate_crop_placement_domain_and_history() {
+    let (mut editor, clip) = fixture(true);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let initial = editor.project().clone();
+    let original = initial.clip(clip).unwrap().clone();
+    let track = initial.tracks()[0].id();
+    let mut states = vec![initial.clone()];
+    let Created::Clip(copied) = editor
+        .execute(Command::CopyClipTo {
+            clip,
+            track,
+            start: 96_000,
+        })
+        .unwrap()
+    else {
+        panic!("copy")
+    };
+    states.push(editor.project().clone());
+    assert!(std::sync::Arc::ptr_eq(
+        &original.audio_edit().unwrap().domain,
+        &editor
+            .project()
+            .clip(copied)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain,
+    ));
+    for command in [
+        Command::MoveClip {
+            clip: copied,
+            track,
+            start: 120_000,
+        },
+        Command::TrimClipEdge {
+            clip: copied,
+            edge: TrimEdge::Left,
+            frame: 121_000,
+        },
+        Command::SetAudioClipPitch {
+            clip: copied,
+            cents: -257,
+        },
+        Command::SetClipSourcePhase {
+            clip: copied,
+            phase: 29,
+        },
+        Command::SetClipFades {
+            clip: copied,
+            fade_in: 89,
+            fade_out: 97,
+        },
+    ] {
+        editor.execute(command).unwrap();
+        assert_eq!(editor.project().clip(clip).unwrap(), &original);
+        assert_eq!(initial.clip(clip).unwrap(), &original);
+        states.push(editor.project().clone());
+    }
+    let copied_edit = editor.project().clip(copied).unwrap().audio_edit().unwrap();
+    assert_ne!(
+        copied_edit.musical_start,
+        original.audio_edit().unwrap().musical_start
+    );
+    assert!(copied_edit.view_start > 0);
+    assert_eq!(copied_edit.domain.pitch_cents, -257);
+    assert_eq!(copied_edit.domain.source_phase, 29);
+    assert_eq!(original.audio_edit().unwrap().domain.pitch_cents, 137);
+    assert_eq!(original.audio_edit().unwrap().domain.source_phase, 7);
+    assert_eq!(
+        Project::from_snapshot(editor.project().snapshot()).unwrap(),
+        *editor.project()
+    );
+    for expected in states.iter().rev().skip(1) {
+        assert!(editor.undo());
+        // Stable IDs are never reused: undo preserves the allocation high-water mark.
+        let mut expected = expected.snapshot();
+        let actual = editor.project().snapshot();
+        assert!(actual.next_id >= expected.next_id);
+        expected.next_id = actual.next_id;
+        assert_eq!(actual, expected);
+    }
+    for expected in states.iter().skip(1) {
+        assert!(editor.redo());
+        assert_eq!(editor.project(), expected);
+    }
+}

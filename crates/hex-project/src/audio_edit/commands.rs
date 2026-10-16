@@ -34,7 +34,7 @@ pub(crate) fn move_clip(clip: &mut Clip, start: u64, tempo: &TempoMap) -> Result
     if let Some(edit) = clip.edit.as_mut()
         && edit.musical_start.is_some()
     {
-        edit.musical_start = Some(tempo.frame_to_beat(start)?);
+        Arc::make_mut(edit).musical_start = Some(tempo.frame_to_beat(start)?);
     }
     clip.start = start;
     project_clip(clip, tempo)
@@ -66,8 +66,7 @@ pub(crate) fn trim_view(
     }
     let mut result = clip.clone();
     let view = result
-        .edit
-        .as_mut()
+        .audio_edit_mut()
         .ok_or(Invalid("audio crop has no domain"))?;
     match edge {
         TrimEdge::Left if coordinate < view.view_end => {
@@ -90,8 +89,8 @@ pub fn default_audio_warp(
     mode: WarpMode,
 ) -> Result<WarpSettings, Invalid> {
     let mut edit = clip
-        .edit
-        .clone()
+        .audio_edit()
+        .cloned()
         .unwrap_or_else(|| AudioClipEdit::capture(clip));
     edit.anchor(clip.start, tempo)?;
     let origin = edit.projection_origin()?;
@@ -149,10 +148,11 @@ pub(crate) fn apply(
     {
         return Ok(crate::Created::None);
     }
-    let mut edit = clip
+    let mut owned_edit = clip
         .edit
         .clone()
-        .unwrap_or_else(|| AudioClipEdit::capture(&clip));
+        .unwrap_or_else(|| Arc::new(AudioClipEdit::capture(&clip)));
+    let edit = Arc::make_mut(&mut owned_edit);
     match command {
         Command::SetAudioClipPitch { cents, .. } => {
             if !(-4_800..=4_800).contains(&cents) {
@@ -182,7 +182,7 @@ pub(crate) fn apply(
         }
         _ => return Err(Invalid("unsupported audio editing command")),
     }
-    clip.edit = Some(edit);
+    clip.edit = Some(owned_edit);
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
     *project.clip_mut(id)? = clip;
@@ -244,7 +244,7 @@ pub(crate) fn reset_region(
     if old.musical_start.is_some() {
         edit.anchor(start, project.tempo_map())?;
     }
-    clip.edit = Some(edit);
+    clip.edit = Some(Arc::new(edit));
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
     *project.clip_mut(id)? = clip;
@@ -261,10 +261,11 @@ pub(crate) fn set_fades(
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
-    let mut edit = clip
+    let mut owned_edit = clip
         .edit
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
+    let edit = Arc::make_mut(&mut owned_edit);
     let fade = ClipFade::new(clip.duration, 0, fade_in, fade_out)?;
     let domain = Arc::make_mut(&mut edit.domain);
     domain.fade = fade;
@@ -274,7 +275,7 @@ pub(crate) fn set_fades(
         origin_beat_raw: i128::from(beat.raw()),
         local_start_raw: edit.view_start,
     });
-    clip.edit = Some(edit);
+    clip.edit = Some(owned_edit);
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
     *project.clip_mut(id)? = clip;
@@ -291,10 +292,11 @@ pub(crate) fn source_policy(
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
-    let mut edit = clip
+    let mut owned_edit = clip
         .edit
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
+    let edit = Arc::make_mut(&mut owned_edit);
     let domain = Arc::make_mut(&mut edit.domain);
     if let Some(looping) = looping {
         domain.looping = looping;
@@ -312,7 +314,7 @@ pub(crate) fn source_policy(
     }
     clip.looping = domain.looping;
     clip.source_phase = domain.source_phase;
-    clip.edit = Some(edit);
+    clip.edit = Some(owned_edit);
     validate_clip(project, &clip)?;
     *project.clip_mut(id)? = clip;
     Ok(crate::Created::None)

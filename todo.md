@@ -2736,3 +2736,22 @@ not complete Operator filter2326, higher-polyphony2226 or scalability2108.
   comparison, integrated exact-source full CI, PR readiness and delivery remain
   with the primary. Native UI/listening/Windows and exact Live equivalence are
   unverified; finite optional owner checklist and truthful limits are documented.
+
+
+## 16 October 2026 — compact musical clip ownership (Pulse #27 / PR #185)
+
+- A neutral control benchmark exposed extra clip clone/layout cost. The private
+  edit field now uses optional shared ownership and copy-on-write mutations;
+  read-only getters, owned snapshots and schema 21 stay unchanged. On this
+  arm64 build, `Clip` is 104 bytes rather than 136. This layout reduction does
+  not itself establish recovered edit/compile latency; the primary will rerun
+  the same optimized baseline comparison.
+- Copy/move/trim/pitch/phase/fade changes preserve independent clones and all
+  Undo/Redo states; a new regression also checks snapshot restoration. Existing
+  split/domain continuity tests remain intact.
+- Guarded targeted report `20261016T064706Z-88105f38` passed 355 model/storage/
+  Session tests, 12 engine transform tests, feature UI (448 passed, 2 existing
+  ignored), and strict affected-crate feature Clippy. The initial new test
+  incorrectly expected Undo to rewind the stable-ID high-water mark; its failed
+  report is retained and the assertion now respects the existing ID contract.
+  Final exact-source full CI and performance comparison remain with the primary.

@@ -8,6 +8,7 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 /// Transport representation of an editable project, without decoded PCM.
@@ -248,7 +249,7 @@ impl Project {
                                 source_length: clip.source_length,
                                 looping: clip.looping,
                                 source_phase: clip.source_phase,
-                                edit: clip.edit.clone(),
+                                edit: clip.audio_edit().cloned(),
                                 fade: clip.fade,
                                 gain: clip.gain,
                             })
@@ -567,7 +568,7 @@ impl Project {
                     source_length: clip.source_length,
                     looping: clip.looping,
                     source_phase: clip.source_phase,
-                    edit: clip.edit,
+                    edit: clip.edit.map(Arc::new),
                     fade: clip.fade,
                     gain: clip.gain,
                 });
