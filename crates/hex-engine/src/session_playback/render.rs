@@ -148,6 +148,18 @@ impl SessionPlayback {
                     .commit_transaction()
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
+            // The ordinary current context already owns the target endpoint.
+            // Retire only after the whole block commits; detached voices retain
+            // their own captured transition, and refused blocks keep this state.
+            for transition in &mut self.analytic_continuations {
+                if transition.as_ref().is_some_and(|transition| {
+                    transition
+                        .elapsed_at(self.performance_frame)
+                        .is_ok_and(|elapsed| elapsed == transition.duration())
+                }) {
+                    *transition = None;
+                }
+            }
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
             }

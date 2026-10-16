@@ -308,14 +308,18 @@ fn compatible_held_and_released_notes_use_actual_boundary_and_partition_independ
             }
             // Undo-equivalent reversal occurs halfway through the applied ramp.
             let mut enabled = handoff(&mut disabled, &on);
-            let actual = render_checkpoint_partitioned(&mut enabled, &[31, 1, 64], 241);
+            let actual = render_checkpoint_partitioned(&mut enabled, &[31, 1, 64], 240);
             for (offset, frame) in actual.iter().enumerate() {
-                let gain = if offset >= 240 {
-                    1.0
-                } else {
-                    0.5 + 0.5 * offset as f64 / 240.0
-                };
+                let gain = 0.5 + 0.5 * offset as f64 / 240.0;
                 assert_eq!(*frame, signal(216 + offset as u64, gate, gain));
+            }
+            assert!(
+                enabled.analytic_continuations.iter().all(Option::is_none),
+                "completed ramps must retire at their committed endpoint",
+            );
+            let endpoint = render_checkpoint_partitioned(&mut enabled, &[1, 17], 127);
+            for (offset, frame) in endpoint.iter().enumerate() {
+                assert_eq!(*frame, signal(456 + offset as u64, gate, 1.0));
             }
         }
     }
@@ -394,14 +398,14 @@ fn provider_render_refusal_rolls_back_absolute_clock_and_seek_resets_transition(
         let mut disabled = handoff(&mut old, &off);
         let routes = disabled.routes.clone();
         let before = disabled.analytic_continuations.clone();
-        let mut output = [[9.0; 2]; 64];
+        let mut output = [[9.0; 2]; 512];
         if session {
             assert!(disabled.render(&mut output).is_err());
         } else {
             let plan = disabled
-                .output_capture_plan(&[OutputCaptureId::Track(disabled.routes[0].id)], 64)
+                .output_capture_plan(&[OutputCaptureId::Track(disabled.routes[0].id)], 512)
                 .unwrap();
-            let mut captured = [[9.0; 2]; 64];
+            let mut captured = [[9.0; 2]; 512];
             let mut buffers: [&mut [Frame]; 1] = [&mut captured];
             let mut capture = OutputCapture::new(&plan, &mut buffers);
             assert!(
@@ -410,16 +414,16 @@ fn provider_render_refusal_rolls_back_absolute_clock_and_seek_resets_transition(
                     .is_err()
             );
             assert_eq!(capture.valid_frames(), 0);
-            assert_eq!(captured, [[0.0; 2]; 64]);
+            assert_eq!(captured, [[0.0; 2]; 512]);
         }
-        assert_eq!(output, [[0.0; 2]; 64]);
+        assert_eq!(output, [[0.0; 2]; 512]);
         assert_eq!(disabled.performance_frame(), 96);
         assert_eq!(disabled.routes, routes);
         assert_eq!(disabled.analytic_continuations, before);
         disabled.apply(SessionPlaybackCommand::Seek(0)).unwrap();
         assert!(disabled.analytic_continuations.iter().all(Option::is_none));
         disabled.render(&mut output).unwrap();
-        assert_eq!(output, [[0.0; 2]; 64]);
+        assert_eq!(output, [[0.0; 2]; 512]);
     }
 }
 
