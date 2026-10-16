@@ -52,6 +52,8 @@ struct RuntimeSlot {
     domains: Vec<AudioCandidateDomainToken>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
     summary: Option<AudioCandidateConstructorSummary>,
+    context_generation: u64,
+    policy: Option<crate::prepared::PublicationPolicy>,
     retained: usize,
     peak: usize,
     returned: Option<Returned>,
@@ -75,6 +77,8 @@ impl RuntimeSlot {
             domains: Vec::new(),
             domain_refs: [None; 2],
             summary: None,
+            context_generation: 0,
+            policy: None,
             retained: 0,
             peak: 0,
             returned: None,
@@ -120,10 +124,10 @@ struct Claims {
     life: Arc<Life>,
     stamp: Stamp,
 }
-pub(super) struct Header {
-    pub(super) revision: u64,
-    pub(super) context_generation: u64,
-    pub(super) policy: crate::prepared::PublicationPolicy,
+pub(in crate::candidate_custody) struct Header {
+    pub(in crate::candidate_custody) revision: u64,
+    pub(in crate::candidate_custody) context_generation: u64,
+    pub(in crate::candidate_custody) policy: crate::prepared::PublicationPolicy,
 }
 struct State {
     stamp: Stamp,
@@ -267,7 +271,7 @@ pub struct AudioCandidateEligibleStageRefusal {
     pub domains: Vec<AudioCandidateDomainToken>,
 }
 impl super::Custody {
-    pub(super) fn configure_publications(
+    pub(in crate::candidate_custody) fn configure_publications(
         &self,
         root: u64,
         reservation: AudioCandidatePublicationReservation,
@@ -306,7 +310,7 @@ impl super::Custody {
     /// Actual exhaustive constructor visitation happens outside the ordinary
     /// publication/terminal barrier. Only this same private stage path uses the
     /// resulting summary; public informational summaries supply no authority.
-    pub(super) fn seal_for_stage(
+    pub(in crate::candidate_custody) fn seal_for_stage(
         &self,
         owner: &mut AudioCandidateOwner,
     ) -> Result<AudioCandidateConstructorSummary, &'static str> {
@@ -320,7 +324,7 @@ impl super::Custody {
     }
     /// Caller holds the same short publication/terminal bank barrier and a real
     /// queue chunk reservation. Every reported refusal precedes the split.
-    pub(super) fn stage_sealed(
+    pub(in crate::candidate_custody) fn stage_sealed(
         &self,
         root: &CandidateRoot,
         owner: AudioCandidateOwner,
@@ -513,6 +517,8 @@ impl super::Custody {
         slot.domain_refs = std::array::from_fn(|index| domains.get(index).copied());
         slot.domains = domains;
         slot.summary = Some(summary);
+        slot.context_generation = context_generation;
+        slot.policy = Some(policy);
         slot.retained = retained;
         slot.peak = peak;
         slot.anchors = Some(anchors);

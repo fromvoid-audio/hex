@@ -2,7 +2,8 @@
 //! tokens are associations with retained pairs, never page/readiness authority.
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
-mod publication;
+pub(super) mod publication;
+pub use publication::{AudioCandidateEligibleStageRefusal, AudioCandidatePublicationReservation};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateDomainReservation {

@@ -24,6 +24,7 @@ use std::time::Instant;
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
+mod eligible_publication;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -192,10 +193,12 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::ReturnedCandidate),
 }
@@ -1116,6 +1119,12 @@ impl Control {
                 break;
             };
             match publication {
+                ReturnedPublication::Eligible(value) => {
+                    if let Err(value) = self.candidate_root.ingest_eligible(value) {
+                        self.held_control_return = Some(ReturnedPublication::Eligible(value));
+                        break;
+                    }
+                }
                 ReturnedPublication::Legacy(publication) => drop(publication),
                 ReturnedPublication::Candidate(returned) => {
                     if let Err(returned) = self.candidate_root.ingest(returned) {
@@ -1316,6 +1325,9 @@ impl Callback {
             // one existing held return plus the one-slot input ring
             if self.held_retirement.is_none() {
                 self.held_retirement = self.publications.pop().ok().map(|queued| match queued {
+                    QueuedPublication::Eligible(value) => {
+                        ReturnedPublication::Eligible(value.reject_before_install())
+                    }
                     QueuedPublication::Legacy(value) => ReturnedPublication::Legacy(value),
                     QueuedPublication::Candidate(value) => {
                         ReturnedPublication::Candidate(value.reject_before_install())
@@ -1329,10 +1341,23 @@ impl Callback {
                 self.terminal_disposal_pending = true;
                 drop(self.held_retirement.take());
                 self.terminal_disposal_pending = false;
-            } else if let Some(ReturnedPublication::Candidate(value)) = self.held_retirement.take()
-            {
-                if let Err(value) = self.candidate_root.ingest(value) {
-                    self.held_retirement = Some(ReturnedPublication::Candidate(value));
+            } else if let Some(value) = self.held_retirement.take() {
+                let refused = match value {
+                    ReturnedPublication::Candidate(value) => self
+                        .candidate_root
+                        .ingest(value)
+                        .err()
+                        .map(ReturnedPublication::Candidate),
+                    ReturnedPublication::Eligible(value) => self
+                        .candidate_root
+                        .ingest_eligible(value)
+                        .err()
+                        .map(ReturnedPublication::Eligible),
+                    // Handled above without holding any owner across destruction.
+                    ReturnedPublication::Legacy(value) => Some(ReturnedPublication::Legacy(value)),
+                };
+                if let Some(value) = refused {
+                    self.held_retirement = Some(value);
                     return false;
                 }
             }
@@ -1406,6 +1431,13 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        QueuedPublication::Eligible(value) => {
+                            self.return_publication(ReturnedPublication::Eligible(
+                                value.reject_before_install(),
+                            ));
+                            self.publication_pending.store(false, Release);
+                            return;
+                        }
                         QueuedPublication::Legacy(publication) => publication,
                         QueuedPublication::Candidate(candidate) => {
                             self.return_publication(ReturnedPublication::Candidate(
@@ -1450,6 +1482,14 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                QueuedPublication::Eligible(value) => {
+                    self.return_publication(ReturnedPublication::Eligible(
+                        value.reject_before_install(),
+                    ));
+                    self.publication_pending.store(false, Release);
+                    self.consume_commands();
+                    return;
+                }
                 QueuedPublication::Legacy(publication) => {
                     if matches!(self.active, Some(ActivePublication::Candidate(_))) {
                         self.return_graph(publication);

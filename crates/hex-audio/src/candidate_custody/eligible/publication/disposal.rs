@@ -28,6 +28,8 @@ impl Custody {
         };
         let valid = returned.state.as_ref().is_some_and(|state| {
             state.stamp == stamp
+                && state.context_generation == slot.context_generation
+                && Some(state.policy) == slot.policy
                 && state.runtime.as_ref().is_some_and(|runtime| {
                     runtime.identity() == stamp.owner
                         && state
@@ -340,6 +342,8 @@ fn release_slot(bank: &mut NativeBank, stamp: Stamp, phase: Phase) -> bool {
     slot.phase = Phase::Vacant;
     slot.identity = None;
     slot.summary = None;
+    slot.context_generation = 0;
+    slot.policy = None;
     slot.retained = 0;
     slot.peak = 0;
     slot.domain_refs = [None; 2];

@@ -13,9 +13,13 @@ use std::{
     },
 };
 mod eligible;
+pub(crate) use eligible::publication::{
+    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate,
+};
 pub use eligible::{
     AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainToken,
-    AudioCandidateDomainUsage,
+    AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePublicationReservation,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
@@ -345,6 +349,71 @@ impl CandidateRoot {
             .eligible
             .configure(self.root_id(), reservation, bytes)
     }
+    pub(crate) fn configure_publications(
+        &self,
+        reservation: AudioCandidatePublicationReservation,
+        queue_bytes: usize,
+    ) -> Result<(), &'static str> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring || bank.slots.iter().any(|s| s.phase != Phase::Vacant) {
+            return Err("constructor Root is not vacant");
+        }
+        let bytes = bank
+            .slots
+            .capacity()
+            .checked_mul(std::mem::size_of::<Slot>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(queue_bytes))
+            .ok_or("constructor Root metadata overflow")?;
+        self.0
+            .eligible
+            .configure_publications(self.root_id(), reservation, bytes)
+    }
+    pub(crate) fn seal_publication(
+        &self,
+        owner: &mut AudioCandidateOwner,
+    ) -> Result<hex_engine::AudioCandidateConstructorSummary, &'static str> {
+        self.0.eligible.seal_for_stage(owner)
+    }
+    /// The caller already holds an actual ring write chunk. The same short
+    /// terminal barrier prevents a successful late push after terminal draining.
+    pub(crate) fn stage_eligible(
+        &self,
+        owner: AudioCandidateOwner,
+        domains: Vec<AudioCandidateDomainToken>,
+        header: (u64, u64, crate::prepared::PublicationPolicy),
+        summary: hex_engine::AudioCandidateConstructorSummary,
+        enqueue: impl FnOnce(QueuedEligibleCandidate),
+    ) -> Result<AudioCandidateTicket, AudioCandidateEligibleStageRefusal> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring {
+            return Err(AudioCandidateEligibleStageRefusal {
+                reason: "constructor Root is closing",
+                owner,
+                domains,
+            });
+        }
+        let (revision, context_generation, policy) = header;
+        let (queued, ticket) = self.0.eligible.stage_sealed(
+            self,
+            owner,
+            domains,
+            eligible::publication::Header {
+                revision,
+                context_generation,
+                policy,
+            },
+            summary,
+        )?;
+        enqueue(queued);
+        Ok(ticket)
+    }
+    pub(crate) fn ingest_eligible(
+        &self,
+        returned: ReturnedEligibleCandidate,
+    ) -> Result<(), ReturnedEligibleCandidate> {
+        self.0.eligible.ingest_publication(self, returned)
+    }
     pub(crate) fn domains_configured(&self) -> bool {
         self.0.eligible.enabled()
     }
@@ -412,6 +481,12 @@ impl CandidateRoot {
                     if let Err(candidate) = self.ingest(candidate) {
                         returns.held =
                             Some(crate::prepared::ReturnedPublication::Candidate(candidate));
+                        return false;
+                    }
+                }
+                crate::prepared::ReturnedPublication::Eligible(value) => {
+                    if let Err(value) = self.ingest_eligible(value) {
+                        returns.held = Some(crate::prepared::ReturnedPublication::Eligible(value));
                         return false;
                     }
                 }
@@ -667,6 +742,10 @@ impl CandidateRoot {
         slot.identity = None;
         slot.domain_count = 0;
         Some(ready)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_eligible_complete(&self) -> bool {
+        self.0.eligible.complete()
     }
     pub(crate) fn finish_on_control(&self) -> bool {
         self.close();

@@ -67,7 +67,7 @@ fn reserved_actual_split_retains_anchors_until_runtime_and_metadata_drop_then_ba
     let root = root(reservation);
     let (queued, ticket) =
         stage(&root, owner, Vec::new()).unwrap_or_else(|r| panic!("{}", r.reason));
-    assert!(root.recover(&ticket).is_none());
+    assert!(root.0.eligible.recover_publication(&ticket).is_none());
     assert_eq!(queued.state.context_generation, 19);
     assert_eq!(
         queued.state.policy,
@@ -109,11 +109,11 @@ fn reserved_actual_split_retains_anchors_until_runtime_and_metadata_drop_then_ba
             ..ticket.stamp
         },
     };
-    assert!(root.recover(&stale).is_none());
-    let recovery = root.recover(&ticket).unwrap();
+    assert!(root.0.eligible.recover_publication(&stale).is_none());
+    let recovery = root.0.eligible.recover_publication(&ticket).unwrap();
     assert_eq!(recovery.disposed.identity(), identity);
     assert!(recovery.inputs.owning_handle_count() > 0);
-    assert!(root.recover(&ticket).is_none());
+    assert!(root.0.eligible.recover_publication(&ticket).is_none());
     assert!(root.0.eligible.complete());
 }
 #[test]
@@ -168,7 +168,13 @@ fn member_pressure_and_foreign_return_refuse_original_ownership_before_release()
         .unwrap();
     actual_root.advance_on_control();
     assert_eq!(
-        actual_root.recover(&ticket).unwrap().disposed.identity(),
+        actual_root
+            .0
+            .eligible
+            .recover_publication(&ticket)
+            .unwrap()
+            .disposed
+            .identity(),
         identity
     );
 }
@@ -186,7 +192,11 @@ fn abandoned_return_destroys_original_bank_and_consumes_charge_on_worker_without
         .ingest_publication(&root, queued.reject_before_install())
         .ok()
         .unwrap();
-    root.abandon_control(None, None);
+    // Isolated owning-boundary fixture: mark the same actual abandonment
+    // state without enqueuing an unleased Root into the native singleton.
+    // The real Control/terminal queue path has its own serialized control.
+    root.0.eligible.close();
+    root.0.abandoned.store(true, Ordering::Release);
     let worker_root = root.clone();
     let thread = std::thread::spawn(move || {
         worker_root.advance_on_control();
@@ -196,7 +206,7 @@ fn abandoned_return_destroys_original_bank_and_consumes_charge_on_worker_without
     .unwrap();
     assert_ne!(thread, std::thread::current().id());
     assert!(root.0.eligible.complete());
-    assert!(root.recover(&ticket).is_none());
+    assert!(root.0.eligible.recover_publication(&ticket).is_none());
     let work = lock(&root.0.eligible.work);
     assert!(work.publication.anchors.iter().all(Option::is_none));
     assert!(work.publication.executions.iter().all(Option::is_none));

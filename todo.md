@@ -3254,6 +3254,8 @@ admission, OS-stop success, deadline, listening or complete-cost claim is made.
   before splitting an owner. Four focused controls cover original-input refusal,
   normal runtime/origin/metadata cleanup before bank recovery, autonomous abandoned
   bank/report destruction on control, and pre-allocation metadata-cap refusal.
-- This is an implementation checkpoint: production queue/return integration,
-  native resource-witness gating and install-versus-ACK wiring remain within PR236. Production admission remains
+- Connected actual ring reservation and terminal-serialized split/fill to callback
+  preinstall rejection, held-return pressure and original-bank lifecycle recovery.
+  Control-first terminal draining completes autonomous cleanup; no install ACK is
+  issued. Native resource-witness gating and resident installation remain within PR236. Production admission remains
   refused; streamed readiness and full24/177 acceptance remain open.

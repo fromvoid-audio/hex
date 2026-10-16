@@ -123,14 +123,19 @@ cleanup. Independent reserved execution cells preserve pending/failed custody an
 the first panic payload. READY follows normal runtime, anchor and return-metadata
 destruction. Original banks and domain uses remain charged until report consumption.
 After Control abandonment, the lifecycle worker also destroys the recovered bank
-and consumes its report without a UI poll. These owning-boundary controls do not
-establish an actual native queue rejection or installation fact.
+and consumes its report without a UI poll. The production Control path reserves a real publication-ring chunk before the
+split and keeps its fill under the existing terminal barrier. The callback's
+actual preinstall rejection returns the same runtime through its real return ring
+or persistent held-return slot; it consumes bounded commands and priority Stop.
+Return ingestion and terminal draining retain both halves until normal lifecycle
+cleanup. Controls exercise full return pressure and Control-first abandonment.
+Queue acceptance advances the submitted revision; rejection does not publish an
+applied ACK or render the candidate.
 
 ## admission boundary
 
-This intermediate source checkpoint does not enable native admission. Production
-queue/return integration, complete native resource-witness gating and
-install-versus-ACK wiring remain within PR236. No opaque OS/std byte estimate,
+This intermediate source checkpoint does not enable native admission. Complete native resource-witness gating and resident installation/handoff
+with applied ACK remain within PR236. No opaque OS/std byte estimate,
 RSS total, new global graph cap or readiness receipt is inferred.
 
 Once the complete eligible claim path is connected, resident candidates may use
