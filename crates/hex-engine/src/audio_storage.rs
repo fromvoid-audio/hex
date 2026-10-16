@@ -51,15 +51,18 @@ impl AudioRootStorageSummary {
         Err(AudioStorageIncomplete::RetirementReceiptUnknown)
     }
 }
+type SharedCounts = fn(&dyn Any) -> Option<(usize, usize)>;
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
     value: &'a dyn Any,
     compare: fn(&dyn Any, &dyn Any) -> bool,
+    counts: Option<SharedCounts>,
 }
 impl<'a> Owner<'a> {
     pub(crate) fn exclusive<T: 'static>(value: &'a T) -> Self {
         Self {
             value,
+            counts: None,
             compare: |a, b| {
                 a.downcast_ref::<T>()
                     .zip(b.downcast_ref::<T>())
@@ -70,10 +73,33 @@ impl<'a> Owner<'a> {
     pub(crate) fn shared<T: 'static + ?Sized>(value: &'a Arc<T>) -> Self {
         Self {
             value,
+            counts: Some(|value| {
+                value
+                    .downcast_ref::<Arc<T>>()
+                    .map(|owner| (Arc::strong_count(owner), Arc::weak_count(owner)))
+            }),
             compare: |a, b| {
                 a.downcast_ref::<Arc<T>>()
                     .zip(b.downcast_ref::<Arc<T>>())
                     .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
+            },
+        }
+    }
+    pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
+        Self {
+            value,
+            counts: Some(|value| {
+                value
+                    .downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .map(|state| {
+                        let (_, strong, weak) = state.payload_storage_observation();
+                        (strong, weak)
+                    })
+            }),
+            compare: |a, b| {
+                a.downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .zip(b.downcast_ref::<hex_lattice_contract::NativeDeviceState>())
+                    .is_some_and(|(a, b)| a.shares_payload_storage_with(b))
             },
         }
     }
@@ -99,6 +125,7 @@ struct Data<'a> {
 struct Handle<'a> {
     owner: Owner<'a>,
     field: Owner<'a>,
+    location: Location,
     id: u64,
 }
 struct Root<'a> {
@@ -184,7 +211,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             this.inputs(inputs)
         })
     }
-    fn mutate(
+    pub(crate) fn mutate(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<(), AudioStorageError>,
     ) -> Result<(), AudioStorageError> {
@@ -446,24 +473,86 @@ impl<'a> AudioRootStorageLedger<'a> {
         )?;
         self.handle(anchor, field, handle)
     }
+    /// An additional physical field may only refer to DATA already declared by
+    /// the actual constructor custody. Equal contents never supply that link.
+    pub(crate) fn existing_shared<T: 'static + ?Sized>(
+        &mut self,
+        owner: &'a Arc<T>,
+        field: Owner<'a>,
+        location: Location,
+    ) -> Result<(), AudioStorageError> {
+        let owner = Owner::shared(owner);
+        if !self.data.iter().any(|row| row.owner.same(owner)) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.handle_at(owner, field, location, crate::audio_only_inputs::handle()?)
+    }
+    /// Count observation detects excess caller handles only. It cannot create
+    /// a declaration, prove provenance or grant retirement/publication rights.
+    pub(crate) fn validate_closed_shared_handles(&self) -> Result<(), AudioStorageError> {
+        self.summary()?;
+        for row in &self.data {
+            if let Some(counts) = row.owner.counts {
+                let (strong, weak) =
+                    counts(row.owner.value).ok_or(AudioStorageError::UnknownStorage)?;
+                let declared = self
+                    .handles
+                    .iter()
+                    .filter(|h| h.owner.same(row.owner))
+                    .count();
+                if strong != declared || weak != 0 {
+                    return Err(AudioStorageError::UnknownStorage);
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn shared_resource_counts(&self) -> (usize, usize) {
+        let allocations = self
+            .data
+            .iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                row.owner.counts.is_some()
+                    && !self.data[..*index]
+                        .iter()
+                        .any(|old| old.owner.same(row.owner))
+            })
+            .count();
+        (allocations, self.handles.len())
+    }
     pub(crate) fn handle(
         &mut self,
         owner: Owner<'a>,
         field: Owner<'a>,
         id: u64,
     ) -> Result<(), AudioStorageError> {
+        self.handle_at(owner, field, Location("handle-field", 0), id)
+    }
+    pub(crate) fn handle_at(
+        &mut self,
+        owner: Owner<'a>,
+        field: Owner<'a>,
+        location: Location,
+        id: u64,
+    ) -> Result<(), AudioStorageError> {
         if id == 0
             || self
                 .handles
                 .iter()
-                .any(|row| row.id == id || row.field.same(field))
+                .any(|row| row.id == id || (row.field.same(field) && row.location == location))
         {
             return Err(AudioStorageError::SourceMismatch);
         }
         if self.handles.len() == self.reservation.handle_rows {
             return Err(AudioStorageError::Capacity);
         }
-        self.handles.push(Handle { owner, field, id });
+        self.handles.push(Handle {
+            owner,
+            field,
+            location,
+            id,
+        });
         Ok(())
     }
     pub(crate) fn growth(&mut self, bytes: usize) -> Result<(), AudioStorageError> {

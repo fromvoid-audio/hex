@@ -179,17 +179,26 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
         if class == NativeDeviceClass::Instrument {
             assert_eq!(
                 state.state_version(),
-                11,
-                "current canonical filter and enable-state history is required"
+                14,
+                "current canonical harmonic, filter and enable-state history is required"
             );
             assert_eq!(
                 state.payload().len(),
-                416,
+                1_616,
                 "complete current payload retained"
             );
             // Non-default values span level, tuning, envelope, signed routing
-            // and supported LFO fields. Compare complete opaque state below.
+            // and supported LFO/harmonic fields, including a hidden partial.
+            // Compare complete opaque state below.
             edits.extend([
+                (357, ParameterValue::Bool(false)),
+                (358, ParameterValue::Float(0.25)),
+                (359, ParameterValue::Bool(true)),
+                (360, ParameterValue::Float(0.5)),
+                (361, ParameterValue::Float(-0.3)),
+                (362, ParameterValue::Choice(1)),
+                (363, ParameterValue::Float(0.25)),
+                (364, ParameterValue::Choice(4)),
                 (513, ParameterValue::Bool(false)),
                 (514, ParameterValue::Bool(true)),
                 (515, ParameterValue::Bool(false)),
@@ -201,6 +210,11 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
                 (63, ParameterValue::Float(440.0)),
                 (82, ParameterValue::Bool(true)),
                 (85, ParameterValue::Float(1.25)),
+                (57, ParameterValue::Choice(4)),
+                (108, ParameterValue::Float(0.61)),
+                (156, ParameterValue::Float(0.23)),
+                (349, ParameterValue::Choice(0)),
+                (353, ParameterValue::Choice(2)),
             ]);
         }
         for (id, value) in edits {

@@ -87,6 +87,10 @@ impl OwnedShared<crate::Project> {
     }
 }
 impl<T> OwnedShared<[T]> {
+    pub(crate) fn declared_slice_parts(len: usize) -> Option<(usize, usize)> {
+        let payload = Layout::array::<T>(len).ok()?;
+        Some((payload.size(), declared(payload)?.checked_sub(2)?))
+    }
     /// DISTINCT explicit allocation origin. Sized zero-array Arc::new allocates
     /// its checked header with T alignment; unsizing moves the same allocation.
     /// Default/from_owned_vec(empty)/raw ingress remain Unknown.
@@ -294,5 +298,17 @@ mod explicit_empty_tests {
             assert!(a.parts().is_none());
             eprintln!("hex preparation evidence: explicit_owned_empty; branch=unsupported-refusal");
         }
+    }
+}
+
+impl<T: hex_lattice::PreparedNativeProcessor + 'static> OwnedShared<T> {
+    pub(crate) fn into_processor_parts_on_control(
+        self,
+    ) -> (
+        Arc<dyn hex_lattice::PreparedNativeProcessor>,
+        SharedDeclaration,
+    ) {
+        let (owner, declaration) = self.into_paired_parts_on_control();
+        (owner, declaration)
     }
 }

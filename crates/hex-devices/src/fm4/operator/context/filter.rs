@@ -54,9 +54,15 @@ impl PreparedOperatorConfiguration {
                 .wrapping_add(crate::fm4::phase_from_turns(modulation));
             let oscillator = match self.waveforms[target] {
                 OperatorWaveform::Sine => table.sample_phase(phase),
-                waveform => self
-                    .waveform_bank
-                    .map_or(0.0, |bank| bank.sample_phase(waveform, caps[target], phase)),
+                waveform => self.waveform_bank.map_or(0.0, |bank| {
+                    bank.sample_frame(
+                        waveform,
+                        caps[target],
+                        phase,
+                        age,
+                        crate::operator_waveform::noise_stream(note.steps[target], target),
+                    )
+                }),
             };
             raw[target] = f64::from(oscillator) * config.levels[target];
             signals[target] = raw[target] * amplitudes[target];

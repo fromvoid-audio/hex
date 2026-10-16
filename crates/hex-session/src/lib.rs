@@ -19,6 +19,7 @@ use std::{
 
 pub mod arrangement_seek;
 pub mod device_gesture;
+mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;

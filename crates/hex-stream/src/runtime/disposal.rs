@@ -103,7 +103,22 @@ impl PreparedStreamDisposal {
     /// Arc/worker/channel/OS costs and pending destruction
     /// remain unresolved. No caller should use this as a complete domain total.
     pub fn metadata_bytes(&self) -> Option<usize> {
-        self.endpoint_pages
+        let Self {
+            pair: _,
+            control: _,
+            pages: _,
+            worker: _,
+            worker_pages: _,
+            endpoint_pages,
+            first_panic: _,
+            phase: _,
+            expected_pages: _,
+            cached_returned: _,
+            ready_count: _,
+            held_count: _,
+            report: _,
+        } = self;
+        endpoint_pages
             .capacity()
             .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
     }

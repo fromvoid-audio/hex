@@ -88,7 +88,11 @@ impl ArrangementRootAssembly {
         // Eligibility is audited again here rather than inferred from an empty
         // mutable-descriptor destination or from a legacy compiler outcome.
         if project.tracks().iter().any(|t| {
-            !t.devices().is_empty() || t.instrument().is_some() || !t.midi_clips().is_empty()
+            t.devices()
+                .iter()
+                .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                || t.instrument().is_some()
+                || !t.midi_clips().is_empty()
         }) || project
             .return_tracks()
             .iter()

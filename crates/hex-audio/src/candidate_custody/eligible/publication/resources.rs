@@ -1,0 +1,124 @@
+//! Sealed native witness distinct from the public scalar byte ledger. Known
+//! DATA and constructor-bounded opaque RESOURCE lifetimes are never conflated.
+use super::*;
+#[derive(Clone, Copy)]
+pub(super) struct RootResourceWitness {
+    root: u64,
+    root_data: usize,
+    root_shared_groups: usize,
+    shared_handle_bound: usize,
+    lifecycle_workers: usize,
+    output_contexts: usize,
+    source_workers: usize,
+    catalog_channels: usize,
+    source_readers: usize,
+    kernel_handles: usize,
+}
+impl RootResourceWitness {
+    pub(super) fn covers(&self, root: u64) -> bool {
+        self.root == root && self.root_data != 0 && self.root_shared_groups != 0
+            && self.shared_handle_bound >= self.root_shared_groups
+            && self.lifecycle_workers == 1 && self.output_contexts == 1
+            && self.source_workers <= 2 && self.catalog_channels <= 2
+            // Counts are retained until actual source-pair/report closure;
+            // zero sources legitimately need no reader or kernel handles.
+            && self.source_readers.checked_add(self.kernel_handles).is_some()
+    }
+}
+fn root_handle_bound(bank: &Bank) -> Option<usize> {
+    // Root handles: 2 per accepted State + at most8 control/callback/terminal,
+    // queue/lifecycle/construction handles in this private factory. Life:3 per
+    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:4.
+    // Observer Status handles outside this publication Root own no graph or
+    // source lease; no process-wide Arc/RSS bound is claimed.
+    bank.slots.len().checked_mul(5)?.checked_add(22)
+}
+fn occupied_handles(bank: &NativeBank) -> Option<usize> {
+    let mut handles = root_handle_bound(&bank.publication)?;
+    for domain in &bank.domains {
+        if let Some(resources) = domain.resources {
+            handles = handles.checked_add(resources.shared_handle_bound)?;
+        }
+    }
+    for slot in &bank.publication.slots {
+        if let Some(summary) = slot.summary {
+            handles = handles.checked_add(summary.shared_resource_handles)?;
+        }
+    }
+    Some(handles)
+}
+pub(in crate::candidate_custody::eligible) fn remaining_handle_reservation(
+    bank: &NativeBank,
+) -> Option<usize> {
+    let Some(reservation) = bank.publication.reservation else {
+        return Some(usize::MAX);
+    };
+    reservation.handle_rows.checked_sub(occupied_handles(bank)?)
+}
+pub(super) fn for_candidate(
+    bank: &NativeBank,
+    summary: AudioCandidateConstructorSummary,
+) -> Result<Option<RootResourceWitness>, &'static str> {
+    if summary.shared_resource_handles
+        > remaining_handle_reservation(bank).ok_or("constructor handle reservation exceeded")?
+    {
+        return Err("constructor handle reservation exceeded");
+    }
+    let Some(native) = bank
+        .native
+        .as_ref()
+        .filter(|native| native.matches(bank.root))
+    else {
+        // Isolated disposal-only owning-boundary tests may reserve and return
+        // without native carriers. They gain no native claim or active authority.
+        return Ok(None);
+    };
+    native
+        .data_bytes()
+        .ok_or("native terminal custody is not anchored")?;
+    let mut witness = RootResourceWitness {
+        root: bank.root,
+        root_data: bank.metadata_bytes,
+        // Actual Root, per-slot Life,3 rings,2 carrier cells and Status payload.
+        root_shared_groups: bank
+            .publication
+            .slots
+            .len()
+            .checked_add(7)
+            .ok_or("resource count overflow")?,
+        shared_handle_bound: occupied_handles(bank)
+            .and_then(|n| n.checked_add(summary.shared_resource_handles))
+            .ok_or("resource count overflow")?,
+        lifecycle_workers: 1,
+        output_contexts: 1,
+        source_workers: 0,
+        catalog_channels: 0,
+        source_readers: 0,
+        kernel_handles: 0,
+    };
+    for domain in &bank.domains {
+        let Some(resources) = domain.resources else {
+            continue;
+        };
+        witness.source_workers = witness
+            .source_workers
+            .checked_add(resources.worker_lifetimes)
+            .ok_or("resource count overflow")?;
+        witness.catalog_channels = witness
+            .catalog_channels
+            .checked_add(resources.catalog_channel_lifetimes)
+            .ok_or("resource count overflow")?;
+        witness.source_readers = witness
+            .source_readers
+            .checked_add(resources.source_reader_lifetimes)
+            .ok_or("resource count overflow")?;
+        witness.kernel_handles = witness
+            .kernel_handles
+            .checked_add(resources.kernel_handle_bound)
+            .ok_or("resource count overflow")?;
+    }
+    if !witness.covers(bank.root) {
+        return Err("constructor resource lifetime closure refused");
+    }
+    Ok(Some(witness))
+}

@@ -27,6 +27,8 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::DeviceRuntime)?
             .delays
             .push_transport_stamp(crate::compensation::TransportStamp {
+                performance_frame,
+                transport_is_running: self.playing,
                 arrangement_frame,
                 loop_pass,
                 performance_beat_raw: beat.raw(),
@@ -76,7 +78,9 @@ impl SessionPlayback {
                             SourceStage::Audio,
                         )?;
                         for release in &self.release_scratch {
-                            if release.track_index == index && release.tail_group.is_none() {
+                            if release.location.track_index() == index
+                                && release.location.tail_group().is_none()
+                            {
                                 render_release_raw(
                                     release,
                                     self.revision.session().sine_table(),

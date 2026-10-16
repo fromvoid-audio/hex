@@ -196,6 +196,17 @@ pub(crate) struct Frame {
     cascade: f64,
 }
 impl Frame {
+    /// Inactive history sentinel; activation installs the prepared target coefficients.
+    pub(crate) const fn dry() -> Self {
+        Self {
+            g: 0.0,
+            k: 2.0,
+            weights: [1.0, 0.0, 0.0],
+            wet: 0.0,
+            cascade: 1.0,
+        }
+    }
+
     pub(crate) fn interpolate(self, to: Self, t: f64) -> Self {
         let lerp = |a: f64, b: f64| a + (b - a) * t;
         if t == 0.0 {

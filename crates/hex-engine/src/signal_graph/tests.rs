@@ -842,3 +842,32 @@ fn zero_latency_routed_tempo_edit_preserves_pcm_while_positive_history_refuses_a
         assert_eq!(actual, expected);
     }
 }
+
+#[test]
+fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses() {
+    use hex_lattice::NativeInstrumentClock;
+    let unknown = OriginClock(None);
+    assert_eq!(unknown.performance_frame_at_offset(0), None);
+    assert_eq!(unknown.transport_is_running(), None);
+    let source = TransportStamp {
+        performance_frame: 900,
+        transport_is_running: true,
+        arrangement_frame: 12,
+        loop_pass: 7,
+        performance_beat_raw: 5 << 32,
+    };
+    let clock = OriginClock(Some(source));
+    assert_eq!(clock.performance_frame_at_offset(0), Some(900));
+    assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
+    assert_eq!(clock.loop_pass_at_offset(0), Some(7));
+    assert_eq!(clock.beat_at_offset(0), Some(5 << 32));
+    assert_eq!(clock.transport_is_running(), Some(true));
+    assert_eq!(clock.performance_frame_at_offset(1), None);
+    let stopped = OriginClock(Some(TransportStamp {
+        transport_is_running: false,
+        ..source
+    }));
+    assert_eq!(stopped.transport_is_running(), Some(false));
+    assert_eq!(stopped.performance_frame_at_offset(0), None);
+    assert_eq!(stopped.beat_at_offset(0), Some(5 << 32));
+}

@@ -571,3 +571,51 @@ fn candidate_rejection_consumes_priority_stop_under_full_command_pressure_in_the
     drop(errors);
     finish(&mut retirement);
 }
+
+#[test]
+fn constructor_domain_opt_in_requires_vacancy_and_preserves_legacy_refusal_owner() {
+    let _serial = serial();
+    let reservation = crate::AudioCandidateDomainReservation {
+        max_retained_data_bytes: 4 * 1024 * 1024,
+        max_construction_peak_data_bytes: 4 * 1024 * 1024,
+    };
+    let (mut control, data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_domains(reservation)
+        .unwrap();
+    let original_root = Arc::new(hex_engine::Project::new(48_000, vec![]).unwrap());
+    let original = Playback::from_shared(Arc::clone(&original_root));
+    let refusal = control.publish(original).err().unwrap();
+    assert_eq!(Arc::strong_count(&original_root), 2);
+    assert_eq!(control.revision, 0);
+    assert!(!control.publication_pending.load(Acquire));
+    assert!(
+        control
+            .configure_audio_candidate_domains(reservation)
+            .is_err()
+    );
+    drop(refusal);
+    assert_eq!(Arc::strong_count(&original_root), 1);
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
+
+    // Default legacy behavior is unchanged, including its real applied ACK.
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    assert_eq!(control.publish(legacy()).unwrap(), 1);
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert!(
+        control
+            .configure_audio_candidate_domains(reservation)
+            .is_err()
+    );
+    assert_eq!(control.revision, 1);
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
+}

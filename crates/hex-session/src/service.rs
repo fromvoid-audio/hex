@@ -33,6 +33,8 @@ use std::{
 };
 
 const REQUEST_CAPACITY: usize = 32;
+#[cfg(test)]
+mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
@@ -218,6 +220,9 @@ impl GainLaneEdit {
 }
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
+// The approved fixed snapshot remains inline: 800 bytes per request, 32 slots
+// (25,600 payload bytes). Boxing would hide storage and add control allocations.
+#[allow(clippy::large_enum_variant)]
 pub enum Request {
     /// Ephemeral same-revision audition graph; no project/history mutation.
     PrepareComputerKeyboard {
@@ -954,7 +959,9 @@ fn run_worker(
                             replacement_revision = Some(prepared);
                         } else if matches!(
                             gesture,
-                            GestureRequest::Change { .. } | GestureRequest::ChangePair { .. }
+                            GestureRequest::Change { .. }
+                                | GestureRequest::ChangePair { .. }
+                                | GestureRequest::ChangeSnapshot { .. }
                         ) {
                             preview_prepared = Some(prepared);
                             preview_project = outcome.preview_project;

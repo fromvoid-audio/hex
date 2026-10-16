@@ -17,6 +17,16 @@ pub trait NativeInstrumentClock {
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Optional exact host performance-frame origin, independent of arrangement
+    /// loop wraps. Unknown during warmup or stopped monitoring is explicit None.
+    fn performance_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
+    /// Transport state at the input origin. An advancing beat alone does not
+    /// imply playback: stopped audition can have a running musical clock.
+    fn transport_is_running(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// One note-on or note-off event in caller-owned block storage.
@@ -165,6 +175,16 @@ pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
 
+/// Actual source context and independent transition boundary, together with
+/// sounding notes. Providers validate this before either candidate twin changes.
+pub struct AnalyticInstrumentHistory<'a> {
+    pub source: &'a dyn super::PreparedSharedAnalyticContext,
+    pub source_id: crate::AnalyticContinuationId,
+    pub transition: Option<crate::AnalyticContinuation>,
+    pub performance_frame: u64,
+    pub voices: &'a [NativeInstrumentAnalyticSeed],
+}
+
 /// Mutable per-note state. Compatibility must include every immutable law
 /// parameter that affects future samples, as well as runtime version and any
 /// implementation-specific rate/configuration key. Compatibility must be
@@ -176,6 +196,12 @@ pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    fn can_import_analytic_history(&self, _history: &AnalyticInstrumentHistory<'_>) -> bool {
+        false
+    }
+    /// Inactive candidate only, after both twins and the whole graph preflight.
+    fn import_analytic_history(&mut self, _history: &AnalyticInstrumentHistory<'_>) {}
+
     fn can_import_analytic(&self, _notes: &[NativeInstrumentAnalyticSeed]) -> bool {
         false
     }
@@ -403,6 +429,21 @@ impl NativeInstrumentRuntimePair {
         self.block_started = true;
     }
 
+    /// Check generic event bounds and both twins' immutable event-domain,
+    /// active-ID and capacity validation against their current histories.
+    /// This does not inspect a clock, open a block, process PCM or change either
+    /// history. Success is not renderability: ordinary processing still requires
+    /// its complete event and clock preflight against current scratch state.
+    pub fn preflight_event_batch(
+        &self,
+        events: &[NativeInstrumentEvent],
+        frame_count: usize,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        validate_event_batch(events, frame_count, self.max_events_per_block)?;
+        self.primary.preflight_events(events, frame_count)?;
+        self.scratch.preflight_events(events, frame_count)
+    }
+
     /// Validate and process one block/segment. Generic ordering and payload
     /// checks plus implementation-specific active-ID/capacity preflight all
     /// complete before either `frames` or scratch history is changed.
@@ -482,6 +523,25 @@ impl NativeInstrumentRuntimePair {
         Ok(())
     }
 
+    pub fn can_import_analytic_history(&self, history: &AnalyticInstrumentHistory<'_>) -> bool {
+        !self.block_started
+            && self.primary.is_quiescent()
+            && self.scratch.is_quiescent()
+            && history.voices.len() <= self.max_active_occurrences
+            && self.primary.can_import_analytic_history(history)
+            && self.scratch.can_import_analytic_history(history)
+    }
+    pub fn import_analytic_history(
+        &mut self,
+        history: &AnalyticInstrumentHistory<'_>,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.can_import_analytic_history(history) {
+            return Err(NativeInstrumentRuntimeError::IncompatibleHistory);
+        }
+        self.primary.import_analytic_history(history);
+        self.scratch.import_analytic_history(history);
+        Ok(())
+    }
     pub fn can_import_analytic(&self, notes: &[NativeInstrumentAnalyticSeed]) -> bool {
         !self.block_started
             && notes.len() <= self.max_active_occurrences
@@ -538,7 +598,7 @@ impl NativeInstrumentRuntimePair {
     }
 }
 
-fn validate_event_batch(
+pub(super) fn validate_event_batch(
     events: &[NativeInstrumentEvent],
     frame_count: usize,
     max_events: usize,
@@ -1298,6 +1358,41 @@ mod tests {
         let reference = render(&mut two_voice_reference, &[candidate], 4);
         assert_eq!(actual, reference);
         assert!(actual.iter().any(|frame| *frame != [0.0, 0.0]));
+    }
+
+    #[test]
+    fn event_only_preflight_checks_generic_bounds_and_both_histories_without_processing() {
+        let mut runtime = new_pair(1, 2);
+        let on = [event_on(0, 11, 60, 100)];
+        assert!(runtime.preflight_event_batch(&on, 1).is_ok());
+        assert!(runtime.committed_is_quiescent());
+        assert_eq!(
+            runtime.preflight_event_batch(&[event_on(1, 11, 60, 100)], 1),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert_eq!(
+            runtime.preflight_event_batch(&[on[0]; 9], 1),
+            Err(NativeInstrumentRuntimeError::EventCapacityExceeded)
+        );
+        runtime.begin_block();
+        runtime.process_block(&on, &mut [[0.0; 2]]).unwrap();
+        // Only scratch has the active ID; a primary-only check would accept it.
+        assert_eq!(
+            runtime.preflight_event_batch(&on, 1),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        runtime.rollback_block();
+        assert!(runtime.committed_is_quiescent());
+        runtime.begin_block();
+        assert!(runtime.preflight_event_batch(&on, 1).is_ok());
+        runtime.process_block(&on, &mut [[0.0; 2]]).unwrap();
+        runtime.commit_block();
+        // Commit swaps twins: only primary now has the active ID.
+        assert_eq!(
+            runtime.preflight_event_batch(&on, 1),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert!(!runtime.committed_is_quiescent());
     }
 
     #[test]

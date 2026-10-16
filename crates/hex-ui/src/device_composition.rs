@@ -15,7 +15,7 @@ pub(crate) const COMPRESSOR_FRAME_WIDTH: f32 = 326.0;
 pub(crate) const GATE_FRAME_WIDTH: f32 = 142.0;
 pub(crate) const AUTO_PAN_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const VECTOR_SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
-pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 292.0;
+pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 340.0;
 pub(crate) const VECTOR_PREVIEW_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + 148.0;
 pub(crate) const VECTOR_WIDTH: f32 =
     VECTOR_SHELL_WIDTH + VECTOR_DETAIL_WIDTH + VECTOR_PREVIEW_WIDTH + 30.0;

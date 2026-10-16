@@ -613,6 +613,31 @@ impl NativeDeviceDefinition for UtilityDefinition {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        Self::prepare_owned_filter(state, sample_rate)
+            .map(|value| value.map(|value| Box::new(value) as Box<dyn PreparedNativeProcessor>))
+    }
+}
+
+/// The concrete fixed-inline Utility filter preparation. Its private fields
+/// cannot contain caller-provided processor/storage implementations. Native
+/// graph construction can retain this exact type's allocation declaration
+/// before erasing the processor trait; this is not a generic provider receipt.
+pub struct PreparedUtilityFilterRuntime(crate::utility_filters::PreparedUtilityFilters);
+impl PreparedUtilityFilterRuntime {
+    fn check_inline_ownership(&self) {
+        let Self(filters) = self;
+        fn inline<T: Copy>(_: &T) {}
+        inline(filters);
+    }
+}
+
+impl UtilityDefinition {
+    /// Prepare the same registered filter through its concrete constructor.
+    /// Memoryless Utility settings return None, exactly as the device registry.
+    pub fn prepare_owned_filter(
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<Option<PreparedUtilityFilterRuntime>, DeviceContractError> {
         let settings = decode_state(state)?;
         if !settings.dc_remove && !settings.bass_mono {
             return Ok(None);
@@ -626,11 +651,11 @@ impl NativeDeviceDefinition for UtilityDefinition {
         )
         .map_err(|_| DeviceContractError::MalformedState)?
         .with_output_mute(settings.mute);
-        Ok(Some(Box::new(PreparedUtilityFilterRuntime(prepared))))
+        let value = PreparedUtilityFilterRuntime(prepared);
+        value.check_inline_ownership();
+        Ok(Some(value))
     }
 }
-
-struct PreparedUtilityFilterRuntime(crate::utility_filters::PreparedUtilityFilters);
 
 impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
     fn runtime_version(&self) -> u32 {

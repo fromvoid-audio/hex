@@ -17,6 +17,21 @@ pub(super) struct Metronome {
 }
 
 impl Metronome {
+    pub(super) fn visit_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            normal,
+            accent,
+            enabled: _,
+            sample: _,
+            accented: _,
+            expected_frame: _,
+        } = self;
+        ledger.vec(normal)?;
+        ledger.vec(accent)
+    }
     pub(super) fn prepare(rate: u32) -> Result<Self, Invalid> {
         if !(8_000..=192_000).contains(&rate) {
             return Err(Invalid("metronome sample rate must be 8000..192000 hz"));

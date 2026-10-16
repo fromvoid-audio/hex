@@ -36,6 +36,7 @@ pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod saturator_panel;
 mod send_controls;
+mod snapshot;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
 pub(super) use send_controls::{
@@ -103,6 +104,7 @@ enum ParameterControl {
         class: NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         descriptor: &'static ParameterDescriptor,
+        values: Vec<u32>,
     },
 }
 
@@ -147,6 +149,7 @@ pub(super) struct DevicePanelState {
     operator_context_focus: HashMap<DeviceId, HashMap<gpui::EntityId, Subscription>>,
     operator_previews: HashMap<DeviceId, operator_panel::preview::State>,
     operator_preview_inventory: Option<OperatorPreviewInventory>,
+    operator_harmonics: HashMap<(DeviceId, usize), operator_panel::harmonics::Control>,
     operator_envelope_graphs:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphControl>,
     operator_envelope_gestures:
@@ -377,6 +380,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         operator_panel::preview::cancel_all(view, cx);
         view.device_panel.operator_preview_inventory = None;
         operator_panel::envelope::cancel_all(view, cx);
+        operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
@@ -478,6 +482,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.operator_context_focus.clear();
         operator_panel::preview::cancel_interactions(view, cx);
         operator_panel::envelope::cancel_all(view, cx);
+        operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
@@ -538,6 +543,7 @@ fn cancel_all_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
         }
     }
     operator_panel::envelope::cancel_all(view, cx);
+    operator_panel::harmonics::retire(view, cx, |_| false);
     view.device_panel.views.clear();
     view.device_panel.pending_values.clear();
     retire_removed_eq8_graphs(view, cx, &HashSet::new());
@@ -688,9 +694,11 @@ fn render_track(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
+    snapshot::retire_invalid_owner(view, &alive);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -752,6 +760,7 @@ fn render_track(
         .operator_context_focus
         .retain(|device, _| alive_operator.contains(device));
     operator_panel::envelope::retire_removed(view, cx, &alive_operator);
+    operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
     let alive_eq8: HashSet<_> = identities
         .iter()
         .filter_map(|(device, identity)| {
@@ -2272,6 +2281,17 @@ pub(super) fn effective_parameter_value(
         .device_gesture
         .snapshot()
         .and_then(|snapshot| match snapshot.target {
+            GestureTarget::DeviceParameterSnapshot { device }
+                if device == key.device && snapshot.key.generation == view.project_generation =>
+            {
+                snapshot.parameters.and_then(|parameters| {
+                    parameters
+                        .entries()
+                        .iter()
+                        .find(|(id, _)| *id == key.parameter)
+                        .map(|(_, value)| *value)
+                })
+            }
             GestureTarget::DeviceParameter { device, parameter }
                 if device == key.device && parameter == key.parameter =>
             {
@@ -2452,6 +2472,7 @@ fn parameter_control_with_presentation(
                     Some("bass mono audition") => 14.0,
                     Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => 18.0,
                     Some("on" | "fix" | "") => 18.0,
+                    Some("r" | "q") => 14.0,
                     Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
                     _ => 40.0,
                 };
@@ -2461,7 +2482,7 @@ fn parameter_control_with_presentation(
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
-        Some(ParameterControl::Choice { entity, .. }) => {
+        Some(ParameterControl::Choice { entity, values, .. }) => {
             if let ParameterValue::Choice(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
@@ -2472,7 +2493,9 @@ fn parameter_control_with_presentation(
                             && descriptor.id != hex_engine::DEVICE_INPUT_GAIN.id,
                         cx,
                     );
-                    let _ = control.set_selected(value as usize, cx);
+                    if let Some(index) = values.iter().position(|candidate| *candidate == value) {
+                        let _ = control.set_selected(index, cx);
+                    }
                 });
             } else {
                 entity.update(cx, |control, cx| {
@@ -2699,7 +2722,12 @@ fn create_parameter_control(
             Some(())
         }
         (ParameterKind::Choice { labels }, ParameterValue::Choice(value)) => {
-            let choices = labels.iter().copied().map(theme::text);
+            let values: Vec<u32> =
+                operator_panel::choice_order(identity, descriptor.id, labels.len());
+            let selected = values.iter().position(|candidate| *candidate == value)?;
+            let choices = values
+                .iter()
+                .map(|index| theme::text(labels[*index as usize]));
             let appearance = if matches!(
                 presentation,
                 ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
@@ -2708,14 +2736,15 @@ fn create_parameter_control(
             } else {
                 DiscreteControlAppearance::Standard
             };
-            let config = SelectorConfig::new(id, choices, value as usize, style)
+            let config = SelectorConfig::new(id, choices, selected, style)
                 .ok()?
                 .with_appearance(appearance);
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
+            let event_values = values.clone();
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
-                    let Ok(value) = u32::try_from(event.index) else {
+                    let Some(&value) = event_values.get(event.index) else {
                         return;
                     };
                     if !finalize_controls(view, cx) {
@@ -2740,6 +2769,7 @@ fn create_parameter_control(
                     class: identity.class,
                     type_id: identity.type_id,
                     descriptor,
+                    values,
                 },
             );
             Some(())

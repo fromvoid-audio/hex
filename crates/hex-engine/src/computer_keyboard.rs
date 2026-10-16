@@ -87,13 +87,6 @@ struct Voice {
     id: u64,
 }
 
-struct PreparationClock(u32);
-impl hex_lattice::NativeInstrumentClock for PreparationClock {
-    fn beat_at_offset(&self, offset: usize) -> Option<u64> {
-        u64::try_from((offset as u128).checked_mul(2_u128 << 32)? / u128::from(self.0)).ok()
-    }
-}
-
 pub(crate) enum KeyboardClock<'a> {
     Playing {
         timing: &'a dyn crate::MidiTiming,
@@ -107,6 +100,15 @@ pub(crate) enum KeyboardClock<'a> {
     },
 }
 impl hex_lattice::NativeInstrumentClock for KeyboardClock<'_> {
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        match *self {
+            Self::Playing { start, .. } => start.checked_add(u64::try_from(offset).ok()?),
+            Self::Monitor { .. } => None,
+        }
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        Some(matches!(self, Self::Playing { .. }))
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         match *self {
             Self::Playing { timing, start } => timing
@@ -172,10 +174,19 @@ impl ComputerKeyboardRuntime {
         let instrument = registry
             .prepare_instrument(device.state(), project.sample_rate())
             .map_err(|_| Invalid("computer keyboard instrument preparation failed"))?;
+        Self::prepare_instrument(track, input, project.sample_rate(), instrument.as_ref())
+    }
+
+    fn prepare_instrument(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        instrument: &dyn hex_lattice::PreparedNativeInstrument,
+    ) -> Result<Self, Invalid> {
         let factory = instrument
             .prepare_mutable_runtime()
             .map_err(|_| Invalid("computer keyboard runtime preparation failed"))?;
-        let mut mutable = factory
+        let mutable = factory
             .as_ref()
             .map(|factory| {
                 NativeInstrumentRuntimePair::new(
@@ -184,7 +195,10 @@ impl ComputerKeyboardRuntime {
                         max_pair_bytes: 2 * 1024 * 1024,
                         max_events_per_block: 256,
                         max_active_occurrences: VOICES,
-                        max_tail_frames: u64::from(project.sample_rate()) * 10,
+                        max_tail_frames: crate::mutable_instrument::max_mutable_tail_frames(
+                            sample_rate,
+                        )
+                        .ok_or(hex_lattice::NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?,
                     },
                 )
             })
@@ -217,25 +231,21 @@ impl ComputerKeyboardRuntime {
         for (velocity_index, velocity) in COMPUTER_KEY_VELOCITIES.into_iter().enumerate() {
             for pitch in 0..128_u8 {
                 let index = velocity_index * 128 + usize::from(pitch);
-                if let Some(runtime) = mutable.as_mut() {
+                if let Some(runtime) = mutable.as_ref() {
                     // Validate against the actual native runtime too. A provider's
                     // optional source validator may not cover every pitch domain.
-                    runtime.begin_block();
-                    let mut probe = [[0.0; 2]; 1];
                     supported[index] = instrument.validate_event_note(pitch, velocity).is_ok()
                         && runtime
-                            .process_block_with_clock(
+                            .preflight_event_batch(
                                 &[NativeInstrumentEvent::NoteOn {
                                     frame_offset: 0,
                                     occurrence_id: 1,
                                     pitch,
                                     velocity,
                                 }],
-                                &mut probe,
-                                Some(&PreparationClock(project.sample_rate())),
+                                1,
                             )
                             .is_ok();
-                    runtime.rollback_block();
                     continue;
                 }
                 let sampler = if let Some(context) = &context {
@@ -1041,6 +1051,11 @@ mod clock_tests {
         let mut runtime = ComputerKeyboardRuntime::prepare(&project, track, input).unwrap();
         runtime.begin_block();
         let clock = runtime.musical_clock(&timing, performance, true).unwrap();
+        assert_eq!(clock.transport_is_running(), Some(true));
+        assert_eq!(
+            clock.performance_frame_at_offset(48_000),
+            Some(performance + 48_000)
+        );
         assert_eq!(
             clock.beat_at_offset(0),
             Some(BeatTime::from_quarters(2).unwrap().raw())
@@ -1053,6 +1068,9 @@ mod clock_tests {
                 .map(|beat| beat.raw())
         );
         let clock = runtime.musical_clock(&timing, performance, false).unwrap();
+        assert_eq!(clock.transport_is_running(), Some(false));
+        assert_eq!(clock.performance_frame_at_offset(0), None);
+        assert_eq!(clock.performance_frame_at_offset(96_000), None);
         assert_eq!(
             clock.beat_at_offset(96_000),
             Some(BeatTime::from_quarters(4).unwrap().raw()),
@@ -1077,6 +1095,71 @@ mod clock_tests {
 mod pitch_domain_tests {
     use super::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
+    #[test]
+    fn computer_keyboard_and_authored_track_admit_existing_sixty_second_operator_release() {
+        let (source, track) = super::tests::fixture();
+        let mut editor = hex_project::Editor::new(source, 4).unwrap();
+        let metadata = &hex_devices::operator_state::OPERATOR_METADATA;
+        let mut state = metadata.default_state().unwrap();
+        for (id, value) in [(38, 60.0), (78, 0.2)] {
+            state = metadata
+                .patch_parameter(
+                    &state,
+                    ParameterId::from_static(id),
+                    ParameterValue::Float(value),
+                )
+                .unwrap();
+        }
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        editor
+            .execute(hex_project::Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        let hex_project::Created::Clip(clip) = editor
+            .execute(hex_project::Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(1).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(hex_project::Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::ZERO,
+                duration: hex_project::BeatTime::from_quarters(1).unwrap(),
+                pitch: 60,
+                velocity: 100,
+                channel: 0,
+            })
+            .unwrap();
+        let input = Arc::new(ComputerKeyboardInput::default());
+        let keyboard = ComputerKeyboardRuntime::prepare(editor.project(), track, input).unwrap();
+        assert!(keyboard.release_frames >= 48_000 * 60);
+        assert!(keyboard.mutable.is_some());
+        let revision = Arc::new(
+            crate::PreparedRevision::prepare(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let mut playback = crate::SessionPlayback::new(revision).unwrap();
+        playback.apply(crate::SessionPlaybackCommand::Play).unwrap();
+        let mut pcm = [[0.0; 2]; 128];
+        playback.render(&mut pcm).unwrap();
+        assert!(pcm.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+    }
+
     #[test]
     fn computer_keyboard_mutable_nyquist_refusal_keeps_audio_render_usable() {
         let (source, track) = super::tests::fixture();
@@ -1127,3 +1210,7 @@ mod pitch_domain_tests {
         assert!(frames.iter().flatten().any(|sample| sample.abs() > 1e-6));
     }
 }
+
+#[cfg(test)]
+#[path = "computer_keyboard_clock_admission_tests.rs"]
+mod clock_admission_tests;

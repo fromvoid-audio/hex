@@ -87,8 +87,8 @@ impl EditorView {
         if self.device_gesture.has_pending_terminal() {
             return;
         }
-        if let Some(snapshot) = self.device_gesture.snapshot()
-            && let Err(error) = self.finish_device_gesture(snapshot.value)
+        if self.device_gesture.snapshot().is_some()
+            && let Err(error) = self.device_gesture.finish_current()
         {
             self.error = Some(error.into());
         }

@@ -127,6 +127,10 @@ headless microbenchmark, not a physical-device deadline or native UI test.
 
 ## Dependencies
 
+The narrow `hex-media` dev dependency opens real verified WAV fixtures for actual
+catalog/source association tests. Production media decoding remains in
+`hex-stream`; audio gains no media/file I/O dependency or callback decoding.
+
 hex-engine; hex-stream for exact catalog/pair custody and control-side stream
 disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow production
 stream edge does not expose pages to the renderer or admit native streamed

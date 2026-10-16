@@ -376,4 +376,7 @@ mod tests {
     }
 }
 
+// Isolated harmonic-kernel proof pending canonical/host dependency integration.
 mod operator_filter;
+#[cfg(test)]
+mod operator_harmonics;
