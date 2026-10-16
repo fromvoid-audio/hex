@@ -43,6 +43,7 @@ mod midi_source_controls;
 mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
+mod musical_audio_controls;
 mod musical_time;
 mod overview;
 mod play_intent;
@@ -498,6 +499,7 @@ pub(super) struct EditorView {
     scrub: scrub::ScrubState,
     zoom_wheel_accum: f32,
     overview_cache: std::cell::RefCell<Option<Rc<overview::OverviewCache>>>,
+    audio_point_page: usize,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
@@ -772,6 +774,7 @@ impl EditorView {
             scrub: scrub::ScrubState::default(),
             zoom_wheel_accum: 0.0,
             overview_cache: std::cell::RefCell::new(None),
+            audio_point_page: 0,
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),

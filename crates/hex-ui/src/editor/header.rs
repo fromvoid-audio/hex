@@ -245,6 +245,7 @@ mod ui_tests {
             view.state = Some(Arc::new(hex_session::service::ViewState {
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 timeline_frames: current.timeline_frames,
                 can_undo: false,

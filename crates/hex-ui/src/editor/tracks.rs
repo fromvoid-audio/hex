@@ -258,7 +258,7 @@ impl EditorView {
             }
             let selected_clip = self.selected_clip() == Some(clip.id());
             if clip_intersects_exclusions(clip, exclusions) {
-                for fragment in clip_fragments_outside(clip, exclusions)
+                for fragment in clip_fragments_outside(clip, exclusions, state.project.tempo_map())
                     .into_iter()
                     .flatten()
                 {
@@ -720,11 +720,12 @@ impl EditorView {
                 else {
                     continue;
                 };
-                let Ok(fragment) = hex_project::preview_clip_fragment(
+                let Ok(fragment) = hex_project::preview_clip_fragment_with_tempo(
                     clip,
                     selected_start,
                     selected_end,
                     destination_start,
+                    state.project.tempo_map(),
                 ) else {
                     continue;
                 };
@@ -1067,7 +1068,11 @@ impl EditorView {
                         destination: std::rc::Rc::new(std::cell::Cell::new(None)),
                         insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
                         ghost_label: format!("audio clip {}", clip_id.value()),
-                        ghost_waveform: state.waveforms.get(&clip.asset()).cloned(),
+                        ghost_waveform: if clip.audio_edit().is_none() {
+                            state.waveforms.get(&clip.asset()).cloned()
+                        } else {
+                            None
+                        },
                         lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
                         last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
                     },
@@ -1094,32 +1099,48 @@ impl EditorView {
         content = content.border_1().border_color(rgb(0x000000));
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
-            match waveform {
-                Some(waveform) => {
-                    content = content.child(super::waveform::waveform_view_cached(
-                        waveform,
-                        clip,
-                        visible_start,
-                        visible_end,
-                        std::rc::Rc::clone(&self.waveform_geometry_cache),
-                    ));
-                }
-                None => {
-                    content = content.child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .flex()
-                            .items_center()
-                            .px_1()
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                            .child(theme::text("missing media")),
-                    );
+            if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+                content = content.child(super::waveform::prepared_waveform_view_cached(
+                    prepared,
+                    clip,
+                    visible_start,
+                    visible_end,
+                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                ));
+            } else if clip.audio_edit().is_some() {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .child(theme::text("prepared waveform unavailable")),
+                );
+            } else {
+                match waveform {
+                    Some(waveform) => {
+                        content = content.child(super::waveform::waveform_view_cached(
+                            waveform,
+                            clip,
+                            visible_start,
+                            visible_end,
+                            std::rc::Rc::clone(&self.waveform_geometry_cache),
+                        ));
+                    }
+                    None => {
+                        content = content.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .px_1()
+                                .text_xs()
+                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                .child(theme::text("missing media")),
+                        );
+                    }
                 }
             }
         }
-        let fade = clip.fade();
+        let fade = clip.retained_fade();
         let envelope_width = self
             .drag_lanes
             .get(&track)
@@ -1129,7 +1150,17 @@ impl EditorView {
             && envelope_width >= 40.0
             && (fade.fade_in() > 0 || fade.fade_out() > 0)
         {
-            let samples = fade_envelope_samples(fade, clip.start(), visible_start, visible_end);
+            let samples = if clip.audio_edit().is_some() {
+                super::waveform::projected_fade_envelope_samples(
+                    clip,
+                    state.project.tempo_map(),
+                    visible_start,
+                    visible_end,
+                )
+                .unwrap_or_default()
+            } else {
+                fade_envelope_samples(fade, clip.start(), visible_start, visible_end)
+            };
             if samples.len() >= 2 {
                 content = content.children([canvas(
                     |_, _, _| (),

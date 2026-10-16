@@ -12,7 +12,7 @@ Own musical state, typed playback commands, timing, and deterministic rendering.
 
 ## Dependencies
 
-hex-project, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
+hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
 library; no UI/device-stream dependencies.
 
 ## Does not own
@@ -471,3 +471,9 @@ on control. Both preflight and commit fill borrowed scratch and return eligibili
 so neither creates or returns large inline plans on the callback stack. Actual
 capacities and the checked preflight bound are charged to preroll storage; declined
 queries reset the valid prefix, and handoff never resizes or drops the buffers.
+
+Control-side `audio_transform` prepares immutable original-domain PCM through
+std-only hex-warp, enforcing finite output/scratch/work and retained PCM limits.
+All compiler entry points use the same direct/prepared decision. Compiled roots
+and crops form a read-only worker waveform sidecar, never callback analysis.
+See [musical editing](../../docs/musical-editing.md).

@@ -41,6 +41,7 @@ fn completed_event(state: &ViewState) -> Event {
         state: Arc::new(ViewState {
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: Arc::clone(&state.midi_preview),
             timeline_frames: state.timeline_frames,
             can_undo: state.can_undo,
@@ -154,6 +155,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
             view.state = Some(Arc::new(ViewState {
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::default(),
                 timeline_frames: 384_000,
                 can_undo: false,

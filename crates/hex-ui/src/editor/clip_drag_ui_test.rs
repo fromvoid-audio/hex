@@ -109,6 +109,7 @@ pub(super) fn editor_window(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview,
                     timeline_frames: TIMELINE_FRAMES,
                     can_undo: false,
@@ -635,6 +636,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&old.project),
             waveforms,
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
@@ -1486,6 +1488,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(moved_project.project().clone()),
             waveforms: Default::default(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(moved_preview),
             timeline_frames: TIMELINE_FRAMES,
             can_undo: true,
@@ -1666,6 +1669,7 @@ fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
         view.state = Some(Arc::new(ViewState {
             project: previous.project.clone(),
             waveforms: previous.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: previous.midi_preview.clone(),
             timeline_frames: previous.timeline_frames,
             can_undo: previous.can_undo,

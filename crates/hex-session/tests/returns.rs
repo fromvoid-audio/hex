@@ -353,17 +353,17 @@ fn return_workflow_routes_pcm_edits_devices_history_and_schema20_roundtrip() {
     let (path, _directory) = temp_project_path();
     service
         .submit(Request::SaveNew(path.clone()))
-        .expect("save schema 20 project");
+        .expect("save schema 21 project");
     let saved = wait(&service);
     assert!(saved.error.is_none(), "save: {:?}", saved.error);
     assert!(saved.save_complete);
     assert!(!saved.state.unsaved);
     let bytes = fs::read(&path).expect("saved document bytes");
     assert!(
-        String::from_utf8_lossy(&bytes).contains("\"version\": 20"),
-        "current return project must be written as schema 20"
+        String::from_utf8_lossy(&bytes).contains("\"version\": 21"),
+        "current return project must be written as schema 21"
     );
-    let persisted = hex_storage::load(&path).expect("load schema 20 project");
+    let persisted = hex_storage::load(&path).expect("load schema 21 project");
     assert_eq!(persisted, *saved.state.project);
     assert_eq!(persisted.return_tracks().len(), 1);
     assert_eq!(persisted.track(track).unwrap().sends()[0].gain(), 0.5);

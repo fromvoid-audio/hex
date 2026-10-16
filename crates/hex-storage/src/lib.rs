@@ -1,4 +1,5 @@
 //! Versioned, bounded persistence of canonical metadata; no media or callback work.
+mod audio_edit;
 mod files;
 mod journal;
 pub use journal::{Journal, journal_path, load_journal};
@@ -128,7 +129,7 @@ impl From<serde_json::Error> for StorageError {
 }
 
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    let document = schema::DocumentV20::from_project(project)?;
+    let document = schema::DocumentV21::from_project(project)?;
     let bytes = serde_json::to_vec_pretty(&document)?;
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(StorageError::Invalid("project document exceeds byte limit"));

@@ -222,6 +222,11 @@ pub(crate) fn apply(
                         .map(|clip| (track.id(), clip.clone()))
                 })
                 .ok_or(Invalid("arrangement audio clip no longer exists"))?;
+            if original.audio_edit().is_some() {
+                return Err(Invalid(
+                    "transformed or musically anchored arrangement audio cannot yet transfer to an unwarped session one-shot",
+                ));
+            }
             require_known_cell_key(project, track, scene)?;
             ensure_empty(project, track, scene)?;
             ensure_clip_room(project, 1)?;

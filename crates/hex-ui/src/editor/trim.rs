@@ -234,7 +234,12 @@ fn preview_for_pointer(
     let frame = snapped_edge_frame(drag, project, pointer_x, lane, viewport)?;
     let clip = drag
         .clip
-        .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
+        .preview_edge_trim_with_tempo(
+            drag.edge,
+            frame,
+            drag.asset_playback_frames,
+            project.tempo_map(),
+        )
         .ok()?;
     Some(TrimPreviewState { clip })
 }
@@ -891,10 +896,12 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Ok(preview) = drag
-            .clip
-            .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
-        else {
+        let Ok(preview) = drag.clip.preview_edge_trim_with_tempo(
+            drag.edge,
+            frame,
+            drag.asset_playback_frames,
+            state.project.tempo_map(),
+        ) else {
             return;
         };
         if preview_is_noop(&drag.clip, &preview) {
@@ -1083,6 +1090,7 @@ mod tests {
         let stale_revision = ViewState {
             project: Arc::clone(&state.project),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&state.midi_preview),
             timeline_frames: state.timeline_frames,
             can_undo: false,
@@ -1139,6 +1147,7 @@ mod tests {
         let removed = ViewState {
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             timeline_frames: 500,
             can_undo: false,
@@ -1183,6 +1192,7 @@ mod tests {
         let moved = ViewState {
             project: Arc::new(moved_editor.project().clone()),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             timeline_frames: 500,
             can_undo: false,
@@ -1230,6 +1240,7 @@ mod tests {
         let state = ViewState {
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             timeline_frames: 500,
             can_undo: false,

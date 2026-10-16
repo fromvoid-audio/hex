@@ -199,6 +199,7 @@ mod ui {
             view.state = Some(Arc::new(hex_session::service::ViewState {
                 project: Arc::clone(&state.project),
                 waveforms: state.waveforms.clone(),
+                audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                 midi_preview: Arc::clone(&state.midi_preview),
                 timeline_frames: state.timeline_frames,
                 can_undo: state.can_undo,

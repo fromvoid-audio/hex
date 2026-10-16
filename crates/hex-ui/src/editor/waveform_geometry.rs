@@ -43,6 +43,11 @@ struct WaveformGeometryKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    Prepared {
+        timeline_origin: u64,
+        root_offset: u64,
+        gain: i32,
+    },
     GainedSource {
         timeline_origin: u64,
         gain: i32,
@@ -128,6 +133,11 @@ impl WaveformGeometryCache {
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
+    Prepared {
+        timeline_origin: u64,
+        root_offset: u64,
+        gain: hex_project::ClipGain,
+    },
     GainedSource {
         timeline_origin: u64,
         gain: hex_project::ClipGain,
@@ -196,6 +206,15 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::Prepared {
+            timeline_origin,
+            root_offset,
+            gain,
+        } => WaveformMappingKey::Prepared {
+            timeline_origin: *timeline_origin,
+            root_offset: *root_offset,
+            gain: gain.millidb(),
+        },
         WaveformMapping::GainedSource {
             timeline_origin,
             gain,
@@ -246,7 +265,9 @@ pub(super) fn prepare_waveform_geometry(
     let frames = visible_end.saturating_sub(visible_start);
     let gain = match mapping {
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
-        WaveformMapping::GainedSource { gain, .. } => gain.linear(),
+        WaveformMapping::GainedSource { gain, .. } | WaveformMapping::Prepared { gain, .. } => {
+            gain.linear()
+        }
         WaveformMapping::Source { .. } => 1.0,
     };
     let mut stereo_peaks = Vec::with_capacity(columns);
@@ -256,6 +277,19 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::Prepared {
+                timeline_origin,
+                root_offset,
+                ..
+            } => start
+                .checked_sub(*timeline_origin)
+                .and_then(|start| start.checked_add(*root_offset))
+                .zip(
+                    end.checked_sub(*timeline_origin)
+                        .and_then(|end| end.checked_add(*root_offset)),
+                )
+                .and_then(|(start, end)| usize::try_from(start).ok().zip(usize::try_from(end).ok()))
+                .and_then(|(start, end)| aggregate_peaks(waveform, start, end)),
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,

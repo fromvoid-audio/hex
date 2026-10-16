@@ -132,3 +132,11 @@ Audio clips in schema 20 persist validated integer `gain_millidb` values for
 Arrangement and Session sources. The fields are required in schema 20; older
 schemas default absent gain to 0 dB. Invalid/missing current values refuse the
 load rather than discarding gain. See [clip gain](../../docs/clip-view.md).
+
+Schema 21 persists Arrangement musical placement, immutable processing root/crop,
+pitch cents, all six warp modes/parameters/markers, original-source Q16.16 gain
+points and frozen output fade context. Earlier documents migrate without audio
+transforms; original frame placements and clip gain remain unchanged. Current
+Arrangement clips require an explicit `audio_edit` object or null. Unknown,
+malformed, oversized and inconsistent state is refused through existing guarded
+load/save paths. PCM, transient analysis and transform caches are not serialized.

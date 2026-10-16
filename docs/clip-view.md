@@ -116,8 +116,10 @@ Separate review bundle: `artifacts/hex-clip-view-20261009.app`; identity/check l
 - MIDI note edits still work; collapsed MIDI does not receive note shortcuts.
 - Check a small window and existing clip drag/resize; Session source panels still open.
 
-Pitch, warp, detail zoom/pan, draggable markers and direct numeric entry
-remain targeted changes. This first panel is not full Live equivalence.
+Pitch, beat anchoring, source envelopes and warp now use the separate
+[musical audio contract](musical-editing.md#canonical-musical-audio). Detail
+zoom/pan, draggable source markers and direct numeric entry remain targeted changes.
+This panel is not full Live equivalence.
 
 ## canonical audio clip gain (musical editing, issue 27 / PR 185)
 
@@ -130,9 +132,9 @@ invalid edits preserve metadata and history. Trim, split, duplicate and audio
 copy operations retain gain, including Arrangement-to-Session copies. Undo/Redo
 and snapshots retain the exact integer value.
 
-Project schema 20 writes required `gain_millidb` fields for both audio clip
-kinds. Prior schemas migrate to unity when the field is absent; schema 20
-refuses absent/null fields and every version refuses out-of-range or noninteger
+Project schema 21 retains the schema-20 required `gain_millidb` fields for both audio clip
+kinds. Prior schemas migrate to unity when the field is absent; schemas 20 and 21
+refuse absent/null fields and every version refuses out-of-range or noninteger
 values. Existing recoverable save/journal/publication paths remain in use.
 
 Preparation converts dB to one finite f32 coefficient on the control thread.

@@ -1144,6 +1144,7 @@ mod tests {
                     view.state = Some(Arc::new(ViewState {
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
+                        audio_clip_waveforms: std::collections::BTreeMap::new(),
                         midi_preview: Arc::new(Default::default()),
                         timeline_frames: 384_000,
                         can_undo: false,

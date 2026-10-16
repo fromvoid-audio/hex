@@ -1795,6 +1795,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
@@ -1916,6 +1917,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
@@ -2025,6 +2027,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
@@ -2146,6 +2149,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
@@ -4416,6 +4420,98 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn derived_pcm_render_replace_and_retire_never_allocate_or_drop_on_callback() {
+        fn transformed(cents: i16) -> (Playback, Weak<hex_engine::PreparedRevision>) {
+            use hex_project::{Command, Created, Editor, Project};
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Imported { clip, asset, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "audio".into(),
+                    path: "derived.wav".into(),
+                    sample_rate: 48_000,
+                    frames: 2_048,
+                })
+                .unwrap()
+            else {
+                panic!("import")
+            };
+            editor
+                .execute(Command::SetAudioClipPitch { clip, cents })
+                .unwrap();
+            let audio = hex_engine::Audio::new(
+                48_000,
+                (0..2_048)
+                    .map(|i| {
+                        let x = (i as f32 * 0.173).sin() * 0.2;
+                        [x, -x]
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            // The temporary default preparation cache is destroyed here. Only the
+            // returned graph owns derived Audio; no UI/source/cache masks retirement.
+            let revision = Arc::new(
+                hex_engine::PreparedRevision::prepare(
+                    editor.project(),
+                    &std::collections::BTreeMap::from([(asset, audio)]),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let weak = Arc::downgrade(&revision);
+            (
+                Playback::try_from_prepared_with_session(revision).unwrap(),
+                weak,
+            )
+        }
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut roots = Vec::new();
+        let mut output = [[0.0; 2]; 31];
+        for cents in [137, 211, 337, 411] {
+            let (graph, weak) = transformed(cents);
+            roots.push(weak);
+            control.publish(graph).unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            let allocation = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    allocation.count_total,
+                    allocation.bytes_total,
+                    allocation.count_current,
+                    allocation.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(
+                roots.iter().all(|root| root.strong_count() > 0),
+                "retired derived roots remain owned until control reclamation"
+            );
+        }
+        control.request_shutdown();
+        for _ in 0..3 {
+            let allocation = allocation_counter::measure(|| {
+                callback.begin_block();
+            });
+            assert_eq!(
+                (
+                    allocation.count_total,
+                    allocation.bytes_total,
+                    allocation.count_current,
+                    allocation.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            control.reclaim();
+        }
+        assert!(roots.iter().all(|root| root.strong_count() == 0));
     }
 
     fn graph() -> (Playback, Weak<hex_engine::Project>) {

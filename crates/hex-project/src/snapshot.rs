@@ -186,6 +186,7 @@ pub struct ClipSnapshot {
     pub source_length: u64,
     pub looping: bool,
     pub source_phase: u64,
+    pub edit: Option<crate::AudioClipEdit>,
     pub fade: ClipFade,
     pub gain: crate::ClipGain,
 }
@@ -247,6 +248,7 @@ impl Project {
                                 source_length: clip.source_length,
                                 looping: clip.looping,
                                 source_phase: clip.source_phase,
+                                edit: clip.edit.clone(),
                                 fade: clip.fade,
                                 gain: clip.gain,
                             })
@@ -565,6 +567,7 @@ impl Project {
                     source_length: clip.source_length,
                     looping: clip.looping,
                     source_phase: clip.source_phase,
+                    edit: clip.edit,
                     fade: clip.fade,
                     gain: clip.gain,
                 });
@@ -805,6 +808,17 @@ impl Project {
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
+        for track in &project.tracks {
+            for clip in track.clips() {
+                if let Some(edit) = &clip.edit {
+                    let frames = project
+                        .asset(clip.asset)
+                        .ok_or(Invalid("audio domain media missing"))?
+                        .playback_frames();
+                    edit.validate(clip, project.tempo_map(), frames)?;
+                }
+            }
+        }
         Ok(project)
     }
 }

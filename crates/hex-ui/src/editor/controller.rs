@@ -2339,6 +2339,7 @@ mod tests {
             state: Arc::new(ViewState {
                 project,
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
                 timeline_frames: 0,
                 can_undo: false,

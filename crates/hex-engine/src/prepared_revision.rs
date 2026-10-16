@@ -114,59 +114,102 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
-        let effects = hex_devices::native_registry()
-            .map_err(|_| Invalid("invalid built-in native device registry"))?;
-        let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
-            project,
-            instruments,
-            previous_session.map(|previous| previous.shared_contexts().as_ref()),
-        )?;
-        if shared_contexts.payload_bytes()
-            > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
-        {
-            return Err(Invalid(
-                "shared instrument context revision budget exceeded",
-            ));
-        }
-        let (arrangement, midi_preview) =
-            crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
-                project,
-                media,
-                Some(Arc::clone(&sine_table)),
-                &effects,
-                instruments,
-                Some(Arc::clone(&shared_contexts)),
-            )?;
-        let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        Self::prepare_with_instrument_registry_and_transforms(
             project,
             media,
             sine_table,
             previous_session,
             instruments,
-            shared_contexts,
-        )?;
-        crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
-            .map_err(|_| Invalid("active effect and mutable instrument runtime budget exceeded"))?;
-        let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
-        let midi_bank_bytes = arrangement
-            .midi_note_bank_storage_bytes()?
-            .checked_add(session.midi_note_bank_storage_bytes())
-            .ok_or(Invalid("complete revision midi bank byte count overflow"))?;
-        let midi_bank_references = arrangement
-            .midi_note_sampler_reference_count()?
-            .checked_add(session.midi_note_bank_reference_count())
-            .ok_or(Invalid(
-                "complete revision midi bank reference count overflow",
-            ))?;
-        crate::midi_note_bank::PreparedMidiNoteBank::validate_complete_revision_budget(
-            midi_bank_bytes,
-            midi_bank_references,
-        )?;
-        Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
-            mutable_track_revisions,
+            &transforms,
+        )
+    }
+
+    pub fn prepare_with_audio_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_instrument_registry_and_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            &instruments,
+            transforms,
+        )
+    }
+
+    fn prepare_with_instrument_registry_and_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        transforms.compile_transaction(|| {
+            let effects = hex_devices::native_registry()
+                .map_err(|_| Invalid("invalid built-in native device registry"))?;
+            let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
+                project,
+                instruments,
+                previous_session.map(|previous| previous.shared_contexts().as_ref()),
+            )?;
+            if shared_contexts.payload_bytes()
+                > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
+            {
+                return Err(Invalid(
+                    "shared instrument context revision budget exceeded",
+                ));
+            }
+            let (arrangement, midi_preview) =
+                crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
+                    project,
+                    media,
+                    Some(Arc::clone(&sine_table)),
+                    &effects,
+                    instruments,
+                    Some(Arc::clone(&shared_contexts)),
+                    Some(transforms),
+                )?;
+            let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+                project,
+                media,
+                sine_table,
+                previous_session,
+                instruments,
+                shared_contexts,
+            )?;
+            crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
+                .map_err(|_| {
+                    Invalid("active effect and mutable instrument runtime budget exceeded")
+                })?;
+            let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
+            let midi_bank_bytes = arrangement
+                .midi_note_bank_storage_bytes()?
+                .checked_add(session.midi_note_bank_storage_bytes())
+                .ok_or(Invalid("complete revision midi bank byte count overflow"))?;
+            let midi_bank_references = arrangement
+                .midi_note_sampler_reference_count()?
+                .checked_add(session.midi_note_bank_reference_count())
+                .ok_or(Invalid(
+                    "complete revision midi bank reference count overflow",
+                ))?;
+            crate::midi_note_bank::PreparedMidiNoteBank::validate_complete_revision_budget(
+                midi_bank_bytes,
+                midi_bank_references,
+            )?;
+            Ok(Self {
+                arrangement: Arc::new(arrangement),
+                session: Arc::new(session),
+                midi_preview: Arc::new(midi_preview),
+                mutable_track_revisions,
+            })
         })
     }
 
@@ -222,6 +265,7 @@ impl PreparedRevision {
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
                 Some(Arc::clone(&shared_contexts)),
+                None,
             )?;
         let session =
             PreparedSessionInventory::prepare_with_prepared_audio_sources_and_shared_contexts(

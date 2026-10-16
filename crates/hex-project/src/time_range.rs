@@ -136,10 +136,22 @@ impl Project {
                 }
                 let mut fragment = clip.clone();
                 if start > fragment.start() {
-                    fragment = crate::edit::split_clip_at(&fragment, start, fragment.id())?.1;
+                    fragment = crate::edit::split_clip_at_tempo(
+                        &fragment,
+                        start,
+                        fragment.id(),
+                        self.tempo_map(),
+                    )?
+                    .1;
                 }
                 if end < clip_end {
-                    fragment = crate::edit::split_clip_at(&fragment, end, fragment.id())?.0;
+                    fragment = crate::edit::split_clip_at_tempo(
+                        &fragment,
+                        end,
+                        fragment.id(),
+                        self.tempo_map(),
+                    )?
+                    .0;
                 }
                 fragment.start = start - range.start;
                 if !result.assets.iter().any(|(id, _)| *id == clip.asset()) {
@@ -362,6 +374,8 @@ pub(crate) fn paste_rows(
         clip.start = frame
             .checked_add(original.start())
             .ok_or(Invalid("paste clip start overflow"))?;
+        let target_frame = clip.start;
+        crate::audio_edit::move_clip(&mut clip, target_frame, project.tempo_map())?;
         let clips = project.audio_clips_mut(destination)?;
         reserve(clips, 1)?;
         clips.push(clip);

@@ -16,6 +16,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         state: Arc::new(ViewState {
             project,
             waveforms: Default::default(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(Default::default()),
             timeline_frames: 384_000,
             can_undo: false,
@@ -47,6 +48,7 @@ fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: boo
     event.state = Arc::new(ViewState {
         project: Arc::clone(&previous.project),
         waveforms: Default::default(),
+        audio_clip_waveforms: std::collections::BTreeMap::new(),
         midi_preview: Arc::new(Default::default()),
         timeline_frames: previous.timeline_frames,
         can_undo: previous.can_undo,

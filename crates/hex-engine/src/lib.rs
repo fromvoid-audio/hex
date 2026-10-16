@@ -12,6 +12,7 @@ pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 use std::{fmt, sync::Arc};
 
+pub mod audio_transform;
 mod native_device_view;
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
@@ -156,6 +157,11 @@ impl fmt::Display for Invalid {
     }
 }
 impl std::error::Error for Invalid {}
+impl From<hex_project::Invalid> for Invalid {
+    fn from(error: hex_project::Invalid) -> Self {
+        Self(error.0)
+    }
+}
 
 pub fn default_native_device_state(
     type_id: hex_lattice_contract::DeviceTypeId,
@@ -283,9 +289,36 @@ impl Tempo {
 #[derive(Debug, Clone)]
 pub struct Audio {
     sample_rate: u32,
-    frames: Arc<[Frame]>,
+    frames: Arc<AudioData>,
+}
+#[derive(Debug)]
+struct AudioData {
+    values: Vec<Frame>,
+    _derived: Option<audio_transform::Reservation>,
+}
+impl std::ops::Deref for AudioData {
+    type Target = [Frame];
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
 }
 impl Audio {
+    pub(crate) fn from_derived(
+        sample_rate: u32,
+        frames: Vec<Frame>,
+        reservation: audio_transform::Reservation,
+    ) -> Result<Self, Invalid> {
+        if frames.is_empty() || frames.iter().flatten().any(|sample| !sample.is_finite()) {
+            return Err(Invalid("prepared audio must contain finite samples"));
+        }
+        Ok(Self {
+            sample_rate,
+            frames: Arc::new(AudioData {
+                values: frames,
+                _derived: Some(reservation),
+            }),
+        })
+    }
     /// Source rate; compilation currently requires an exact project-rate match.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -295,7 +328,8 @@ impl Audio {
         &self.frames
     }
     /// True when two audio handles retain the same immutable PCM allocation.
-    pub(crate) fn shares_pcm_with(&self, other: &Self) -> bool {
+    /// Exact retained PCM identity for control-side cache/summary reuse.
+    pub fn shares_pcm_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.frames, &other.frames)
     }
     pub fn new(sample_rate: u32, frames: Vec<Frame>) -> Result<Self, Invalid> {
@@ -307,7 +341,10 @@ impl Audio {
         }
         Ok(Self {
             sample_rate,
-            frames: frames.into(),
+            frames: Arc::new(AudioData {
+                values: frames,
+                _derived: None,
+            }),
         })
     }
 }
@@ -1512,8 +1549,19 @@ pub(crate) struct InstrumentTrack {
     pub(crate) mutable: bool,
 }
 
+/// Immutable control-side root/crop view for worker waveform preparation.
+/// Audio retains the same PCM reservation as playback; never build summaries in render.
+#[derive(Debug, Clone)]
+pub struct PreparedAudioClipView {
+    pub clip: hex_project::ClipId,
+    pub audio: Audio,
+    pub offset: u64,
+    pub length: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Project {
+    audio_clip_views: Vec<PreparedAudioClipView>,
     sample_rate: u32,
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
@@ -1524,6 +1572,11 @@ pub struct Project {
     shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
+    /// Worker-only observation of accepted transformed PCM, independent of cache residency.
+    pub fn audio_clip_views(&self) -> &[PreparedAudioClipView] {
+        &self.audio_clip_views
+    }
+
     /// Accounted Arrangement note-bank bytes, including each bank's entry
     /// allocation and fixed bank/Arc owner overhead.
     pub fn midi_note_bank_storage_bytes(&self) -> Result<usize, Invalid> {
@@ -1597,6 +1650,7 @@ impl Project {
             ));
         }
         Ok(Self {
+            audio_clip_views: Vec::new(),
             audible_end_frame: tracks
                 .iter()
                 .flat_map(|track| track.clips.iter().map(|clip| clip.end))

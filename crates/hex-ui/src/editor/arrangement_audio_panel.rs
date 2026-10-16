@@ -81,6 +81,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .flex_shrink_0()
         .flex()
         .flex_col()
+        .h_full()
+        .overflow_y_scroll()
         .gap(px(2.0))
         .p(px(4.0))
         .border_r_1()
@@ -149,6 +151,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             pending,
         ))
         .child(loop_row(cx, window, pending));
+    controls = controls.child(super::musical_audio_controls::view(view, clip_id, cx));
     details = details.child(controls);
 
     let mut waveform_panel = div()
@@ -161,6 +164,20 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .p(px(4.0))
         .gap(px(2.0))
         .debug_selector(|| "arrangement-audio-waveform-panel".into());
+    if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
+        waveform_panel = waveform_panel.child(div().h(px(52.0)).flex_shrink_0().child(
+            super::waveform::prepared_waveform_view_cached(
+                prepared,
+                clip,
+                clip.start(),
+                clip.start() + clip.duration(),
+                std::rc::Rc::clone(&view.waveform_geometry_cache),
+            ),
+        ));
+        waveform_panel = waveform_panel.child(div().text_xs().child(theme::text(
+            "audible output · source and warp markers below",
+        )));
+    }
     waveform_panel = waveform_panel.child(time_ruler(window));
     let mut canvas_region = div()
         .id("arrangement-audio-waveform")
@@ -216,6 +233,26 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 "play-start-marker",
                 theme::color(theme::PaletteRole::Secondary),
             ));
+    }
+    if let Some(edit) = clip.audio_edit() {
+        if let Some(warp) = edit.domain.warp.as_ref() {
+            for marker in &warp.markers {
+                canvas_region = canvas_region.child(source_marker(
+                    marker.source_frame,
+                    window.asset_frames,
+                    "warp-source-marker",
+                    theme::color(theme::PaletteRole::Secondary),
+                ));
+            }
+        }
+        for point in &edit.domain.source_gain {
+            canvas_region = canvas_region.child(source_marker(
+                point.frame,
+                window.asset_frames,
+                "source-gain-point",
+                theme::color(theme::PaletteRole::Primary),
+            ));
+        }
     }
     waveform_panel = waveform_panel.child(canvas_region).child(
         div()

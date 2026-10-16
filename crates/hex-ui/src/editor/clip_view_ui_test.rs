@@ -123,6 +123,7 @@ fn audio_detail_fixture(
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(project),
             waveforms,
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(Default::default()),
             timeline_frames: 384_000,
             can_undo: false,
@@ -574,6 +575,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&project_after_remove),
             waveforms: previous.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&previous.midi_preview),
             timeline_frames: previous.timeline_frames,
             can_undo: true,
@@ -688,6 +690,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
@@ -706,6 +709,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,
@@ -741,6 +745,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
         view.state = Some(Arc::new(ViewState {
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             timeline_frames: old.timeline_frames,
             can_undo: old.can_undo,

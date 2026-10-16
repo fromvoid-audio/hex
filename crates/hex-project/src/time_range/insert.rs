@@ -95,9 +95,12 @@ fn open_audio_gap(
                 .start
                 .checked_add(shifted.duration)
                 .ok_or(Invalid("shifted audio clip end overflow"))?;
+            let target_frame = shifted.start;
+            crate::audio_edit::move_clip(&mut shifted, target_frame, project.tempo_map())?;
             replacement.push(shifted);
         } else {
-            let (left, mut right) = crate::edit::split_clip_at(&clip, frame, ClipId(0))?;
+            let (left, mut right) =
+                crate::edit::split_clip_at_tempo(&clip, frame, ClipId(0), project.tempo_map())?;
             right.id = ClipId(project.allocate_id()?);
             right.start = right
                 .start
@@ -107,6 +110,8 @@ fn open_audio_gap(
                 .start
                 .checked_add(right.duration)
                 .ok_or(Invalid("shifted audio tail end overflow"))?;
+            let target_frame = right.start;
+            crate::audio_edit::move_clip(&mut right, target_frame, project.tempo_map())?;
             replacement.push(left);
             replacement.push(right);
         }

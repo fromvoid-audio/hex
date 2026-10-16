@@ -1,5 +1,12 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+mod audio_edit;
+pub use audio_edit::{
+    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
+    BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
+    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
+    audio_projection_frame, default_audio_warp,
+};
 mod clip_copy;
 mod clip_fragment;
 mod conversion;
@@ -9,7 +16,7 @@ pub use device::{
     default_instrument_state,
 };
 mod edit;
-pub use clip_fragment::preview_clip_fragment;
+pub use clip_fragment::{preview_clip_fragment, preview_clip_fragment_with_tempo};
 pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
@@ -293,6 +300,7 @@ pub struct Clip {
     pub(crate) source_phase: u64,
     pub(crate) fade: ClipFade,
     pub(crate) gain: ClipGain,
+    pub(crate) edit: Option<AudioClipEdit>,
 }
 impl Clip {
     pub fn id(&self) -> ClipId {
@@ -325,6 +333,31 @@ impl Clip {
     }
     pub fn gain(&self) -> ClipGain {
         self.gain
+    }
+    /// Authored fade in its retained reference-frame domain. A musical fade is
+    /// not a newly linear frame fade; use its read-only projected gain for geometry.
+    pub fn retained_fade(&self) -> ClipFade {
+        self.edit
+            .as_ref()
+            .map_or(self.fade, |edit| edit.domain.fade)
+    }
+
+    pub fn audio_edit(&self) -> Option<&AudioClipEdit> {
+        self.edit.as_ref()
+    }
+
+    pub fn preview_edge_trim_with_tempo(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        if self.edit.is_some() {
+            crate::audio_edit::trim_view(self, edge, frame, tempo)
+        } else {
+            self.preview_edge_trim(edge, frame, asset_playback_frames)
+        }
     }
 
     /// Return canonical edge-trim metadata for UI preview without cloning the project.

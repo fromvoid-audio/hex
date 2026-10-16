@@ -188,7 +188,7 @@ pub(crate) struct DocumentV16 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DocumentV20 {
+pub(crate) struct DocumentV21 {
     format: String,
     version: u32,
     sample_rate: u32,
@@ -974,7 +974,7 @@ impl DocumentV16 {
     }
 }
 
-impl DocumentV20 {
+impl DocumentV21 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
         let base = DocumentV16::from_project(project)?;
         let DocumentV16 {
@@ -1036,7 +1036,7 @@ impl DocumentV20 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         Ok(Self {
             format,
-            version: 20,
+            version: 21,
             sample_rate,
             next_id,
             assets,
@@ -1052,16 +1052,27 @@ impl DocumentV20 {
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
-        if doc.format != "hex-project" || !matches!(doc.version, 17..=20) {
+        if doc.format != "hex-project" || !matches!(doc.version, 17..=21) {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
         }
-        if doc.version == 20
+        if doc.version >= 20
             && (doc.tracks.iter().flat_map(|track| &track.audio_clips).any(|clip| clip.gain_millidb.is_none())
                 || doc.session.cells.iter().any(|cell| matches!(&cell.content, SessionContentDtoV12::Audio { clip } if clip.gain_millidb.is_none())))
         {
             return Err(StorageError::Invalid("clip gain is required in schema 20"));
+        }
+        if doc.version == 21
+            && doc
+                .tracks
+                .iter()
+                .flat_map(|track| &track.audio_clips)
+                .any(|clip| clip.audio_edit.is_none())
+        {
+            return Err(StorageError::Invalid(
+                "audio editing state is required in schema 21",
+            ));
         }
         let mut sends = Vec::with_capacity(doc.tracks.len());
         let mut positions = Vec::with_capacity(doc.tracks.len());
@@ -1206,6 +1217,8 @@ struct ClipV6 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClipV7 {
+    #[serde(default, deserialize_with = "deserialize_audio_edit")]
+    audio_edit: Option<Option<crate::audio_edit::AudioEditDto>>,
     #[serde(default)]
     gain_millidb: Option<i32>,
     id: u64,
@@ -1915,8 +1928,8 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
-        if matches!(header.version, 17..=20) {
-            return DocumentV20::decode(bytes);
+        if matches!(header.version, 17..=21) {
+            return DocumentV21::decode(bytes);
         }
         if header.version == 16 {
             return DocumentV16::decode(bytes);
@@ -2462,6 +2475,7 @@ fn default_meter_points() -> Vec<MeterPoint> {
 fn clip_v7_from_snapshot(clip: ClipSnapshot) -> ClipV7 {
     ClipV7 {
         gain_millidb: Some(clip.gain.millidb()),
+        audio_edit: Some(clip.edit.map(Into::into)),
         id: clip.id,
         asset: clip.asset,
         start: clip.start,
@@ -2484,6 +2498,11 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
         .into_iter()
         .map(|clip| {
             Ok(ClipSnapshot {
+                edit: clip
+                    .audio_edit
+                    .flatten()
+                    .map(TryInto::try_into)
+                    .transpose()?,
                 id: clip.id,
                 asset: clip.asset,
                 start: clip.start,
@@ -2587,6 +2606,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
                         asset: clip.asset,
@@ -2633,6 +2653,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        edit: None,
                         id: clip.id,
                         asset: clip.asset,
                         start: clip.start,
@@ -2671,6 +2692,7 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             let fade = ClipFade::neutral(clip.duration.max(1))
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
+                edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
                 asset: clip.asset,
@@ -2684,4 +2706,10 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             })
         })
         .collect()
+}
+
+fn deserialize_audio_edit<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<crate::audio_edit::AudioEditDto>>, D::Error> {
+    Option::<crate::audio_edit::AudioEditDto>::deserialize(deserializer).map(Some)
 }
