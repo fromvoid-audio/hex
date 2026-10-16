@@ -101,17 +101,16 @@ pub(super) fn load_command(
     // legacy migrations remain authoritative; retain the original opaque bytes.
     hex_engine::native_device_view_for_class(owner.class, &preset.state)
         .map_err(|error| format!("device preset refused · {error}"))?;
-    // Output trim is host-owned identity metadata, outside the schema-1
-    // opaque native payload. Loading must not reset the target's current trim.
-    let gain = session
+    // Host input/output gains belong to the target, outside the opaque preset.
+    let target = session
         .project()
         .device(owner.device)
         .ok_or("device is missing")?
-        .state()
-        .output_gain_millidb();
+        .state();
     let state = preset
         .state
-        .with_output_gain_millidb(gain)
+        .with_input_gain_millidb(target.input_gain_millidb())
+        .and_then(|state| state.with_output_gain_millidb(target.output_gain_millidb()))
         .map_err(|error| format!("device preset refused · {error}"))?;
     Ok(Command::ReplaceDeviceState {
         device: owner.device,

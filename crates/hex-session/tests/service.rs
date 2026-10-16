@@ -1338,7 +1338,10 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(saved.error.is_none());
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
-    assert!(json.contains("\"version\": 18"));
+    let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
+    assert_eq!(document["version"], 25);
+    assert_eq!(document["routing"], serde_json::json!([]));
+    assert!(document["import_provenance"].is_null());
     service
         .submit(Request::Open(project_path.clone()))
         .expect("open");
@@ -1870,4 +1873,286 @@ fn loop_worker_edit_is_dirty_undoable_compiled_and_saved_with_extended_view_hori
         )),
         Some((extended_end - 1, extended_end, false))
     );
+}
+
+#[test]
+fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
+    use hex_engine::NativeDeviceClass;
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_session::service::ArrangementDeviceDestination;
+    for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
+        for destination_kind in 0..4 {
+            let service = Service::new(48_000, 16, 128).expect("service");
+            let mut baseline = next_event(&service);
+            if destination_kind != 2 {
+                for name in ["source", "anchor"] {
+                    service
+                        .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                        .unwrap();
+                    baseline = next_event(&service);
+                }
+                let first = baseline.state.project.tracks()[0].id();
+                // Retain actual clip content through insertion/replacement and Undo.
+                service
+                    .submit(Request::Edit(Command::PlaceMidiClip {
+                        track: first,
+                        start: hex_project::BeatTime::ZERO,
+                        length: hex_project::BeatTime::ONE,
+                    }))
+                    .unwrap();
+                baseline = next_event(&service);
+                assert!(baseline.error.is_none());
+                let directory = TempDir::new();
+                let path = directory.path().join("Original.WAV");
+                fs::write(&path, wav_mono_pcm16(&[8000, -8000, 4000, -4000])).unwrap();
+                service
+                    .submit(Request::ImportToTrack {
+                        path,
+                        track: first,
+                        start: 96,
+                    })
+                    .unwrap();
+                baseline = next_event(&service);
+                assert!(baseline.error.is_none());
+                service
+                    .submit(Request::AddNativeDevice {
+                        track: first,
+                        class: NativeDeviceClass::Effect,
+                        type_id: Box::new(DeviceTypeId::from_static("hex.utility")),
+                        before: None,
+                    })
+                    .unwrap();
+                baseline = next_event(&service);
+                if destination_kind == 3 {
+                    service
+                        .submit(Request::Edit(Command::RemoveInstrument { track: first }))
+                        .unwrap();
+                    baseline = next_event(&service);
+                }
+            }
+            let first = baseline.state.project.tracks().first();
+            let destination = match destination_kind {
+                0 | 3 => ArrangementDeviceDestination::ExistingTrack {
+                    track: first.unwrap().id(),
+                    instrument: first.unwrap().instrument().map(hex_project::Device::id),
+                },
+                1 => ArrangementDeviceDestination::NewTrack {
+                    before_track: Some(baseline.state.project.tracks()[1].id()),
+                },
+                _ => ArrangementDeviceDestination::NewTrack { before_track: None },
+            };
+            let type_id = DeviceTypeId::from_static(match class {
+                NativeDeviceClass::Instrument => "hex.instrument.fm4",
+                NativeDeviceClass::Effect => "hex.utility",
+            });
+            service
+                .submit(Request::DropBrowserDeviceOnArrangement {
+                    project_generation: 0,
+                    revision: baseline.state.revision,
+                    class,
+                    type_id,
+                    destination,
+                })
+                .unwrap();
+            let applied = next_event(&service);
+            assert!(applied.error.is_none(), "{:?}", applied.error);
+            assert_eq!(applied.state.revision, baseline.state.revision + 1);
+            assert!(
+                applied.created.is_none(),
+                "drop must not request a selection change"
+            );
+            let target_index = usize::from(destination_kind == 1);
+            let target = &applied.state.project.tracks()[target_index];
+            match class {
+                NativeDeviceClass::Instrument => {
+                    assert_eq!(target.instrument().unwrap().state().type_id(), type_id)
+                }
+                NativeDeviceClass::Effect => {
+                    let existing = first.map_or(0, |track| {
+                        if destination_kind == 0 || destination_kind == 3 {
+                            track.devices().len()
+                        } else {
+                            0
+                        }
+                    });
+                    assert_eq!(target.devices().len(), existing + 1);
+                    assert_eq!(target.devices().last().unwrap().state().type_id(), type_id);
+                }
+            }
+            if destination_kind == 0 || destination_kind == 3 {
+                assert_eq!(target.id(), first.unwrap().id());
+                assert_eq!(target.midi_clips(), first.unwrap().midi_clips());
+                assert_eq!(target.clips(), first.unwrap().clips());
+                assert_eq!(
+                    &target.devices()[..first.unwrap().devices().len()],
+                    first.unwrap().devices()
+                );
+                assert_eq!(
+                    applied.state.project.tracks()[1],
+                    baseline.state.project.tracks()[1]
+                );
+            } else if destination_kind == 1 {
+                assert_eq!(
+                    applied.state.project.tracks()[0],
+                    baseline.state.project.tracks()[0]
+                );
+                assert_eq!(
+                    applied.state.project.tracks()[2],
+                    baseline.state.project.tracks()[1]
+                );
+            }
+            service.submit(Request::Undo).unwrap();
+            let undone = next_event(&service);
+            // Canonical Undo deliberately retains the ID high-water mark.
+            assert_eq!(
+                undone.state.project.tracks(),
+                baseline.state.project.tracks()
+            );
+            assert_eq!(
+                undone.state.project.assets().collect::<Vec<_>>(),
+                baseline.state.project.assets().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                undone.state.project.session(),
+                baseline.state.project.session()
+            );
+            service.submit(Request::Redo).unwrap();
+            assert_eq!(next_event(&service).state.project, applied.state.project);
+        }
+    }
+}
+
+#[test]
+fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomically() {
+    use hex_engine::NativeDeviceClass;
+    use hex_lattice_contract::DeviceTypeId;
+    use hex_session::service::ArrangementDeviceDestination;
+    let service = Service::new(48_000, 16, 128).unwrap();
+    next_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "target".into(),
+        }))
+        .unwrap();
+    let baseline = next_event(&service);
+    let track = baseline.state.project.tracks()[0].id();
+    for refusal in 0..5 {
+        service
+            .submit(Request::DropBrowserDeviceOnArrangement {
+                project_generation: u64::from(refusal == 0),
+                revision: baseline.state.revision + u64::from(refusal == 1),
+                class: NativeDeviceClass::Instrument,
+                type_id: DeviceTypeId::from_static(if refusal == 2 {
+                    "unknown.device"
+                } else if refusal == 3 {
+                    "hex.utility"
+                } else {
+                    "hex.instrument.fm4"
+                }),
+                destination: ArrangementDeviceDestination::ExistingTrack {
+                    track,
+                    instrument: if refusal == 4 {
+                        None
+                    } else {
+                        baseline
+                            .state
+                            .project
+                            .track(track)
+                            .unwrap()
+                            .instrument()
+                            .map(hex_project::Device::id)
+                    },
+                },
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.is_some(), "refusal {refusal}");
+        assert_eq!(refused.state.project, baseline.state.project);
+        assert_eq!(refused.state.revision, baseline.state.revision);
+        assert_eq!(refused.state.can_undo, baseline.state.can_undo);
+    }
+    service
+        .submit(Request::Edit(Command::RemoveTrack(track)))
+        .unwrap();
+    let removed = next_event(&service);
+    for destination in [
+        ArrangementDeviceDestination::ExistingTrack {
+            track,
+            instrument: None,
+        },
+        ArrangementDeviceDestination::NewTrack {
+            before_track: Some(track),
+        },
+    ] {
+        service
+            .submit(Request::DropBrowserDeviceOnArrangement {
+                project_generation: 0,
+                revision: removed.state.revision,
+                class: NativeDeviceClass::Effect,
+                type_id: DeviceTypeId::from_static("hex.utility"),
+                destination,
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project, removed.state.project);
+        assert_eq!(refused.state.revision, removed.state.revision);
+        assert_eq!(refused.state.can_undo, removed.state.can_undo);
+    }
+}
+
+#[test]
+fn arrangement_catalog_atomic_command_preserves_project_on_compile_and_capacity_failure() {
+    use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+    use hex_project::TrackDeviceSlot;
+    for slot in [TrackDeviceSlot::Instrument, TrackDeviceSlot::Effect] {
+        let mut session = hex_session::Session::new(48_000, 16, 0).unwrap();
+        let baseline = session.project().clone();
+        let unsupported =
+            NativeDeviceState::new(DeviceTypeId::from_static("unknown.device"), 1, Vec::new())
+                .unwrap();
+        let result = session.command_prepared_revision(
+            Command::InsertTrackWithDevice {
+                name: "new track".into(),
+                before_track: None,
+                slot,
+                state: unsupported,
+            },
+            None,
+        );
+        assert!(result.is_err());
+        assert_eq!(session.project(), &baseline);
+        assert!(!session.can_undo());
+    }
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+    for _ in 0..hex_project::MAX_TRACKS {
+        editor
+            .execute(Command::AddTrack {
+                name: "existing".into(),
+            })
+            .unwrap();
+    }
+    let mut session =
+        hex_session::Session::from_loaded(editor.project().clone(), 16, 0, Vec::new()).unwrap();
+    let baseline = session.project().clone();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    assert!(
+        session
+            .command_prepared_revision(
+                Command::InsertTrackWithDevice {
+                    name: "over capacity".into(),
+                    before_track: None,
+                    slot: TrackDeviceSlot::Effect,
+                    state,
+                },
+                None
+            )
+            .is_err()
+    );
+    assert_eq!(session.project(), &baseline);
+    assert!(!session.can_undo());
 }

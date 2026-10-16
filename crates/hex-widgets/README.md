@@ -23,6 +23,13 @@ control purpose, never a device identity.
 
 Device frames accept title elements as well as text, so callers can attach header
 drag input while the frame retains shared title styling and fixed geometry.
+`ControlStyle::with_device_selection` returns `DeviceFrameStyle`, which keeps the
+neutral shell palette separate from header paint. `device_frame` and
+`device_header` accept either presentation; a plain `ControlStyle` gives an idle
+header matching its surround. Products may inject contrast-checked selected
+header colors with `with_header_colors`. Selection never recolors the outer
+border, body or control palette, and widgets do not acquire selection/focus,
+bypass or drag/drop ownership.
 
 ## Dependencies
 
@@ -43,11 +50,70 @@ draws a saturation/brightness field and hue strip, and emits synchronized RGB/HS
 values. The caller retains the RGB value as canonical state and may synchronize
 it back while preserving a preferred hue for gray or black. `device_frame`
 accepts a title, style, header actions and body element; it does not impose
-device-specific layout or parameter semantics. All device frames use the shared
-`DEVICE_CORNER_RADIUS` token; `compact_device_frame` changes header density only.
-Header backgrounds carry matching inner rounding because GPUI's content masks
-are rectangular. Numeric readouts use `CONTROL_CORNER_RADIUS`. Device modules
-must reuse these library frames rather than selecting device-specific corners.
+device-specific layout or parameter semantics.
+
+### shared device composition
+
+Every device uses one `device_frame`/`device_header` geometry: 14px header,
+3px horizontal header inset, 2px header gaps, 4px outer radius and 1px border.
+The header and surround both paint the injected `surface`, with no bottom rule.
+`with_device_selection` returns independent header paint without transforming
+the neutral frame palette; body/control styles remain unchanged.
+There is no compact/standard frame switch or device-selected header density.
+
+Build the body with `device_body` (3px horizontal inset, 4px layout gutters),
+then compose independently sized children:
+
+- `device_layout(DeviceLayout::{Row, Column, Wrapped, Grid(columns)})` provides
+  ordinary, wrapping or equal-column grid arrangements; zero grid columns means
+  one. `device_split(first, second)` gives two equal flexible panes. A Row allows
+  fixed/unequal widths and caller-selected flexible children.
+- `device_section(style, DeviceSectionSurface::{Surround, Rail, Display})` gives
+  a rounded semantic surface without fixing its height or children.
+- `device_rail` groups rows with 2px gutters. `device_grouped_row(style, active)`
+  supplies the shared rail/surround focus state, without owning focus or bindings.
+- `device_display` supplies a recessed column for graphs or tabbed inspectors.
+  Owners retain graph data, tab slots, selection/focus state and gesture entities.
+
+Sections use 3px radii and 4px horizontal insets. Insets are same-color structural
+side borders: GPUI clips descendants' paint and hit masks inside visible borders,
+whereas padding alone cannot contain oversized children at rounded corners.
+This leaves the full vertical content height available for 40px controls. Keep
+those borders/overflow masks when composing; do not replace them with padding,
+transparent borders or `overflow_visible`. Add content padding inside when needed.
+The body uses the same mechanism with 3px side borders and rounded lower corners.
+Header side borders protect the inner rounded top corners and clip oversized
+caller title/actions. The surface and border paint retain their actual radii.
+Numeric readouts retain the separate `CONTROL_CORNER_RADIUS` token.
+
+`device_compact_section` uses the same 3px rounded surface with 4px vertical
+structural insets instead of horizontal insets. Use it for narrow full-width
+controls; it preserves their width while containing paint/hits above and below.
+`device_dense_section` and `device_compact_row` use 1px corners and vertical
+insets when a tightly packed column or short row needs its full control height.
+Pick one boundary for a region, rather than nesting section insets. These are
+reusable density/containment policies, never device identities.
+
+`device_action` supplies the shared 12px compact action geometry, and
+`device_segment` adds the common readout rounding for direct selection.
+`DeviceActionStyle` injects foreground/background for both idle and hover; the
+product is responsible for contrast. `device_badge`, `device_identity_marker`,
+`device_focus_target`, `device_caption`, `device_inline_caption` and
+`device_divider` keep stateless device chrome inside this library. Captions
+separate full-column headings from intrinsic-width inline labels. Owners attach
+IDs, focus, handlers/tooltips and semantic colors; widgets own no device state.
+
+Extend this library first when a device needs a new visual capability. Add a
+small generic semantic primitive/layout option and rendered boundary coverage,
+then consume it in the panel. Do not add device-named variants, type-ID switches,
+parameter semantics, a monolithic device template or another GUI library.
+Colors stay injected and typography inherited; device width, parameter order,
+canonical bindings and musical meaning remain caller-owned.
+
+Rendered tests cover normal/constrained header/body bounds, actual filled-quad
+radii/backgrounds, oversized content paint/hit masks, equal split/grid placement,
+wrapping and unchanged control heights. They inspect the GPUI scene and input
+routing, not GPU framebuffer pixels or physical native visual acceptance.
 
 Numeric event phases are `begin`, `change`, `commit` and `cancel`. The widget
 keeps a responsive local draft but does not queue audio work, merge gestures,
@@ -123,3 +189,9 @@ The `DeviceMeters` numeric presentation renders two adjacent sample-peak wells.
 The input well is read-only; output uses the existing numeric scrub/reset/focus
 contract. Callers supply levels, held markers, height, colors and already-themed
 hover text through `DeviceMeterReadout`; widgets never fetch audio telemetry.
+
+`DeviceMeters` presents one compact adjustable meter well. The host supplies
+input/output index, live and held sample peaks, gain, colors and tooltip text,
+and composes the two controls. Gain and unity lines accompany the audio fill.
+Readout updates do not interrupt pointer gestures; both wells use the shared
+numeric gesture and double-click reset lifecycle.

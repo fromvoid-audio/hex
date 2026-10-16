@@ -6,6 +6,7 @@ use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureS
 use crate::{PreparedImport, Session, SessionError};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
+pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 pub mod preset;
@@ -32,12 +33,23 @@ const IMPORT_FRAME_LIMIT: usize = 8_000_000;
 const BROWSER_PREVIEW_BINS: usize = 48;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
+#[derive(Clone)]
+pub struct AudioClipWaveform {
+    pub waveform: Arc<Waveform>,
+    pub offset: u64,
+    pub length: u64,
+}
+
 /// Read-only model and cached summaries for a single committed project revision.
 pub struct ViewState {
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
+    /// Worker-built transformed root peaks and exact audible crop coordinates.
+    pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
+    pub gain_preview: Result<Arc<hex_engine::GainAutomationPreview>, hex_engine::Invalid>,
     pub timeline_frames: u64,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -111,17 +123,7 @@ pub fn prepare_audio_preview(
     path: impl AsRef<Path>,
     project_sample_rate: u32,
 ) -> Result<AudioPreview, String> {
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let audio = hex_media::resample(
-        decoded.audio(),
-        project_sample_rate,
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: IMPORT_FRAME_LIMIT,
-        },
-    )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = prepare_sample_preview(path, project_sample_rate)?;
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
     let waveform = Arc::new(
@@ -135,6 +137,73 @@ pub fn prepare_audio_preview(
     })
 }
 
+/// Decode a bounded browser one-shot on a background worker, independent of
+/// canonical project/history. PCM is finite stereo at the actual output rate.
+pub fn prepare_sample_preview(
+    path: impl AsRef<Path>,
+    output_sample_rate: u32,
+) -> Result<hex_engine::Audio, String> {
+    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = hex_media::resample(
+        decoded.audio(),
+        output_sample_rate,
+        ResampleLimits {
+            max_source_frames: IMPORT_FRAME_LIMIT,
+            max_output_frames: IMPORT_FRAME_LIMIT,
+        },
+    )
+    .map_err(|error| error.to_string().to_lowercase())?;
+    Ok(audio)
+}
+
+/// Stable captured identities; instrument expectation is explicit, never an effect ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrangementDeviceDestination {
+    ExistingTrack {
+        track: hex_project::TrackId,
+        instrument: Option<hex_project::DeviceId>,
+    },
+    NewTrack {
+        before_track: Option<hex_project::TrackId>,
+    },
+}
+
+/// Only gain-envelope commands may cross this revision-stamped UI boundary.
+#[derive(Clone, Debug)]
+pub enum GainLaneEdit {
+    SpliceTake {
+        expected_epoch: u64,
+        spans: Vec<hex_project::GainTouchSpan>,
+    },
+    Replace(Vec<hex_project::GainPoint>),
+    Upsert(hex_project::GainPoint),
+    Move {
+        from: hex_project::BeatTime,
+        to: hex_project::BeatTime,
+    },
+    Remove(hex_project::BeatTime),
+    Clear,
+}
+impl GainLaneEdit {
+    fn command(self, track: hex_project::TrackId) -> Command {
+        match self {
+            Self::SpliceTake {
+                expected_epoch,
+                spans,
+            } => Command::SpliceGainTouchBatch {
+                track,
+                expected_epoch,
+                spans,
+            },
+            Self::Replace(points) => Command::ReplaceTrackGainEnvelope { track, points },
+            Self::Upsert(point) => Command::UpsertTrackGainPoint { track, point },
+            Self::Move { from, to } => Command::MoveTrackGainPoint { track, from, to },
+            Self::Remove(beat) => Command::RemoveTrackGainPoint { track, beat },
+            Self::Clear => Command::ClearTrackGainEnvelope { track },
+        }
+    }
+}
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
@@ -145,6 +214,26 @@ pub enum Request {
     LoadDevicePreset {
         owner: preset::Owner,
         path: PathBuf,
+    },
+    /// Catalog device on a captured Arrangement lane or before-track anchor.
+    DropBrowserDeviceOnArrangement {
+        project_generation: u64,
+        revision: u64,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        destination: ArrangementDeviceDestination,
+    },
+    ArmGainRecording {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+    },
+    /// Check all stamps before preparation or history, including requests delayed in either queue.
+    GainLane {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        edit: GainLaneEdit,
     },
     DeviceGesture(GestureRequest),
     /// One metadata-only browser/rail device drop, admitted only against the
@@ -219,6 +308,15 @@ pub enum Request {
         generation: u64,
     },
     Export(PathBuf),
+    /// Explicit half-open Arrangement range; worker captures the current revision.
+    ExportRange {
+        path: PathBuf,
+        start: u64,
+        frames: Option<u64>,
+        signal: hex_export::ExportSignal,
+        control: hex_export::ExportControl,
+        overwrite: bool,
+    },
 }
 
 impl Request {
@@ -278,9 +376,16 @@ pub struct Service {
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
     arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
     _export_worker: JoinHandle<()>,
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+    }
 }
 
 type Exporter = Arc<
@@ -292,6 +397,12 @@ struct ExportJob {
     path: PathBuf,
     prepared: Arc<PreparedRevision>,
     frames: u64,
+    controlled: Option<(
+        u64,
+        hex_export::ExportSignal,
+        hex_export::ExportControl,
+        bool,
+    )>,
 }
 
 enum ExportWork {
@@ -358,8 +469,10 @@ impl Service {
         recovery: Option<PathBuf>,
         exporter: Exporter,
     ) -> Result<Self, ServiceError> {
+        let shutdown = Arc::new(AtomicBool::new(false));
         let session = Session::new(sample_rate, history_capacity, max_resident_frames)
-            .map_err(ServiceError::Session)?;
+            .map_err(ServiceError::Session)?
+            .with_shutdown(Arc::clone(&shutdown));
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -369,6 +482,7 @@ impl Service {
         let export_busy = Arc::new(AtomicBool::new(false));
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
             .map_err(ServiceError::Worker)?;
         let worker = thread::Builder::new()
@@ -390,6 +504,7 @@ impl Service {
             events: event_rx,
             export_events: export_event_rx,
             export_busy,
+            shutdown,
             arrangement_seek: Some(arrangement_seek),
             _worker: worker,
             _export_worker: export_worker,
@@ -399,7 +514,7 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
-        if matches!(&request, Request::Export(_)) {
+        if matches!(&request, Request::Export(_) | Request::ExportRange { .. }) {
             if self
                 .export_busy
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -517,8 +632,10 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
+        audio_clip_waveforms: session.audio_clip_waveforms().unwrap_or_default(),
         midi_preview,
         timeline_frames: latest_content_end
             .saturating_add(rate.saturating_mul(2))
@@ -544,8 +661,10 @@ fn preview_view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
+        audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(prepared.midi_preview()),
         timeline_frames: content_end
             .saturating_add(rate.saturating_mul(2))
@@ -714,6 +833,7 @@ fn run_worker(
                 | Request::SaveDevicePreset { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
+                | Request::ExportRange { .. }
         );
         let mut barrier_failure = None;
         if barrier {
@@ -752,7 +872,7 @@ fn run_worker(
             if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
                 save_complete = true;
             }
-            if let Request::Export(path) = &request {
+            if let Request::Export(path) | Request::ExportRange { path, .. } = &request {
                 export_completion = Some(ExportEvent {
                     revision,
                     path: path.clone(),
@@ -785,6 +905,39 @@ fn run_worker(
                         } else {
                             restore_prepared = Some(prepared);
                         }
+                    }
+                }
+                Request::DropBrowserDeviceOnArrangement {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    class,
+                    type_id,
+                    destination,
+                } => {
+                    let command = if device_gesture.snapshot().is_some() {
+                        Err("device edit is still applying; drag again".to_owned())
+                    } else if expected_generation != project_generation
+                        || expected_revision != revision
+                    {
+                        Err("device drag canceled · project changed".to_owned())
+                    } else {
+                        arrangement_device_command(session.project(), class, type_id, destination)
+                    };
+                    match command.and_then(|command| {
+                        session
+                            .command_prepared_revision(
+                                command,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            )
+                            .map_err(|error| error.to_string().to_lowercase())
+                    }) {
+                        Ok((_, prepared)) => {
+                            // No Created::Track focus response: this drop preserves prior selection.
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("device added to arrangement".into());
+                        }
+                        Err(reason) => error = Some(reason),
                     }
                 }
                 Request::DropNativeDevice {
@@ -1242,6 +1395,59 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::ArmGainRecording {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    track,
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("gain recording arm refused · project changed".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some(
+                            "gain recording arm refused · device edit is still applying".into(),
+                        );
+                    } else {
+                        match session.prepare_gain_recording(
+                            track,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok(prepared) => {
+                                restore_prepared = Some(prepared);
+                                status = Some("gain recording target prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
+                    }
+                }
+                Request::GainLane {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    track,
+                    edit,
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("gain draft refused · project changed".into());
+                    } else if session.project().track(track).is_none() {
+                        error = Some("gain draft refused · track no longer exists".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some("gain draft refused · device edit is still applying".into());
+                    } else {
+                        let before = session.project().clone();
+                        match session.command_prepared_revision(
+                            edit.command(track),
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((result, prepared)) if session.project() != &before => {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                                created = Some(result);
+                                status = Some("gain edit committed".into());
+                            }
+                            Ok(_) => status = Some("no change".into()),
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
+                    }
+                }
                 Request::SaveDevicePreset { owner, path } => {
                     match preset::save(&session, project_generation, revision, owner, &path) {
                         Ok(()) => status = Some("device preset saved".into()),
@@ -1389,6 +1595,7 @@ fn run_worker(
                                 path: path.clone(),
                                 prepared: Arc::clone(prepared),
                                 frames,
+                                controlled: None,
                             })
                         }
                         _ => Err("latest project revision has not compiled".to_owned()),
@@ -1401,6 +1608,51 @@ fn run_worker(
                                 path,
                                 result: Err(reason),
                             });
+                        }
+                    }
+                }
+                Request::ExportRange {
+                    path,
+                    start,
+                    frames,
+                    signal,
+                    control,
+                    overwrite,
+                } => {
+                    let job = match compiled.as_ref() {
+                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
+                            let frames = frames.unwrap_or_else(|| {
+                                prepared
+                                    .arrangement()
+                                    .audible_end_frame()
+                                    .unwrap_or(0)
+                                    .saturating_sub(start)
+                            });
+                            if frames == 0 || start.checked_add(frames).is_none() {
+                                Err("invalid export range".to_owned())
+                            } else {
+                                Ok(ExportJob {
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some((start, signal, control, overwrite)),
+                                })
+                            }
+                        }
+                        _ => Err("latest project revision has not compiled".to_owned()),
+                    };
+                    match job {
+                        Ok(job) => {
+                            status = Some("export queued".into());
+                            export_job = Some(job);
+                        }
+                        Err(reason) => {
+                            export_completion = Some(ExportEvent {
+                                revision,
+                                path,
+                                result: Err(reason),
+                            })
                         }
                     }
                 }
@@ -1600,7 +1852,28 @@ fn run_export_worker(
             ExportWork::Render(job) => ExportEvent {
                 revision: job.revision,
                 path: job.path.clone(),
-                result: exporter(&job.path, &job.prepared, 0, job.frames),
+                result: if let Some((start, signal, control, overwrite)) = job.controlled {
+                    let policy = if overwrite {
+                        hex_export::Publication::confirmed_save(&job.path)
+                    } else {
+                        Ok(hex_export::Publication::CreateNew)
+                    };
+                    policy
+                        .and_then(|policy| {
+                            hex_export::render_prepared_with_policy(
+                                &job.path,
+                                job.prepared,
+                                start,
+                                job.frames,
+                                signal,
+                                &control,
+                                &policy,
+                            )
+                        })
+                        .map_err(|error| error.to_string())
+                } else {
+                    exporter(&job.path, &job.prepared, 0, job.frames)
+                },
             },
         };
         if events.send(event).is_err() {
@@ -1776,6 +2049,49 @@ fn import_to_session(
         .import_session_audio_clip_revision(prepared, track, scene, previous)
         .map(|(_, revision)| revision)
         .map_err(|error| error.to_string().to_lowercase())
+}
+
+fn arrangement_device_command(
+    project: &hex_project::Project,
+    class: hex_engine::NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+    destination: ArrangementDeviceDestination,
+) -> Result<Command, String> {
+    use hex_engine::NativeDeviceClass;
+    let state = hex_engine::default_native_device_state_for_class(class, type_id)
+        .map_err(|error| error.to_string().to_lowercase())?;
+    match destination {
+        ArrangementDeviceDestination::NewTrack { before_track } => {
+            Ok(Command::InsertTrackWithDevice {
+                name: "new track".into(),
+                before_track,
+                slot: match class {
+                    NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
+                    NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
+                },
+                state,
+            })
+        }
+        ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
+            let target = project
+                .track(track)
+                .ok_or("device drop track no longer exists")?;
+            if target.instrument().map(hex_project::Device::id) != instrument {
+                return Err("instrument replacement target changed".into());
+            }
+            Ok(match class {
+                NativeDeviceClass::Effect => Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                },
+                NativeDeviceClass::Instrument => match instrument {
+                    Some(device) => Command::ReplaceDeviceState { device, state },
+                    None => Command::InsertInstrument { track, state },
+                },
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2511,6 +2827,24 @@ mod service_tests {
     }
 
     #[test]
+    fn browser_sample_playback_decodes_at_output_rate_and_reports_bad_sources() {
+        let directory = TestDir::new();
+        let path = directory.0.join("tone.WAV");
+        fs::write(&path, wav_mono(&[4_000; 96])).unwrap();
+        let pcm = prepare_sample_preview(&path, 24_000).unwrap();
+        assert_eq!(pcm.sample_rate(), 24_000);
+        assert_eq!(pcm.frames().len(), 48);
+        assert!(
+            pcm.frames()
+                .iter()
+                .all(|frame| { frame[0] > 0.0 && frame[0] == frame[1] && frame[0].is_finite() })
+        );
+        assert!(prepare_sample_preview(directory.0.join("missing.wav"), 48_000).is_err());
+        fs::write(&path, b"bad wave").unwrap();
+        assert!(prepare_sample_preview(&path, 48_000).is_err());
+    }
+
+    #[test]
     fn native_device_parameter_requests_patch_latest_actor_state() {
         let service = Service::new(48_000, 16, 0).expect("service");
         next_event(&service);
@@ -3033,6 +3367,113 @@ mod service_tests {
         assert_eq!(rejected.state.project, before_cycle.project);
         assert_eq!(rejected.state.can_undo, before_cycle.can_undo);
         assert!(rejected.playback.is_none());
+    }
+
+    #[test]
+    fn utility_controls_survive_history_and_project_reopen() {
+        use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+
+        let service = Service::new(48_000, 16, 0).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "utility persistence".into(),
+            }))
+            .expect("add track");
+        let track = next_event(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: Box::new(DeviceTypeId::from_static("hex.utility")),
+                before: None,
+            })
+            .expect("add utility");
+        let mut current = next_event(&service);
+        assert!(current.error.is_none(), "{:?}", current.error);
+        let device = current.state.project.track(track).unwrap().devices()[0].id();
+        // Exercise both matrix and stateful fields through the service rather
+        // than just round-tripping the codec's own output.
+        for (id, value) in [
+            (1, ParameterValue::Float(2.0)),
+            (2, ParameterValue::Float(-0.25)),
+            (3, ParameterValue::Float(2.5)),
+            (4, ParameterValue::Choice(3)),
+            (5, ParameterValue::Bool(true)),
+            (6, ParameterValue::Bool(true)),
+            (7, ParameterValue::Bool(true)),
+            (8, ParameterValue::Bool(true)),
+            (9, ParameterValue::Bool(true)),
+            (10, ParameterValue::Float(0.5)),
+            (11, ParameterValue::Bool(true)),
+            (12, ParameterValue::Bool(true)),
+            (13, ParameterValue::Float(500.0)),
+            (14, ParameterValue::Bool(true)),
+        ] {
+            let parameter = ParameterId::from_static(id);
+            let prior = current
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .clone();
+            service
+                .submit(Request::SetDeviceParameter {
+                    device,
+                    parameter,
+                    value,
+                })
+                .expect("edit utility parameter");
+            let changed = next_event(&service);
+            assert!(changed.error.is_none(), "{:?}", changed.error);
+            let expected = changed
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .clone();
+            assert_eq!(
+                hex_engine::native_device_parameter(&expected, parameter),
+                Ok(value)
+            );
+            service.submit(Request::Undo).expect("undo utility edit");
+            let undone = next_event(&service);
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(undone.state.project.device(device).unwrap().state(), &prior);
+            service.submit(Request::Redo).expect("redo utility edit");
+            current = next_event(&service);
+            assert!(current.error.is_none(), "{:?}", current.error);
+            assert_eq!(
+                current.state.project.device(device).unwrap().state(),
+                &expected
+            );
+        }
+        let expected = current
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone();
+        let directory = TestDir::new();
+        let path = directory.0.join("utility.hex");
+        service
+            .submit(Request::SaveNew(path.clone()))
+            .expect("save utility");
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        let reopened_service = Service::new(48_000, 16, 0).expect("reopen service");
+        next_event(&reopened_service);
+        reopened_service
+            .submit(Request::Open(path))
+            .expect("open utility");
+        let reopened = next_event(&reopened_service);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        let persisted = &reopened.state.project.track(track).unwrap().devices()[0];
+        assert_eq!(persisted.id(), device);
+        assert_eq!(persisted.state(), &expected);
     }
 
     #[test]
@@ -4381,6 +4822,24 @@ mod service_tests {
         assert!(active.active_device_gesture.is_some());
 
         service
+            .submit(Request::DropBrowserDeviceOnArrangement {
+                project_generation: 0,
+                revision: active.state.revision,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id: utility,
+                destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+            })
+            .expect("arrangement drop during parameter gesture");
+        let refused_arrangement = next_event(&service);
+        assert_eq!(
+            refused_arrangement.error.as_deref(),
+            Some("device edit is still applying; drag again")
+        );
+        assert_eq!(refused_arrangement.state.project, active.state.project);
+        assert_eq!(refused_arrangement.state.revision, active.state.revision);
+        assert_eq!(refused_arrangement.state.can_undo, active.state.can_undo);
+
+        service
             .submit(Request::DropNativeDevice {
                 project_generation: 0,
                 revision: active.state.revision,
@@ -4539,6 +4998,62 @@ mod service_tests {
         assert_eq!(read_u16(&bytes, 50), 0x2000);
     }
 
+    #[test]
+    fn explicit_export_range_uses_canonical_track_capture_and_releases_cancelled_reservation() {
+        let directory = TestDir::new();
+        let source = directory.0.join("selected.wav");
+        fs::write(&source, wav_mono(&[16_384, 8_192])).unwrap();
+        let service = Service::new(48_000, 16, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        let imported = next_event(&service);
+        let track = imported.state.project.tracks()[0].id();
+        let output = directory.0.join("selected-output.wav");
+        let cancelled = ExportControl::default();
+        cancelled.cancel();
+        service
+            .submit(Request::ExportRange {
+                path: output.clone(),
+                start: 1,
+                frames: Some(1),
+                signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
+                control: cancelled,
+                overwrite: false,
+            })
+            .unwrap();
+        next_event(&service);
+        let refused = next_export_event(&service);
+        assert_eq!(refused.result.unwrap_err(), "export cancelled");
+        assert!(!output.exists());
+        let control = ExportControl::default();
+        service
+            .submit(Request::ExportRange {
+                path: output.clone(),
+                start: 1,
+                frames: Some(1),
+                signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
+                control: control.clone(),
+                // Native save confirmation also permits a new destination.
+                overwrite: true,
+            })
+            .unwrap();
+        next_event(&service);
+        let completed = next_export_event(&service);
+        assert_eq!(completed.revision, imported.state.revision);
+        assert_eq!(completed.result.unwrap().frames, 1);
+        let bytes = fs::read(output).unwrap();
+        assert_eq!(bytes.len(), 48);
+        assert_eq!(read_u16(&bytes, 44), 0x2000);
+        assert_eq!(read_u16(&bytes, 46), 0x2000);
+        assert_eq!(
+            control.progress(),
+            ExportProgress {
+                processed_frames: 1,
+                total_frames: 1
+            }
+        );
+    }
+
     fn read_u16(bytes: &[u8], offset: usize) -> u16 {
         u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
     }
@@ -4575,6 +5090,7 @@ mod service_tests {
             events,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
             arrangement_seek: None,
             _worker: thread::spawn(|| {}),
             _export_worker: thread::spawn(|| {}),
@@ -5294,6 +5810,7 @@ mod service_tests {
                     sample_rate: project.arrangement().sample_rate(),
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
+                    recovery_path: None,
                 })
             })
         };

@@ -10,9 +10,52 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+pub mod compensation;
+
 use std::{fmt, sync::Arc};
 
+mod audio_candidate;
+mod audio_storage;
+pub use audio_candidate::{
+    AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateIdentity,
+    AudioCandidateOwner, AudioCandidateRefusal,
+};
+pub use audio_storage::{
+    AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
+    AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
+    audio_storage_constructor_layout_supported,
+};
+mod audio_input_storage;
+mod audio_only_inputs;
+mod audio_preparation;
+mod session_audio_preparation;
+mod session_shared_preparation;
+mod session_structure_preparation;
+pub use session_shared_preparation::SessionSharedCapacity;
+mod session_tempo_preparation;
+pub use audio_preparation::{
+    ArrangementClipCapacity, ArrangementReturnCapacity, ArrangementReturnMetadata,
+    ArrangementRootCapacity, ArrangementTrackCapacity, ArrangementTrackMetadata,
+    AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
+    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, ReturnFeedCapacity,
+};
+pub use session_audio_preparation::SessionSourceCapacity;
+pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInventoryMetadata};
+pub use session_structure_preparation::SessionStructureCapacity;
+pub use session_tempo_preparation::SessionTempoCapacity;
+pub mod audio_transform;
 mod native_device_view;
+pub use audio_input_storage::{
+    AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
+};
+pub use audio_only_inputs::{
+    AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
+    AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
+    ResidentSourceRefusal, StreamedSourceRefusal,
+};
+mod owned_shared;
+mod pcm_arc;
+pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
@@ -20,6 +63,13 @@ pub use native_device_view::{
     native_effect_frequency_response,
 };
 
+mod gain_envelope;
+pub use gain_envelope::{
+    GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
+    MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
+};
+mod return_feed_plan;
+mod signal_graph;
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -52,7 +102,7 @@ impl PostNodeIdentity {
 }
 
 pub use hex_lattice::DeviceMeter;
-pub use native_device_view::DEVICE_OUTPUT_GAIN;
+pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
 
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
@@ -69,6 +119,7 @@ pub(crate) struct StreamedPageSpan<'a> {
     pub timeline_frame: u64,
     pub output_offset: usize,
     pub count: usize,
+    pub gain: f32,
     pub fade: Option<(&'a hex_project::ClipFade, u64)>,
 }
 
@@ -96,6 +147,7 @@ pub(crate) fn render_streamed_page_span_captured(
         output_offset,
         count: requested_count,
         fade,
+        gain: clip_gain,
     } = span;
     if requested_count == 0 {
         return 0;
@@ -126,6 +178,10 @@ pub(crate) fn render_streamed_page_span_captured(
                     sample[1] *= gain;
                 }
             }
+            if clip_gain != 1.0 {
+                sample[0] *= clip_gain;
+                sample[1] *= clip_gain;
+            }
             mix.add_captured(
                 destination,
                 sample,
@@ -150,6 +206,11 @@ impl fmt::Display for Invalid {
     }
 }
 impl std::error::Error for Invalid {}
+impl From<hex_project::Invalid> for Invalid {
+    fn from(error: hex_project::Invalid) -> Self {
+        Self(error.0)
+    }
+}
 
 pub fn default_native_device_state(
     type_id: hex_lattice_contract::DeviceTypeId,
@@ -189,6 +250,16 @@ pub fn patch_native_device_parameter_for_class(
     parameter: hex_lattice_contract::ParameterId,
     value: hex_lattice_contract::ParameterValue,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    if parameter == native_device_view::DEVICE_INPUT_GAIN.id {
+        native_device_view_for_class(class, state)?;
+        let hex_lattice_contract::ParameterValue::Float(gain) = value else {
+            return Err(Invalid("input gain must be a finite db value"));
+        };
+        return state
+            .clone()
+            .with_input_gain_db(gain)
+            .map_err(map_device_contract_error);
+    }
     if parameter == native_device_view::DEVICE_OUTPUT_GAIN.id {
         native_device_view_for_class(class, state)?;
         let hex_lattice_contract::ParameterValue::Float(gain) = value else {
@@ -267,9 +338,38 @@ impl Tempo {
 #[derive(Debug, Clone)]
 pub struct Audio {
     sample_rate: u32,
-    frames: Arc<[Frame]>,
+    frames: Arc<AudioData>,
+    pcm_arc_receipt: Option<pcm_arc::PcmArcReceipt>,
+}
+#[derive(Debug)]
+struct AudioData {
+    values: Vec<Frame>,
+    _derived: Option<audio_transform::Reservation>,
+}
+impl std::ops::Deref for AudioData {
+    type Target = [Frame];
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
 }
 impl Audio {
+    pub(crate) fn from_derived(
+        sample_rate: u32,
+        frames: Vec<Frame>,
+        reservation: audio_transform::Reservation,
+    ) -> Result<Self, Invalid> {
+        if frames.is_empty() || frames.iter().flatten().any(|sample| !sample.is_finite()) {
+            return Err(Invalid("prepared audio must contain finite samples"));
+        }
+        Ok(Self {
+            sample_rate,
+            pcm_arc_receipt: None,
+            frames: Arc::new(AudioData {
+                values: frames,
+                _derived: Some(reservation),
+            }),
+        })
+    }
     /// Source rate; compilation currently requires an exact project-rate match.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -279,7 +379,8 @@ impl Audio {
         &self.frames
     }
     /// True when two audio handles retain the same immutable PCM allocation.
-    pub(crate) fn shares_pcm_with(&self, other: &Self) -> bool {
+    /// Exact retained PCM identity for control-side cache/summary reuse.
+    pub fn shares_pcm_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.frames, &other.frames)
     }
     pub fn new(sample_rate: u32, frames: Vec<Frame>) -> Result<Self, Invalid> {
@@ -291,7 +392,11 @@ impl Audio {
         }
         Ok(Self {
             sample_rate,
-            frames: frames.into(),
+            pcm_arc_receipt: None,
+            frames: Arc::new(AudioData {
+                values: frames,
+                _derived: None,
+            }),
         })
     }
 }
@@ -310,6 +415,7 @@ pub struct Clip {
 /// Control-owned uncommon playback state; neutral clips keep their compact stride.
 #[derive(Debug, Clone)]
 struct ClipMetadata {
+    gain: f32,
     source_phase: u64,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
@@ -383,6 +489,7 @@ impl Clip {
             None
         } else {
             Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: 0,
                 fade: Some(fade),
                 streamed: None,
@@ -407,11 +514,16 @@ impl Clip {
         }
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.source_phase = phase;
-            if phase == 0 && metadata.fade.is_none() && metadata.streamed.is_none() {
+            if phase == 0
+                && metadata.fade.is_none()
+                && metadata.streamed.is_none()
+                && metadata.gain == 1.0
+            {
                 self.metadata = None;
             }
         } else if phase != 0 {
             self.metadata = Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: phase,
                 fade: None,
                 streamed: None,
@@ -419,6 +531,29 @@ impl Clip {
         }
         Ok(self)
     }
+    /// Control-side clip gain preparation, preserving the compact unity path.
+    pub fn with_gain(mut self, gain: hex_project::ClipGain) -> Self {
+        let linear = gain.linear();
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.gain = linear;
+            if linear == 1.0
+                && metadata.source_phase == 0
+                && metadata.fade.is_none()
+                && metadata.streamed.is_none()
+            {
+                self.metadata = None;
+            }
+        } else if linear != 1.0 {
+            self.metadata = Some(Box::new(ClipMetadata {
+                gain: linear,
+                source_phase: 0,
+                fade: None,
+                streamed: None,
+            }));
+        }
+        self
+    }
+
     fn at(&self, position: u64, source_phase: u64) -> Frame {
         if position < self.start || position >= self.end {
             return [0.0; 2];
@@ -503,6 +638,7 @@ impl Clip {
             source_length: usize::try_from(source_length)
                 .map_err(|_| Invalid("source length exceeds addressable range"))?,
             metadata: Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: 0,
                 fade: (fade.fade_in() != 0 || fade.fade_out() != 0).then_some(fade),
                 streamed: Some(source),
@@ -517,6 +653,7 @@ pub struct Track {
     clips: Vec<Clip>,
     mix: PreparedTrackMix,
     source_mix: PreparedTrackMix,
+    gain_envelope: Option<gain_envelope::PreparedGainEnvelope>,
     instrument: Option<InstrumentTrack>,
     instrument_position: usize,
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
@@ -526,10 +663,14 @@ pub struct Track {
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_bypassed: bool,
+    instrument_input_gain: f32,
     instrument_output_gain: f32,
+    instrument_latency: Option<u32>,
+    instrument_runtime_latency: Option<u32>,
     instrument_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
     mutable_instrument: bool,
     mutable_looping_source: bool,
+    midi_source_index: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -615,6 +756,12 @@ impl PreparedTrackMix {
         ]
     }
 
+    pub(crate) fn with_absolute_gain(mut self, gain: f32) -> Self {
+        self.channel_gain[0] *= gain;
+        self.channel_gain[1] *= gain;
+        self
+    }
+
     fn add_captured(self, destination: &mut Frame, source: Frame, capture: Option<&mut Frame>) {
         let source = self.apply_frame(source);
         destination[0] += source[0];
@@ -650,6 +797,7 @@ impl Track {
             clips,
             mix: PreparedTrackMix::new(gain, balance, muted)?,
             source_mix: PreparedTrackMix::new(gain, balance, muted)?,
+            gain_envelope: None,
             instrument: None,
             instrument_position: 0,
             ordered_prefix: None,
@@ -659,10 +807,14 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
+            instrument_latency: Some(0),
+            instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
+            midi_source_index: None,
         })
     }
 
@@ -695,6 +847,7 @@ impl Track {
             clips,
             mix,
             source_mix,
+            gain_envelope: None,
             instrument,
             instrument_position,
             ordered_prefix,
@@ -704,10 +857,14 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
+            instrument_latency: Some(0),
+            instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
+            midi_source_index: None,
         })
     }
 
@@ -717,11 +874,13 @@ impl Track {
     ) -> Self {
         self.instrument_id = instrument.map(hex_project::Device::id);
         self.instrument_state =
-            instrument.map(|device| device.state().clone().without_output_gain());
+            instrument.map(|device| device.state().clone().without_host_gains());
         self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
+        self.instrument_input_gain =
+            instrument.map_or(1.0, |device| device.state().input_gain_linear());
         self.instrument_output_gain =
             instrument.map_or(1.0, |device| device.state().output_gain_linear());
-        if self.instrument_output_gain != 1.0 {
+        if self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0 {
             self.source_mix = PreparedTrackMix {
                 channel_gain: [1.0; 2],
                 effects: None,
@@ -731,6 +890,15 @@ impl Track {
         self
     }
 
+    pub(crate) fn with_instrument_latency(
+        mut self,
+        source: Option<u32>,
+        runtime: Option<u32>,
+    ) -> Self {
+        self.instrument_latency = source;
+        self.instrument_runtime_latency = runtime;
+        self
+    }
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
         self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
@@ -825,13 +993,23 @@ impl Track {
     }
 
     pub(crate) fn requires_ordered_processing(&self) -> bool {
-        (self.instrument_id.is_some() && self.instrument_output_gain != 1.0)
+        (self.instrument_id.is_some()
+            && (self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0))
             || self.mutable_instrument
+            || self.midi_source_index.is_some()
             || self.has_device_chain()
             || (self.has_ordered_instrument()
                 && (self.ordered_prefix.is_some() || self.ordered_suffix.is_some()))
     }
 
+    pub(crate) fn apply_instrument_input_gain(&self, frames: &mut [Frame]) {
+        if !self.instrument_bypassed && self.instrument_input_gain != 1.0 {
+            for frame in frames {
+                frame[0] *= self.instrument_input_gain;
+                frame[1] *= self.instrument_input_gain;
+            }
+        }
+    }
     pub(crate) fn apply_instrument_output_gain(&self, frames: &mut [Frame]) {
         if !self.instrument_bypassed {
             let gain = self.instrument_output_gain;
@@ -877,6 +1055,62 @@ impl Track {
         }
     }
 
+    pub(crate) fn with_gain_envelope(
+        mut self,
+        lane: &hex_project::GainLane,
+        tempo: &hex_project::TempoMap,
+        balance: f32,
+        fallback: f32,
+    ) -> Result<Self, Invalid> {
+        let neutral =
+            PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
+        self.gain_envelope =
+            gain_envelope::PreparedGainEnvelope::prepare(lane, tempo, neutral, fallback)?;
+        if self.gain_envelope.is_some() {
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        Ok(self)
+    }
+    /// Read-only prepared curve metadata. Empty means static fallback; this is not an applied-value acknowledgment.
+    pub fn gain_envelope_knots(&self) -> &[GainEnvelopeKnot] {
+        self.gain_envelope
+            .as_ref()
+            .map_or(&[], |envelope| envelope.knots())
+    }
+    /// Logical prepared gain at an Arrangement frame, independent of the runtime source owner.
+    pub fn prepared_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
+    pub(crate) fn arm_gain_recording(
+        &mut self,
+        fallback: f32,
+        balance: f32,
+    ) -> Result<(), Invalid> {
+        if self.gain_envelope.is_none() {
+            let neutral =
+                PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
+            self.gain_envelope = Some(gain_envelope::PreparedGainEnvelope::constant(
+                neutral, fallback,
+            ));
+        }
+        self.source_mix = PreparedTrackMix::identity();
+        Ok(())
+    }
+    pub(crate) fn recording_mix(&self, gain: f32) -> PreparedTrackMix {
+        self.gain_envelope
+            .as_ref()
+            .map_or(self.mix, |envelope| envelope.mix_with_gain(gain))
+    }
+    pub(crate) fn has_gain_automation(&self) -> bool {
+        self.gain_envelope.is_some()
+    }
+    pub(crate) fn mix_at(&self, frame: u64) -> PreparedTrackMix {
+        self.gain_envelope
+            .as_ref()
+            .map_or(self.mix, |envelope| envelope.mix_at(frame))
+    }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
     }
@@ -887,6 +1121,16 @@ impl Track {
 
     pub(crate) fn has_instrument_source(&self) -> bool {
         self.instrument.is_some()
+    }
+
+    pub(crate) fn with_midi_source_index(mut self, source: Option<usize>) -> Self {
+        self.midi_source_index = source;
+        if source.is_some() {
+            // Audio keeps its local owner; the block renderer adds the selected
+            // MIDI bus at the destination instrument and applies its fader once.
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        self
     }
 
     pub(crate) fn with_track_id(mut self, track: hex_project::TrackId) -> Self {
@@ -902,6 +1146,9 @@ impl Track {
     /// `start_frame` anchors output[0]; transport is not changed. The range end is
     /// checked before any samples are added, so overflow leaves output untouched.
     pub fn render_additive(&self, start_frame: u64, output: &mut [Frame]) -> Result<(), Invalid> {
+        if self.has_gain_automation() {
+            return Err(Invalid("automated track requires project rendering"));
+        }
         if self.clips.iter().any(Clip::is_streamed) {
             return Err(Invalid("streamed clips require a media page provider"));
         }
@@ -1241,6 +1488,7 @@ impl Track {
                         timeline_frame: position,
                         output_offset,
                         count,
+                        gain: metadata.gain,
                         fade: metadata.fade.as_ref().map(|fade| (fade, clip.start)),
                     },
                     output,
@@ -1275,13 +1523,21 @@ impl Track {
         let output_end = (span_end - start_frame) as usize;
         let metadata = clip.metadata.as_deref();
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
-        if let Some(fade) = metadata.and_then(|metadata| metadata.fade.as_ref()) {
+        let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
+        let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if fade.is_some() || clip_gain != 1.0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
                 let position = span_start + offset as u64;
                 let mut sample = clip.at(position, source_phase);
-                let gain = fade.gain_at(position - clip.start);
-                sample[0] *= gain;
-                sample[1] *= gain;
+                if let Some(fade) = fade {
+                    let gain = fade.gain_at(position - clip.start);
+                    sample[0] *= gain;
+                    sample[1] *= gain;
+                }
+                if clip_gain != 1.0 {
+                    sample[0] *= clip_gain;
+                    sample[1] *= clip_gain;
+                }
                 self.source_mix.add_captured(
                     frame,
                     sample,
@@ -1442,18 +1698,38 @@ pub(crate) struct InstrumentTrack {
     pub(crate) mutable: bool,
 }
 
+/// Immutable control-side root/crop view for worker waveform preparation.
+/// Audio retains the same PCM reservation as playback; never build summaries in render.
+#[derive(Debug, Clone)]
+pub struct PreparedAudioClipView {
+    pub clip: hex_project::ClipId,
+    pub audio: Audio,
+    pub offset: u64,
+    pub length: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Project {
+    audio_clip_views: Vec<PreparedAudioClipView>,
     sample_rate: u32,
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
+    return_feed_plan: return_feed_plan::ReturnFeedPlan,
+    signal_graph: Option<Arc<signal_graph::SignalGraph>>,
+    tempo_map: Option<hex_project::TempoMap>,
+    midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
-    shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
+    /// Worker-only observation of accepted transformed PCM, independent of cache residency.
+    pub fn audio_clip_views(&self) -> &[PreparedAudioClipView] {
+        &self.audio_clip_views
+    }
+
     /// Accounted Arrangement note-bank bytes, including each bank's entry
     /// allocation and fixed bank/Arc owner overhead.
     pub fn midi_note_bank_storage_bytes(&self) -> Result<usize, Invalid> {
@@ -1527,6 +1803,7 @@ impl Project {
             ));
         }
         Ok(Self {
+            audio_clip_views: Vec::new(),
             audible_end_frame: tracks
                 .iter()
                 .flat_map(|track| track.clips.iter().map(|clip| clip.end))
@@ -1534,10 +1811,16 @@ impl Project {
             sample_rate,
             tracks,
             return_buses: Vec::new(),
+            return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
+            signal_graph: None,
+            tempo_map: None,
+            midi_routing: Vec::new(),
             loop_region,
             master_gain,
             has_streamed_sources,
-            shared_contexts: Arc::new(shared_analytic::SharedAnalyticContextTable::default()),
+            shared_contexts: owned_shared::OwnedShared::new_owned(
+                shared_analytic::SharedAnalyticContextTable::default(),
+            ),
         })
     }
 
@@ -1551,7 +1834,7 @@ impl Project {
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
         project.return_buses = return_buses;
-        project.shared_contexts = shared_contexts;
+        project.shared_contexts = owned_shared::OwnedShared::untracked(shared_contexts);
         project.audible_end_frame = project
             .tracks
             .iter()
@@ -1573,6 +1856,29 @@ impl Project {
 
     pub(crate) fn shared_contexts(&self) -> &Arc<shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
+    }
+    pub fn gain_automation_capacity(&self) -> GainAutomationCapacity {
+        let mut capacity = GainAutomationCapacity::default();
+        for track in &self.tracks {
+            if let Some(envelope) = &track.gain_envelope {
+                let actual = envelope.capacity();
+                capacity.authored_points += actual.authored_points;
+                capacity.prepared_knots += actual.prepared_knots;
+                capacity.allocated_knot_slots += actual.allocated_knot_slots;
+                capacity.allocated_knot_bytes += actual.allocated_knot_bytes;
+                capacity.authored_units += actual.authored_units;
+                capacity.prepared_touch_spans += actual.prepared_touch_spans;
+                capacity.prepared_touch_steps += actual.prepared_touch_steps;
+                capacity.allocated_touch_bytes += actual.allocated_touch_bytes;
+            }
+        }
+        capacity
+    }
+    /// Known causal startup delay; compensation does not remove physical latency.
+    pub fn main_latency_frames(&self) -> u32 {
+        self.signal_graph
+            .as_ref()
+            .map_or(0, |graph| graph.main_latency())
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -1660,6 +1966,7 @@ pub(crate) struct RendererRuntime {
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
+    compensation: Option<signal_graph::SignalRuntime>,
 }
 impl RendererRuntime {
     pub(crate) fn new(project: &Project) -> Self {
@@ -1667,6 +1974,18 @@ impl RendererRuntime {
         let mut return_chains = Vec::new();
         let mut return_scratch = Vec::new();
         let mut runtime_error = None;
+        let compensation = match project
+            .signal_graph
+            .as_ref()
+            .map(|graph| signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .transpose()
+        {
+            Ok(compensation) => compensation,
+            Err(_) => {
+                runtime_error = Some("compensation runtime storage is unavailable");
+                None
+            }
+        };
         if device_chains
             .try_reserve_exact(project.tracks.len())
             .is_err()
@@ -1703,6 +2022,7 @@ impl RendererRuntime {
                             return_chains,
                             return_scratch,
                             runtime_error,
+                            compensation,
                         };
                     }
                     instances.extend(bus.device_chain.iter().cloned());
@@ -1726,10 +2046,14 @@ impl RendererRuntime {
             return_chains,
             return_scratch,
             runtime_error,
+            compensation,
         }
     }
 
     pub(crate) fn reset(&mut self) {
+        if let Some(compensation) = self.compensation.as_mut() {
+            compensation.delays.reset_epoch();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -1995,6 +2319,11 @@ impl RendererRuntime {
             return Ok(());
         }
         let block_start = *position;
+        if self.compensation.is_some() {
+            self.render_compensated(project, block_start, output, pages.as_deref_mut())?;
+            *position = next;
+            return Ok(());
+        }
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
@@ -2022,7 +2351,7 @@ impl RendererRuntime {
         }
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_device_chain();
-            if stateful || track.requires_ordered_processing() {
+            if stateful || track.requires_ordered_processing() || track.has_gain_automation() {
                 let mut chain = if stateful {
                     Some(
                         self.device_chains
@@ -2071,6 +2400,7 @@ impl RendererRuntime {
                         } else {
                             track.apply_ordered_prefix(target);
                         }
+                        track.apply_instrument_input_gain(target);
                         track.render_instrument_range(start, end, target, None);
                         track.apply_instrument_output_gain(target);
                         if let Some(chain) = chain.as_deref_mut() {
@@ -2084,11 +2414,23 @@ impl RendererRuntime {
                     } else if let Some(chain) = chain.as_deref_mut() {
                         chain.process_block(target);
                     }
-                    for (destination, source) in output[offset..offset + count]
-                        .iter_mut()
-                        .zip(target.iter().copied())
-                    {
-                        track.mix.add_frame(destination, source);
+                    if track.has_gain_automation() {
+                        for (frame_index, (destination, source)) in output[offset..offset + count]
+                            .iter_mut()
+                            .zip(target.iter().copied())
+                            .enumerate()
+                        {
+                            track
+                                .mix_at(start + frame_index as u64)
+                                .add_frame(destination, source);
+                        }
+                    } else {
+                        for (destination, source) in output[offset..offset + count]
+                            .iter_mut()
+                            .zip(target.iter().copied())
+                        {
+                            track.mix.add_frame(destination, source);
+                        }
                     }
                     offset += count;
                 }
@@ -2138,7 +2480,7 @@ impl RendererRuntime {
             for (track_index, track) in project.tracks.iter().enumerate() {
                 let stateful = track.has_device_chain();
                 let ordered = track.requires_ordered_processing();
-                if !stateful && !ordered && track.sends.is_empty() {
+                if !stateful && !ordered && !track.has_gain_automation() && track.sends.is_empty() {
                     if let Some(provider) = pages.as_deref_mut() {
                         track.render_unmuted_range_with_pages(
                             start,
@@ -2176,6 +2518,7 @@ impl RendererRuntime {
                     } else {
                         track.apply_ordered_prefix(rendered);
                     }
+                    track.apply_instrument_input_gain(rendered);
                     track.render_instrument_range(start, end, rendered, None);
                     track.apply_instrument_output_gain(rendered);
                     if stateful {
@@ -2197,7 +2540,11 @@ impl RendererRuntime {
                         .process_block(rendered);
                 }
                 for (frame_index, source) in rendered.iter().copied().enumerate() {
-                    let mixed = track.mix.apply_frame(source);
+                    let mixed = if track.has_gain_automation() {
+                        track.mix_at(start + frame_index as u64).apply_frame(source)
+                    } else {
+                        track.mix.apply_frame(source)
+                    };
                     output_chunk[frame_index][0] += mixed[0];
                     output_chunk[frame_index][1] += mixed[1];
                     for send in &track.sends {
@@ -2209,6 +2556,38 @@ impl RendererRuntime {
                         target[frame_index][1] += mixed[1] * send.gain;
                     }
                 }
+            }
+            if !project.return_feed_plan.is_empty() {
+                for &index in project.return_feed_plan.order() {
+                    let bus = &project.return_buses[index];
+                    let frames = &mut self.return_scratch[index][..count];
+                    self.return_chains
+                        .get_mut(index)
+                        .ok_or(Invalid("return runtime is unavailable"))?
+                        .process_block(frames);
+                    if let Some(matrix) = bus.matrix {
+                        matrix.apply_block(frames);
+                    }
+                    if bus.muted {
+                        frames.fill([0.0; 2]);
+                    } else {
+                        for frame in frames {
+                            frame[0] *= bus.gain;
+                            frame[1] *= bus.gain;
+                        }
+                    }
+                    project
+                        .return_feed_plan
+                        .propagate(index, &mut self.return_scratch, count);
+                }
+                // Main always sums in pinned bus order, not dependency order.
+                for frames in &self.return_scratch {
+                    for (destination, source) in output_chunk.iter_mut().zip(&frames[..count]) {
+                        destination[0] += source[0];
+                        destination[1] += source[1];
+                    }
+                }
+                continue;
             }
             for (index, bus) in project.return_buses.iter().enumerate() {
                 let bus_frames = self
@@ -2512,6 +2891,7 @@ pub use playback::{
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
 };
 pub use prepared_revision::PreparedRevision;
+pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
 pub use prepared_tempo::{
     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
 };

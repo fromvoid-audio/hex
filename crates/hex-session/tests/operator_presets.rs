@@ -42,6 +42,9 @@ fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
         (87, ParameterValue::Float(100.0)),
         (88, ParameterValue::Bool(false)),
         (89, ParameterValue::Bool(false)),
+        (90, ParameterValue::Bool(false)),
+        (91, ParameterValue::Bool(false)),
+        (92, ParameterValue::Bool(false)),
     ] {
         let before = session.project().device(device).unwrap().state().clone();
         graph = session
@@ -294,8 +297,8 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.state_version(), 8);
-    assert_eq!(selected.payload().len(), 380);
+    assert_eq!(selected.state_version(), 11);
+    assert_eq!(selected.payload().len(), 416);
     for (id, enabled) in [(513, false), (514, true), (515, true), (516, true)] {
         assert_eq!(
             hex_engine::native_device_parameter_for_class(

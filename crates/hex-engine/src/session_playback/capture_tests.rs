@@ -16,6 +16,8 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip,
                 asset: 4,
                 start: 3,
@@ -461,8 +463,53 @@ fn interactive_capture_rechecks_arrangement_cut_after_launch_and_revision_loop_c
     );
 }
 
+fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::Audio>) {
+    let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+    let base = with_test_instrument(&project(1.0, 0, 1 << 26), device_type, 0);
+    let mut snapshot = base.snapshot();
+    snapshot.session = SessionSnapshot::default();
+    snapshot.next_id = 100;
+    snapshot.master_gain = 0.25;
+    snapshot.tracks[0].gain = 0.5;
+    snapshot.tracks[0].balance = -0.5;
+    snapshot.assets = vec![AssetSnapshot {
+        id: 80,
+        path: "hybrid.wav".into(),
+        source_sample_rate: 48_000,
+        source_frames: 32,
+        playback_frames: 32,
+        conversion_version: hex_project::IDENTITY_CONVERSION,
+    }];
+    let midi_clips = match &snapshot.tracks[0].content {
+        TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips.clone(),
+        _ => panic!("canonical hybrid instrument"),
+    };
+    snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
+        midi_clips,
+        audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
+            id: 81,
+            asset: 80,
+            start: 3,
+            duration: 512,
+            source_offset: 0,
+            source_length: 32,
+            looping: true,
+            source_phase: 0,
+            fade: ClipFade::neutral(512).unwrap(),
+        }],
+    };
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let media = BTreeMap::from([(
+        project.assets().next().unwrap().id(),
+        crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap(),
+    )]);
+    (project, media)
+}
+
 #[test]
-fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
+fn analytic_hybrid_metered_capture_is_partition_independent() {
     for metered in [false, true] {
         let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
         let definition = ContinuityInstrumentDefinition {
@@ -472,44 +519,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
         };
         let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
         let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-        let base = with_test_instrument(&project(1.0, 0, 1 << 26), device_type, 0);
-        let mut snapshot = base.snapshot();
-        snapshot.session = SessionSnapshot::default();
-        snapshot.next_id = 100;
-        snapshot.master_gain = 0.25;
-        snapshot.tracks[0].gain = 0.5;
-        snapshot.tracks[0].balance = -0.5;
-        snapshot.assets = vec![AssetSnapshot {
-            id: 80,
-            path: "hybrid.wav".into(),
-            source_sample_rate: 48_000,
-            source_frames: 32,
-            playback_frames: 32,
-            conversion_version: hex_project::IDENTITY_CONVERSION,
-        }];
-        let midi_clips = match &snapshot.tracks[0].content {
-            TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips.clone(),
-            _ => panic!("canonical hybrid instrument"),
-        };
-        snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
-            midi_clips,
-            audio_clips: vec![ClipSnapshot {
-                id: 81,
-                asset: 80,
-                start: 3,
-                duration: 512,
-                source_offset: 0,
-                source_length: 32,
-                looping: true,
-                source_phase: 0,
-                fade: ClipFade::neutral(512).unwrap(),
-            }],
-        };
-        let project = Project::from_snapshot(snapshot).unwrap();
-        let media = BTreeMap::from([(
-            project.assets().next().unwrap().id(),
-            crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap(),
-        )]);
+        let (project, media) = analytic_hybrid_fixture();
         let revision = Arc::new(
             PreparedRevision::prepare_with_instrument_registry(
                 &project,
@@ -520,35 +530,22 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             )
             .unwrap(),
         );
-        let mut runtime = linear(Arc::clone(&revision));
-        runtime.set_device_metering(metered);
-        let plan = runtime
-            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
-            .unwrap();
-        let mut main = [[0.0; 2]; 512];
-        let mut captured = main;
-        let mut buffers: [&mut [Frame]; 1] = [&mut captured];
-        let mut capture = OutputCapture::new(&plan, &mut buffers);
-        runtime
-            .render_with_capture(&mut main, &mut capture)
-            .unwrap();
-        let mut reference = linear(Arc::clone(&revision));
-        let mut expected = main;
-        reference.render(&mut expected).unwrap();
-        assert_eq!(main, expected);
-        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
-            let level = if index < 379 { 0.25 } else { 0.0 };
-            let audio = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
-            let expected = [(audio[0] + level) * 0.5, (audio[1] + level) * 0.25];
-            assert_eq!(*frame, expected);
-            assert_eq!(main[index], expected.map(|sample| sample * 0.25));
-        }
+        let mut expected = [[0.0; 2]; 512];
+        linear(Arc::clone(&revision)).render(&mut expected).unwrap();
         // Same physical oracle across callback-sized partitions; the uncaptured
         // reference above intentionally leaves metering off.
         let mut partitioned = linear(Arc::clone(&revision));
         partitioned.set_device_metering(metered);
-        let partition_plan = partitioned.output_capture_plan(plan.ids(), 512).unwrap();
-        let expected_capture = capture.output(0).unwrap().to_vec();
+        let partition_plan = partitioned
+            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
+            .unwrap();
+        let expected_capture: Vec<_> = (0..512)
+            .map(|index| {
+                let level = if index < 379 { 0.25 } else { 0.0 };
+                let audio = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
+                [(audio[0] + level) * 0.5, (audio[1] + level) * 0.25]
+            })
+            .collect();
         let mut offset = 0;
         for count in [1, 2, 17, 127, 256, 109] {
             let mut block = vec![[9.0; 2]; count];
@@ -565,7 +562,21 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             );
             offset += count;
         }
+    }
+}
 
+#[test]
+fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order() {
+    for metered in [false, true] {
+        let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+        let definition = ContinuityInstrumentDefinition {
+            id: device_type,
+            levels: [0.25, 0.5],
+            release_frames: 4,
+        };
+        let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+        let (project, media) = analytic_hybrid_fixture();
         // Real hybrid prefix -> instrument -> nonlinear suffix -> track mix ->
         // send -> return -> master. Neither metering nor capture may move a stage.
         let utility = &hex_devices::utility::UTILITY_DEFINITION;
@@ -679,6 +690,54 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
                         < 1e-7
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
+    for metered in [false, true] {
+        let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+        let definition = ContinuityInstrumentDefinition {
+            id: device_type,
+            levels: [0.25, 0.5],
+            release_frames: 4,
+        };
+        let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+        let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+        let (project, media) = analytic_hybrid_fixture();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &project,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut runtime = linear(Arc::clone(&revision));
+        runtime.set_device_metering(metered);
+        let plan = runtime
+            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
+            .unwrap();
+        let mut main = [[0.0; 2]; 512];
+        let mut captured = main;
+        let mut buffers: [&mut [Frame]; 1] = [&mut captured];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        let mut reference = linear(Arc::clone(&revision));
+        let mut expected = main;
+        reference.render(&mut expected).unwrap();
+        assert_eq!(main, expected);
+        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
+            let level = if index < 379 { 0.25 } else { 0.0 };
+            let audio = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
+            let expected = [(audio[0] + level) * 0.5, (audio[1] + level) * 0.25];
+            assert_eq!(*frame, expected);
+            assert_eq!(main[index], expected.map(|sample| sample * 0.25));
         }
         let mut gain_source = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         gain_source.set_device_metering(metered);
@@ -828,3 +887,61 @@ fn capture_bounds_and_handoff_generation_exhaustion_refuse_before_runtime_mutati
         );
     }
 }
+
+#[test]
+fn reused_capture_buffers_only_clear_rendered_prefix_on_success() {
+    let mut runtime = linear(audio_fixture(true, false, false));
+    let ids = [
+        OutputCaptureId::Track(runtime.routes[0].id),
+        OutputCaptureId::Return(runtime.revision.arrangement().return_buses()[0].id),
+    ];
+    let plan = runtime
+        .output_capture_plan(&ids, MAX_OUTPUT_CAPTURE_FRAMES)
+        .unwrap();
+    let sentinel = [9.0, -9.0];
+    let mut track = vec![sentinel; MAX_OUTPUT_CAPTURE_FRAMES];
+    let mut bus = track.clone();
+    for frames in [256, 0, 17] {
+        let previous_track = track.clone();
+        let previous_bus = bus.clone();
+        let mut main = vec![[0.0; 2]; frames];
+        let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut bus];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        assert_eq!(capture.valid_frames(), frames);
+        assert!(
+            capture
+                .output(0)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() < 1.0)
+        );
+        assert!(
+            capture
+                .output(1)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() < 1.0)
+        );
+        assert_eq!(track[frames..], previous_track[frames..]);
+        assert_eq!(bus[frames..], previous_bus[frames..]);
+    }
+    // Refusal still performs the documented bounded full-slice cleanup.
+    let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut bus];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    let mut oversized = vec![[9.0; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1];
+    assert!(
+        runtime
+            .render_with_capture(&mut oversized, &mut capture)
+            .is_err()
+    );
+    assert_eq!(capture.valid_frames(), 0);
+    assert!(track.iter().chain(&bus).all(|frame| *frame == [0.0; 2]));
+}
+
+#[path = "capture_routing_tests.rs"]
+mod routing;

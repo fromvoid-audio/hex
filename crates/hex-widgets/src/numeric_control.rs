@@ -1070,24 +1070,21 @@ impl gpui::Render for NumericControl {
         let mut root = match (self.kind, self.appearance) {
             (_, NumericControlAppearance::DeviceMeters) => div()
                 .id(self.id.clone())
-                .w(px(25.0))
+                .w(px(10.0))
                 .h(px(self.meter_readout.height))
                 .flex()
-                .gap(px(3.0))
-                .px(px(2.0))
                 .py(px(4.0))
                 .track_focus(&self.focus)
                 .key_context("hex_numeric_control")
-                .child(crate::device_meters::well(
-                    self.id.clone(),
-                    0,
-                    &self.meter_readout,
-                    style,
-                ))
                 .child(
-                    crate::device_meters::well(self.id.clone(), 1, &self.meter_readout, style)
-                        .cursor(gpui::CursorStyle::ResizeUpDown)
-                        .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx)),
+                    crate::device_meters::well(
+                        self.id.clone(),
+                        self.meter_readout.index,
+                        &self.meter_readout,
+                        style,
+                    )
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx)),
                 ),
             (
                 NumericControlKind::Knob,
