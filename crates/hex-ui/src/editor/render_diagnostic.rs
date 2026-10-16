@@ -1,6 +1,9 @@
-//! Temporary opt-in UI-thread CPU diagnostics; removed before production candidate.
+//! Temporary opt-in UI-thread elapsed diagnostics; removed before production candidate.
+use gpui::{IntoElement, canvas, prelude::*, px};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 #[derive(Clone, Copy, Debug)]
@@ -25,8 +28,10 @@ pub(super) enum Kind {
     AudioBuild,
     ClipContentBuild,
     ClipContentReuse,
+    CachedClipPrepaintWall,
+    CachedClipPaintWall,
 }
-const KINDS: [Kind; 20] = [
+const KINDS: [Kind; 22] = [
     Kind::RenderBuild,
     Kind::OverviewLookup,
     Kind::OverviewBuild,
@@ -47,6 +52,8 @@ const KINDS: [Kind; 20] = [
     Kind::AudioBuild,
     Kind::ClipContentBuild,
     Kind::ClipContentReuse,
+    Kind::CachedClipPrepaintWall,
+    Kind::CachedClipPaintWall,
 ];
 #[derive(Clone, Copy, Default)]
 struct Metric {
@@ -55,7 +62,48 @@ struct Metric {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Stats {
-    metrics: [Metric; 20],
+    metrics: [Metric; 22],
+}
+pub(super) fn enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("HEX_TIME_SELECTION_DIAGNOSTIC").is_some_and(|value| value == "1")
+    })
+}
+
+/// Live lane siblings bracket the cached child without changing its bounds.
+pub(super) fn clip_brackets() -> (impl IntoElement, impl IntoElement) {
+    let prepaint = Rc::new(Cell::new(None::<Instant>));
+    let paint = Rc::new(Cell::new(None::<Instant>));
+    let leading_prepaint = Rc::clone(&prepaint);
+    let leading_paint = Rc::clone(&paint);
+    let leading = canvas(
+        move |_, _, _| leading_prepaint.set(Some(Instant::now())),
+        move |_, _, _, _| leading_paint.set(Some(Instant::now())),
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .w(px(1.0))
+    .h(px(1.0));
+    let trailing = canvas(
+        move |_, _, _| {
+            if let Some(started) = prepaint.take() {
+                record(Kind::CachedClipPrepaintWall, started.elapsed());
+            }
+        },
+        move |_, _, _, _| {
+            if let Some(started) = paint.take() {
+                record(Kind::CachedClipPaintWall, started.elapsed());
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .w(px(1.0))
+    .h(px(1.0));
+    (leading, trailing)
 }
 thread_local! { static ACTIVE: RefCell<Option<Stats>> = const { RefCell::new(None) }; }
 pub(super) fn begin() {

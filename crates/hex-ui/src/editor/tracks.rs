@@ -285,7 +285,16 @@ impl EditorView {
             },
             cx,
         );
-        clip_area = clip_area.child(content);
+        clip_area = if super::render_diagnostic::enabled() {
+            let (leading, trailing) = super::render_diagnostic::clip_brackets();
+            clip_area.children([
+                leading.into_any_element(),
+                content,
+                trailing.into_any_element(),
+            ])
+        } else {
+            clip_area.child(content)
+        };
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         let live_midi_trim_preview = self
