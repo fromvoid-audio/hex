@@ -8,6 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
     'hex-clap-scan': set(),
+    'hex-plugin-scan': set(),
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract'},
@@ -16,12 +17,14 @@ ALLOWED = {
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project', 'hex-lattice-contract'},
     'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
-    'hex-engine': {'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
+    'hex-warp': set(),
+    'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
     'hex-preferences': set(),
     'hex-widgets': set(),
+    # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
     'hex-ui': {'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio'},
@@ -37,12 +40,17 @@ DEV_ALLOWED = {
 BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
-              # Source-page and controlled scanner identities stay off DSP.
-              'sha2': {'hex-media', 'hex-clap-scan'},
-              # Standalone controlled scanner only; never primary/audio ownership.
-              'signal-hook': {'hex-clap-scan'},
+              # Source and controlled scanner identities never enter DSP.
+              'sha2': {'hex-media', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Child disposition belongs only to the standalone scanners.
+              'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
+              # Safe publication and standalone child ownership only.
+              'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan'},
               # Advisory journal locks stay on the storage/control boundary.
               'fs2': {'hex-storage'}}
+# Build-only hash checks of observed pinned rtrb constructor files. This does
+# not permit cryptography or a new dependency on the stream runtime path.
+BUILD_BOUNDARIES = {'sha2': {'hex-stream'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
@@ -58,16 +66,18 @@ for name, package in packages.items():
             errors.append(f'{name}: README must define {heading}')
     for dep in package['dependencies']:
         target = dep['name']
+        if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
+            errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
         if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream'} or dep['kind'] != 'dev'):
             errors.append(f'{name}: allocation-counter is allowed only for audio/stream dev probes')
-        if target == 'rustix' and 'process' in dep.get('features', []) and name != 'hex-clap-scan':
-            errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())
         if target in packages and target not in allowed:
             errors.append(f'{name} -> {target}: violates the dependency policy')
-        if target in BOUNDARIES and name not in BOUNDARIES[target]:
+        if (target in BOUNDARIES and name not in BOUNDARIES[target]
+                and not (dep['kind'] == 'build'
+                         and name in BUILD_BOUNDARIES.get(target, set()))):
             errors.append(f'{name}: {target} belongs in its declared platform/UI boundary')
 if errors:
     print('\n'.join(errors), file=sys.stderr)

@@ -40,7 +40,7 @@ reference/listening/deadline acceptance or complete Pulse20 hosting.
 produces `controlled-clap-fixtures.json`. Invoke
 `hex-clap-scan <controlled-clap-fixtures.json> <fixture-name> [deadline-ms]
 [previous-report.json]`; optional stdin `cancel` terminates the owned attempt.
-Only receipt-listed ORIGINAL names/paths are accepted. ELF64LE x86_64 ET_DYN,
+Only receipt-listed ORIGINAL names/paths are accepted. On Linux, ELF64LE x86_64 ET_DYN,
 exact source/helper/module hashes and immutable before/after receipt checks are
 required. Caller-owned receipts establish build provenance, not authenticity of
 arbitrary code. No credential/environment dumps or installed-folder search occurs.
@@ -357,3 +357,20 @@ PDF/extraction/section applicability remain an operator audit. Compiler depfiles
 record source/header closure; retained otool reports and loaded-image UUIDs do not
 establish full hashed linker/tool/SDK-stub closure. This unresolved provenance
 limit must not be described as complete link closure or loaded-image hashes.
+
+## current-main Linux verification — 16 october 2026
+
+The official CLAP1.2.10 checkout at the pinned commit was fetched without tracked
+changes. The builder verified the retained MIT notice and actual compiler/header/
+runtime closure: 68 original artifacts, 343 headers and five runtime libraries.
+Explicit Linux suites passed 53 cases: 13 delay/tail, one common-Unix direct-child,
+ten descriptor and 29 offline/MIDI/state tests. Default protocol/unit tests and
+strict crate Clippy passed. Final exact-head native/full-CI evidence is in PR199.
+The initial test invocation used an incorrect offline receipt filename; that
+setup failure is retained separately and was not source failure or acceptance.
+
+The eight native Mac tests remain unrun here. Linux common-Unix and portable
+validation tests are not Darwin ABI, SDK notice provenance, Mach-O/dyld or native
+process evidence. Existing enrollment, exclusive custody, receipt-size and SDK/
+toolchain guards remain intact; no Mac admission is enabled by Linux results.
+Production third-party/application hosting and parent #20 acceptance remain open.

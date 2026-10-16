@@ -137,12 +137,100 @@ impl SharedContextOwner {
         self.id
     }
 
+    pub(crate) fn device_id(&self) -> DeviceId {
+        self.identity.device
+    }
+
     pub(crate) fn declared_bytes(&self) -> usize {
         self.declared_bytes
     }
 
     pub(crate) fn context(&self) -> &dyn PreparedSharedAnalyticContext {
         self.context.as_ref()
+    }
+
+    pub(crate) fn continuation_id(&self) -> Result<hex_lattice::AnalyticContinuationId, Invalid> {
+        hex_lattice::AnalyticContinuationId::new(self.id.0)
+            .map_err(|_| Invalid("shared analytic continuation identity is invalid"))
+    }
+
+    /// Evaluate only the actually applied owner. Desired intermediate revisions
+    /// are never an input, and an in-flight ramp collapses to its exact boundary.
+    pub(crate) fn continue_from(
+        &self,
+        previous: &Self,
+        transition: Option<hex_lattice::AnalyticContinuation>,
+        performance_frame: u64,
+    ) -> Result<Option<hex_lattice::AnalyticContinuation>, Invalid> {
+        if self.id == previous.id {
+            return Ok(transition);
+        }
+        if self.identity.track != previous.identity.track
+            || self.identity.device != previous.identity.device
+            || self.identity.device_type != previous.identity.device_type
+            || self.identity.sample_rate != previous.identity.sample_rate
+        {
+            return Ok(None);
+        }
+        let Some(target) = self.context().analytic_continuation() else {
+            return Ok(None);
+        };
+        let Some(source) = previous.context().analytic_continuation() else {
+            return Ok(None);
+        };
+        if target.format() != source.format() {
+            return Ok(None);
+        }
+        let source_id = previous.continuation_id()?;
+        if self.identity == previous.identity {
+            // A control preparation may recreate an identical context without
+            // reuse. Rebind the fixed original start, retaining absolute clock
+            // and duration; unrelated publication must not restart its ramp.
+            return transition
+                .map(|transition| {
+                    let target_id = self.continuation_id()?;
+                    let start = target
+                        .prepare_start(target_id, source, source_id, transition.start())
+                        .map_err(|_| {
+                            Invalid("shared analytic continuation identity rebinding was refused")
+                        })?;
+                    hex_lattice::AnalyticContinuation::new(
+                        target_id,
+                        start,
+                        transition.start_frame(),
+                        transition.duration(),
+                    )
+                    .map_err(|_| Invalid("shared analytic continuation clock is invalid"))
+                })
+                .transpose();
+        }
+        let boundary = match transition {
+            Some(transition) => source
+                .parameters_at(source_id, &transition, performance_frame)
+                .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?,
+            None => source.endpoint(source_id),
+        };
+        let target_id = self.continuation_id()?;
+        let start = match target.prepare_start(target_id, source, source_id, &boundary) {
+            Ok(start) => start,
+            Err(hex_lattice::AnalyticContinuationError::IncompatibleSource) => return Ok(None),
+            Err(_) => return Err(Invalid("shared analytic continuation source was refused")),
+        };
+        let duration =
+            hex_lattice::AnalyticContinuation::default_duration(self.identity.sample_rate)
+                .map_err(|_| Invalid("shared analytic continuation duration is invalid"))?;
+        let transition =
+            hex_lattice::AnalyticContinuation::new(target_id, start, performance_frame, duration)
+                .map_err(|_| Invalid("shared analytic continuation clock is invalid"))?;
+        // Check the provider's clock/identity law before admitting any voice.
+        target
+            .parameters_at(target_id, &transition, performance_frame)
+            .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?;
+        Ok(Some(transition))
+    }
+
+    pub(crate) fn same_configuration(&self, other: &Self) -> bool {
+        self.identity == other.identity
     }
 
     fn compatible_identity(&self, identity: &SharedContextIdentity) -> bool {
@@ -161,6 +249,26 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// Exhaustive audited empty-table payload check for the opt-in compiler.
+    /// Vec headers belong to this outer payload; nonzero spare capacities or
+    /// nested handles are unsupported rather than assumed free/complete.
+    pub(crate) fn require_empty_owned_storage(&self) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            owners,
+            ids,
+            payload_bytes,
+        } = self;
+        if !owners.is_empty()
+            || owners.capacity() != 0
+            || !ids.is_empty()
+            || ids.capacity() != 0
+            || *payload_bytes != 0
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        Ok(())
+    }
+
     pub(crate) fn empty() -> Arc<Self> {
         Arc::new(Self::default())
     }
@@ -193,7 +301,7 @@ impl SharedAnalyticContextTable {
                 track: track.id(),
                 device: device.id(),
                 device_type: device.state().type_id(),
-                state: device.state().clone().without_output_gain(),
+                state: device.state().clone().without_host_gains(),
                 sample_rate: project.sample_rate(),
             };
             if previous
@@ -262,6 +370,21 @@ impl SharedAnalyticContextTable {
             ids,
             payload_bytes,
         }))
+    }
+
+    pub(crate) fn owners(&self) -> impl Iterator<Item = (u16, &SharedContextOwner)> {
+        self.owners.iter().enumerate().filter_map(|(index, owner)| {
+            u16::try_from(index)
+                .ok()
+                .map(|index| (index, owner.as_ref()))
+        })
+    }
+
+    pub(crate) fn index_for_track(&self, track: TrackId) -> Option<u16> {
+        self.owners
+            .iter()
+            .position(|owner| owner.identity.track == track)
+            .and_then(|index| u16::try_from(index).ok())
     }
 
     pub(crate) fn owner_for_device(&self, device: DeviceId) -> Option<&SharedContextOwner> {
