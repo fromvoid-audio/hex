@@ -76,6 +76,19 @@ unchanged control entries plus snapshot reads. Render/validation checks stay
 outside timing; no CPAL stream is opened. See docs/performance.md for methodology,
 retained outliers and the separate physical deadline gate.
 
+## Browser sample preview
+
+`prepared::Control::sample_preview` accepts finite, output-rate `Audio` prepared
+on a background worker. `request` silences older generations before decoding;
+`publish` coalesces a latest pending owner behind the one-slot input queue.
+The existing callback adds the one-shot at unity after project master output,
+including while project transport is stopped or paused. Project Stop is separate.
+Two return slots carry exhausted/stale PCM to the ordinary control reclamation
+poll; full return storage retains ownership and stale PCM stays silent. Shutdown
+waits for preview owners too. No extra stream, callback allocation, locking or
+final PCM drop is needed. The media decoder and browser input remain outside
+this crate. See [runtime](../../docs/runtime.md#browser-sample-playback--pulse2637--pr254).
+
 ## Output spectrum analysis
 
 `spectrum` provides the fixed 4096-frame stereo FFT kernel; `spectrum_worker`
