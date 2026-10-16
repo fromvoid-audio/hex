@@ -11,6 +11,8 @@ use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 pub mod preset;
 mod recovery;
+#[cfg(test)]
+mod stopped_playback_tests;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
 use recovery::{absolute_document_path, checkpoint_project, open_source, project_for_save};
@@ -73,6 +75,9 @@ pub struct Event {
     pub save_complete: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
+    /// Completion of explicit Stop recovery, including refusal. A returned graph
+    /// must install with fresh histories; this never replaces the project.
+    pub stopped_playback_restore_complete: bool,
     pub created: Option<Created>,
     pub duplicate_complete: bool,
     /// Generation echoed for each processed restore request, including errors.
@@ -316,6 +321,8 @@ pub enum Request {
     RestorePlayback {
         generation: u64,
     },
+    /// Reprepare the current canonical sound after the caller explicitly stops.
+    RestoreStoppedPlayback,
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
     ExportRange {
@@ -780,6 +787,7 @@ fn run_worker(
                 save_complete: false,
                 open_complete: false,
                 project_replaced: false,
+                stopped_playback_restore_complete: false,
                 created: None,
                 duplicate_complete: false,
                 restore_complete: None,
@@ -800,6 +808,7 @@ fn run_worker(
             save_complete: false,
             open_complete: false,
             project_replaced: false,
+            stopped_playback_restore_complete: false,
             created: None,
             duplicate_complete: false,
             restore_complete: None,
@@ -825,6 +834,7 @@ fn run_worker(
         let revision_before_request = revision;
         let mut duplicate_complete = false;
         let mut restore_complete = None;
+        let mut stopped_playback_restore_complete = false;
         let mut restore_prepared = None;
         let mut status = None;
         let mut error = None;
@@ -1669,6 +1679,21 @@ fn run_worker(
                         }
                     }
                 }
+                Request::RestoreStoppedPlayback => {
+                    stopped_playback_restore_complete = true;
+                    if device_gesture.snapshot().is_some() {
+                        error = Some(
+                            "finish the device gesture before restoring stopped playback".into(),
+                        );
+                    } else if let Some((compiled_revision, prepared)) = compiled.as_ref()
+                        && *compiled_revision == revision
+                    {
+                        restore_prepared = Some(Arc::clone(prepared));
+                        status = Some("restoring stopped playback".into());
+                    } else {
+                        error = Some("current playback revision is unavailable".into());
+                    }
+                }
                 Request::PrepareComputerKeyboard {
                     project_generation: generation,
                     revision: expected_revision,
@@ -1830,6 +1855,7 @@ fn run_worker(
                 save_complete,
                 open_complete,
                 project_replaced,
+                stopped_playback_restore_complete,
                 created,
                 duplicate_complete,
                 restore_complete,

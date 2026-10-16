@@ -59,6 +59,7 @@ fn completed_event(state: &ViewState) -> Event {
         save_complete: false,
         open_complete: false,
         project_replaced: false,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,
