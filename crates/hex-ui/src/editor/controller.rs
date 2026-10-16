@@ -99,6 +99,7 @@ impl EditorView {
         visible_change |= self.pump_device_gesture();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
+        visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
         visible_change |= self.tick_edit_cursor(now);
         let project_edit_pending = self.edit_pending();
         visible_change |= self.retire_stale_spectrum_target();
@@ -136,6 +137,7 @@ impl EditorView {
             self.invalidate_prepared_seek();
         }
         visible_change |= self.tick_prepared_arrangement_seek();
+        visible_change |= self.tick_scrub();
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -357,6 +359,9 @@ impl EditorView {
             }
             match audio.control.action_with_ticket(pending.action) {
                 Ok(ticket) => {
+                    if matches!(pending.action, PlaybackAction::SetMetronome(_)) {
+                        self.pending_metronome_ticket = Some(ticket);
+                    }
                     if matches!(
                         pending.action,
                         PlaybackAction::Transport(
@@ -384,6 +389,21 @@ impl EditorView {
         }
         let consumed_command = audio.control.status.consumed_command.load(Acquire);
         let actual_playing = audio.control.status.playing.load(Acquire);
+        if self
+            .pending_metronome_ticket
+            .is_some_and(|ticket| consumed_command >= ticket)
+        {
+            let rejected = audio
+                .control
+                .status
+                .rejected_action()
+                .is_some_and(|(ticket, _)| self.pending_metronome_ticket == Some(ticket));
+            self.pending_metronome_ticket = None;
+            visible_change = true;
+            if rejected {
+                replace_error(&mut self.error, "metronome request rejected · try again");
+            }
+        }
         let rejected_action_ticket = audio
             .control
             .status
@@ -418,6 +438,7 @@ impl EditorView {
         if audio.control.status.device_fault.load(Relaxed) {
             self.session_routes.clear();
             self.pending_audio_commands.clear();
+            self.pending_metronome_ticket = None;
             self.pending_session_ticket = None;
             self.pending_seek_ticket = None;
             self.play_intent.clear();
@@ -429,6 +450,7 @@ impl EditorView {
         } else if audio.control.status.render_fault.load(Relaxed) {
             self.session_routes.clear();
             self.pending_audio_commands.clear();
+            self.pending_metronome_ticket = None;
             self.pending_seek_ticket = None;
             self.pending_session_ticket = None;
             self.play_intent.clear();
@@ -1547,8 +1569,34 @@ impl EditorView {
         self.status = "session launch requested · waiting for audio callback".into();
     }
 
+    pub(super) fn metronome_enabled(&self) -> bool {
+        self.audio_status()
+            .is_some_and(|status| status.metronome_enabled.load(Acquire))
+    }
+
+    pub(super) fn metronome_pending(&self) -> bool {
+        self.pending_metronome_ticket.is_some_and(|ticket| {
+            self.audio_status()
+                .is_some_and(|status| status.consumed_command.load(Acquire) < ticket)
+        }) || self
+            .pending_audio_commands
+            .iter()
+            .any(|pending| matches!(pending.action, PlaybackAction::SetMetronome(_)))
+    }
+
+    pub(super) fn toggle_metronome(&mut self) {
+        if !self.metronome_pending() {
+            self.queue_playback_action(
+                PlaybackAction::SetMetronome(!self.metronome_enabled()),
+                None,
+            );
+        }
+    }
+
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
-        self.invalidate_prepared_seek();
+        if !matches!(action, PlaybackAction::SetMetronome(_)) {
+            self.invalidate_prepared_seek();
+        }
         if self.audio.is_none() {
             self.error = Some("audio output is unavailable".into());
             return;
@@ -1583,6 +1631,9 @@ impl EditorView {
                 .map(|audio| audio.control.action_with_ticket(action));
             match result {
                 Some(Ok(ticket)) => {
+                    if matches!(action, PlaybackAction::SetMetronome(_)) {
+                        self.pending_metronome_ticket = Some(ticket);
+                    }
                     self.admit_play_intent(pending, desired_playing, Some(ticket));
                     if matches!(
                         action,
@@ -1684,10 +1735,12 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.cancel_scrub();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
         self.recovery.stop();
         self.pending_audio_commands.clear();
+        self.pending_metronome_ticket = None;
         self.pending_seek_ticket = None;
         self.pending_session_ticket = None;
         self.play_intent.priority_stop();
@@ -1867,7 +1920,8 @@ fn intent_desired_playing(action: PlaybackAction) -> Option<bool> {
         PlaybackAction::Transport(PlaybackCommand::Pause) => Some(false),
         PlaybackAction::Transport(PlaybackCommand::Stop)
         | PlaybackAction::Transport(PlaybackCommand::Seek(_))
-        | PlaybackAction::Session(_) => None,
+        | PlaybackAction::Session(_)
+        | PlaybackAction::SetMetronome(_) => None,
     }
 }
 
@@ -1882,7 +1936,7 @@ fn queued_action_is_current(
         return false;
     }
     match pending.action {
-        PlaybackAction::Transport(_) => true,
+        PlaybackAction::Transport(_) | PlaybackAction::SetMetronome(_) => true,
         PlaybackAction::Session(command) | PlaybackAction::LaunchAndPlay(command) => {
             !project_edit_pending
                 && pending.revision.is_some_and(|revision| {

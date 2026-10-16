@@ -158,6 +158,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
 
     let clips = (3..3 + MAX_CLIPS as u64)
         .map(|id| ClipSnapshot {
+            gain: hex_project::ClipGain::UNITY,
             id,
             asset: 1,
             start: 0,

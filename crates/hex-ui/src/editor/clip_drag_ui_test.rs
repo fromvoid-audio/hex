@@ -1597,3 +1597,86 @@ fn arrangement_scroll_rebuilds_drag_lane_eligibility_from_painted_rows(cx: &mut 
         );
     });
 }
+
+#[gpui::test]
+fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
+    cx: &mut TestAppContext,
+) {
+    use super::{musical_time::SnapGrid, viewport::Viewport};
+    use std::time::{Duration, Instant};
+    let (project, source, _, clip) = audio_project();
+    let original = project.clip(clip).unwrap().clone();
+    let (window, editor) = editor_window(cx, project, Arc::new(Default::default()));
+    editor.update(cx, |view, cx| {
+        view.viewport = Some(Viewport {
+            start: 0,
+            length: TIMELINE_FRAMES / 2,
+        });
+        view.snap_grid = SnapGrid::Off;
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let down = point(
+        surface.origin.x + surface.size.width / 2.0,
+        surface.origin.y + surface.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let edge = editor.read_with(cx, |view, _| {
+        let lane = view.drag_lanes[&source];
+        point(
+            px(lane.left + lane.width - 4.0),
+            px(lane.top + lane.height / 2.0),
+        )
+    });
+    visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        let now = Instant::now();
+        let before = view
+            .active_clip_drag
+            .as_ref()
+            .unwrap()
+            .preview
+            .get()
+            .unwrap();
+        view.tick_clip_gesture_autoscroll(now, cx);
+        assert!(view.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
+        let drag = view.active_clip_drag.as_ref().unwrap();
+        let after = drag.preview.get().unwrap();
+        assert!(after.start_frame > before.start_frame);
+        assert_eq!(
+            view.state.as_ref().unwrap().project.clip(clip),
+            Some(&original)
+        );
+        assert!(view.drag_start_is_current(drag));
+        let viewport = view.viewport;
+        let previous = view.state.as_ref().unwrap();
+        view.state = Some(Arc::new(ViewState {
+            project: previous.project.clone(),
+            waveforms: previous.waveforms.clone(),
+            midi_preview: previous.midi_preview.clone(),
+            timeline_frames: previous.timeline_frames,
+            can_undo: previous.can_undo,
+            can_redo: previous.can_redo,
+            revision: previous.revision + 1,
+            unsaved: previous.unsaved,
+            document_path: previous.document_path.clone(),
+        }));
+        assert!(!view.tick_clip_gesture_autoscroll(now + Duration::from_millis(100), cx));
+        assert_eq!(view.viewport, viewport);
+        view.active_clip_drag = None;
+        assert!(!view.tick_clip_gesture_autoscroll(now + Duration::from_millis(150), cx));
+    });
+}

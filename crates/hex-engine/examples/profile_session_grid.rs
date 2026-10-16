@@ -64,6 +64,7 @@ fn fixture(
                 let id = next_id;
                 next_id += 1;
                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id,
                     name: format!("source {index}"),
                     asset: 1,

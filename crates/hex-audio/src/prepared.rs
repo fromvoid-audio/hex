@@ -154,7 +154,8 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
         ) => true,
         PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::Pause)
         | PlaybackAction::Session(_)
-        | PlaybackAction::LaunchAndPlay(_) => false,
+        | PlaybackAction::LaunchAndPlay(_)
+        | PlaybackAction::SetMetronome(_) => false,
     }
 }
 
@@ -307,6 +308,8 @@ pub struct Status {
     pub position: AtomicU64,
     pub performance_frame: AtomicU64,
     pub playing: AtomicBool,
+    /// Last callback-admitted interactive click state.
+    pub metronome_enabled: AtomicBool,
     pub session_capability: AtomicU32,
     pub shutdown_complete: AtomicBool,
     route_sequence: AtomicU64,
@@ -349,6 +352,7 @@ impl Status {
             position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             playing: AtomicBool::new(false),
+            metronome_enabled: AtomicBool::new(false),
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             shutdown_complete: AtomicBool::new(false),
             route_sequence: AtomicU64::new(0),
@@ -492,6 +496,7 @@ impl Status {
     }
 
     fn publish_empty_routes(&self) {
+        self.metronome_enabled.store(false, Relaxed);
         self.begin_route_snapshot();
         for slot in self.route_slots.iter() {
             slot.clear();
@@ -957,7 +962,9 @@ impl Control {
         self.action_with_ticket(PlaybackAction::Transport(command))
             .map_err(|action| match action {
                 PlaybackAction::Transport(command) => command,
-                PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_) => command,
+                PlaybackAction::Session(_)
+                | PlaybackAction::LaunchAndPlay(_)
+                | PlaybackAction::SetMetronome(_) => command,
             })
     }
 
@@ -970,7 +977,9 @@ impl Control {
         self.action_with_ticket(PlaybackAction::Session(command))
             .map_err(|action| match action {
                 PlaybackAction::Session(command) => command,
-                PlaybackAction::Transport(_) | PlaybackAction::LaunchAndPlay(_) => command,
+                PlaybackAction::Transport(_)
+                | PlaybackAction::LaunchAndPlay(_)
+                | PlaybackAction::SetMetronome(_) => command,
             })
     }
 
@@ -984,7 +993,7 @@ impl Control {
                 PlaybackAction::LaunchAndPlay(command) | PlaybackAction::Session(command) => {
                     command
                 }
-                PlaybackAction::Transport(_) => command,
+                PlaybackAction::Transport(_) | PlaybackAction::SetMetronome(_) => command,
             })
     }
 
@@ -1630,6 +1639,9 @@ impl Callback {
             self.status
                 .playing
                 .store(active.playback.playing(), Relaxed);
+            self.status
+                .metronome_enabled
+                .store(active.playback.metronome_enabled(), Relaxed);
         }
     }
 }
@@ -1771,6 +1783,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -1891,6 +1904,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -1999,6 +2013,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -2119,6 +2134,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
                     asset: ASSET_ID,
                     start: 0,
@@ -2227,6 +2243,200 @@ mod tests {
     struct CompressorReferenceHistory {
         envelope: f64,
         gain_db: f64,
+    }
+
+    fn metronome_graph() -> Playback {
+        let mut project = hex_project::Project::new(8_000).unwrap().snapshot();
+        project.loop_region = Some(hex_project::LoopRegion::new(0, 4_050, true).unwrap());
+        let revision = hex_engine::PreparedRevision::prepare(
+            &hex_project::Project::from_snapshot(project).unwrap(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        Playback::from_prepared(Arc::new(revision))
+    }
+
+    #[test]
+    fn metronome_admission_is_reported_and_priority_stop_discards_older_toggle() {
+        let (mut control, mut callback) = channel(8_000).unwrap();
+        control.publish(metronome_graph()).unwrap();
+        callback.begin_block();
+        let ticket = control
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        assert!(!control.status.metronome_enabled.load(Relaxed));
+        callback.begin_block();
+        assert!(control.status.metronome_enabled.load(Relaxed));
+        assert!(control.status.consumed_command.load(Acquire) >= ticket);
+        control
+            .action_with_ticket(PlaybackAction::SetMetronome(false))
+            .unwrap();
+        control.stop();
+        callback.begin_block();
+        assert!(control.status.metronome_enabled.load(Relaxed));
+        assert!(!control.status.playing.load(Relaxed));
+        control
+            .action_with_ticket(PlaybackAction::SetMetronome(false))
+            .unwrap();
+        callback.begin_block();
+        assert!(!control.status.metronome_enabled.load(Relaxed));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn clip_gain_with_fades_and_replacement_allocates_and_frees_nothing_in_callback() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Imported { asset, clip, .. } = editor
+            .execute(hex_project::Command::ImportAudioTrack {
+                name: "clip gain".into(),
+                path: "gain.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_024,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        editor
+            .execute(hex_project::Command::SetClipFades {
+                clip,
+                fade_in: 64,
+                fade_out: 64,
+            })
+            .unwrap();
+        let audio = hex_engine::Audio::new(48_000, vec![[0.5, -0.25]; 1_024]).unwrap();
+        let media = std::collections::BTreeMap::from([(asset, audio)]);
+        let prepare = |editor: &hex_project::Editor| {
+            let revision = hex_engine::PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap();
+            Playback::try_from_prepared_with_session(Arc::new(revision)).unwrap()
+        };
+        editor
+            .execute(hex_project::Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            })
+            .unwrap();
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(prepare(&editor)).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut prefix).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let gain = hex_project::ClipGain::new(-6_000).unwrap().linear();
+        assert_eq!(prefix[0], [0.0; 2]);
+        assert_eq!(prefix[64], [0.5 * gain, -0.25 * gain]);
+        editor
+            .execute(hex_project::Command::SetAudioClipGain {
+                clip,
+                millidb: 6_000,
+            })
+            .unwrap();
+        control.publish(prepare(&editor)).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let gain = hex_project::ClipGain::new(6_000).unwrap().linear();
+        assert_eq!(output, [[0.5 * gain, -0.25 * gain]; 128]);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn metronome_commands_loops_and_handoff_allocate_and_free_nothing_in_callback() {
+        let (mut control, mut callback) = channel(8_000).unwrap();
+        control.publish(metronome_graph()).unwrap();
+        callback.begin_block();
+        control
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            for _ in 0..65 {
+                callback.render(&mut output).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(control.status.metronome_enabled.load(Relaxed));
+        control.publish(metronome_graph()).unwrap();
+        control.command(PlaybackCommand::Seek(0)).unwrap();
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output[0], [0.16; 2]);
+        control.command(PlaybackCommand::Pause).unwrap();
+        let allocations = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output, [[0.0; 2]; 128]);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
     }
 
     #[cfg(feature = "allocation-probe")]
@@ -4088,6 +4298,7 @@ mod tests {
                     track: 1,
                     scene: 2,
                     content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                        gain: hex_project::ClipGain::UNITY,
                         id: 3,
                         name: "one shot".into(),
                         asset: 4,

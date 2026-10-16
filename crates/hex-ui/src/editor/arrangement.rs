@@ -678,7 +678,7 @@ impl EditorView {
             .cursor_pointer()
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
-                    description: "seek to position".into(),
+                    description: "drag to seek".into(),
                 })
                 .into()
             })
@@ -686,27 +686,57 @@ impl EditorView {
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
+                    entity.update(_cx, |view, _| view.update_scrub_geometry(bounds));
                     let mouse_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.bubble()
                             || event.button != MouseButton::Left
                             || !bounds.contains(&event.position)
                         {
                             return;
                         }
-                        let Some(frame) = super::seek::pointer_to_frame(
-                            f32::from(event.position.x),
-                            f32::from(bounds.origin.x),
-                            f32::from(bounds.size.width),
-                            seek_viewport,
-                        ) else {
-                            return;
-                        };
-                        mouse_entity.update(cx, |view, _| {
-                            if view.context_menu.is_none() {
-                                view.request_seek(frame);
+                        let started = mouse_entity.update(cx, |view, _| {
+                            if view.begin_scrub(f32::from(event.position.x), seek_viewport, bounds)
+                            {
+                                view.focus.focus(window);
+                                true
+                            } else {
+                                false
                             }
                         });
+                        if started {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                    let move_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.capture() {
+                            return;
+                        }
+                        let changed = move_entity.update(cx, |view, _| {
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                view.update_scrub(f32::from(event.position.x), false)
+                            } else {
+                                view.lose_scrub_pointer()
+                            }
+                        });
+                        if changed {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                    let up_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                        if !phase.capture() || event.button != MouseButton::Left {
+                            return;
+                        }
+                        if up_entity.update(cx, |view, _| {
+                            view.update_scrub(f32::from(event.position.x), true)
+                        }) {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
                     });
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {

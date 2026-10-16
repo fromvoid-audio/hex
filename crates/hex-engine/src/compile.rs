@@ -323,6 +323,7 @@ fn compile_project<'a>(
                         clip.looping(),
                         clip.fade(),
                     )?
+                    .with_gain(clip.gain())
                     .with_source_phase(clip.source_phase()),
                     PreparedAudioSourceRef::Streamed(source) => Clip::streamed_region_with_fade(
                         Arc::clone(source),
@@ -333,6 +334,7 @@ fn compile_project<'a>(
                         clip.looping(),
                         clip.fade(),
                     )?
+                    .with_gain(clip.gain())
                     .with_source_phase(clip.source_phase()),
                 }
             })

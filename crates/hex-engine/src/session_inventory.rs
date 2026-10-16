@@ -151,6 +151,7 @@ pub struct PreparedSessionAudioClip {
     pub asset: AssetId,
     pub source_start: u64,
     pub source_end: u64,
+    pub(crate) gain: f32,
     source: PreparedAudioSource,
 }
 impl std::fmt::Debug for PreparedSessionAudioClip {
@@ -271,6 +272,7 @@ impl PreparedSessionMidiClip {
 /// Immutable inventory for all Session scenes, sparse cells and MIDI sources.
 /// Arrangement rendering remains separate and does not activate these cells.
 pub struct PreparedSessionInventory {
+    meter_map: hex_project::MeterMap,
     timing: PreparedTempoMap,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     periodic_tempo_error: Option<PreparedTempoError>,
@@ -944,6 +946,7 @@ impl PreparedSessionInventory {
                         asset: clip.asset(),
                         source_start: clip.source_start(),
                         source_end: clip.source_end(),
+                        gain: clip.gain().linear(),
                         source: retained_source,
                     };
                     contains_streamed_sources |= is_streamed;
@@ -1030,6 +1033,7 @@ impl PreparedSessionInventory {
             }
         }
         Ok(Self {
+            meter_map: project.meter_map().clone(),
             timing,
             periodic_tempo,
             periodic_tempo_error,
@@ -1050,6 +1054,10 @@ impl PreparedSessionInventory {
             midi_note_bank_reference_count: midi_bank_references,
             shared_contexts,
         })
+    }
+
+    pub fn meter_map(&self) -> &hex_project::MeterMap {
+        &self.meter_map
     }
 
     pub fn timing(&self) -> &PreparedTempoMap {

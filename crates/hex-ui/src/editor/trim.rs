@@ -56,6 +56,7 @@ pub(super) struct TrimDrag {
     source_lane: LaneBounds,
     viewport_start: u64,
     viewport_length: u64,
+    pub(super) scroll: super::drag_autoscroll::DragScroll,
     snap_grid: super::musical_time::SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
@@ -75,6 +76,7 @@ pub(super) struct MidiTrimDrag {
     source_lane: LaneBounds,
     viewport_start: u64,
     viewport_length: u64,
+    pub(super) scroll: super::drag_autoscroll::DragScroll,
     snap_grid: super::musical_time::SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
@@ -134,8 +136,8 @@ fn payload_is_current(
 ) -> bool {
     drag.project_generation == generation
         && drag.revision == state.revision
-        && drag.viewport_start == viewport.start
-        && drag.viewport_length == viewport.length
+        && drag.viewport().start == viewport.start
+        && drag.viewport().length == viewport.length
         && source_lane.is_some_and(|lane| {
             lane.left == drag.source_lane.left && lane.width == drag.source_lane.width
         })
@@ -164,8 +166,8 @@ fn midi_payload_is_current(
 ) -> bool {
     drag.project_generation == generation
         && drag.revision == state.revision
-        && drag.viewport_start == viewport.start
-        && drag.viewport_length == viewport.length
+        && drag.viewport().start == viewport.start
+        && drag.viewport().length == viewport.length
         && source_lane.is_some_and(|lane| {
             lane.left == drag.source_lane.left && lane.width == drag.source_lane.width
         })
@@ -373,6 +375,7 @@ impl EditorView {
             source_lane: lane,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: self.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),
@@ -546,6 +549,7 @@ impl EditorView {
             source_lane: lane,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: self.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),
@@ -918,6 +922,24 @@ impl gpui::Render for TrimPreview {
     }
 }
 
+impl TrimDrag {
+    pub(super) fn viewport(&self) -> Viewport {
+        self.scroll.get().viewport.unwrap_or(Viewport {
+            start: self.viewport_start,
+            length: self.viewport_length,
+        })
+    }
+}
+
+impl MidiTrimDrag {
+    pub(super) fn viewport(&self) -> Viewport {
+        self.scroll.get().viewport.unwrap_or(Viewport {
+            start: self.viewport_start,
+            length: self.viewport_length,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1235,6 +1257,7 @@ mod tests {
             },
             viewport_start: 0,
             viewport_length: 500,
+            scroll: Default::default(),
             snap_grid: super::super::musical_time::SnapGrid::Off,
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),

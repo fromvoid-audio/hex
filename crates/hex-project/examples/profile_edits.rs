@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut clips = Vec::new();
         for clip in 0..100 {
             clips.push(ClipSnapshot {
+                gain: hex_project::ClipGain::UNITY,
                 id: next_id,
                 asset: 1,
                 start: clip * 4096,

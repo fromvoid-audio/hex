@@ -127,3 +127,8 @@ strict journal envelope retains one current snapshot, uses a stable generation
 lock to serialize cooperating publication, refuses unknown files, and clears
 only the exact owned generation. No untitled history is retained. Native
 composition, ownership and tested limits: [project recovery](../../docs/project-recovery.md).
+
+Audio clips in schema 20 persist validated integer `gain_millidb` values for
+Arrangement and Session sources. The fields are required in schema 20; older
+schemas default absent gain to 0 dB. Invalid/missing current values refuse the
+load rather than discarding gain. See [clip gain](../../docs/clip-view.md).

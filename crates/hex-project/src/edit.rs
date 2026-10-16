@@ -305,6 +305,11 @@ pub enum Command {
         fade_in: u64,
         fade_out: u64,
     },
+    /// Set Arrangement or Session audio clip gain, in -60_000..=24_000 millidecibels.
+    SetAudioClipGain {
+        clip: ClipId,
+        millidb: i32,
+    },
     /// Enable or disable the audio clip's source loop; disabling resets its phase.
     SetClipLooping {
         clip: ClipId,
@@ -788,6 +793,7 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        gain: clip.gain,
         id: clip.id,
         asset: clip.asset,
         start,
@@ -860,6 +866,7 @@ pub(crate) fn split_clip_at(
         source_length: right_source_length,
         looping: original.looping,
         source_phase: right_phase,
+        gain: original.gain,
         fade: right_fade,
     };
     Ok((left, right))
@@ -1113,6 +1120,7 @@ impl Project {
                     .id;
                 let fade = original.fade;
                 let source_phase = original.source_phase;
+                let gain = original.gain;
                 let duplicate = self.apply(Command::PlaceClip {
                     track,
                     asset: original.asset,
@@ -1125,6 +1133,7 @@ impl Project {
                 if let Created::Clip(duplicate_id) = duplicate {
                     self.clip_mut(duplicate_id)?.fade = fade;
                     self.clip_mut(duplicate_id)?.source_phase = source_phase;
+                    self.clip_mut(duplicate_id)?.gain = gain;
                 }
                 Ok(duplicate)
             }
@@ -1600,6 +1609,7 @@ impl Project {
                     looping,
                     source_phase: 0,
                     fade,
+                    gain: crate::ClipGain::UNITY,
                 });
                 Ok(Created::Clip(id))
             }
@@ -1719,6 +1729,27 @@ impl Project {
                     .playback_frames;
                 let trimmed = preview_edge_trim(original, edge, frame, asset_frames)?;
                 *self.clip_mut(clip)? = trimmed;
+                Ok(Created::None)
+            }
+            Command::SetAudioClipGain { clip, millidb } => {
+                let gain = crate::ClipGain::new(millidb)?;
+                if self.clip(clip).is_some() {
+                    self.clip_mut(clip)?.gain = gain;
+                } else {
+                    let target = self
+                        .session
+                        .cells
+                        .iter_mut()
+                        .find_map(|cell| {
+                            if let crate::SessionCellContent::Audio(audio) = &mut cell.content {
+                                (audio.id == clip).then_some(audio)
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or(Invalid("audio clip no longer exists"))?;
+                    target.gain = gain;
+                }
                 Ok(Created::None)
             }
             Command::SetClipFades {
@@ -1872,6 +1903,7 @@ mod overwrite_tests {
                     looping: false,
                     source_phase: 0,
                     fade: ClipFade::neutral(1).expect("neutral fade"),
+                    gain: crate::ClipGain::UNITY,
                 });
         }
         let before = project.clone();
@@ -1931,6 +1963,7 @@ mod overwrite_tests {
                     looping: false,
                     source_phase: 0,
                     fade: ClipFade::neutral(1).expect("neutral fade"),
+                    gain: crate::ClipGain::UNITY,
                 });
         }
         assert_eq!(

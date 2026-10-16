@@ -27,6 +27,18 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let revision = state.revision;
     let project_generation = view.project_generation;
     let name = clip.name().to_lowercase();
+    let gain = clip.gain();
+    let captured = SourceWindow {
+        clip: id,
+        asset: asset_id,
+        track,
+        scene,
+        start,
+        end,
+        asset_frames,
+        revision,
+        project_generation,
+    };
     let waveform = state
         .waveforms
         .get(&asset_id)
@@ -143,7 +155,19 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             SourceEdge::EndLater,
             edit_pending,
         ));
+    row = row
+        .child(gain_adjust_button(cx, captured, gain, -1, edit_pending))
+        .child(
+            div()
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                .child(theme::text(format!(
+                    "gain {:+.1} db",
+                    f64::from(gain.millidb()) / 1_000.0
+                ))),
+        )
+        .child(gain_adjust_button(cx, captured, gain, 1, edit_pending));
     if let Some(amplitudes) = waveform {
+        let linear_gain = gain.linear();
         let mut bars = div()
             .h(px(24.0))
             .flex_1()
@@ -156,7 +180,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 div().flex_1().h(px(22.0)).flex().items_center().child(
                     div()
                         .w_full()
-                        .h(px((amplitude * 20.0).max(1.0)))
+                        .h(px(
+                            ((amplitude * linear_gain).clamp(0.0, 1.0) * 20.0).max(1.0)
+                        ))
                         .bg(rgb(theme::color(theme::PaletteRole::Waveform))),
                 ),
             );
@@ -164,6 +190,61 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         row = row.child(bars);
     }
     Some(row)
+}
+
+fn gain_adjust_button(
+    cx: &mut Context<EditorView>,
+    window: SourceWindow,
+    gain: hex_project::ClipGain,
+    direction: i32,
+    pending: bool,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(
+            format!("session-audio-gain-{}-{direction}", window.clip.value()).into(),
+        ))
+        .size(px(18.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .debug_selector(move || format!("session-audio-gain-{direction}"))
+        .tooltip(|_, cx| {
+            cx.new(|_| super::transport::MiniTooltip {
+                description: "adjust clip gain by 1 db · alt: 0.1 db".into(),
+            })
+            .into()
+        })
+        .child(theme::text(if direction < 0 { "−" } else { "+" }))
+        .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+            let current = view.state.as_ref().is_some_and(|state| {
+                source_window_is_current(
+                    window,
+                    view.project_generation,
+                    view.selected_cell,
+                    state.revision,
+                    &state.project,
+                )
+            });
+            if current
+                && view.mode == super::EditorMode::Session
+                && !pending
+                && !view.edit_pending()
+            {
+                let step = if event.modifiers().alt { 100 } else { 1_000 };
+                if let Some(millidb) = gain.millidb().checked_add(direction * step)
+                    && hex_project::ClipGain::new(millidb).is_ok()
+                {
+                    view.enqueue(hex_session::service::Request::Edit(
+                        Command::SetAudioClipGain {
+                            clip: window.clip,
+                            millidb,
+                        },
+                    ));
+                }
+            }
+            cx.notify();
+        }))
 }
 
 #[derive(Clone, Copy)]

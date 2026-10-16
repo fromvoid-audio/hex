@@ -149,7 +149,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -328,7 +328,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -531,7 +531,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -593,7 +593,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     assert_eq!(json["tracks"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
@@ -625,7 +625,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
 #[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     json["version"] = 13.into();
     remove_schema_seventeen_routes(&mut json);
     for track in json["tracks"].as_array_mut().unwrap() {
@@ -769,7 +769,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -896,8 +896,8 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 19);
-    json["version"] = 20.into();
+    assert_eq!(json["version"], 20);
+    json["version"] = 21.into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
     remove_schema_seventeen_routes(&mut json);
@@ -1019,7 +1019,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 19);
+    assert_eq!(current_json["version"], 20);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
@@ -1073,6 +1073,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         for clip in track["clips"].as_array_mut().unwrap() {
             clip.as_object_mut().unwrap().remove("fade");
             clip.as_object_mut().unwrap().remove("source_phase");
+            clip.as_object_mut().unwrap().remove("gain_millidb");
         }
     }
     let migrated_v2 = decode(&serde_json::to_vec(&legacy_v2).unwrap()).unwrap();
@@ -1108,6 +1109,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         for clip in track["clips"].as_array_mut().unwrap() {
             clip.as_object_mut().unwrap().remove("fade");
             clip.as_object_mut().unwrap().remove("source_phase");
+            clip.as_object_mut().unwrap().remove("gain_millidb");
         }
     }
     let migrated_v3 = decode(&serde_json::to_vec(&legacy_v3).unwrap()).unwrap();
@@ -1138,6 +1140,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         for clip in track["clips"].as_array_mut().unwrap() {
             clip.as_object_mut().unwrap().remove("fade");
             clip.as_object_mut().unwrap().remove("source_phase");
+            clip.as_object_mut().unwrap().remove("gain_millidb");
         }
     }
     let migrated_v4 = decode(&serde_json::to_vec(&legacy_v4).unwrap()).unwrap();
@@ -1162,6 +1165,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         for clip in track["clips"].as_array_mut().unwrap() {
             clip.as_object_mut().unwrap().remove("fade");
             clip.as_object_mut().unwrap().remove("source_phase");
+            clip.as_object_mut().unwrap().remove("gain_millidb");
         }
     }
     let migrated_v5 = decode(&serde_json::to_vec(&legacy_v5).unwrap()).unwrap();
@@ -1186,6 +1190,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     for track in legacy_v6["tracks"].as_array_mut().unwrap() {
         for clip in track["clips"].as_array_mut().unwrap() {
             clip.as_object_mut().unwrap().remove("source_phase");
+            clip.as_object_mut().unwrap().remove("gain_millidb");
         }
     }
     let migrated_v6 = decode(&serde_json::to_vec(&legacy_v6).unwrap()).unwrap();
@@ -1631,4 +1636,77 @@ fn invalid_host_input_gain_refuses_loading() {
         serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
     json["tracks"][0]["devices"][0]["input_gain_millidb"] = (-60_001).into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
+}
+
+#[test]
+fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
+    let mut editor = Editor::new(project(), 8).unwrap();
+    let clip = editor.project().tracks()[0].clips()[0].id();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip,
+            millidb: -6_000,
+        })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "gain".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(session) = editor
+        .execute(Command::CopyArrangementAudioClipToSession {
+            source: clip,
+            scene,
+        })
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: session,
+            millidb: 3_000,
+        })
+        .unwrap();
+    let bytes = encode(editor.project()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["version"], 20);
+    assert_eq!(decode(&bytes).unwrap(), *editor.project());
+    for value in [
+        serde_json::json!(-60_001),
+        serde_json::json!(24_001),
+        serde_json::json!(1.5),
+        serde_json::Value::Null,
+    ] {
+        for session in [false, true] {
+            let mut invalid = json.clone();
+            if session {
+                invalid["session"]["cells"][0]["content"]["clip"]["gain_millidb"] = value.clone();
+            } else {
+                invalid["tracks"][0]["audio_clips"][0]["gain_millidb"] = value.clone();
+            }
+            assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+        }
+    }
+    let mut legacy = json;
+    legacy["version"] = 19.into();
+    for clip in legacy["tracks"][0]["audio_clips"].as_array_mut().unwrap() {
+        clip.as_object_mut().unwrap().remove("gain_millidb");
+    }
+    legacy["session"]["cells"][0]["content"]["clip"]
+        .as_object_mut()
+        .unwrap()
+        .remove("gain_millidb");
+    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert_eq!(
+        migrated.clip(clip).unwrap().gain(),
+        hex_project::ClipGain::UNITY
+    );
+    assert_eq!(
+        migrated.session_audio_clip(session).unwrap().gain(),
+        hex_project::ClipGain::UNITY
+    );
 }

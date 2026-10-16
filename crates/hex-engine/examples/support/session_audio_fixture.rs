@@ -81,6 +81,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                gain: hex_project::ClipGain::UNITY,
                 id: arrangement_clip,
                 asset,
                 start: 0,
@@ -97,6 +98,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_A,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                gain: hex_project::ClipGain::UNITY,
                 id: scene_a_clip,
                 name: format!("one shot a {index:03}"),
                 asset,
@@ -108,6 +110,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_B,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                gain: hex_project::ClipGain::UNITY,
                 id: scene_b_clip,
                 name: format!("one shot b {index:03}"),
                 asset,

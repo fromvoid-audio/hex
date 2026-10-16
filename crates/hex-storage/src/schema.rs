@@ -188,7 +188,7 @@ pub(crate) struct DocumentV16 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DocumentV19 {
+pub(crate) struct DocumentV20 {
     format: String,
     version: u32,
     sample_rate: u32,
@@ -322,6 +322,8 @@ enum SessionContentDtoV12 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SessionAudioClipDtoV12 {
+    #[serde(default)]
+    gain_millidb: Option<i32>,
     id: u64,
     name: String,
     asset: u64,
@@ -972,7 +974,7 @@ impl DocumentV16 {
     }
 }
 
-impl DocumentV19 {
+impl DocumentV20 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
         let base = DocumentV16::from_project(project)?;
         let DocumentV16 {
@@ -1034,7 +1036,7 @@ impl DocumentV19 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         Ok(Self {
             format,
-            version: 19,
+            version: 20,
             sample_rate,
             next_id,
             assets,
@@ -1050,10 +1052,16 @@ impl DocumentV19 {
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
-        if doc.format != "hex-project" || !matches!(doc.version, 17..=19) {
+        if doc.format != "hex-project" || !matches!(doc.version, 17..=20) {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if doc.version == 20
+            && (doc.tracks.iter().flat_map(|track| &track.audio_clips).any(|clip| clip.gain_millidb.is_none())
+                || doc.session.cells.iter().any(|cell| matches!(&cell.content, SessionContentDtoV12::Audio { clip } if clip.gain_millidb.is_none())))
+        {
+            return Err(StorageError::Invalid("clip gain is required in schema 20"));
         }
         let mut sends = Vec::with_capacity(doc.tracks.len());
         let mut positions = Vec::with_capacity(doc.tracks.len());
@@ -1198,6 +1206,8 @@ struct ClipV6 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClipV7 {
+    #[serde(default)]
+    gain_millidb: Option<i32>,
     id: u64,
     asset: u64,
     start: u64,
@@ -1671,6 +1681,7 @@ impl DocumentV12 {
                     },
                     SessionCellContentSnapshot::Audio(clip) => SessionContentDtoV12::Audio {
                         clip: SessionAudioClipDtoV12 {
+                            gain_millidb: Some(clip.gain.millidb()),
                             id: clip.id,
                             name: clip.name,
                             asset: clip.asset,
@@ -1727,64 +1738,7 @@ impl DocumentV12 {
         };
         let legacy_bytes = serde_json::to_vec(&v10)?;
         let mut snapshot = DocumentV10::decode(&legacy_bytes)?.snapshot();
-        snapshot.session = SessionSnapshot {
-            scenes: doc
-                .session
-                .scenes
-                .into_iter()
-                .map(|scene| SceneSnapshot {
-                    id: scene.id,
-                    name: scene.name,
-                })
-                .collect(),
-            cells: doc
-                .session
-                .cells
-                .into_iter()
-                .map(|cell| SessionCellSnapshot {
-                    track: cell.track,
-                    scene: cell.scene,
-                    content: match cell.content {
-                        SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
-                        SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
-                            hex_project::SessionAudioClipSnapshot {
-                                id: clip.id,
-                                name: clip.name,
-                                asset: clip.asset,
-                                source_start: clip.source_start,
-                                source_end: clip.source_end,
-                            },
-                        ),
-                        SessionContentDtoV12::Midi { clip } => {
-                            SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
-                                id: clip.id,
-                                name: clip.name,
-                                source: MidiSourceSnapshot {
-                                    source_length_raw: clip.source.source_length_raw,
-                                    source_start_raw: clip.source.source_start_raw,
-                                    loop_start_raw: clip.source.loop_start_raw,
-                                    loop_end_raw: clip.source.loop_end_raw,
-                                    looping: clip.source.looping,
-                                    notes: clip
-                                        .source
-                                        .notes
-                                        .into_iter()
-                                        .map(|note| MidiNoteSnapshot {
-                                            id: note.id,
-                                            start_raw: note.start_raw,
-                                            duration_raw: note.duration_raw,
-                                            pitch: note.pitch,
-                                            channel: note.channel,
-                                            velocity: note.velocity,
-                                        })
-                                        .collect(),
-                                },
-                            })
-                        }
-                    },
-                })
-                .collect(),
-        };
+        snapshot.session = session_v12_into_snapshot(doc.session)?;
         Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
     }
 }
@@ -1942,7 +1896,7 @@ impl DocumentV13 {
                 })
                 .collect(),
             tracks,
-            session: session_v12_into_snapshot(doc.session),
+            session: session_v12_into_snapshot(doc.session)?,
             loop_region,
             master_gain: doc.master_gain,
             tempo_points,
@@ -1961,8 +1915,8 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
-        if matches!(header.version, 17..=19) {
-            return DocumentV19::decode(bytes);
+        if matches!(header.version, 17..=20) {
+            return DocumentV20::decode(bytes);
         }
         if header.version == 16 {
             return DocumentV16::decode(bytes);
@@ -2388,6 +2342,7 @@ fn session_snapshot_to_v12(snapshot: SessionSnapshot) -> SessionDtoV12 {
                     SessionCellContentSnapshot::Stop => SessionContentDtoV12::Stop,
                     SessionCellContentSnapshot::Audio(clip) => SessionContentDtoV12::Audio {
                         clip: SessionAudioClipDtoV12 {
+                            gain_millidb: Some(clip.gain.millidb()),
                             id: clip.id,
                             name: clip.name,
                             asset: clip.asset,
@@ -2427,8 +2382,8 @@ fn session_snapshot_to_v12(snapshot: SessionSnapshot) -> SessionDtoV12 {
     }
 }
 
-fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
-    SessionSnapshot {
+fn session_v12_into_snapshot(session: SessionDtoV12) -> Result<SessionSnapshot, StorageError> {
+    Ok(SessionSnapshot {
         scenes: session
             .scenes
             .into_iter()
@@ -2440,50 +2395,54 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
         cells: session
             .cells
             .into_iter()
-            .map(|cell| SessionCellSnapshot {
-                track: cell.track,
-                scene: cell.scene,
-                content: match cell.content {
-                    SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
-                    SessionContentDtoV12::Audio { clip } => {
-                        SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
-                            id: clip.id,
-                            name: clip.name,
-                            asset: clip.asset,
-                            source_start: clip.source_start,
-                            source_end: clip.source_end,
-                        })
-                    }
-                    SessionContentDtoV12::Midi { clip } => {
-                        SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
-                            id: clip.id,
-                            name: clip.name,
-                            source: MidiSourceSnapshot {
-                                source_length_raw: clip.source.source_length_raw,
-                                source_start_raw: clip.source.source_start_raw,
-                                loop_start_raw: clip.source.loop_start_raw,
-                                loop_end_raw: clip.source.loop_end_raw,
-                                looping: clip.source.looping,
-                                notes: clip
-                                    .source
-                                    .notes
-                                    .into_iter()
-                                    .map(|note| MidiNoteSnapshot {
-                                        id: note.id,
-                                        start_raw: note.start_raw,
-                                        duration_raw: note.duration_raw,
-                                        pitch: note.pitch,
-                                        channel: note.channel,
-                                        velocity: note.velocity,
-                                    })
-                                    .collect(),
+            .map(|cell| {
+                Ok(SessionCellSnapshot {
+                    track: cell.track,
+                    scene: cell.scene,
+                    content: match cell.content {
+                        SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
+                        SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
+                            hex_project::SessionAudioClipSnapshot {
+                                id: clip.id,
+                                name: clip.name,
+                                asset: clip.asset,
+                                source_start: clip.source_start,
+                                source_end: clip.source_end,
+                                gain: hex_project::ClipGain::new(clip.gain_millidb.unwrap_or(0))
+                                    .map_err(|e| StorageError::Invalid(e.0))?,
                             },
-                        })
-                    }
-                },
+                        ),
+                        SessionContentDtoV12::Midi { clip } => {
+                            SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                id: clip.id,
+                                name: clip.name,
+                                source: MidiSourceSnapshot {
+                                    source_length_raw: clip.source.source_length_raw,
+                                    source_start_raw: clip.source.source_start_raw,
+                                    loop_start_raw: clip.source.loop_start_raw,
+                                    loop_end_raw: clip.source.loop_end_raw,
+                                    looping: clip.source.looping,
+                                    notes: clip
+                                        .source
+                                        .notes
+                                        .into_iter()
+                                        .map(|note| MidiNoteSnapshot {
+                                            id: note.id,
+                                            start_raw: note.start_raw,
+                                            duration_raw: note.duration_raw,
+                                            pitch: note.pitch,
+                                            channel: note.channel,
+                                            velocity: note.velocity,
+                                        })
+                                        .collect(),
+                                },
+                            })
+                        }
+                    },
+                })
             })
-            .collect(),
-    }
+            .collect::<Result<Vec<_>, StorageError>>()?,
+    })
 }
 
 fn path_to_string(path: std::path::PathBuf) -> Result<String, StorageError> {
@@ -2502,6 +2461,7 @@ fn default_meter_points() -> Vec<MeterPoint> {
 
 fn clip_v7_from_snapshot(clip: ClipSnapshot) -> ClipV7 {
     ClipV7 {
+        gain_millidb: Some(clip.gain.millidb()),
         id: clip.id,
         asset: clip.asset,
         start: clip.start,
@@ -2532,6 +2492,8 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
                 source_length: clip.source_length,
                 looping: clip.looping,
                 source_phase: clip.source_phase,
+                gain: hex_project::ClipGain::new(clip.gain_millidb.unwrap_or(0))
+                    .map_err(|e| StorageError::Invalid(e.0))?,
                 fade: ClipFade::new(
                     clip.fade.span,
                     clip.fade.offset,
@@ -2625,6 +2587,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
                         asset: clip.asset,
                         start: clip.start,
@@ -2678,6 +2641,8 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                         source_length: clip.source_length,
                         looping: clip.looping,
                         source_phase: clip.source_phase,
+                        gain: hex_project::ClipGain::new(clip.gain_millidb.unwrap_or(0))
+                            .map_err(|e| StorageError::Invalid(e.0))?,
                         fade,
                     })
                 })
@@ -2706,6 +2671,7 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             let fade = ClipFade::neutral(clip.duration.max(1))
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
+                gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
                 asset: clip.asset,
                 start: clip.start,

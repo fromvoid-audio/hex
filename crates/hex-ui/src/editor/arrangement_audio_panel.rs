@@ -13,6 +13,7 @@ enum Field {
     SourceEnd,
     PlayStart,
     Looping,
+    Gain,
 }
 
 #[derive(Clone, Copy)]
@@ -27,6 +28,7 @@ struct ClipWindow {
     source_end: u64,
     source_phase: u64,
     looping: bool,
+    gain: hex_project::ClipGain,
     asset_frames: u64,
     sample_rate: u32,
     revision: u64,
@@ -54,6 +56,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         source_end,
         source_phase: clip.source_phase(),
         looping: clip.looping(),
+        gain: clip.gain(),
         asset_frames: asset.playback_frames(),
         sample_rate: state.project.sample_rate(),
         revision: state.revision,
@@ -137,6 +140,14 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             format_frame_time(source_end, window.sample_rate),
             pending,
         ))
+        .child(field_row(
+            cx,
+            window,
+            Field::Gain,
+            "gain",
+            format!("{:+.1} db", f64::from(window.gain.millidb()) / 1_000.0),
+            pending,
+        ))
         .child(loop_row(cx, window, pending));
     details = details.child(controls);
 
@@ -163,13 +174,15 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .debug_selector(|| "arrangement-audio-waveform".into());
     if let Some(waveform) = waveform {
-        canvas_region = canvas_region.child(super::waveform::waveform_source_segment_view_cached(
-            waveform,
-            0,
-            0,
-            window.asset_frames,
-            std::rc::Rc::clone(&view.waveform_geometry_cache),
-        ));
+        canvas_region =
+            canvas_region.child(super::waveform::waveform_source_segment_gain_view_cached(
+                waveform,
+                0,
+                0,
+                window.asset_frames,
+                window.gain,
+                std::rc::Rc::clone(&view.waveform_geometry_cache),
+            ));
     } else {
         canvas_region = canvas_region.child(
             div()
@@ -256,6 +269,7 @@ fn field_row(
         }
         Field::PlayStart => "move play start earlier inside the source interval · alt: one frame",
         Field::Looping => "toggle source looping",
+        Field::Gain => "adjust clip gain by 1 db · alt: 0.1 db",
     };
     let tooltip_plus = match field {
         Field::Position => "move clip later · alt: one frame",
@@ -268,9 +282,10 @@ fn field_row(
         }
         Field::PlayStart => "move play start later inside the source interval · alt: one frame",
         Field::Looping => "toggle source looping",
+        Field::Gain => "adjust clip gain by 1 db · alt: 0.1 db",
     };
     div()
-        .h(px(27.0))
+        .h(px(24.0))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -320,7 +335,7 @@ fn loop_row(cx: &mut Context<EditorView>, window: ClipWindow, pending: bool) -> 
         "enable source looping"
     };
     div()
-        .h(px(27.0))
+        .h(px(24.0))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -393,6 +408,7 @@ fn control_button(
                 Field::SourceEnd => "source-end",
                 Field::PlayStart => "play-start",
                 Field::Looping => "looping",
+                Field::Gain => "gain",
             };
             format!("audio-clip-{field}-{direction}")
         })
@@ -408,7 +424,11 @@ fn control_button(
                 return;
             }
             let fine = event.modifiers().alt;
-            let step = frame_step(window.sample_rate, fine);
+            let step = if field == Field::Gain {
+                if fine { 100 } else { 1_000 }
+            } else {
+                frame_step(window.sample_rate, fine)
+            };
             if let Some(command) = command_for(window, field, direction, step) {
                 view.enqueue(hex_session::service::Request::Edit(command));
             }
@@ -516,6 +536,17 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
                 source_length: window.source_end - start,
             })
         }
+        Field::Gain => {
+            let delta = i32::try_from(step)
+                .ok()?
+                .checked_mul(i32::from(direction))?;
+            let millidb = window.gain.millidb().checked_add(delta)?;
+            hex_project::ClipGain::new(millidb).ok()?;
+            Some(Command::SetAudioClipGain {
+                clip: window.clip,
+                millidb,
+            })
+        }
         Field::Looping => Some(Command::SetClipLooping {
             clip: window.clip,
             looping: !window.looping,
@@ -539,6 +570,7 @@ fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
                     && clip.duration() == captured.length
                     && clip.source_offset() == captured.source_start
                     && clip.source_length() == captured.source_length
+                    && clip.gain() == captured.gain
                     && clip.looping() == captured.looping
                     && clip.source_phase() == captured.source_phase
             })
@@ -597,6 +629,19 @@ fn source_marker(frame: u64, total: u64, id: &'static str, color: u32) -> Div {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gain_steps_use_db_units_and_refuse_the_bounds() {
+        let mut captured = window();
+        assert!(matches!(
+            command_for(captured, Field::Gain, -1, 100),
+            Some(Command::SetAudioClipGain { millidb: -100, .. })
+        ));
+        captured.gain = hex_project::ClipGain::new(24_000).unwrap();
+        assert!(command_for(captured, Field::Gain, 1, 1_000).is_none());
+        captured.gain = hex_project::ClipGain::new(-60_000).unwrap();
+        assert!(command_for(captured, Field::Gain, -1, 100).is_none());
+    }
+
     fn window() -> ClipWindow {
         use hex_project::{Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
@@ -647,6 +692,7 @@ mod tests {
                 .expect("clip data")
                 .source_phase(),
             looping: true,
+            gain: hex_project::ClipGain::UNITY,
             asset_frames: 1_000,
             sample_rate: 48_000,
             revision: 7,

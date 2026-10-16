@@ -35,6 +35,7 @@ pub struct SessionAudioClip {
     pub(crate) asset: crate::AssetId,
     pub(crate) source_start: u64,
     pub(crate) source_end: u64,
+    pub(crate) gain: crate::ClipGain,
 }
 impl SessionAudioClip {
     pub fn id(&self) -> ClipId {
@@ -48,6 +49,9 @@ impl SessionAudioClip {
     }
     pub fn source_start(&self) -> u64 {
         self.source_start
+    }
+    pub fn gain(&self) -> crate::ClipGain {
+        self.gain
     }
     pub fn source_end(&self) -> u64 {
         self.source_end
@@ -201,6 +205,7 @@ pub(crate) fn apply(
                     asset,
                     source_start,
                     source_end,
+                    gain: crate::ClipGain::UNITY,
                 }),
             });
             Ok(Created::SessionClip(id))
@@ -230,6 +235,7 @@ pub(crate) fn apply(
                 content: SessionCellContent::Audio(SessionAudioClip {
                     id,
                     name,
+                    gain: original.gain(),
                     asset: original.asset(),
                     source_start: original.source_offset(),
                     source_end: original
@@ -630,6 +636,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     asset: clip.asset,
                     source_start: clip.source_start,
                     source_end: clip.source_end,
+                    gain: clip.gain,
                 })
             }
         };

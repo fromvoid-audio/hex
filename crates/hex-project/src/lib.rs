@@ -253,6 +253,34 @@ impl ClipFade {
     }
 }
 
+/// Saved audio-clip gain in integer millidecibels, before track processing.
+/// The finite -60..=24 dB range does not imply normalization or output limiting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClipGain(i32);
+impl ClipGain {
+    pub const MIN_MILLIDB: i32 = -60_000;
+    pub const MAX_MILLIDB: i32 = 24_000;
+    pub const UNITY: Self = Self(0);
+
+    pub fn new(millidb: i32) -> Result<Self, Invalid> {
+        if !(Self::MIN_MILLIDB..=Self::MAX_MILLIDB).contains(&millidb) {
+            return Err(Invalid("clip gain must be within -60..24 db"));
+        }
+        Ok(Self(millidb))
+    }
+    pub fn millidb(self) -> i32 {
+        self.0
+    }
+    /// Control-side coefficient conversion; prepare once, never per audio sample.
+    pub fn linear(self) -> f32 {
+        if self == Self::UNITY {
+            1.0
+        } else {
+            10.0_f64.powf(f64::from(self.0) / 20_000.0) as f32
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
     pub(crate) id: ClipId,
@@ -264,6 +292,7 @@ pub struct Clip {
     pub(crate) looping: bool,
     pub(crate) source_phase: u64,
     pub(crate) fade: ClipFade,
+    pub(crate) gain: ClipGain,
 }
 impl Clip {
     pub fn id(&self) -> ClipId {
@@ -293,6 +322,9 @@ impl Clip {
     }
     pub fn fade(&self) -> ClipFade {
         self.fade
+    }
+    pub fn gain(&self) -> ClipGain {
+        self.gain
     }
 
     /// Return canonical edge-trim metadata for UI preview without cloning the project.

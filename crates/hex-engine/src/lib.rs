@@ -69,6 +69,7 @@ pub(crate) struct StreamedPageSpan<'a> {
     pub timeline_frame: u64,
     pub output_offset: usize,
     pub count: usize,
+    pub gain: f32,
     pub fade: Option<(&'a hex_project::ClipFade, u64)>,
 }
 
@@ -96,6 +97,7 @@ pub(crate) fn render_streamed_page_span_captured(
         output_offset,
         count: requested_count,
         fade,
+        gain: clip_gain,
     } = span;
     if requested_count == 0 {
         return 0;
@@ -125,6 +127,10 @@ pub(crate) fn render_streamed_page_span_captured(
                     sample[0] *= gain;
                     sample[1] *= gain;
                 }
+            }
+            if clip_gain != 1.0 {
+                sample[0] *= clip_gain;
+                sample[1] *= clip_gain;
             }
             mix.add_captured(
                 destination,
@@ -320,6 +326,7 @@ pub struct Clip {
 /// Control-owned uncommon playback state; neutral clips keep their compact stride.
 #[derive(Debug, Clone)]
 struct ClipMetadata {
+    gain: f32,
     source_phase: u64,
     fade: Option<hex_project::ClipFade>,
     streamed: Option<Arc<StreamedSourceMetadata>>,
@@ -393,6 +400,7 @@ impl Clip {
             None
         } else {
             Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: 0,
                 fade: Some(fade),
                 streamed: None,
@@ -417,11 +425,16 @@ impl Clip {
         }
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.source_phase = phase;
-            if phase == 0 && metadata.fade.is_none() && metadata.streamed.is_none() {
+            if phase == 0
+                && metadata.fade.is_none()
+                && metadata.streamed.is_none()
+                && metadata.gain == 1.0
+            {
                 self.metadata = None;
             }
         } else if phase != 0 {
             self.metadata = Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: phase,
                 fade: None,
                 streamed: None,
@@ -429,6 +442,29 @@ impl Clip {
         }
         Ok(self)
     }
+    /// Control-side clip gain preparation, preserving the compact unity path.
+    pub fn with_gain(mut self, gain: hex_project::ClipGain) -> Self {
+        let linear = gain.linear();
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.gain = linear;
+            if linear == 1.0
+                && metadata.source_phase == 0
+                && metadata.fade.is_none()
+                && metadata.streamed.is_none()
+            {
+                self.metadata = None;
+            }
+        } else if linear != 1.0 {
+            self.metadata = Some(Box::new(ClipMetadata {
+                gain: linear,
+                source_phase: 0,
+                fade: None,
+                streamed: None,
+            }));
+        }
+        self
+    }
+
     fn at(&self, position: u64, source_phase: u64) -> Frame {
         if position < self.start || position >= self.end {
             return [0.0; 2];
@@ -513,6 +549,7 @@ impl Clip {
             source_length: usize::try_from(source_length)
                 .map_err(|_| Invalid("source length exceeds addressable range"))?,
             metadata: Some(Box::new(ClipMetadata {
+                gain: 1.0,
                 source_phase: 0,
                 fade: (fade.fade_in() != 0 || fade.fade_out() != 0).then_some(fade),
                 streamed: Some(source),
@@ -1265,6 +1302,7 @@ impl Track {
                         timeline_frame: position,
                         output_offset,
                         count,
+                        gain: metadata.gain,
                         fade: metadata.fade.as_ref().map(|fade| (fade, clip.start)),
                     },
                     output,
@@ -1299,13 +1337,21 @@ impl Track {
         let output_end = (span_end - start_frame) as usize;
         let metadata = clip.metadata.as_deref();
         let source_phase = metadata.map_or(0, |metadata| metadata.source_phase);
-        if let Some(fade) = metadata.and_then(|metadata| metadata.fade.as_ref()) {
+        let clip_gain = metadata.map_or(1.0, |metadata| metadata.gain);
+        let fade = metadata.and_then(|metadata| metadata.fade.as_ref());
+        if fade.is_some() || clip_gain != 1.0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
                 let position = span_start + offset as u64;
                 let mut sample = clip.at(position, source_phase);
-                let gain = fade.gain_at(position - clip.start);
-                sample[0] *= gain;
-                sample[1] *= gain;
+                if let Some(fade) = fade {
+                    let gain = fade.gain_at(position - clip.start);
+                    sample[0] *= gain;
+                    sample[1] *= gain;
+                }
+                if clip_gain != 1.0 {
+                    sample[0] *= clip_gain;
+                    sample[1] *= clip_gain;
+                }
                 self.source_mix.add_captured(
                     frame,
                     sample,

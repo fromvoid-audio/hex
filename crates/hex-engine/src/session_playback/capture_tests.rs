@@ -16,6 +16,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                gain: hex_project::ClipGain::UNITY,
                 id: clip,
                 asset: 4,
                 start: 3,
@@ -485,6 +486,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         midi_clips,
         audio_clips: vec![ClipSnapshot {
+            gain: hex_project::ClipGain::UNITY,
             id: 81,
             asset: 80,
             start: 3,

@@ -54,6 +54,7 @@ pub struct SessionAudioClipSnapshot {
     pub asset: u64,
     pub source_start: u64,
     pub source_end: u64,
+    pub gain: crate::ClipGain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
@@ -186,6 +187,7 @@ pub struct ClipSnapshot {
     pub looping: bool,
     pub source_phase: u64,
     pub fade: ClipFade,
+    pub gain: crate::ClipGain,
 }
 
 impl Project {
@@ -246,6 +248,7 @@ impl Project {
                                 looping: clip.looping,
                                 source_phase: clip.source_phase,
                                 fade: clip.fade,
+                                gain: clip.gain,
                             })
                             .collect(),
                         midi_clips: track
@@ -358,6 +361,7 @@ impl Project {
                                     asset: clip.asset().value(),
                                     source_start: clip.source_start(),
                                     source_end: clip.source_end(),
+                                    gain: clip.gain(),
                                 })
                             }
                         },
@@ -562,6 +566,7 @@ impl Project {
                     looping: clip.looping,
                     source_phase: clip.source_phase,
                     fade: clip.fade,
+                    gain: clip.gain,
                 });
             }
             let mut compiled_midi = Vec::with_capacity(midi_clips.len());
@@ -779,6 +784,7 @@ impl Project {
                         asset: AssetId(clip.asset),
                         source_start: clip.source_start,
                         source_end: clip.source_end,
+                        gain: clip.gain,
                     })
                 }
             };

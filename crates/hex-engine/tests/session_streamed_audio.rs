@@ -75,6 +75,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: 8,
                     asset: BED_ASSET,
                     start: 0,
@@ -97,6 +98,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 track: SESSION_TRACK,
                 scene: SCENE,
                 content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: SESSION_CLIP,
                     name: "one shot".into(),
                     asset: STREAM_ASSET,
@@ -881,6 +883,7 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         panic!("audio track expected")
     };
     clips.push(ClipSnapshot {
+        gain: hex_project::ClipGain::UNITY,
         id: 10,
         asset: STREAM_ASSET,
         start: 0,
@@ -986,6 +989,7 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = 0.5;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        gain: hex_project::ClipGain::UNITY,
         id: 10,
         asset: STREAM_ASSET,
         start: 3,
@@ -1067,5 +1071,72 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
                 (source[1] + resident[1]) * 0.25
             ]
         );
+    }
+}
+
+#[test]
+fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
+    for streamed in [false, true] {
+        let project = project(4_094, 4_102);
+        let clip = project.session_cells()[0].content();
+        let hex_project::SessionCellContent::Audio(clip) = clip else {
+            panic!("audio")
+        };
+        let clip = clip.id();
+        let media: BTreeMap<_, _> = project
+            .assets()
+            .map(|asset| {
+                let frames = if asset.id().value() == STREAM_ASSET {
+                    (0..8_192).map(sample).collect()
+                } else {
+                    (0..32).map(|index| sample(index + 2)).collect()
+                };
+                (asset.id(), Audio::new(RATE, frames).unwrap())
+            })
+            .collect();
+        let prepare = |project: &Project| {
+            if streamed {
+                prepared(project, 71, [3; 32])
+            } else {
+                Arc::new(
+                    PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+                        .unwrap(),
+                )
+            }
+        };
+        let mut before = Playback::try_from_prepared_with_session(prepare(&project)).unwrap();
+        launch_and_play(&mut before);
+        let key = StreamSourceKey::new(71, project.assets().next().unwrap().id());
+        let mut prefix = [[0.0; 2]; 3];
+        before
+            .render_with_pages(&mut prefix, &mut MemoryPages::with_source(key))
+            .unwrap();
+        let mut editor = Editor::new(project, 8).unwrap();
+        editor
+            .execute(Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            })
+            .unwrap();
+        let gain = hex_project::ClipGain::new(-6_000).unwrap().linear();
+        let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())).unwrap();
+        next.try_inherit_runtime_from(&mut before).unwrap();
+        assert_eq!(next.performance_frame(), 3);
+        let mut actual = [[0.0; 2]; 9];
+        let mut pages = MemoryPages::with_source(key);
+        for chunk in actual.chunks_mut(2) {
+            next.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        for (index, actual) in actual.iter().enumerate() {
+            let age = index as u64 + 3;
+            let bed = sample(age + 2);
+            let expected = if age < 8 {
+                let source = sample(4_094 + age);
+                [source[0] * gain + bed[0], source[1] * gain + bed[1]]
+            } else {
+                bed
+            };
+            assert_eq!(*actual, expected);
+        }
     }
 }

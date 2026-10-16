@@ -697,6 +697,7 @@ fn arrangement_to_session_copy_respects_combined_clip_limit_atomically() {
     let mut id = snapshot.next_id;
     while clips.len() + 2 < hex_project::MAX_CLIPS {
         clips.push(ClipSnapshot {
+            gain: hex_project::ClipGain::UNITY,
             id,
             asset: asset.value(),
             start: 0,
