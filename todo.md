@@ -29,6 +29,41 @@ lifecycle cleanup and report consumption; the real first-play readiness fixture
 uses this path. Session sink/desktop/UI wiring is still unfinished; no full-CI,
 native UI or delivery claim. See [source plan](docs/streamed-session-source-plan.md).
 
+## dense selection candidate integration — #2648 / PR264, 16 october 2026
+
+Integrated current main00cb2c70, preserving the separately merged unsnapped Main
+cursor fix and current canonical worker/streaming contracts. Updated only the
+synthetic cache snapshot fixture for the worker-captured source field; the
+production cache/replay algorithm and original timing harness are unchanged.
+Nine focused cache/replay regressions pass (one manual profile remains ignored),
+including current-draw invalidation, painter ordering/refusal, snapshot ownership,
+scroll/resize and pending drag identity. Final full CI belongs to the linked PR.
+The complete360-row optimized native rerun and16.67ms p95 target remain pending
+an actual Mac capture; headless results do not establish native/display timing.
+
+## dense selection feedback experiment — #2648 / PR264, 16 october 2026
+
+Confirmed the dense visible waveform working set thrashed the 128-entry LRU;
+512 entries retain it with the same 65,536-column aggregate bound. After that
+fix alone missed the timing target, phase probes identified substantial lazy-row
+prepaint and scene-paint work. The bounded child cache retains original visuals
+with live selection/geometry. An explicit GPUI epoch repairs same-draw stale
+replay while preserving input identity across state/key/transient changes.
+Read-only snapshot capture has a red/green regression; cache lifecycle and
+input-path GPUI fixtures pass. The optimized headless profile still spent most
+time in cached paint, so a narrow ordered scene replay interval now avoids
+per-primitive bounds-tree insertion. Its retained legacy painter oracle passes
+mixed/layered/alpha/future-overlay/repeated-generation and refusal checks;
+all 510 enabled UI tests pass. Strict checks are recorded with the candidate.
+The ignored headless framework diagnostic uses the same loaded fixture and
+explicit draw timing, with test text/renderer limitations disclosed. Optimized
+`80330bc` reduced headless draw median/p95 from 18.353/19.123 ms to
+5.426/5.799 ms with zero clip rebuilds; the optimized replay oracle passed.
+All temporary production probes and eight-case termination are removed, and
+the native harness matches the merged measurement source byte for byte. Final
+full local CI, corrected optimized native timing and the unchanged 360-sample
+benchmark remain open.
+See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
 ## unsnapped main cursor — #2647 / PR263, 16 october 2026
 
 Main gestures now retain Main-lane pointer geometry for selection updates,

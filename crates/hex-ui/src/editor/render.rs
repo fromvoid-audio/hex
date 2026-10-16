@@ -360,6 +360,8 @@ impl Render for EditorView {
                 self.gain_lane.change_owner(track, &state.project);
             }
         }
+        self.clip_content_cache
+            .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {

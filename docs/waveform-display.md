@@ -1,5 +1,100 @@
 # detailed Arrangement waveform display
 
+## dense selection feedback cache experiment — #2648 / PR264
+
+The waveform LRU now retains 512 entries while keeping the existing 65,536
+aggregate device-column bound. A 350-visible-clip working-set regression fails
+with the previous 128-entry limit and passes with 512. Bounded native diagnostics
+confirmed 350 misses/evictions per selection frame before this change and 350
+hits with no preparation afterward. Those diagnostic elapsed spans include
+scheduling and overlap; they are not measurements of thread CPU time.
+
+An editor-owned map retains at most `hex_project::MAX_TRACKS` GPUI child views
+containing the original audio/MIDI clip elements, shapes, clipping, trim handles,
+drag listeners and tooltips. No decorative geometry realignment or canvas
+batching is retained. Project generation changes clear all children. On each new
+immutable snapshot, one bounded reconciliation prunes removed track IDs and
+updates every retained child to the current Arc, releasing old offscreen snapshot
+ownership while preserving same-project input identity. Pointer-only updates do
+not traverse project tracks.
+
+Each child's key includes track/index, revision, viewport, musical grid/snap,
+display scale, palette, selected clip and measured lane geometry/drag availability.
+Time ranges and track endpoint focus stay outside it. Changed keys advance an
+opaque GPUI cache epoch, rebuilding in the current draw with the same child and
+global element identity. Busy edits, modals and transient drags rebuild the legacy
+child content each draw; the first idle draw rebuilds once before reuse. There
+is no notification queued during prepaint. Replacing a child or temporarily
+removing its view ancestry was rejected after rendered tests proved it could
+lose pending mouse-down capture across otherwise-current state refreshes.
+
+Headers, lane geometry measurement, selection shading/cursors and transient
+previews remain live. Main/track selection updates notify the editor instead of
+globally refreshing the window; other drag/hover refresh behavior is preserved.
+A pointer-down alone keeps the child identity and listeners stable until drag
+capture. The read-only same-revision snapshot refresh regression fails with the
+identity-replacing cache, passes with the original direct builder, and passes
+with the epoch implementation. Snapshot history, palette/grid/resize,
+busy-to-idle, pending capture and genuine selection-scene reuse are covered.
+
+The test-support-only GPUI debug bounds map now replays exact paint-history
+segments for cached scenes. Nested selector reuse, duplicate overwrite order,
+movement and removal pass without disabling caching. The real audio/MIDI trim,
+clip drag and worker Undo/Redo regressions run with this cache enabled. See
+[native boundary decisions](native-input.md) for the epoch and metadata patches.
+
+The first eight-case native child-cache diagnostic at `49e7109` still missed
+the target (100-track selection first paint 18.5–29.2 ms); corrected epoch timing
+and the final unchanged 360-sample native benchmark remain pending. A passing
+source regression does not establish the 16.67 ms native p95 target.
+
+The optimized headless fixed-fixture run at `cfc07ca` measured zero clip rebuilds
+but explicit draw median 18.353 ms/p95 19.123 ms; cached clip paint median
+12.813 ms/p95 13.422 ms dominated it. This is the limited test-framework profile
+described below, not native input latency. The replay implementation replaces
+repeated per-primitive bounds-tree insertions with one validated ordered interval for a
+cached scene range. Internal order differences/ties, layer operations, typed
+payloads and fresh path IDs are preserved; the unchanged old loop handles
+refused contexts. No whole-row paint-layer shortcut is used.
+
+The private deterministic oracle compares actual old/new batch painter sequences
+in every overlap cell, including translucent mixed kinds, nested layers, fresh
+overlays, multiple cached ranges and eight repeated generations with stable
+order spans. Refused invalid geometry/layer/range/overflow cases leave state
+unchanged. All 510 enabled UI tests pass with the cache and replay path active.
+Native image-buffer Surface rendering has no new fixture; its shared append
+branch is unchanged. The same oracle also passed in the optimized test binary.
+See [the scene replay boundary](native-input.md).
+
+The optimized headless comparison at `80330bc` retained zero clip rebuilds over
+40 measured draws. Draw median/p95/max fell from 18.353/19.123/43.264 ms to
+5.426/5.799/5.996 ms. Nested cached-clip paint wall median/p95 fell from
+12.813/13.422 ms to 0.858/1.065 ms. These elapsed spans include scheduling and
+are not thread CPU measurements; the nested spans overlap the whole draw.
+Local receipts and raw output are retained under
+`artifacts/issue2648/headless-bulk-replay-recovery/`, with the earlier run under
+`artifacts/issue2648/headless-replay/`. This establishes a framework replay
+speedup under the limits below, not the native 16.67 ms selection-feedback target.
+Final full local CI and the unchanged native 360-sample run remain required.
+
+The ignored `headless_time_selection_framework_profile` test opens the existing
+100-track fixture through the normal Session worker with isolated settings and
+no audio. It drives 5 warm-up and 40 measured steady selection updates in a
+1240×760, 2× GPUI test window. Only explicit `Window::draw` wall time is measured;
+input dispatch, setup, worker loading, arena clearing and reporting are outside
+that interval. Each draw must paint the new range and reuse warmed clip children.
+Run with an absolute `HEX_TIME_SELECTION_FIXTURE_DIR`, `--release`, UI test support
+and `--ignored --nocapture`; debug requires the explicit smoke-only flag.
+The test backend uses `NoopTextSystem`, test selector bookkeeping and no native
+font shaping/raster, GPU submission/presentation, physical input/display or audio.
+Its framework timings diagnose cache/replay work; they are not comparable native
+feedback measurements or proof of smoothness. The canonical native harness and
+its six metrics, fixtures and 360-sample protocol remain unchanged. Temporary
+production diagnostic hooks, phase brackets and eight-case termination were
+removed; the native harness is byte-identical to merged measurement source
+`bc8da487`. The retained ignored profile emits only iteration, warm-up flag,
+explicit draw wall time and test-only clip-build count.
+
 Source implemented, 9 October 2026. The user-provided screenshot is the
 visual reference: black filled signed waveforms, separate channel bands and
 centerlines, with the musical grid visible through the clip. Native appearance

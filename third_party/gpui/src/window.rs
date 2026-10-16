@@ -679,12 +679,45 @@ pub(crate) struct Frame {
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
+    pub(crate) debug_bounds: DebugBounds,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
     pub(crate) tab_stops: TabStopMap,
+}
+
+// Test selectors follow paint ordering, including cached and nested view replay.
+// Retaining only the final map loses each cached view's insertion range and can
+// incorrectly restore another view's later overwrite of the same selector.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+pub(crate) struct DebugBounds {
+    bounds: FxHashMap<String, Bounds<Pixels>>,
+    insertion_history: Vec<(String, Bounds<Pixels>)>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DebugBounds {
+    pub(crate) fn insert(&mut self, selector: String, bounds: Bounds<Pixels>) {
+        self.insertion_history.push((selector.clone(), bounds));
+        self.bounds.insert(selector, bounds);
+    }
+
+    pub(crate) fn get(&self, selector: &str) -> Option<&Bounds<Pixels>> {
+        self.bounds.get(selector)
+    }
+
+    fn clear(&mut self) {
+        self.bounds.clear();
+        self.insertion_history.clear();
+    }
+
+    fn replay(&mut self, entries: &[(String, Bounds<Pixels>)]) {
+        for (selector, bounds) in entries {
+            self.insert(selector.clone(), *bounds);
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -706,6 +739,8 @@ pub(crate) struct PaintIndex {
     accessed_element_states_index: usize,
     tab_handle_index: usize,
     line_layout_index: LineLayoutIndex,
+    #[cfg(any(test, feature = "test-support"))]
+    debug_bounds_index: usize,
 }
 
 impl Frame {
@@ -726,7 +761,7 @@ impl Frame {
             cursor_styles: Vec::new(),
 
             #[cfg(any(test, feature = "test-support"))]
-            debug_bounds: FxHashMap::default(),
+            debug_bounds: DebugBounds::default(),
 
             #[cfg(any(feature = "inspector", debug_assertions))]
             next_inspector_instance_ids: FxHashMap::default(),
@@ -2312,10 +2347,17 @@ impl Window {
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             tab_handle_index: self.next_frame.tab_stops.paint_index(),
             line_layout_index: self.text_system.layout_index(),
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
         }
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
+        #[cfg(any(test, feature = "test-support"))]
+        self.next_frame.debug_bounds.replay(
+            &self.rendered_frame.debug_bounds.insertion_history
+                [range.start.debug_bounds_index..range.end.debug_bounds_index],
+        );
         self.next_frame.cursor_styles.extend(
             self.rendered_frame.cursor_styles
                 [range.start.cursor_styles_index..range.end.cursor_styles_index]

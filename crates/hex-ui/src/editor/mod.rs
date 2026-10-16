@@ -9,6 +9,7 @@ mod arrangement_seek;
 mod audio_admission;
 mod browser;
 mod browser_input;
+mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
 mod clip_view;
@@ -564,6 +565,7 @@ pub(super) struct EditorView {
     clip_detail_body_height: f32,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     loop_rail_cursor: gpui::CursorStyle,
+    clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
@@ -905,6 +907,7 @@ impl EditorView {
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             loop_rail_gesture: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
+            clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,
