@@ -43,9 +43,16 @@ The following measurements describe the frozen checkpoint above. Integration
 with main `d7915f8` changes instrument accounting and runtime layout; these
 positive fit claims do not apply to that combined source. See
 [the current integration evidence](../../../../../docs/operator-harmonic-retarget.md#current-main-integration--15-october-2026).
-The tests retain the original maximum mixed case as a current admission refusal
-and separately test an admitted mixture with real track/Return/mutable owners.
-No pool is installed and no budget is raised.
+The original full-size inventory (256 tracks with 64 effects each and 16 Returns
+with 64 effects each) now fails during current `PreparedRevision` construction
+at the signal graph's bounded node/edge limit. The regression suite asserts that
+exact refusal and uses a separately admitted 44-track, 64-effect, 16-Return
+inventory for current ownership checks. That fixture prepares 4,093 graph nodes;
+it is a bounded test shape, not a claim that every other 44-track topology fits.
+The former 4,096 retained-suffix integration shape is likewise historical: the
+admitted fixture exercises 44 × 16 = 704 real track suffixes, while pure
+planner tests retain the independent 4,096/+1 accounting boundary. No pool is
+installed and no budget is raised.
 
 ## Budget provenance and finite reachable inventory
 
@@ -60,14 +67,17 @@ Prepared revisions/assets/static process tables are not a new global memory cap.
 If 32 MiB is intended to include context payloads too, the following EQ/mixed
 projections fail that stronger contract; resolve it before runtime integration.
 
-All cases use real preparation and inheritance: 256 tracks with 64 effect slots,
-16 Returns with 64 slots, fresh candidate IDs, and predecessor PCM rendered for
-96 frames. Neutral Utility padding keeps allocated capacity maximal. Stateful
-EQ uses +6 dB and actual sends; the mixed case asserts 16 retained Return chains.
-Both active and retained instrument ledgers have their real 128-entry capacity.
-Legacy split/recomposition must equal the actual accounting exactly before any
-proposed replacement. Remaining buffers, suppression/release banks, track/Return
-chains, context lease handles and original duplicate charges stay in the base.
+The table below records measurements from the frozen checkpoint's real
+preparation and inheritance: 256 tracks with 64 effect slots, 16 Returns with
+64 slots, fresh candidate IDs, and predecessor PCM rendered for 96 frames.
+Neutral Utility padding keeps allocated capacity maximal. Stateful EQ uses +6 dB
+and actual sends; the mixed case asserts 16 retained Return chains. Both active
+and retained instrument ledgers have their real 128-entry capacity. Legacy
+split/recomposition equaled the actual accounting exactly before any proposed
+replacement. Remaining buffers, suppression/release banks, track/Return chains,
+context lease handles and original duplicate charges stayed in the base. These
+historical measurements are not evidence that the same source inventory passes
+the current signal graph's construction limits.
 
 | Reachable shape | Existing playback | Proposed playback | Complete reported ownership |
 | --- | ---: | ---: | ---: |
@@ -96,7 +106,7 @@ remain bounded at 4,096. All sums/capacities/generation advancement are checked.
 
 ## Proof boundaries and next contract decisions
 
-The seven tests cover exact byte/count boundaries and +1/overflow refusal,
+At the frozen checkpoint, seven tests covered exact byte/count boundaries and +1/overflow refusal,
 owner-generation roots, full-identity aliases/conflicts, actual capacities,
 complete layouts, raw signed zero and inactive bank bits, and refusal without
 clock/ownership/next-PCM mutation on real retained track/Return/instrument owners.

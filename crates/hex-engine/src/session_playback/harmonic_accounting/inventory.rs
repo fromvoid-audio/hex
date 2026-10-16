@@ -17,6 +17,7 @@ pub(super) enum Instrument {
     Fm4,
 }
 pub(super) struct Shape {
+    pub tracks: usize,
     pub effect: &'static str,
     pub effect_tracks: usize,
     pub returns: usize,
@@ -80,6 +81,7 @@ fn effect(id: &'static str) -> hex_lattice_contract::NativeDeviceState {
 }
 
 pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<PreparedRevision> {
+    assert!(shape.effect_tracks <= shape.tracks);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
         .execute(Command::AddTrack {
@@ -92,7 +94,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         crate::default_native_device_state(DeviceTypeId::from_static("hex.utility")).unwrap();
     let stateful = effect(shape.effect);
     let mut next = first_id;
-    for index in 0..256 {
+    for index in 0..shape.tracks {
         let mut track = template.clone();
         track.id = next;
         next += 1;
@@ -107,7 +109,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
                 id: next,
-                state: if index >= 256 - shape.effect_tracks && slot == 63 {
+                state: if index >= shape.tracks - shape.effect_tracks && slot == 63 {
                     stateful.clone()
                 } else {
                     utility.clone()

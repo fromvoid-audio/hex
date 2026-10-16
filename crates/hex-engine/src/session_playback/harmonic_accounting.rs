@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 #[path = "../../examples/harmonic_transition_layout.rs"]
 mod layout;
 
+const ADMITTED_TRACKS: usize = 44;
+
 fn inventory(effect_count: usize, held: bool, first_id: u64) -> Arc<PreparedRevision> {
     inventory_with_eq(effect_count, held, first_id, false)
 }
@@ -16,6 +18,16 @@ fn inventory_with_eq(
     first_id: u64,
     eq: bool,
 ) -> Arc<PreparedRevision> {
+    inventory_shape(ADMITTED_TRACKS, effect_count, held, first_id, eq).unwrap()
+}
+
+fn inventory_shape(
+    track_count: usize,
+    effect_count: usize,
+    held: bool,
+    first_id: u64,
+    eq: bool,
+) -> Result<Arc<PreparedRevision>, crate::Invalid> {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
         .execute(Command::AddTrack {
@@ -51,7 +63,7 @@ fn inventory_with_eq(
     )
     .unwrap();
     let mut next = first_id;
-    for _ in 0..hex_project::MAX_TRACKS {
+    for _ in 0..track_count {
         let mut track = template.clone();
         track.id = next;
         next += 1;
@@ -122,29 +134,46 @@ fn inventory_with_eq(
             });
     }
     snapshot.next_id = next;
-    let project = Project::from_snapshot(snapshot).unwrap();
-    Arc::new(
-        PreparedRevision::prepare(
-            &project,
-            &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
-            None,
-        )
-        .unwrap(),
-    )
+    let project = Project::from_snapshot(snapshot)?;
+    Ok(Arc::new(PreparedRevision::prepare(
+        &project,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+    )?))
 }
 
 #[test]
-fn candidate_pool_charge_with_maximum_track_and_effect_inventory() {
+fn historical_full_project_shape_is_refused_by_current_signal_graph_bound() {
+    let error = match inventory_shape(
+        hex_project::MAX_TRACKS,
+        hex_project::MAX_DEVICES_PER_TRACK,
+        false,
+        100,
+        false,
+    ) {
+        Ok(_) => panic!("historical oversized graph unexpectedly prepared"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        crate::Invalid("signal compensation graph exceeds its bounded node or edge limit")
+    );
+}
+
+#[test]
+fn candidate_pool_charge_with_admitted_track_and_effect_inventory() {
+    // 44 full tracks plus 16 full Returns prepare to 4093 graph nodes:
+    // 44 * (5 track nodes + 64 devices) + 16 * (2 Return nodes + 64 devices) + Main.
     let revision = inventory(hex_project::MAX_DEVICES_PER_TRACK, false, 100);
     let preflight = preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
     let runtime = SessionPlayback::new(revision).unwrap();
     let actual = runtime.accounted_runtime_storage_bytes().unwrap();
-    let pool = 2_639_456;
+    let pool = 2_643_560;
     eprintln!(
-        "harmonic candidate inventory: tracks={} effects={} actual={} preflight={} pool={} combined_actual={} combined_preflight={} cap={}",
-        hex_project::MAX_TRACKS,
-        hex_project::MAX_TRACKS * hex_project::MAX_DEVICES_PER_TRACK,
+        "admitted harmonic candidate inventory: tracks={} effects={} actual={} preflight={} pool={} combined_actual={} combined_preflight={} cap={}",
+        ADMITTED_TRACKS,
+        ADMITTED_TRACKS * hex_project::MAX_DEVICES_PER_TRACK,
         actual,
         preflight,
         pool,
@@ -161,7 +190,7 @@ fn candidate_pool_charge_with_maximum_track_and_effect_inventory() {
 }
 
 #[test]
-fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
+fn admitted_inventory_accounting_includes_detached_mutable_tail_ledgers() {
     // Real existing publication, not artificial insertion into tail fields:
     // deleted old track IDs keep release owners while all new tracks have
     // their own constructor-allocated mutable runtime and effect inventory.
@@ -177,27 +206,21 @@ fn candidate_pool_accounting_includes_detached_mutable_tail_ledgers() {
         SESSION_RELEASE_CAPACITY
     );
     let existing = candidate.accounted_runtime_storage_bytes().unwrap();
-    let proposed = existing.checked_add(2_639_456).unwrap();
+    let proposed = existing.checked_add(2_643_560).unwrap();
     eprintln!(
         "harmonic retained-tail candidate: tails={tails} existing={existing} proposed={proposed} cap={} excess={}",
         MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
         proposed.saturating_sub(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
     );
-    assert_eq!(tails, hex_project::MAX_TRACKS);
-    // Current instrument accounting includes all declared pair bytes. The
-    // historical positive fit is no longer valid on this integrated source.
-    // Main's filter-capable LFO factories add 320 bytes per retained pair.
-    assert_eq!(existing, 34_336_744 + 320 * hex_project::MAX_TRACKS);
-    assert_eq!(proposed, 37_058_120);
-    assert!(existing > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    assert_eq!(tails, ADMITTED_TRACKS);
+    assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
 
 #[test]
-fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
-    // Each real EQ chain retains 48 prefix and 16 suffix entries. The suffixes
-    // exactly fill the unchanged 4096-entry processing budget; all 16384
-    // allocated entries remain owned and charged across the handoff.
+fn admitted_inventory_accounting_charges_retained_memoryless_suffixes() {
+    // Each admitted EQ chain retains 48 prefix and 16 suffix entries. The
+    // independent planner test covers the 4096-entry aggregate suffix limit.
     let mut old = SessionPlayback::new(inventory_with_eq(64, true, 100_000, true)).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     old.render(&mut [[0.0; 2]; 96]).unwrap();
@@ -220,23 +243,16 @@ fn complete_pool_accounting_with_maximum_retained_memoryless_suffixes() {
         SESSION_RELEASE_CAPACITY
     );
     let existing = candidate.accounted_runtime_storage_bytes().unwrap();
-    let proposed = existing.checked_add(2_639_456).unwrap();
+    let proposed = existing.checked_add(2_643_560).unwrap();
     eprintln!(
-        "harmonic maximum-suffix candidate: tails={tails} suffixes={suffixes} existing={existing} proposed={proposed} cap={} excess={}",
+        "admitted harmonic suffix candidate: tails={tails} suffixes={suffixes} existing={existing} proposed={proposed} cap={} excess={}",
         MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
         proposed.saturating_sub(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
     );
-    assert_eq!(tails, hex_project::MAX_TRACKS);
-    assert_eq!(suffixes, MAX_RETAINED_SUFFIX_ENTRIES);
-    assert_eq!(existing, 31_514_600);
-    assert_eq!(proposed, 34_154_056);
+    assert_eq!(tails, ADMITTED_TRACKS);
+    assert_eq!(suffixes, ADMITTED_TRACKS * 16);
     assert!(existing <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    // Reconstruct the original c048995 negative control with identical
-    // capacities/payload: only the old location's eight extra bytes differ.
-    let legacy_proposed = proposed + 2 * SESSION_RELEASE_CAPACITY * 8;
-    assert_eq!(legacy_proposed, 34_416_200);
-    assert!(legacy_proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
-    assert!(proposed > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+    assert!(proposed <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
 }
 
 // Disconnected private planner and concrete proposed layouts, compiled only in tests.

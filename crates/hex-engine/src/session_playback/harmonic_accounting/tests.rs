@@ -5,6 +5,8 @@ use super::{
 };
 use std::mem::{align_of, offset_of, size_of};
 
+const TRACKS: usize = super::super::ADMITTED_TRACKS;
+
 fn empty(pool: payload::PoolCapacity) -> Input<'static> {
     Input {
         base: 0,
@@ -290,7 +292,7 @@ fn actual_recipe_charge_and_owner_generation_boundary_identity_govern_admission(
 }
 
 #[test]
-fn reachable_registered_maxima_and_post_handoff_ownership_are_recomposed_exactly() {
+fn admitted_registered_inventory_and_post_handoff_ownership_are_recomposed_exactly() {
     let pool = payload::PoolCapacity::allocated();
     let mut shapes = Vec::new();
     for effect in [
@@ -302,8 +304,9 @@ fn reachable_registered_maxima_and_post_handoff_ownership_are_recomposed_exactly
         "hex.auto-pan",
     ] {
         shapes.push(Shape {
+            tracks: TRACKS,
             effect,
-            effect_tracks: 256,
+            effect_tracks: TRACKS,
             returns: 0,
             mutable: None,
             instrument: Instrument::Analytic,
@@ -316,6 +319,7 @@ fn reachable_registered_maxima_and_post_handoff_ownership_are_recomposed_exactly
         Instrument::Fm4,
     ] {
         shapes.push(Shape {
+            tracks: TRACKS,
             effect: "hex.eq8",
             effect_tracks: 0,
             returns: 0,
@@ -324,39 +328,31 @@ fn reachable_registered_maxima_and_post_handoff_ownership_are_recomposed_exactly
         });
     }
     shapes.push(Shape {
+        tracks: TRACKS,
         effect: "hex.eq8",
-        effect_tracks: 128,
+        effect_tracks: TRACKS,
         returns: 0,
-        mutable: Some((128, Instrument::Lfo)),
+        mutable: Some((TRACKS, Instrument::Lfo)),
         instrument: Instrument::Analytic,
     });
     shapes.push(Shape {
+        tracks: TRACKS,
         effect: "hex.eq8",
-        effect_tracks: 192,
+        effect_tracks: TRACKS,
         returns: 16,
-        mutable: Some((48, Instrument::Feedback)),
+        mutable: Some((24, Instrument::Feedback)),
         instrument: Instrument::Analytic,
     });
     shapes.push(Shape {
+        tracks: TRACKS,
         effect: "hex.eq8",
-        effect_tracks: 128,
+        effect_tracks: 32,
         returns: 16,
-        mutable: Some((48, Instrument::Feedback)),
+        mutable: Some((16, Instrument::Feedback)),
         instrument: Instrument::Analytic,
     });
     for shape in shapes {
-        let runtime = match inventory::handoff(&shape) {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                // Current retained-tail admission rejects
-                // this original maximum mix before the proposed pool exists.
-                assert_eq!(shape.effect_tracks, 192);
-                assert_eq!(shape.returns, 16);
-                assert!(matches!(shape.mutable, Some((48, Instrument::Feedback))));
-                assert_eq!(error, crate::SessionPlaybackError::ReleaseBankFull);
-                continue;
-            }
-        };
+        let runtime = inventory::handoff(&shape).unwrap();
         if shape.returns != 0 {
             assert_eq!(
                 runtime.return_effect_tails.slots().iter().flatten().count(),
@@ -473,12 +469,13 @@ fn namespace_generation_ledger_and_retained_slot_refusals_are_independent() {
 }
 
 #[test]
-fn refusal_on_real_retained_track_return_and_mutable_owners_preserves_next_pcm() {
+fn refusal_on_real_admitted_track_return_and_mutable_owners_preserves_next_pcm() {
     let shape = Shape {
+        tracks: TRACKS,
         effect: "hex.eq8",
-        effect_tracks: 128,
+        effect_tracks: 32,
         returns: 16,
-        mutable: Some((48, Instrument::Feedback)),
+        mutable: Some((16, Instrument::Feedback)),
         instrument: Instrument::Analytic,
     };
     let mut actual = inventory::handoff(&shape).unwrap();
