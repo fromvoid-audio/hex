@@ -55,7 +55,7 @@ impl EditorView {
         else {
             return false;
         };
-        let Some((_, lane)) = self.visible_lane_near_y(y) else {
+        let Some((_, lane)) = self.time_gesture_lane_near_y(y) else {
             update_last_tick(
                 &mut self.time_selection_gesture,
                 &mut self.time_range_move_gesture,
@@ -99,6 +99,27 @@ impl EditorView {
             self.update_time_selection_gesture(x, y, free);
         }
         true
+    }
+
+    /// Captured project-scope gestures keep the Main row's horizontal projection,
+    /// even when the pointer leaves that row or regular lanes have different widths.
+    pub(super) fn time_gesture_lane_near_y(&self, y: f32) -> Option<(TrackId, LaneBounds)> {
+        if !self.time_selection_project_scope {
+            return self.visible_lane_near_y(y);
+        }
+        if !y.is_finite() || self.main_track_lane_epoch != self.drag_layout_generation {
+            return None;
+        }
+        let track = self.state.as_ref()?.project.tracks().last()?.id();
+        let lane = self.main_track_lane_bounds.filter(|lane| {
+            lane.left.is_finite()
+                && lane.width.is_finite()
+                && lane.width > 0.0
+                && lane.top.is_finite()
+                && lane.height.is_finite()
+                && lane.height > 0.0
+        })?;
+        Some((track, lane))
     }
 
     pub(super) fn visible_lane_near_y(&self, y: f32) -> Option<(TrackId, LaneBounds)> {

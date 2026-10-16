@@ -183,12 +183,17 @@ fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
         main_lane.origin.x + main_lane.size.width * 0.1,
         main_lane.origin.y + main_lane.size.height * 0.7,
     );
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    let unsnapped = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(click, MouseButton::Left, unsnapped);
+    visual.simulate_mouse_up(click, MouseButton::Left, unsnapped);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let cursor = view.edit_cursor.expect("main cursor");
         assert!(view.time_selection_project_scope);
+        assert!(view.normalized_time_selection().is_none());
         assert!(cursor.frame > 0 && cursor.frame < 96_000);
         assert!(view.selected_track.is_none());
     });
