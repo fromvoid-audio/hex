@@ -55,3 +55,53 @@ run the current prepared NoPages renderer. No device eligibility, ownership,
 readiness, physical deadline or native UI/listening acceptance is established by
 this source plan. The native admitted audio-only/Utility class and original
 Pulse24 / PR177 acceptance remain unchanged.
+
+## worker/client endpoint checkpoint
+
+The native worker factory now reserves four constructor-paired terminal
+destinations before CPAL exposure: data callback, error callback, UI client and
+worker publication. `WorkerPreparedOutput` retains the stream and publication
+endpoint. Its one-way `take_client` boundary permanently prevents later Resident
+conversion/configuration. The client exposes borrowed/scalar observations and
+bounded commands, not a cloneable status Arc, publication queue, graph or stream.
+Legacy unsplit `Control` remains compatible with existing Resident callers.
+
+Client close/Drop signals closing and priority Stop, transfers its entire endpoint
+Box into the already reserved terminal, then becomes inert. Endpoint/ring/PCM
+destruction and joins never occur in that transfer. Actual endpoint destruction
+runs on lifecycle control, outside ordinary locks, with Pending recorded before
+Drop and sticky first-payload/no-retry failure custody. Callback nonrenderability,
+graph/source cleanup and final endpoint resource release are separate: graph
+cleanup can complete without UI polling while a client remains live, but the
+exclusive output lease cannot release until its actual endpoint destructor has
+completed normally. Undelivered clients use the same abandonment path.
+
+The split moves four formerly separate atomic payloads into the measured Status
+allocation. A single admission word serializes split gain Begin against worker
+publication before either commits ownership or queue state. Callback completion
+clears only publication; a matching current gain terminal clears only gain.
+Queue failure rolls back its own reservation; stale gain terminals cannot clear a
+new take. Legacy unsplit publish-then-Begin ordering remains supported. Verified
+constructor mode still refuses gain recording and every owning preview route.
+
+Known DATA covers actual persistent retirement/guard values, both endpoint Boxes,
+terminal cell payloads, queue backing capacities and scalar payloads. Opaque Arc
+control blocks remain bounded RESOURCE groups, not guessed bytes or scalar
+completeness. After the split the auxiliary rings/scalars contribute eleven
+paired groups; two additional terminal cells contribute four actual handles,
+and the client bundle adds one Status handle. Constructor hooks contribute two
+other Status handles. The actual factory visitor and caller reservations retain
+these until physical completion; public `require_complete` remains unchanged.
+
+This is an endpoint/lifecycle checkpoint only. Session sink composition,
+nonblocking worker open delivery, document-generation replacement and the UI
+client integration are still unfinished. Headless controls do not establish
+physical CPAL deadlines, OS dispose success, listening or native UI acceptance.
+
+A final production-constructor trace also found that capture-enabled output's
+existing spectrum worker still needs its capture queue, six analysis Boxes,
+rate-change replacement peak and result-channel/Reader lifetime added to the
+strict factory declaration. Its consuming Reaper join must retain panic custody.
+That bounded repair remains part of PR239 before claiming a complete production
+worker boundary; the current checkpoint does not certify it or expose a new UI
+streaming path.

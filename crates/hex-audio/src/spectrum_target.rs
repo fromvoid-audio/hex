@@ -32,6 +32,7 @@ pub enum TargetUpdate {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetError {
+    OutputClosed,
     InvalidDevice,
     InvalidOwner,
     WrongDeviceType,

@@ -33,26 +33,96 @@ impl PreparedOutput {
         expected_sample_rate: Option<u32>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or("no default audio output device")?;
-        let supported = device.default_output_config().map_err(|e| e.to_string())?;
-        let config = supported.config();
-        validate_expected_rate(expected_sample_rate, config.sample_rate)?;
-        if config.channels == 0 {
-            return Err("output device has no channels".into());
-        }
-        let sample_format = supported.sample_format();
-        if !matches!(
-            sample_format,
-            cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
-        ) {
-            return Err(format!("unsupported output format: {sample_format:?}"));
-        }
+        open_prepared(expected_sample_rate, lease, false)?.into_legacy()
+    }
+}
+/// Worker-owned native output. Only take_client() may deliver its UI endpoint;
+/// configure the virgin publication Root before that one-way boundary.
+pub struct WorkerPreparedOutput {
+    _stream: lifecycle::StreamOwner,
+    pub publication: prepared::WorkerControl,
+    client: Option<prepared::Client>,
+    pub sample_rate: u32,
+    pub label: String,
+    pub spectrum: Option<SpectrumReader>,
+    pub spectrum_error: Option<String>,
+}
+impl WorkerPreparedOutput {
+    /// Blocking device setup, intended only for the existing lifecycle worker.
+    pub fn open() -> Result<Self, String> {
+        Self::open_with_lease(None, lifecycle::Lease::acquire()?)
+    }
+    pub(crate) fn open_with_lease(
+        expected_sample_rate: Option<u32>,
+        lease: lifecycle::Lease,
+    ) -> Result<Self, String> {
+        open_prepared(expected_sample_rate, lease, true)?.into_worker()
+    }
+    pub fn take_client(&mut self) -> Option<prepared::Client> {
+        let mut client = self.client.take()?;
+        client.activate();
+        Some(client)
+    }
+}
+struct Opened {
+    stream: lifecycle::StreamOwner,
+    legacy: Option<prepared::Control>,
+    publication: Option<prepared::WorkerControl>,
+    client: Option<prepared::Client>,
+    sample_rate: u32,
+    label: String,
+    spectrum: Option<SpectrumReader>,
+    spectrum_error: Option<String>,
+}
+impl Opened {
+    fn into_legacy(self) -> Result<PreparedOutput, String> {
+        Ok(PreparedOutput {
+            _stream: self.stream,
+            control: self.legacy.ok_or("legacy audio endpoint unavailable")?,
+            sample_rate: self.sample_rate,
+            label: self.label,
+            spectrum: self.spectrum,
+            spectrum_error: self.spectrum_error,
+        })
+    }
+    fn into_worker(self) -> Result<WorkerPreparedOutput, String> {
+        Ok(WorkerPreparedOutput {
+            _stream: self.stream,
+            publication: self
+                .publication
+                .ok_or("worker publication endpoint unavailable")?,
+            client: Some(self.client.ok_or("worker command endpoint unavailable")?),
+            sample_rate: self.sample_rate,
+            label: self.label,
+            spectrum: self.spectrum,
+            spectrum_error: self.spectrum_error,
+        })
+    }
+}
+fn open_prepared(
+    expected_sample_rate: Option<u32>,
+    lease: lifecycle::Lease,
+    worker: bool,
+) -> Result<Opened, String> {
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or("no default audio output device")?;
+    let supported = device.default_output_config().map_err(|e| e.to_string())?;
+    let config = supported.config();
+    validate_expected_rate(expected_sample_rate, config.sample_rate)?;
+    if config.channels == 0 {
+        return Err("output device has no channels".into());
+    }
+    let sample_format = supported.sample_format();
+    if !matches!(
+        sample_format,
+        cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+    ) {
+        return Err(format!("unsupported output format: {sample_format:?}"));
+    }
 
-        let (capture, spectrum, spectrum_reaper, spectrum_error) = if (8_000..=192_000)
-            .contains(&config.sample_rate)
-        {
+    let (capture, spectrum, spectrum_reaper, spectrum_error) =
+        if (8_000..=192_000).contains(&config.sample_rate) {
             let initial = SpectrumStamp {
                 target: SpectrumTargetId(0),
                 generation: 0,
@@ -74,53 +144,75 @@ impl PreparedOutput {
                 )),
             )
         };
-        let channel_result = match capture {
-            Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
-            None => prepared::channel(config.sample_rate),
-        };
-        let (mut control, callback) = match channel_result {
-            Ok(channel) => channel,
-            Err(error) => {
-                if let Some(reaper) = spectrum_reaper {
-                    let _ = reaper.shutdown_and_join();
-                }
-                return Err(error.to_string());
+    let channel_result = match capture {
+        Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
+        None => prepared::channel(config.sample_rate),
+    };
+    let (control, callback) = match channel_result {
+        Ok(channel) => channel,
+        Err(error) => {
+            if let Some(reaper) = spectrum_reaper {
+                let _ = reaper.shutdown_and_join();
             }
-        };
-        let (data_guard, error_guard, terminals) =
-            crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
-        let native = crate::native_callback_owner::NativeRetirement::new(
-            terminals,
-            control.native_candidate_root(),
-        );
-        // Anchor both terminal receivers and lease BEFORE CPAL can start or
-        // retain a callback, including failed construction with no Stream handle.
-        let mut stream_owner =
-            lifecycle::StreamOwner::prepared_custody(lease, spectrum_reaper, native);
-        control.enable_native_custody()?;
-        stream_owner.expose_backend();
-        let stream = if sample_format == cpal::SampleFormat::F32 {
-            build::<f32>(&device, &config, data_guard, error_guard)
-        } else if sample_format == cpal::SampleFormat::I16 {
-            build::<i16>(&device, &config, data_guard, error_guard)
-        } else {
-            build::<u16>(&device, &config, data_guard, error_guard)
+            return Err(error.to_string());
         }
-        .map_err(|error| error.to_string())?;
-        stream_owner.set_stream(stream);
-        stream_owner.play()?;
-        Ok(Self {
-            _stream: stream_owner,
-            control,
-            sample_rate: config.sample_rate,
-            label: format!(
-                "coreaudio · {} hz · {} channels",
-                config.sample_rate, config.channels
-            ),
-            spectrum,
-            spectrum_error,
-        })
+    };
+    let root = control.native_candidate_root();
+    let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
+        if worker {
+            let (data, errors, terminals, client, publication) =
+                crate::native_callback_owner::reserve_native_worker(control, callback);
+            (
+                data,
+                errors,
+                terminals,
+                None,
+                Some(publication),
+                Some(client),
+            )
+        } else {
+            let (data, errors, terminals) =
+                crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
+            (data, errors, terminals, Some(control), None, None)
+        };
+    let native = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    // Anchor both terminal receivers and lease BEFORE CPAL can start or
+    // retain a callback, including failed construction with no Stream handle.
+    let mut stream_owner = lifecycle::StreamOwner::prepared_custody(lease, spectrum_reaper, native);
+    if let Some(control) = legacy_control.as_mut() {
+        control.enable_native_custody()?;
     }
+    if let Some(worker) = worker_control.as_mut() {
+        worker
+            .control()
+            .ok_or("worker publication endpoint unavailable")?
+            .enable_native_custody()?;
+    }
+    stream_owner.expose_backend();
+    let stream = if sample_format == cpal::SampleFormat::F32 {
+        build::<f32>(&device, &config, data_guard, error_guard)
+    } else if sample_format == cpal::SampleFormat::I16 {
+        build::<i16>(&device, &config, data_guard, error_guard)
+    } else {
+        build::<u16>(&device, &config, data_guard, error_guard)
+    }
+    .map_err(|error| error.to_string())?;
+    stream_owner.set_stream(stream);
+    stream_owner.play()?;
+    let label = format!(
+        "coreaudio · {} hz · {} channels",
+        config.sample_rate, config.channels
+    );
+    Ok(Opened {
+        stream: stream_owner,
+        legacy: legacy_control,
+        publication: worker_control,
+        client,
+        sample_rate: config.sample_rate,
+        label,
+        spectrum,
+        spectrum_error,
+    })
 }
 
 fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), String> {

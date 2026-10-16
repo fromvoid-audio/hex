@@ -15,6 +15,16 @@ result is consumed, or until an abandoned late output and any retained stream
 lease have retired. Device setup and stream disposal stay off the audio callback
 and caller thread.
 
+The staged service integration also provides `WorkerPreparedOutput`: its native
+factory reserves paired client/publication terminal destinations before CPAL
+exposure. Configure its virgin Root before `take_client()`; the returned move-only
+`prepared::Client` has bounded scalar/command methods and borrowed observations.
+Closing it transfers the complete endpoint bundle for lifecycle destruction and
+leaves an inert token. Worker publication and graph cleanup can finish while the
+client remains live; final native resource/lease release waits for its actual
+endpoint Drop. Session/desktop integration of this factory is still in progress;
+see [source/service integration](../../docs/streamed-session-source-plan.md).
+
 `prepared::Control` publishes a fixed-size `Playback` wrapper through a one-slot
 queue and keeps publication admission closed until the callback accepts or
 returns that candidate. Session route commands share the bounded command queue

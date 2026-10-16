@@ -588,7 +588,7 @@ fn constructor_domain_opt_in_requires_vacancy_and_preserves_legacy_refusal_owner
     let refusal = control.publish(original).err().unwrap();
     assert_eq!(Arc::strong_count(&original_root), 2);
     assert_eq!(control.revision, 0);
-    assert!(!control.publication_pending.load(Acquire));
+    assert!(!control.status.publication_pending.load(Acquire));
     assert!(
         control
             .configure_audio_candidate_domains(reservation)

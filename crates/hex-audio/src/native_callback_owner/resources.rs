@@ -43,6 +43,7 @@ pub(crate) struct NativeCandidateBoundary {
     root: u64,
     data_cell: usize,
     error_cell: usize,
+    endpoint_cells: Option<[usize; 2]>,
     data_bytes: usize,
     anchored: bool,
     channels: ChannelStorage,
@@ -53,12 +54,12 @@ impl NativeCandidateBoundary {
         data: &mut Guard<NativeCallbackOwner>,
         errors: &mut Guard<ErrorCallbackOwner>,
     ) -> Option<Self> {
-        let data_cell = Arc::as_ptr(&data.cell) as usize;
-        let error_cell = Arc::as_ptr(&errors.cell) as usize;
-        let cell_data = std::mem::size_of_val(data.cell.as_ref())
-            .checked_add(std::mem::size_of_val(errors.cell.as_ref()))?;
-        let data = data.owner_mut()?;
-        let errors = errors.owner_mut()?;
+        let data_cell = Arc::as_ptr(data.shared_cell()?) as usize;
+        let error_cell = Arc::as_ptr(errors.shared_cell()?) as usize;
+        let cell_data = std::mem::size_of_val(data.shared_cell()?.as_ref())
+            .checked_add(std::mem::size_of_val(errors.shared_cell()?.as_ref()))?;
+        let data = data.owner_ref()?;
+        let errors = errors.owner_ref()?;
         if !data.callback.belongs_to_candidate_root(root)
             || !data.callback.matches_native_status(&data.status)
             || !Arc::ptr_eq(&data.status, &errors.status)
@@ -69,21 +70,56 @@ impl NativeCandidateBoundary {
         let data_bytes = std::mem::size_of_val(data)
             .checked_add(std::mem::size_of_val(errors))?
             .checked_add(cell_data)?
-            // Separate fixed terminal destinations remain reserved through both
-            // carrier destructors, including a failed destructor's quarantine.
-            .checked_add(std::mem::size_of::<
-                [Option<crate::candidate_custody::DomainEnvelope>; 2],
-            >())?
+            // Actual persistent retirement destinations and the captured guard
+            // values are distinct from their separately allocated owner Boxes.
+            .checked_add(std::mem::size_of::<NativeRetirement>())?
+            .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
+            .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
             .checked_add(data.status.candidate_boundary_data_bytes()?)?
             .checked_add(channels.data_bytes)?;
         Some(Self {
             root: root.root_id(),
             data_cell,
             error_cell,
+            endpoint_cells: None,
             data_bytes,
             anchored: false,
             channels,
         })
+    }
+    pub(super) fn with_worker_endpoints(
+        mut self,
+        client: &crate::prepared::Client,
+        publication: &crate::prepared::WorkerControl,
+    ) -> Option<Self> {
+        let control = publication.owner_ref()?;
+        if control.native_candidate_root().root_id() != self.root
+            || !client.owner_ref()?.matches(&control.status)
+        {
+            return None;
+        }
+        let client_cell = client.guard().shared_cell()?;
+        let publication_cell = publication.guard().shared_cell()?;
+        self.endpoint_cells = Some([
+            Arc::as_ptr(client_cell) as usize,
+            Arc::as_ptr(publication_cell) as usize,
+        ]);
+        self.data_bytes = self
+            .data_bytes
+            .checked_add(std::mem::size_of_val(client.owner_ref()?))?
+            .checked_add(std::mem::size_of_val(control))?
+            .checked_add(std::mem::size_of_val(client_cell.as_ref()))?
+            .checked_add(std::mem::size_of_val(publication_cell.as_ref()))?
+            .checked_add(std::mem::size_of::<crate::prepared::Client>())?
+            .checked_add(std::mem::size_of::<crate::prepared::WorkerControl>())?;
+        // Two actual terminal cells each have a guard and receiver handle.
+        // The client bundle adds one Status handle to the unsplit constructor.
+        self.channels = self.channels.plus(ChannelStorage {
+            data_bytes: 0,
+            shared_groups: 2,
+            shared_handles: 5,
+        })?;
+        Some(self)
     }
     pub(crate) fn anchor(&mut self, root: u64, terminals: &NativeTerminals) -> bool {
         let Some(data) = terminals.data.cell.as_ref() else {
@@ -92,7 +128,24 @@ impl NativeCandidateBoundary {
         let Some(errors) = terminals.errors.cell.as_ref() else {
             return false;
         };
-        if self.anchored
+        let endpoint_match = match (self.endpoint_cells, terminals.endpoints.as_ref()) {
+            (None, None) => true,
+            (Some(expected), Some(endpoints)) => endpoints
+                .client
+                .cell
+                .as_ref()
+                .zip(endpoints.publication.cell.as_ref())
+                .is_some_and(|(client, publication)| {
+                    expected
+                        == [
+                            Arc::as_ptr(client) as usize,
+                            Arc::as_ptr(publication) as usize,
+                        ]
+                }),
+            _ => false,
+        };
+        if !endpoint_match
+            || self.anchored
             || self.root != root
             || self.data_cell != Arc::as_ptr(data) as usize
             || self.error_cell != Arc::as_ptr(errors) as usize

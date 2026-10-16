@@ -43,6 +43,7 @@ pub struct Control {
     rate: u32,
     last_generation: u64,
     closing: bool,
+    status: Option<Arc<crate::prepared::Status>>,
 }
 
 pub(crate) struct Callback {
@@ -65,6 +66,7 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             rate,
             last_generation: 0,
             closing: false,
+            status: None,
         },
         Callback {
             incoming: consumer,
@@ -76,24 +78,30 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
 }
 
 impl Control {
-    pub(crate) fn constructor_virgin(&self) -> bool {
-        self.last_generation == 0
-            && self.pending.is_none()
-            && self.retired.is_empty()
-            && self.incoming.slots() == self.incoming.buffer().capacity()
-            && !self.closing
+    pub(crate) fn bind_status(&mut self, status: Arc<crate::prepared::Status>) {
+        self.status = Some(status);
+    }
+    fn permitted(&self) -> bool {
+        !self.closing
+            && self
+                .status
+                .as_ref()
+                .is_none_or(|status| status.preview_permitted())
     }
 
     /// Silence the previous request, including queued PCM, before decode starts.
     /// The returned token is scoped to this output instance.
     pub fn request(&mut self) -> Result<u64, Invalid> {
-        if self.closing {
+        if !self.permitted() {
             return Err(Invalid("sample preview output is closing"));
         }
         let generation = self
             .last_generation
             .checked_add(1)
             .ok_or(Invalid("sample preview request counter exhausted"))?;
+        if let Some(status) = &self.status {
+            status.mark_preview_used();
+        }
         self.last_generation = generation;
         self.generation.store(generation, Release);
         self.pending = None;
@@ -103,7 +111,7 @@ impl Control {
 
     /// Admit immutable, validated PCM. Stale completions are disposed on control.
     pub fn publish(&mut self, generation: u64, audio: Audio) -> Result<(), PublishRefusal> {
-        if self.closing {
+        if !self.permitted() {
             return Err(PublishRefusal {
                 reason: Invalid("sample preview output is closing"),
                 audio,

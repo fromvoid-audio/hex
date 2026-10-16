@@ -1,0 +1,284 @@
+//! Actual endpoint Boxes, original runtime and the existing lifecycle executor.
+use super::*;
+use crate::prepared::{self, PublicationPolicy};
+use std::sync::atomic::Ordering::{Acquire, SeqCst};
+use std::time::{Duration, Instant};
+fn wait(mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !ready() {
+        assert!(
+            Instant::now() < deadline,
+            "endpoint lifecycle did not progress"
+        );
+        std::thread::yield_now();
+    }
+}
+fn limits(
+    owner: &mut hex_engine::AudioCandidateOwner,
+) -> crate::AudioCandidatePublicationReservation {
+    let ledger = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 4096,
+        handle_rows: 2048,
+        root_rows: 1,
+        max_retained_bytes: 96 * 1024 * 1024,
+        max_construction_peak_bytes: 96 * 1024 * 1024,
+    };
+    let summary = owner.seal_constructor_on_control(ledger).unwrap();
+    crate::AudioCandidatePublicationReservation {
+        runtime_slots: 3,
+        archive_slots: 3,
+        member_rows: summary.member_rows * 3,
+        transfer_rows: summary.transfer_rows * 3,
+        receipt_rows: 4,
+        data_rows: ledger.data_rows,
+        handle_rows: ledger.handle_rows,
+        max_retained_data_bytes: ledger.max_retained_bytes,
+        max_construction_peak_data_bytes: ledger.max_construction_peak_bytes,
+    }
+}
+#[test]
+fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease_until_client_drop()
+{
+    let _serial = crate::prepared::candidate_tests::serial();
+    let ui = std::thread::current().id();
+    for error_first in [false, true] {
+        let Some(mut current) = crate::prepared::candidate_tests::candidate() else {
+            return;
+        };
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let reservation = limits(&mut current);
+        let lease = crate::lifecycle::Lease::acquire().unwrap();
+        let (control, callback) = prepared::channel(48_000).unwrap();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut publication) =
+            reserve_native_worker(control, callback);
+        let client_address = client.owner_ref().unwrap() as *const _ as usize;
+        let publication_address = publication.owner_ref().unwrap() as *const _ as usize;
+        let observed = Arc::clone(&records);
+        client.test_drop_probe(move || {
+            observed
+                .lock()
+                .unwrap()
+                .push(("client", client_address, std::thread::current().id()))
+        });
+        let observed = Arc::clone(&records);
+        publication.test_drop_probe(move || {
+            observed.lock().unwrap().push((
+                "publication",
+                publication_address,
+                std::thread::current().id(),
+            ))
+        });
+        let native = NativeRetirement::new(terminals, root.clone());
+        let stream = crate::lifecycle::StreamOwner::prepared_custody(lease, None, native);
+        let control = publication.control().unwrap();
+        control.enable_native_custody().unwrap();
+        control
+            .configure_audio_candidate_publication(reservation)
+            .unwrap();
+        client.activate();
+        // Once exposed, even an unused Resident client cannot be converted.
+        assert!(
+            control
+                .configure_audio_candidate_publication(reservation)
+                .is_err()
+        );
+        let _ticket = control
+            .stage_eligible_audio_candidate(current, vec![], PublicationPolicy::InheritRuntime, 1)
+            .ok()
+            .unwrap();
+        assert!(client.preview_request().is_err());
+        client.command(hex_engine::PlaybackCommand::Play).unwrap();
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                let mut output = [[0.0; 2]; 8];
+                callback.render(&mut output).unwrap();
+                assert!(output.iter().any(|frame| frame[0] != 0.0));
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(client.status().unwrap().applied_revision.load(Acquire), 1);
+        publication.close();
+        drop(stream); // actual singleton lifecycle owns retirement and lease
+        if error_first {
+            drop(errors);
+            drop(data);
+        } else {
+            drop(data);
+            drop(errors);
+        }
+        // No UI reclaim/recover/advance calls: original graph disposal is autonomous.
+        wait(|| root.test_eligible_complete());
+        assert!(crate::lifecycle::Lease::acquire().is_err());
+        assert!(
+            !records
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(kind, address, _)| *kind == "client" && *address == client_address)
+        );
+        let measured = allocation_counter::measure(|| {
+            client.close();
+            client.close();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(client.status().is_none());
+        let mut replacement = None;
+        wait(|| {
+            replacement = crate::lifecycle::Lease::acquire().ok();
+            replacement.is_some()
+        });
+        let records = records.lock().unwrap();
+        for (kind, address) in [
+            ("client", client_address),
+            ("publication", publication_address),
+        ] {
+            let found = records
+                .iter()
+                .filter(|(k, a, _)| *k == kind && *a == address)
+                .collect::<Vec<_>>();
+            assert_eq!(found.len(), 1);
+            assert_ne!(found[0].2, ui);
+        }
+        drop(records);
+        drop(replacement);
+        // Keep the inert token alive until AFTER the replacement lease exists.
+        drop(client);
+        drop(publication);
+    }
+}
+
+#[test]
+fn worker_and_client_endpoints_return_in_either_order_and_unexposed_open_abandonment_is_inert() {
+    let _serial = crate::prepared::candidate_tests::serial();
+    for client_first in [false, true] {
+        let (control, callback) = prepared::channel(48_000).unwrap();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, client, publication) =
+            reserve_native_worker(control, callback);
+        let mut client = Some(client);
+        let mut publication = Some(publication);
+        let mut retirement = NativeRetirement::new(terminals, root.clone());
+        publication
+            .as_mut()
+            .unwrap()
+            .control()
+            .unwrap()
+            .enable_native_custody()
+            .unwrap();
+        drop(data);
+        drop(errors);
+        if client_first {
+            drop(client.take());
+        } else {
+            drop(publication.take());
+        }
+        assert!(!retirement.advance().unwrap());
+        if client_first {
+            drop(publication.take());
+        } else {
+            drop(client.take());
+        }
+        crate::prepared::candidate_tests::finish(&mut retirement);
+    }
+}
+#[test]
+fn publication_destructor_failure_keeps_other_actual_endpoint_and_first_payload_without_retry() {
+    let _serial = crate::prepared::candidate_tests::serial();
+    let (control, callback) = prepared::channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (data, errors, terminals, mut client, mut publication) =
+        reserve_native_worker(control, callback);
+    let mut retirement = NativeRetirement::new(terminals, root);
+    publication
+        .control()
+        .unwrap()
+        .enable_native_custody()
+        .unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&calls);
+    publication.test_drop_probe(move || {
+        count.fetch_add(1, SeqCst);
+        std::panic::panic_any(1234_u64);
+    });
+    publication.close();
+    client.close();
+    drop(data);
+    drop(errors);
+    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| retirement.advance()))
+        .err()
+        .unwrap();
+    assert_eq!(first.downcast_ref::<u64>(), Some(&1234));
+    assert_eq!(calls.load(SeqCst), 1);
+    assert!(
+        retirement
+            .terminals
+            .as_mut()
+            .unwrap()
+            .endpoints
+            .as_mut()
+            .unwrap()
+            .client
+            .ready()
+    );
+    assert!(retirement.advance().is_err());
+    assert_eq!(calls.load(SeqCst), 1);
+    assert!(retirement.data.is_none()); // exact callback Boxes still retained by terminals
+    // Fixture teardown is explicit and never asserted as successful disposal.
+    wait(|| !retirement.root.cleanup_scheduled());
+    drop(first);
+}
+
+#[test]
+fn exposed_resident_client_permanently_refuses_later_constructor_conversion() {
+    let _serial = crate::prepared::candidate_tests::serial();
+    let Some(mut owner) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let limits = limits(&mut owner);
+    let (control, callback) = prepared::channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (data, errors, terminals, mut client, mut publication) =
+        reserve_native_worker(control, callback);
+    let mut retirement = NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    client.activate(); // still Resident, no graph and no preview request
+    assert!(
+        control
+            .configure_audio_candidate_publication(limits)
+            .is_err()
+    );
+    assert!(
+        control
+            .configure_audio_candidate_domains(crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 96 * 1024 * 1024,
+                max_construction_peak_data_bytes: 96 * 1024 * 1024,
+            })
+            .is_err()
+    );
+    assert!(control.configure_audio_candidate_streaming(8).is_err());
+    assert!(client.preview_request().is_ok()); // failed conversion preserves Resident
+    client.close();
+    publication.close();
+    drop(data);
+    drop(errors);
+    crate::prepared::candidate_tests::finish(&mut retirement);
+}

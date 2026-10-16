@@ -565,7 +565,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
             control.status.position.load(Acquire),
             control.status.stream_readiness_refused.load(Acquire),
             control.status.rejected_revision(),
-            control.publication_pending.load(Acquire)
+            control.status.publication_pending.load(Acquire)
         );
         std::thread::yield_now();
     }
@@ -640,7 +640,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
             control.status.position.load(Acquire),
             control.status.stream_readiness_refused.load(Acquire),
             control.status.rejected_revision(),
-            control.publication_pending.load(Acquire)
+            control.status.publication_pending.load(Acquire)
         );
         std::thread::yield_now();
     }
@@ -664,7 +664,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
     assert_eq!(control.status.position.load(Acquire), position);
     assert!(!control.status.playing.load(Acquire));
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
-    assert!(control.publication_pending.load(Acquire));
+    assert!(control.status.publication_pending.load(Acquire));
     assert_eq!(
         control.cancel_audio_candidate(&b_ticket),
         crate::AudioCandidateCancellationResult::Cancelled
@@ -709,7 +709,7 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
             control.status.position.load(Acquire),
             control.status.stream_readiness_refused.load(Acquire),
             control.status.rejected_revision(),
-            control.publication_pending.load(Acquire)
+            control.status.publication_pending.load(Acquire)
         );
         std::thread::yield_now();
     }

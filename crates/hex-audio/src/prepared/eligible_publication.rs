@@ -1,17 +1,18 @@
 //! Control reservation and the same real publication/return rings. This owning
 //! seam does not itself grant native installation or page readiness.
 use super::*;
-impl Control {
+impl PublicationControl {
     /// Reserve exact-demand rows per retained runtime before accepting any
     /// source domain or graph. Existing resident callers need not opt in.
     pub fn configure_audio_candidate_streaming(
         &mut self,
         extents_per_domain: usize,
     ) -> Result<(), &'static str> {
-        if !self.native_custody
+        if self.status.client_exposed.load(Acquire)
+            || !self.native_custody
             || self.revision != 0
-            || self.closing.load(Acquire)
-            || self.publication_pending.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
         {
             return Err("stream demand requires a vacant native channel");
         }
@@ -26,7 +27,7 @@ impl Control {
         domain: crate::candidate_catalog::CandidateDomain,
         reservation: hex_stream::StreamReadinessReservation,
     ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
-        if !self.native_custody || self.closing.load(Acquire) {
+        if !self.native_custody || self.status.closing.load(Acquire) {
             return Err(Box::new(crate::AudioCandidateDomainRefusal {
                 reason: "candidate native custody unavailable",
                 domain,
@@ -53,9 +54,10 @@ impl Control {
     ) -> Result<(), &'static str> {
         if !self.native_custody
             || self.revision != 0
-            || !self.sample_preview.constructor_virgin()
-            || self.closing.load(Acquire)
-            || self.publication_pending.load(Acquire)
+            || !self.status.preview_unused()
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
             || self.held_control_return.is_some()
             || self.latest_fresh_runtime_cancellation.is_some()
         {
@@ -82,11 +84,7 @@ impl Control {
                 .capacity()
                 .checked_mul(std::mem::size_of::<ReturnedPublication>())
                 .and_then(|n| n.checked_add(std::mem::size_of_val(returned.buffer()))),
-            self.commands
-                .buffer()
-                .capacity()
-                .checked_mul(std::mem::size_of::<QueuedCommand>())
-                .and_then(|n| n.checked_add(std::mem::size_of_val(self.commands.buffer()))),
+            Some(self.command_storage_bytes),
         ]
         .into_iter()
         .try_fold(native_bytes, |n, value| n.checked_add(value?))
@@ -95,7 +93,8 @@ impl Control {
             .configure_publications(reservation, queue_bytes)?;
         // Closed constructor claims never adopt the independent owning browser
         // preview lane. The virgin predicate proves shutdown drops no PCM here.
-        self.sample_preview.shutdown();
+        self.status.constructor_mode.store(true, Release);
+
         Ok(())
     }
     /// Cancel this exact retained slot/incarnation before its callback apply
@@ -117,7 +116,7 @@ impl Control {
         policy: PublicationPolicy,
         context_generation: u64,
     ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateEligibleStageRefusal> {
-        let reason = if !self.native_custody || self.closing.load(Acquire) {
+        let reason = if !self.native_custody || self.status.closing.load(Acquire) {
             Some("candidate native custody unavailable")
         } else if owner.sample_rate() != self.rate
             || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
@@ -125,7 +124,7 @@ impl Control {
             Some("candidate constructor rate or phase differs")
         } else if policy != PublicationPolicy::InheritRuntime {
             Some("constructor fresh-runtime policy is not supported")
-        } else if self.gain_recording.target().is_some() {
+        } else if self.status.publication_pending.gain_active() {
             Some("finish gain recording before replacing playback")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
@@ -152,11 +151,7 @@ impl Control {
                 });
             }
         };
-        if self
-            .publication_pending
-            .compare_exchange(false, true, AcqRel, Acquire)
-            .is_err()
-        {
+        if !self.status.publication_pending.reserve_publication() {
             return Err(crate::AudioCandidateEligibleStageRefusal {
                 reason: "playback publication already pending",
                 owner,
@@ -164,7 +159,7 @@ impl Control {
             });
         }
         let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
-            self.publication_pending.store(false, Release);
+            self.status.publication_pending.store(false, Release);
             return Err(crate::AudioCandidateEligibleStageRefusal {
                 reason: "candidate publication queue is full",
                 owner,
@@ -185,10 +180,11 @@ impl Control {
         ) {
             Ok(ticket) => {
                 self.revision = revision;
+                self.status.submitted_revision.store(revision, Release);
                 Ok(ticket)
             }
             Err(refused) => {
-                self.publication_pending.store(false, Release);
+                self.status.publication_pending.store(false, Release);
                 Err(refused)
             }
         }
@@ -274,7 +270,7 @@ impl Callback {
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                     if let Some(ticket) = self.stream_pending_play.take() {
                         self.status.publish_rejected_action(
                             ticket,
@@ -314,7 +310,7 @@ impl Callback {
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.applied_revision.store(revision, Release);
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                 }
             }
         }

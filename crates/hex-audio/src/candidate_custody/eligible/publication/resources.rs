@@ -28,7 +28,7 @@ impl RootResourceWitness {
 fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     // Root handles: 2 per accepted State + at most8 control/callback/terminal,
     // queue/lifecycle/construction handles in this private factory. Life:3 per
-    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:4; two domain signals:4.
+    // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:6; two domain signals:4.
     // Six auxiliary rings and private channel atomic payload handles come from
     // the actual callback constructor visitor, independently of queue occupancy.
     // Observer Status handles outside this publication Root own no graph or
@@ -37,7 +37,7 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
         .slots
         .len()
         .checked_mul(5)?
-        .checked_add(26)?
+        .checked_add(28)?
         .checked_add(
             bank.native
                 .as_ref()

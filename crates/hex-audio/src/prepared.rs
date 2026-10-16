@@ -24,7 +24,11 @@ use std::time::Instant;
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
+mod admission;
 mod eligible_publication;
+mod endpoints;
+pub use endpoints::{Client, WorkerControl};
+pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 mod runtime_view;
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
@@ -336,6 +340,15 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    pending_stop_marker: AtomicU64,
+    admitted_ticket: AtomicU64,
+    closing: AtomicBool,
+    publication_pending: admission::PublicationAdmission,
+    preview_used: AtomicBool,
+    constructor_mode: AtomicBool,
+    split_endpoints: AtomicBool,
+    client_exposed: AtomicBool,
+    submitted_revision: AtomicU64,
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
     render_fault_record: crate::render_fault::RenderFaultRecord,
@@ -401,6 +414,49 @@ impl Default for Status {
 }
 
 impl Status {
+    #[cfg(test)]
+    pub(crate) fn set_split_for_test(&self) {
+        self.split_endpoints.store(true, Release);
+    }
+    #[cfg(test)]
+    pub(crate) fn publication_reserve_for_test(&self) -> bool {
+        self.publication_pending.reserve_publication()
+    }
+    #[cfg(test)]
+    pub(crate) fn publication_clear_for_test(&self) {
+        self.publication_pending.store(false, Release);
+    }
+    pub(crate) fn preview_permitted(&self) -> bool {
+        !self.constructor_mode.load(Acquire) && !self.closing.load(Acquire)
+    }
+    pub(crate) fn mark_preview_used(&self) {
+        self.preview_used.store(true, Release);
+    }
+    pub(crate) fn preview_unused(&self) -> bool {
+        !self.preview_used.load(Acquire)
+    }
+    pub(crate) fn reserve_gain_begin(&self) -> Result<bool, &'static str> {
+        if self.closing.load(Acquire) {
+            return Err("gain recording output is closing");
+        }
+        if self.constructor_mode.load(Acquire) {
+            return Err("gain recording is unavailable for streamed documents");
+        }
+        if self.split_endpoints.load(Acquire) {
+            if !self.publication_pending.reserve_gain() {
+                return Err("playback publication or gain recording is pending");
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    pub(crate) fn gain_begin_committed(&self) {
+        self.publication_pending.legacy_gain_started();
+    }
+    pub(crate) fn gain_end(&self) {
+        self.publication_pending.gain_finished();
+    }
     pub(crate) fn candidate_boundary_data_bytes(&self) -> Option<usize> {
         self.route_slots
             .len()
@@ -409,6 +465,15 @@ impl Status {
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
+            pending_stop_marker: AtomicU64::new(0),
+            admitted_ticket: AtomicU64::new(0),
+            closing: AtomicBool::new(false),
+            publication_pending: admission::PublicationAdmission::default(),
+            preview_used: AtomicBool::new(false),
+            constructor_mode: AtomicBool::new(false),
+            split_endpoints: AtomicBool::new(false),
+            client_exposed: AtomicBool::new(false),
+            submitted_revision: AtomicU64::new(0),
             device_fault: AtomicBool::new(false),
             render_fault: AtomicBool::new(false),
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
@@ -713,26 +778,42 @@ impl std::fmt::Debug for PublishError {
     }
 }
 
+/// Legacy unsplit control. Native worker composition consumes this exactly once
+/// before delivering its nonowning client. Resident callers retain these APIs.
 pub struct Control {
     pub sample_preview: crate::sample_preview::Control,
+    commands: Producer<QueuedCommand>,
+    pub spectrum_target: spectrum_target::SpectrumTargetControl,
+    pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
+    pub gain_recording: crate::gain_recording::Control,
+    command_ticket: u64,
+    publication: PublicationControl,
+}
+/// The unique worker-side publication/return endpoint; never a UI command client.
+pub struct PublicationControl {
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
     native_custody: bool,
     held_control_return: Option<ReturnedPublication>,
-    commands: Producer<QueuedCommand>,
-    pending_stop_marker: Arc<AtomicU64>,
-    admitted_ticket: Arc<AtomicU64>,
-    closing: Arc<AtomicBool>,
-    publication_pending: Arc<AtomicBool>,
     pub status: Arc<Status>,
-    pub spectrum_target: spectrum_target::SpectrumTargetControl,
-    pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
-    pub gain_recording: crate::gain_recording::Control,
     rate: u32,
     revision: u64,
-    command_ticket: u64,
+    command_storage_bytes: usize,
+    #[cfg(test)]
+    endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+}
+impl std::ops::Deref for Control {
+    type Target = PublicationControl;
+    fn deref(&self) -> &Self::Target {
+        &self.publication
+    }
+}
+impl std::ops::DerefMut for Control {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.publication
+    }
 }
 
 pub struct Callback {
@@ -741,10 +822,6 @@ pub struct Callback {
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
-    pending_stop_marker: Arc<AtomicU64>,
-    admitted_ticket: Arc<AtomicU64>,
-    closing: Arc<AtomicBool>,
-    publication_pending: Arc<AtomicBool>,
     status: Arc<Status>,
     rate: u32,
     spectrum_target: spectrum_target::SpectrumTargetCallback,
@@ -797,40 +874,45 @@ pub fn channel_with_spectrum(
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
-    let (sample_preview, callback_preview) = crate::sample_preview::channel(rate);
+    let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
-    let pending_stop_marker = Arc::new(AtomicU64::new(0));
-    let admitted_ticket = Arc::new(AtomicU64::new(0));
-    let closing = Arc::new(AtomicBool::new(false));
-    let publication_pending = Arc::new(AtomicBool::new(false));
     let status = Arc::new(Status::try_new()?);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
-    let (gain_recording, callback_gain_recording) = crate::gain_recording::channel();
+    let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
+    sample_preview.bind_status(status.clone());
+    gain_recording.bind_status(status.clone());
     let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
+    let command_storage_bytes = commands
+        .buffer()
+        .capacity()
+        .checked_mul(std::mem::size_of::<QueuedCommand>())
+        .and_then(|n| n.checked_add(std::mem::size_of_val(commands.buffer())))
+        .ok_or(Invalid("command queue storage overflow"))?;
     Ok((
         Control {
             sample_preview,
-            candidate_root: candidate_root.clone(),
-            native_custody: false,
-            held_control_return: None,
-            publications,
-            retired: Some(retired),
             commands,
-            pending_stop_marker: pending_stop_marker.clone(),
-            admitted_ticket: admitted_ticket.clone(),
-            closing: closing.clone(),
-            publication_pending: publication_pending.clone(),
-            status: status.clone(),
             spectrum_target,
             processor_audition,
             gain_recording,
-            rate,
-            revision: 0,
             command_ticket: 0,
-            latest_fresh_runtime_cancellation: None,
+            publication: PublicationControl {
+                candidate_root: candidate_root.clone(),
+                native_custody: false,
+                held_control_return: None,
+                publications,
+                retired: Some(retired),
+                status: status.clone(),
+                rate,
+                revision: 0,
+                command_storage_bytes,
+                #[cfg(test)]
+                endpoint_probe: None,
+                latest_fresh_runtime_cancellation: None,
+            },
         },
         Callback {
             sample_preview: callback_preview,
@@ -838,10 +920,6 @@ pub fn channel_with_spectrum(
             publications: incoming,
             retired: returning,
             commands: events,
-            pending_stop_marker,
-            admitted_ticket,
-            closing,
-            publication_pending,
             status,
             rate,
             spectrum_target: callback_target,
@@ -964,7 +1042,7 @@ impl SpectrumStage {
     }
 }
 
-impl Control {
+impl PublicationControl {
     /// Capture the current route header under its sequence lock, then acquire
     /// the admitted-command high-water mark. Returns `None` on a contended or
     /// invalid route snapshot so callers can retry before preparing a graph.
@@ -974,7 +1052,7 @@ impl Control {
         Some(FreshRuntimeFence {
             expected_active_revision: snapshot.audio_revision,
             route_state_generation: snapshot.route_state_generation,
-            admitted_command_ticket: self.admitted_ticket.load(Acquire),
+            admitted_command_ticket: self.status.admitted_ticket.load(Acquire),
         })
     }
 
@@ -1001,9 +1079,9 @@ impl Control {
     ) -> Result<u64, PublishError> {
         let reason = if self.candidate_root.domains_configured() {
             Some("constructor publication does not adopt legacy playback")
-        } else if self.gain_recording.target().is_some() {
+        } else if self.status.publication_pending.gain_active() {
             Some("finish gain recording before replacing playback")
-        } else if self.closing.load(Acquire) {
+        } else if self.status.closing.load(Acquire) {
             Some("playback is shutting down")
         } else if playback.sample_rate() != self.rate {
             Some("playback rate differs from device")
@@ -1017,11 +1095,7 @@ impl Control {
         if let Some(reason) = reason {
             return Err(PublishError { reason, playback });
         }
-        if self
-            .publication_pending
-            .compare_exchange(false, true, AcqRel, Acquire)
-            .is_err()
-        {
+        if !self.status.publication_pending.reserve_publication() {
             return Err(PublishError {
                 reason: "playback publication already pending",
                 playback,
@@ -1045,13 +1119,14 @@ impl Control {
             playback: Box::new(playback),
         };
         if let Err(publication) = enqueue_legacy(&mut self.publications, publication) {
-            self.publication_pending.store(false, Release);
+            self.status.publication_pending.store(false, Release);
             return Err(PublishError {
                 reason: "playback publication queue full",
                 playback: *publication.playback,
             });
         }
         self.revision = revision;
+        self.status.submitted_revision.store(revision, Release);
         self.latest_fresh_runtime_cancellation = cancellation;
         Ok(revision)
     }
@@ -1073,6 +1148,144 @@ impl Control {
         }
         cancellation.request_cancel()
     }
+    /// Bounded reclamation on the control thread, including final PCM drops.
+    pub fn reclaim(&mut self) -> usize {
+        let mut count = 0;
+        for _ in 0..RETIRED {
+            let publication = self
+                .held_control_return
+                .take()
+                .or_else(|| self.retired.as_mut().and_then(|r| r.pop().ok()));
+            let Some(publication) = publication else {
+                break;
+            };
+            match publication {
+                ReturnedPublication::Domain(pages) => {
+                    if let Err(pages) = self.candidate_root.ingest_pages(pages) {
+                        self.held_control_return = Some(ReturnedPublication::Domain(pages));
+                        break;
+                    }
+                }
+                ReturnedPublication::Eligible(value) => {
+                    if let Err(value) = self.candidate_root.ingest_eligible(value) {
+                        self.held_control_return = Some(ReturnedPublication::Eligible(value));
+                        break;
+                    }
+                }
+                ReturnedPublication::Legacy(publication) => drop(publication),
+                ReturnedPublication::Candidate(returned) => {
+                    if let Err(returned) = self.candidate_root.ingest(returned) {
+                        self.held_control_return = Some(ReturnedPublication::Candidate(returned));
+                        break;
+                    }
+                }
+            }
+            count += 1;
+        }
+        crate::lifecycle::request_candidate_cleanup(&self.candidate_root);
+        count
+    }
+    pub(crate) fn enable_native_custody(&mut self) -> Result<(), String> {
+        crate::lifecycle::prepare_candidate_cleanup()?;
+        self.native_custody = true;
+        Ok(())
+    }
+    pub(crate) fn native_candidate_root(&self) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
+    }
+    /// Opt in only on a vacant native channel. This reserves retained domain
+    /// DATA, not native installation, page readiness or complete scalar costs.
+    pub fn configure_audio_candidate_domains(
+        &mut self,
+        reservation: crate::AudioCandidateDomainReservation,
+    ) -> Result<(), &'static str> {
+        if self.status.client_exposed.load(Acquire)
+            || !self.native_custody
+            || self.revision != 0
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || self.held_control_return.is_some()
+            || self.latest_fresh_runtime_cancellation.is_some()
+        {
+            return Err("constructor publication requires a vacant native channel");
+        }
+        self.candidate_root.configure_domains(reservation)
+    }
+    /// Retains one actual factory pair in a fixed Root cell. Successful custody
+    /// may already be closing; the token does not promise publication/readiness.
+    pub fn register_audio_candidate_domain(
+        &mut self,
+        domain: crate::CandidateDomain,
+    ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
+        self.candidate_root.register_domain(domain)
+    }
+    pub fn retire_audio_candidate_domain(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.retire_domain(token)
+    }
+    /// Moves an already READY scalar report; never joins or destroys endpoints.
+    pub fn recover_audio_candidate_domain(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> Option<hex_stream::PagePoolReport> {
+        self.candidate_root.recover_domain(token)
+    }
+    /// Nonblocking observation. None includes temporary lifecycle contention;
+    /// it does not establish zero occupancy or release any reservation.
+    pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
+        self.candidate_root.domain_usage()
+    }
+    /// Accept disposal-only custody. Queue acceptance is not installation or a
+    /// complete-cost claim; the callback currently refuses this path before use.
+    pub fn stage_audio_candidate(
+        &mut self,
+        owner: hex_engine::AudioCandidateOwner,
+        domains: Vec<crate::CandidateDomain>,
+    ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateStageRefusal> {
+        if !self.native_custody
+            || self.status.closing.load(Acquire)
+            || owner.sample_rate() != self.rate
+            || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
+        {
+            return Err(crate::AudioCandidateStageRefusal {
+                reason: "candidate native custody unavailable",
+                owner,
+                domains,
+            });
+        }
+        let publications = &mut self.publications;
+        self.candidate_root
+            .stage(owner, domains, |queued| {
+                let Ok(chunk) = publications.write_chunk_uninit(1) else {
+                    return Err(queued);
+                };
+                chunk.fill_from_iter(std::iter::once(QueuedPublication::Candidate(queued)));
+                Ok(())
+            })
+            .map(|(_, ticket)| ticket)
+    }
+    pub fn recover_audio_candidate(
+        &mut self,
+        ticket: &crate::AudioCandidateTicket,
+    ) -> Option<crate::AudioCandidateRecovery> {
+        // Caller polls ordinary return ingestion with reclaim(); this method
+        // only moves a READY original bank/receipt, with no destructor or join.
+        self.candidate_root.recover(ticket)
+    }
+    pub fn audio_candidate_custody(&self) -> crate::AudioCandidateCustodyReport {
+        self.candidate_root.report()
+    }
+    pub fn request_shutdown(&mut self) {
+        self.status.closing.store(true, Release);
+        self.status.pending_stop_marker.store(
+            self.status.admitted_ticket.load(Acquire).saturating_add(1),
+            Release,
+        );
+    }
+}
+impl Control {
     /// Caller retains a rejected command; Stop uses the independent priority path.
     pub fn command(&mut self, command: PlaybackCommand) -> Result<(), PlaybackCommand> {
         self.command_with_ticket(command).map(|_| ())
@@ -1124,178 +1337,42 @@ impl Control {
     }
 
     pub fn action_with_ticket(&mut self, action: PlaybackAction) -> Result<u64, PlaybackAction> {
-        if self.closing.load(Acquire) || self.revision == 0 {
-            return Err(action);
-        }
-        let Some(ticket) = self
-            .command_ticket
-            .checked_add(1)
-            .filter(|ticket| *ticket != u64::MAX)
-        else {
-            return Err(action);
-        };
-        self.commands
-            .push(QueuedCommand { ticket, action })
-            .map_err(|PushError::Full(queued)| queued.action)?;
-        self.command_ticket = ticket;
-        self.admitted_ticket.store(ticket, Release);
-        if action_invalidates_processor_audition(action) {
-            let _ = self.processor_audition.cancel_immediately();
-        }
-        Ok(ticket)
+        endpoints::legacy_enqueue(self, action)
     }
     pub fn stop(&self) {
         // Ticket MAX is refused for ordinary commands, so the supported marker
         // encoding (ticket + 1) is always nonzero and cannot wrap.
-        self.pending_stop_marker
+        self.status
+            .pending_stop_marker
             .store(self.command_ticket.saturating_add(1), Release);
         self.processor_audition.invalidate_current_immediately();
-    }
-    /// Bounded reclamation on the control thread, including final PCM drops.
-    pub fn reclaim(&mut self) -> usize {
-        self.sample_preview.reclaim();
-        let mut count = 0;
-        for _ in 0..RETIRED {
-            let publication = self
-                .held_control_return
-                .take()
-                .or_else(|| self.retired.as_mut().and_then(|r| r.pop().ok()));
-            let Some(publication) = publication else {
-                break;
-            };
-            match publication {
-                ReturnedPublication::Domain(pages) => {
-                    if let Err(pages) = self.candidate_root.ingest_pages(pages) {
-                        self.held_control_return = Some(ReturnedPublication::Domain(pages));
-                        break;
-                    }
-                }
-                ReturnedPublication::Eligible(value) => {
-                    if let Err(value) = self.candidate_root.ingest_eligible(value) {
-                        self.held_control_return = Some(ReturnedPublication::Eligible(value));
-                        break;
-                    }
-                }
-                ReturnedPublication::Legacy(publication) => drop(publication),
-                ReturnedPublication::Candidate(returned) => {
-                    if let Err(returned) = self.candidate_root.ingest(returned) {
-                        self.held_control_return = Some(ReturnedPublication::Candidate(returned));
-                        break;
-                    }
-                }
-            }
-            count += 1;
-        }
-        crate::lifecycle::request_candidate_cleanup(&self.candidate_root);
-        count
-    }
-    pub(crate) fn enable_native_custody(&mut self) -> Result<(), String> {
-        crate::lifecycle::prepare_candidate_cleanup()?;
-        self.native_custody = true;
-        Ok(())
-    }
-    pub(crate) fn native_candidate_root(&self) -> crate::candidate_custody::CandidateRoot {
-        self.candidate_root.clone()
-    }
-    /// Opt in only on a vacant native channel. This reserves retained domain
-    /// DATA, not native installation, page readiness or complete scalar costs.
-    pub fn configure_audio_candidate_domains(
-        &mut self,
-        reservation: crate::AudioCandidateDomainReservation,
-    ) -> Result<(), &'static str> {
-        if !self.native_custody
-            || self.revision != 0
-            || self.closing.load(Acquire)
-            || self.publication_pending.load(Acquire)
-            || self.held_control_return.is_some()
-            || self.latest_fresh_runtime_cancellation.is_some()
-        {
-            return Err("constructor publication requires a vacant native channel");
-        }
-        self.candidate_root.configure_domains(reservation)
-    }
-    /// Retains one actual factory pair in a fixed Root cell. Successful custody
-    /// may already be closing; the token does not promise publication/readiness.
-    pub fn register_audio_candidate_domain(
-        &mut self,
-        domain: crate::CandidateDomain,
-    ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
-        self.candidate_root.register_domain(domain)
-    }
-    pub fn retire_audio_candidate_domain(
-        &mut self,
-        token: crate::AudioCandidateDomainToken,
-    ) -> bool {
-        self.candidate_root.retire_domain(token)
-    }
-    /// Moves an already READY scalar report; never joins or destroys endpoints.
-    pub fn recover_audio_candidate_domain(
-        &mut self,
-        token: crate::AudioCandidateDomainToken,
-    ) -> Option<hex_stream::PagePoolReport> {
-        self.candidate_root.recover_domain(token)
-    }
-    /// Nonblocking observation. None includes temporary lifecycle contention;
-    /// it does not establish zero occupancy or release any reservation.
-    pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
-        self.candidate_root.domain_usage()
-    }
-    /// Accept disposal-only custody. Queue acceptance is not installation or a
-    /// complete-cost claim; the callback currently refuses this path before use.
-    pub fn stage_audio_candidate(
-        &mut self,
-        owner: hex_engine::AudioCandidateOwner,
-        domains: Vec<crate::CandidateDomain>,
-    ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateStageRefusal> {
-        if !self.native_custody
-            || self.closing.load(Acquire)
-            || owner.sample_rate() != self.rate
-            || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
-        {
-            return Err(crate::AudioCandidateStageRefusal {
-                reason: "candidate native custody unavailable",
-                owner,
-                domains,
-            });
-        }
-        let publications = &mut self.publications;
-        self.candidate_root
-            .stage(owner, domains, |queued| {
-                let Ok(chunk) = publications.write_chunk_uninit(1) else {
-                    return Err(queued);
-                };
-                chunk.fill_from_iter(std::iter::once(QueuedPublication::Candidate(queued)));
-                Ok(())
-            })
-            .map(|(_, ticket)| ticket)
-    }
-    pub fn recover_audio_candidate(
-        &mut self,
-        ticket: &crate::AudioCandidateTicket,
-    ) -> Option<crate::AudioCandidateRecovery> {
-        // Caller polls ordinary return ingestion with reclaim(); this method
-        // only moves a READY original bank/receipt, with no destructor or join.
-        self.candidate_root.recover(ticket)
-    }
-    pub fn audio_candidate_custody(&self) -> crate::AudioCandidateCustodyReport {
-        self.candidate_root.report()
     }
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
-        self.closing.store(true, Release);
+        self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
         self.stop();
     }
+    /// Resident compatibility reclamation; Verified clients never own preview PCM.
+    pub fn reclaim(&mut self) -> usize {
+        self.sample_preview.reclaim();
+        self.publication.reclaim()
+    }
 }
 
-impl Drop for Control {
+impl Drop for PublicationControl {
     fn drop(&mut self) {
+        if self.status.split_endpoints.load(Acquire) {
+            self.request_shutdown();
+        }
         if !self.native_custody {
             return;
         }
         self.candidate_root
             .abandon_control(self.retired.take(), self.held_control_return.take());
+        #[cfg(test)]
+        drop(self.endpoint_probe.take());
     }
 }
 
@@ -1303,22 +1380,11 @@ impl Callback {
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
-        use crate::native_callback_owner::ChannelStorage;
         self.sample_preview
             .constructor_channel_storage()?
             .plus(self.gain_recording.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
-            .plus(self.processor_audition.constructor_channel_storage()?)?
-            .plus(ChannelStorage::paired_payload(
-                self.pending_stop_marker.as_ref(),
-            ))?
-            .plus(ChannelStorage::paired_payload(
-                self.admitted_ticket.as_ref(),
-            ))?
-            .plus(ChannelStorage::paired_payload(self.closing.as_ref()))?
-            .plus(ChannelStorage::paired_payload(
-                self.publication_pending.as_ref(),
-            ))
+            .plus(self.processor_audition.constructor_channel_storage()?)
     }
 
     fn install_candidate(
@@ -1332,14 +1398,14 @@ impl Callback {
         if !allowed
             || self.active.is_some()
             || self.deferred.is_some()
-            || self.closing.load(Acquire)
+            || self.status.closing.load(Acquire)
         {
             return Err(value);
         }
         let active =
             crate::candidate_custody::ActiveCandidate::install(value, &self.candidate_root)?;
         self.active = Some(ActivePublication::Candidate(active));
-        self.publication_pending.store(false, Release);
+        self.status.publication_pending.store(false, Release);
         Ok(())
     }
     pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
@@ -1410,7 +1476,7 @@ impl Callback {
         }
     }
     pub(crate) fn close_candidate_custody_on_control(&mut self) {
-        self.closing.store(true, Release);
+        self.status.closing.store(true, Release);
         self.candidate_root.close();
     }
     pub(crate) fn has_domain_pages(&self) -> bool {
@@ -1513,8 +1579,9 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
-        self.sample_preview.begin_block(self.closing.load(Acquire));
-        if self.closing.load(Acquire) {
+        self.sample_preview
+            .begin_block(self.status.closing.load(Acquire));
+        if self.status.closing.load(Acquire) {
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::Cancelled);
         }
         self.processor_audition.begin_block();
@@ -1530,7 +1597,7 @@ impl Callback {
             if self.held_retirement.is_some() {
                 // Ownership backpressure must not delay the independent Stop
                 // path. Keep the graph retained while consuming bounded control.
-                if self.closing.load(Acquire) {
+                if self.status.closing.load(Acquire) {
                     self.status.playing.store(false, Relaxed);
                 } else {
                     self.consume_commands();
@@ -1539,7 +1606,7 @@ impl Callback {
             }
         }
         self.return_requested_domain_pages();
-        if self.closing.load(Acquire) {
+        if self.status.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
             self.status.playing.store(false, Relaxed);
@@ -1549,7 +1616,7 @@ impl Callback {
                 self.return_publication(ReturnedPublication::Eligible(
                     value.reject_before_install(),
                 ));
-                self.publication_pending.store(false, Release);
+                self.status.publication_pending.store(false, Release);
             }
             if !self.retired.is_full() {
                 if let Some(publication) = self.deferred.take() {
@@ -1562,7 +1629,7 @@ impl Callback {
                         }
                     }
                     self.return_graph(publication);
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                 }
             }
             if !self.retired.is_full() {
@@ -1590,7 +1657,7 @@ impl Callback {
                             self.return_publication(ReturnedPublication::Eligible(
                                 value.reject_before_install(),
                             ));
-                            self.publication_pending.store(false, Release);
+                            self.status.publication_pending.store(false, Release);
                             return;
                         }
                         QueuedPublication::Legacy(publication) => publication,
@@ -1610,7 +1677,7 @@ impl Callback {
                         }
                     }
                     self.return_graph(publication);
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                 }
             }
             self.status.playing.store(false, Relaxed);
@@ -1711,8 +1778,8 @@ impl Callback {
                         .as_ref()
                         .and_then(ActivePublication::legacy)
                         .map_or(0, |active| active.playback.session_route_state_generation());
-                    let admitted_ticket = self.admitted_ticket.load(Acquire);
-                    let stop_pending = self.pending_stop_marker.load(Acquire) != 0;
+                    let admitted_ticket = self.status.admitted_ticket.load(Acquire);
+                    let stop_pending = self.status.pending_stop_marker.load(Acquire) != 0;
                     (active_revision != fence.expected_active_revision
                         || active_route_generation != fence.route_state_generation
                         || admitted_ticket != fence.admitted_command_ticket
@@ -1765,7 +1832,7 @@ impl Callback {
                         self.status.publish_rejected_revision(next.revision, reason);
                     }
                     self.return_graph(next);
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                 }
                 _ => {
                     #[cfg(test)]
@@ -1790,7 +1857,7 @@ impl Callback {
                             PlaybackHandoffRejection::FreshRuntimeCancelled,
                         );
                         self.return_graph(next);
-                        self.publication_pending.store(false, Release);
+                        self.status.publication_pending.store(false, Release);
                         self.consume_commands();
                         return;
                     }
@@ -1889,7 +1956,7 @@ impl Callback {
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
                     self.status.applied_revision.store(revision, Release);
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                 }
             }
         }
@@ -1999,8 +2066,8 @@ impl Callback {
         // Capture the published queue prefix before clearing the marker. Later
         // producer admissions stay queued for the next block; a Stop arriving
         // after this swap also remains pending for the next block.
-        let entry_ticket = self.admitted_ticket.load(Acquire);
-        let stop_marker = self.pending_stop_marker.swap(0, AcqRel);
+        let entry_ticket = self.status.admitted_ticket.load(Acquire);
+        let stop_marker = self.status.pending_stop_marker.swap(0, AcqRel);
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
     }
 
@@ -2124,7 +2191,7 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        if !self.closing.load(Acquire)
+        if !self.status.closing.load(Acquire)
             && self
                 .deferred_eligible
                 .as_ref()
@@ -2133,7 +2200,7 @@ impl Callback {
             self.advance_eligible_publication(Some(output.len()));
         }
         self.render_project(output)?;
-        if !self.closing.load(Acquire) {
+        if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
         Ok(())
@@ -2141,7 +2208,7 @@ impl Callback {
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
-            if self.closing.load(Acquire) {
+            if self.status.closing.load(Acquire) {
                 output.fill([0.0; 2]);
                 return Ok(());
             }
@@ -2186,7 +2253,7 @@ impl Callback {
             return self.render_unobserved(output);
         }
         self.spectrum_stage.begin(target, epoch, output.len());
-        if self.closing.load(Acquire) {
+        if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
         }
@@ -2227,7 +2294,7 @@ impl Callback {
     }
 
     fn render_unobserved(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        if self.closing.load(Acquire) {
+        if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
         }
@@ -4653,7 +4720,7 @@ mod tests {
                 PlaybackHandoffRejection::RuntimeFenceChanged
             ))
         );
-        assert!(!control.publication_pending.load(Acquire));
+        assert!(!control.status.publication_pending.load(Acquire));
     }
 
     #[test]
@@ -4669,7 +4736,7 @@ mod tests {
                 PublicationPolicy::InstallFreshRuntimeIfUnchanged(empty),
             )
             .unwrap();
-        assert_eq!(control.admitted_ticket.load(Acquire), 0);
+        assert_eq!(control.status.admitted_ticket.load(Acquire), 0);
         callback.begin_block();
         assert_eq!(
             control.status.applied_revision.load(Acquire),
@@ -4689,7 +4756,7 @@ mod tests {
             second_revision
         );
         assert_eq!(control.status.rejected_revision(), None);
-        assert!(!control.publication_pending.load(Acquire));
+        assert!(!control.status.publication_pending.load(Acquire));
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
         callback.begin_block();
@@ -4731,7 +4798,7 @@ mod tests {
                 PlaybackHandoffRejection::FreshRuntimeCancelled
             ))
         );
-        assert!(!control.publication_pending.load(Acquire));
+        assert!(!control.status.publication_pending.load(Acquire));
         let mut output = [[0.0; 2]; 1];
         callback.render(&mut output).unwrap();
         assert_eq!(output, [[0.25; 2]], "the old runtime remains active");
@@ -4951,7 +5018,7 @@ mod tests {
         oracle.apply(PlaybackCommand::Play);
 
         let stale = control.capture_fresh_runtime_fence().unwrap();
-        let ticket_before = control.admitted_ticket.load(Acquire);
+        let ticket_before = control.status.admitted_ticket.load(Acquire);
         callback
             .active
             .as_mut()
@@ -4968,7 +5035,7 @@ mod tests {
             ))
             .unwrap();
         callback.publish_active_routes(true);
-        assert_eq!(control.admitted_ticket.load(Acquire), ticket_before);
+        assert_eq!(control.status.admitted_ticket.load(Acquire), ticket_before);
         assert_ne!(
             callback
                 .active
@@ -5063,7 +5130,7 @@ mod tests {
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), 1);
         assert!(!control.status.playing.load(Acquire));
-        assert_eq!(control.pending_stop_marker.load(Acquire), 0);
+        assert_eq!(control.status.pending_stop_marker.load(Acquire), 0);
         assert_fresh_fence_rejection(&mut control, rejected);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
@@ -5129,7 +5196,7 @@ mod tests {
         });
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         assert!(!control.status.playing.load(Acquire));
-        assert_eq!(control.pending_stop_marker.load(Acquire), 0);
+        assert_eq!(control.status.pending_stop_marker.load(Acquire), 0);
         assert_eq!(control.status.rejected_revision(), None);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
@@ -5162,7 +5229,7 @@ mod tests {
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
         assert_eq!(control.status.consumed_command.load(Acquire), ticket);
-        assert!(control.publication_pending.load(Acquire));
+        assert!(control.status.publication_pending.load(Acquire));
         assert_eq!(control.reclaim(), RETIRED);
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
@@ -5289,7 +5356,10 @@ mod tests {
                 .command_with_ticket(PlaybackCommand::Seek(99))
                 .is_err()
         );
-        assert_eq!(control.admitted_ticket.load(Acquire), COMMANDS as u64);
+        assert_eq!(
+            control.status.admitted_ticket.load(Acquire),
+            COMMANDS as u64
+        );
         callback.begin_block();
         assert_eq!(
             control.status.consumed_command.load(Acquire),
@@ -5297,13 +5367,13 @@ mod tests {
         );
 
         control.command_ticket = u64::MAX - 1;
-        control.admitted_ticket.store(u64::MAX - 1, Release);
+        control.status.admitted_ticket.store(u64::MAX - 1, Release);
         assert!(control.command_with_ticket(PlaybackCommand::Play).is_err());
         control.stop();
-        assert_eq!(control.pending_stop_marker.load(Acquire), u64::MAX);
+        assert_eq!(control.status.pending_stop_marker.load(Acquire), u64::MAX);
         callback.begin_block();
         assert!(!control.status.playing.load(Acquire));
-        assert_eq!(control.pending_stop_marker.load(Acquire), 0);
+        assert_eq!(control.status.pending_stop_marker.load(Acquire), 0);
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
@@ -5358,8 +5428,8 @@ mod tests {
 
         // Capture the actual callback cut and marker, then admit Stop twice
         // and Play after that cut. Both Stops coalesce to the same cutoff.
-        let entry_ticket = control.admitted_ticket.load(Acquire);
-        let marker = control.pending_stop_marker.swap(0, AcqRel);
+        let entry_ticket = control.status.admitted_ticket.load(Acquire);
+        let marker = control.status.pending_stop_marker.swap(0, AcqRel);
         let cut = command_cut(entry_ticket, marker);
         assert_eq!(cut.stop_through, None);
         control.stop();
@@ -5371,7 +5441,10 @@ mod tests {
         callback.consume_commands_through(cut);
         assert!(!control.status.playing.load(Acquire));
         assert_eq!(control.status.consumed_command.load(Acquire), 0);
-        assert_eq!(control.pending_stop_marker.load(Acquire), post_cut_play);
+        assert_eq!(
+            control.status.pending_stop_marker.load(Acquire),
+            post_cut_play
+        );
         assert_eq!(callback.commands.peek().unwrap().ticket, post_cut_play);
 
         // The next real block captures Stop + Play and applies them in order.
@@ -5498,6 +5571,75 @@ mod tests {
             control.reclaim();
         }
         assert!(roots.iter().all(|root| root.strong_count() == 0));
+    }
+
+    fn admission_gain_target() -> crate::gain_recording::Target {
+        crate::gain_recording::Target {
+            track_id: 1,
+            project_generation: 1,
+            canonical_revision: 1,
+            audio_revision: 1,
+            recording_epoch: 1,
+            transport_epoch: 1,
+            gesture_serial: 1,
+            sample_rate: 48_000,
+        }
+    }
+    #[test]
+    fn split_gain_and_publication_each_reserve_before_the_other_actor_mutates() {
+        for gain_first in [false, true] {
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            control.status.split_endpoints.store(true, Release);
+            if gain_first {
+                control
+                    .gain_recording
+                    .begin(admission_gain_target(), 0.5)
+                    .unwrap();
+                let (playback, weak) = graph();
+                let refused = control.publish(playback).unwrap_err();
+                assert_eq!(control.revision, 0);
+                assert_eq!(
+                    control.publications.slots(),
+                    control.publications.buffer().capacity()
+                );
+                assert!(weak.upgrade().is_some());
+                drop(refused);
+                assert!(weak.upgrade().is_none());
+            } else {
+                control.publish(graph().0).unwrap();
+                assert!(
+                    control
+                        .gain_recording
+                        .begin(admission_gain_target(), 0.5)
+                        .is_err()
+                );
+                assert!(control.gain_recording.target().is_none());
+                // Callback completion clears only publication; the next Begin
+                // succeeds without any UI publication receipt collection.
+                callback.begin_block();
+                control
+                    .gain_recording
+                    .begin(admission_gain_target(), 0.5)
+                    .unwrap();
+            }
+        }
+    }
+    #[test]
+    fn unsplit_legacy_control_keeps_publish_then_begin_ordering() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        control
+            .gain_recording
+            .begin(admission_gain_target(), 0.5)
+            .unwrap();
+        callback.begin_block();
+        assert!(!control.status.publication_pending.load(Acquire));
+        assert!(!control.status.publication_pending.reserve_publication());
+        // Publication completion did not clear gain's independent bit.
+        assert_eq!(
+            control.gain_recording.target(),
+            Some(admission_gain_target())
+        );
     }
 
     fn graph() -> (Playback, Weak<hex_engine::Project>) {
@@ -5744,7 +5886,7 @@ mod tests {
         control.stop();
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), 1);
-        assert!(control.publication_pending.load(Acquire));
+        assert!(control.status.publication_pending.load(Acquire));
         assert!(!control.status.playing.load(Acquire));
         let mut routes = [SessionRouteEntry::default(); 1];
         control.status.session_routes(&mut routes).unwrap();
@@ -5765,7 +5907,7 @@ mod tests {
         assert!(retired_weak.iter().all(|weak| weak.upgrade().is_none()));
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), 2);
-        assert!(!control.publication_pending.load(Acquire));
+        assert!(!control.status.publication_pending.load(Acquire));
         assert!(!control.status.playing.load(Acquire));
         assert_eq!(control.status.performance_frame.load(Acquire), 0);
         control.status.session_routes(&mut routes).unwrap();

@@ -11,10 +11,14 @@ check passed at this source checkpoint. The next accounting checkpoint enumerate
 DATA and bounded opaque resource handles, with a never-used preview seal and
 owning refusals (including sentinel request0). All164 audio feature unit tests and
 76 integration tests plus strict feature Clippy pass; the handle-budget and
-sentinel-token negative controls fail with their guards disabled. Native
-facade/unique UI client/output ownership and actual service publication remain
-unfinished in PR239; no full-CI,
-manual UI or native delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+sentinel-token negative controls fail with their guards disabled. The native endpoint checkpoint reserves four terminal destinations before CPAL
+exposure and separates callback nonrenderability, autonomous graph cleanup and
+final client endpoint/lease release. The move-only client transfers its whole
+bundle on close/Drop; the lifecycle thread destroys actual endpoint Boxes.
+Split gain/publication admission uses one atomic word with matching terminal
+release and enqueue-failure rollback. Legacy Resident Control remains compatible.
+Session sink/desktop/UI wiring is still unfinished; no full-CI, native UI or
+delivery claim. See [source plan](docs/streamed-session-source-plan.md).
 
 ## unsnapped main cursor — #2647 / PR263, 16 october 2026
 

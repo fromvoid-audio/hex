@@ -36,6 +36,7 @@ pub enum ClearMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetError {
+    OutputClosed,
     InvalidDevice,
     InvalidOwner,
     InvalidActivationFloor,

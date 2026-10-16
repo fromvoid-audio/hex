@@ -901,6 +901,7 @@ mod tests {
 
     #[test]
     fn exclusive_lease_prevents_accumulating_live_or_retained_streams() {
+        let _serial = crate::prepared::candidate_tests::serial();
         let first = Lease::acquire().unwrap();
         assert!(Lease::acquire().is_err());
         drop(first);
