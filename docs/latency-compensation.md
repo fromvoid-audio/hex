@@ -58,3 +58,11 @@ fixtures. They do not establish CoreAudio deadlines, listening quality, Live
 parity or arbitrary plugin delay. Performance measurements state workload and
 hardware separately in [performance](performance.md). Native listening remains
 an optional exact-build check, using the supported optimized delivery tooling.
+
+Pulse #2646 extends each transport stamp with the exact source performance frame
+and actual running state. Node clocks preserve these through the same delay and
+transaction history as content frames, beats and loop passes. Startup history
+returns unknown observations. Stopped audition explicitly reports a stopped
+transport and no advancing performance origin, even though its musical audition
+clock can advance. Stamp storage remains charged against existing compensation
+limits using the actual type size and allocated ring capacities; no limit rises.

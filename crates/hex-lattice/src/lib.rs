@@ -322,6 +322,14 @@ impl NativeInstrumentClock for OffsetClock<'_> {
         self.clock
             .loop_pass_at_offset(self.offset.checked_add(offset)?)
     }
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .performance_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn transport_is_running(&self) -> Option<bool> {
+        self.clock.transport_is_running()
+    }
 }
 
 /// Paired audio-owned runtime state. `primary` is committed state; processing

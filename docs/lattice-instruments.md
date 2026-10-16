@@ -638,3 +638,56 @@ performance frame. Serialized persistence, offline bounded replay, native seek
 and publication-worker integration remain
 separate work under Pulses 2164/2165 and later integration. Focused engine and
 lattice tests pass; full local CI and parent integration review are still open.
+
+## Host clock origins and finite mutable tails (#2646 / PR261)
+
+`NativeInstrumentClock` adds optional `performance_frame_at_offset` and
+`transport_is_running` observations. Existing providers default to explicit
+`None`; absence is not frame zero, a guessed tempo or a playing transport.
+The Session authored-note clock reports checked absolute performance frames and
+`Some(true)` while rendering. This origin continues across Arrangement loop
+wraps independently of content position. Playing computer-keyboard audition
+uses the same origin. Stopped audition reports `Some(false)` and no advancing
+performance origin: Session transport frames freeze while audition age advances.
+Its existing beat clock still extrapolates from the actual current canonical
+tempo, so an advancing musical clock must not be used to infer playback.
+Preparation probes leave both new observations unknown.
+
+Latency compensation carries the performance frame and actual playing state in
+each existing transactional transport stamp, along with content frame, loop
+pass and exact beat. Node clocks report the delayed source stamp, not the current
+block's transport. Unknown startup history stays unknown. A stopped source stamp
+reports `Some(false)` and no advancing performance origin. Per-sample range
+clocks forward offsets with checked addition and preserve the observed transport
+state. The larger fixed stamp is charged by the existing `size_of`-based
+preflight and actual ring-capacity accounting; no compensation budget increases.
+
+Track runtime construction, checkpoint declaration checks and live keyboard
+runtime admission now share a finite 140-second maximum declaration after final
+note-off. The former ten-second cap rejected the existing 60-second Operator
+release when a mutable path was required. This duration policy also accommodates
+a finite 140-second Trigger envelope declaration; it does not implement Trigger
+or other new device laws. Declarations above the prepared-rate horizon refuse
+before either runtime twin is constructed. The lattice still verifies actual
+owned bytes and runtime compatibility, and the provider must become quiescent
+within its declared bound.
+
+The duration ceiling does not reserve history proportional to seconds. The
+64-occurrence ledger, 192-span scratch, 256-event buffer, active/retained 2 MiB
+paired DSP pools, 256 retained owner slots and voice limits stay unchanged.
+Arrangement interval admission includes the entire checked gate-plus-tail span.
+Ongoing MIDI templates conservatively include the declared tail in their density
+proof and retain the 64-voice, 16,384-visit and 326-period-window limits; short or
+dense loops may therefore refuse even if the duration itself fits. Checkpoints
+still have 16 slots and a 256 KiB store ceiling. Preroll retains its 32 MiB storage
+and 8,388,608-frame work ceilings: at 192 kHz the latter covers about 43.69 seconds,
+so some destinations inside a long envelope remain explicit work-budget refusals.
+No replay budget is inferred from tail duration. The separate ten-second finite
+effect-suffix retention policy is unchanged.
+
+Focused tests cover optional/overflowed clock origins, stopped musical time,
+exact delayed transport stamps and rollback, 60-second Operator admission through
+both authored and keyboard paths, rate-scaled boundary refusal before runtime
+construction, and a real fixed-storage 140-second release whose final audible
+frame, ledger retirement and rollback/retry are checked. These headless tests do
+not establish physical callback deadlines or native listening acceptance.

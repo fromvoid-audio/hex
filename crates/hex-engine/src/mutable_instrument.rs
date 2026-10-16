@@ -20,7 +20,13 @@ pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 /// be audible. The runtime's `max_active_occurrences` declaration is
 /// implementation-defined and does not specify how released voices count.
 pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
-const MAX_MUTABLE_TAIL_SECONDS: u64 = 10;
+/// Finite duration admission only: voice/query/storage/replay ceilings remain
+/// independent and may refuse dense sources or long prerolls at this horizon.
+const MAX_MUTABLE_TAIL_SECONDS: u64 = 140;
+
+pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
+    u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
+}
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
@@ -203,7 +209,7 @@ impl MutableInstrumentTrackRuntime {
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
     ) -> Option<usize> {
-        let max_tail_frames = u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)?;
+        let max_tail_frames = max_mutable_tail_frames(sample_rate)?;
         let pair_bytes = prepared.declared_twin_bytes().checked_mul(2)?;
         if prepared.runtime_version() == 0
             || prepared.declared_twin_bytes() == 0
@@ -226,9 +232,8 @@ impl MutableInstrumentTrackRuntime {
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
     ) -> Result<Self, MutableInstrumentRuntimeError> {
-        let max_tail_frames = u64::from(sample_rate)
-            .checked_mul(MAX_MUTABLE_TAIL_SECONDS)
-            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        let max_tail_frames =
+            max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {

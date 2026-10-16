@@ -17,6 +17,16 @@ pub trait NativeInstrumentClock {
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Optional exact host performance-frame origin, independent of arrangement
+    /// loop wraps. Unknown during warmup or stopped monitoring is explicit None.
+    fn performance_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
+    /// Transport state at the input origin. An advancing beat alone does not
+    /// imply playback: stopped audition can have a running musical clock.
+    fn transport_is_running(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// One note-on or note-off event in caller-owned block storage.

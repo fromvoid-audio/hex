@@ -23,7 +23,9 @@ return-bus retirement remains separate. See [native effect
 tails](../../docs/native-effect-tails.md). Mutable instrument event
 batches are caller-owned and preflighted before scratch-state processing; their
 separate runtime factory declares a finite release-tail bound and exposes
-committed-state quiescence for later retirement.
+committed-state quiescence for later retirement. Borrowed native clocks expose
+optional exact performance origins and actual transport state; unavailable
+observations remain explicit `None`, including stopped audition performance time.
 Analytic instruments may also prepare an immutable shared context and compact
 copyable note payloads; the host enforces per-context and per-revision byte
 bounds, while the engine owns revision and release leases.

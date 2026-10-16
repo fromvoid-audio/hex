@@ -3336,3 +3336,15 @@ retain ownership and charges. Exhaustive present/absent location coverage refuse
 unsupported tail/context population; broader transfer fanout remains #24/177.
 Exact-source CI and remaining native evidence are recorded with PR235; no native
 admission, OS-stop success, deadline, listening or complete-cost claim is made.
+
+## 16 October 2026 — companion host clock and finite tail prerequisites (#2646 / PR261)
+
+Added optional exact performance-frame and actual running-state observations to
+native instrument clocks, forwarding checked offsets and delayed transport-stamp
+origins. Stopped audition keeps its canonical-tempo musical clock but exposes no
+invented advancing transport origin. Centralized finite mutable tail admission
+at 140 seconds for authored tracks, checkpoints and keyboard audition, retaining
+all existing storage, voice, density, query and replay limits. Separate effect
+suffix limits are unchanged. Focused headless lattice/engine checks and remaining
+exact-source CI are recorded with PR261; this prerequisite does not implement
+Operator companion controls or establish native/listening/deadline acceptance.

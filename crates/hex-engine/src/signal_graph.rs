@@ -633,6 +633,17 @@ impl SignalRuntime {
 }
 struct OriginClock(Option<TransportStamp>);
 impl hex_lattice::NativeInstrumentClock for OriginClock {
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        if offset != 0 {
+            return None;
+        }
+        self.0
+            .filter(|stamp| stamp.transport_is_running)
+            .map(|stamp| stamp.performance_frame)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        self.0.map(|stamp| stamp.transport_is_running)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         if offset != 0 {
             return None;
