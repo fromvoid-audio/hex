@@ -13,8 +13,10 @@ use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 #[cfg(test)]
 mod audio_batch_tests;
+mod canonical_audio_source;
 pub mod preset;
 mod recovery;
+pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
@@ -50,6 +52,9 @@ pub struct AudioClipWaveform {
 
 /// Read-only model and cached summaries for a single committed project revision.
 pub struct ViewState {
+    /// Present only for a canonical worker snapshot. Preview views cannot mint
+    /// source freshness for streamed constructor publication.
+    pub canonical_audio_source: Option<CanonicalAudioSourceSnapshot>,
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
@@ -670,6 +675,7 @@ fn view_state(
     session: &Session,
     midi_preview: Arc<hex_engine::MidiArrangementPreview>,
     revision: u64,
+    project_generation: u64,
     unsaved: bool,
     document_path: Option<&Path>,
 ) -> Arc<ViewState> {
@@ -683,6 +689,11 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        canonical_audio_source: Some(CanonicalAudioSourceSnapshot::capture(
+            &project,
+            project_generation,
+            revision,
+        )),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
@@ -712,6 +723,7 @@ fn preview_view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        canonical_audio_source: None,
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
@@ -803,14 +815,28 @@ fn run_worker(
     let mut document: Option<DocumentHandle> = None;
     let mut journal: Option<hex_storage::Journal> = None;
     let mut midi_preview = Arc::new(hex_engine::MidiArrangementPreview::default());
-    let mut state = view_state(&session, Arc::clone(&midi_preview), revision, unsaved, None);
-    let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut project_generation = 0_u64;
+    let mut state = view_state(
+        &session,
+        Arc::clone(&midi_preview),
+        revision,
+        project_generation,
+        unsaved,
+        None,
+    );
+    let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut device_gesture = GestureMachine::default();
     let initial = match compile(&session, None) {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
-            state = view_state(&session, Arc::clone(&midi_preview), revision, unsaved, None);
+            state = view_state(
+                &session,
+                Arc::clone(&midi_preview),
+                revision,
+                project_generation,
+                unsaved,
+                None,
+            );
             compiled = Some((revision, Arc::clone(&prepared)));
             Event {
                 state: Arc::clone(&state),
@@ -916,6 +942,7 @@ fn run_worker(
                                 &session,
                                 Arc::clone(&midi_preview),
                                 revision,
+                                project_generation,
                                 unsaved,
                                 document.as_ref().map(|handle| handle.path.as_path()),
                             );
@@ -1637,6 +1664,7 @@ fn run_worker(
                                         &session,
                                         Arc::clone(&midi_preview),
                                         revision,
+                                        project_generation,
                                         unsaved,
                                         document.as_ref().map(|handle| handle.path.as_path()),
                                     );
@@ -1675,6 +1703,7 @@ fn run_worker(
                                         &session,
                                         Arc::clone(&midi_preview),
                                         revision,
+                                        project_generation,
                                         unsaved,
                                         document.as_ref().map(|current| current.path.as_path()),
                                     );
@@ -1820,6 +1849,7 @@ fn run_worker(
                                     &session,
                                     Arc::clone(&midi_preview),
                                     revision,
+                                    project_generation,
                                     unsaved,
                                     document.as_ref().map(|handle| handle.path.as_path()),
                                 );
@@ -1848,6 +1878,7 @@ fn run_worker(
                 &session,
                 Arc::clone(&midi_preview),
                 revision,
+                project_generation,
                 unsaved,
                 document.as_ref().map(|handle| handle.path.as_path()),
             );
@@ -2634,6 +2665,14 @@ mod service_tests {
         service.submit(Request::Open(path)).expect("open");
         let opened = next_event(&service);
         assert!(opened.project_replaced);
+        let source = opened
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        assert_eq!(source.project_generation, 1);
+        assert_eq!(source.editor_revision, opened.state.revision);
         service
             .submit(Request::PasteTimeRange {
                 track,

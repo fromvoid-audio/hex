@@ -132,6 +132,44 @@ impl ConstructorStreamDomain {
             if shared_handle_bound > max_shared_handle_bound {
                 return Err(AudioStreamStorageError::ReservationExceeded);
             }
+            let readiness_requested = match readiness {
+                Some(reservation)
+                    if reservation.extents_per_role != 0
+                        && reservation.extents_per_role <= pages.endpoint.cache_capacity() =>
+                {
+                    reservation
+                        .extents_per_role
+                        .checked_mul(6)
+                        .and_then(|count| {
+                            count.checked_mul(std::mem::size_of::<crate::StreamPageExtent>())
+                        })
+                        .ok_or(AudioStreamStorageError::Overflow)?
+                }
+                Some(_) => return Err(AudioStreamStorageError::ReservationExceeded),
+                None => 0,
+            };
+            // Reject an insufficient allowance before the disposal/readiness
+            // Vec reserves. This is a requested-layout lower bound only;
+            // actual allocator capacities remain authoritative below.
+            let requested_metadata = control
+                .owner
+                .config
+                .page_buffers
+                .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreparedStreamDisposal>()))
+                .and_then(|bytes| bytes.checked_add(readiness_requested))
+                .ok_or(AudioStreamStorageError::Overflow)?;
+            if listed_data_bytes
+                .checked_add(requested_metadata)
+                .ok_or(AudioStreamStorageError::Overflow)?
+                > max_retained_data_bytes
+                || listed_construction_peak_bytes
+                    .checked_add(requested_metadata)
+                    .ok_or(AudioStreamStorageError::Overflow)?
+                    > max_construction_peak_data_bytes
+            {
+                return Err(AudioStreamStorageError::ReservationExceeded);
+            }
             let disposal = PreparedStreamDisposal::try_prepare_on_control(&control, &pages)
                 .map_err(|_| AudioStreamStorageError::Capacity)?;
             let lease = control

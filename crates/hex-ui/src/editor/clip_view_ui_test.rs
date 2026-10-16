@@ -121,6 +121,7 @@ fn audio_detail_fixture(
         let mut waveforms = BTreeMap::new();
         waveforms.insert(asset, peaks);
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::new(project),
             waveforms,
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -574,6 +575,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     editor.update(cx, |view, cx| {
         let previous = view.state.as_ref().expect("initial view state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&project_after_remove),
             waveforms: previous.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -690,6 +692,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         view.last_enqueued_edit = None;
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -710,6 +713,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
     editor.update(cx, |view, _| {
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -747,6 +751,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
         view.last_enqueued_edit = None;
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),

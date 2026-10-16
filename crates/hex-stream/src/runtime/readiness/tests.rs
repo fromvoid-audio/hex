@@ -244,6 +244,15 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
             .page(key, 1)
             .is_some()
     );
+    let requests = loan.pages.stats().queued_requests;
+    {
+        let mut protected = loan
+            .protected_pages(ProtectionRole::Active, first, &extents)
+            .unwrap();
+        assert!(protected.page(key, 2).is_none());
+        protected.request_page(key, 2);
+    }
+    assert_eq!(loan.pages.stats().queued_requests, requests);
     let second = stamp(&owner, 2);
     let over_pool = [
         StreamPageExtent {
@@ -301,6 +310,42 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
 fn readiness_reservation_and_wrong_pair_refusals_preserve_actual_owners() {
     let (_wav, control, pages, _) = pair();
     let identity = Arc::as_ptr(&control.pair_id);
+    let existing_data = storage::closed_constructor_pair_data(&control, &pages)
+        .unwrap()
+        .listed_data_bytes()
+        .unwrap();
+    let mut refused = None;
+    let attempt = || {
+        refused = Some(
+            ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+                control,
+                pages,
+                existing_data,
+                usize::MAX,
+                usize::MAX,
+                Some(StreamReadinessReservation {
+                    extents_per_role: 3,
+                }),
+            ),
+        );
+    };
+    #[cfg(feature = "allocation-probe")]
+    let allocations = allocation_counter::measure(attempt);
+    #[cfg(not(feature = "allocation-probe"))]
+    attempt();
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (allocations.count_total, allocations.bytes_total),
+        (1, std::mem::size_of::<StreamDomainSealRefusal>() as u64)
+    );
+    let refused = refused.unwrap().err().unwrap();
+    assert_eq!(refused.reason, AudioStreamStorageError::ReservationExceeded);
+    assert_eq!(Arc::as_ptr(&refused.control.pair_id), identity);
+    let StreamDomainSealRefusal {
+        control,
+        pages,
+        reason: _,
+    } = *refused;
     let refusal = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
         control,
         pages,

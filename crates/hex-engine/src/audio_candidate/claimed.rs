@@ -15,6 +15,7 @@ pub struct AudioCandidateAnchors {
 }
 struct ClaimedState {
     identity: AudioCandidateIdentity,
+    source_context: Option<crate::AudioSourceContext>,
     runtime: Option<Box<RuntimeOwner>>,
     groups: Vec<Group>,
     journal: Vec<groups::TransferRow>,
@@ -26,6 +27,7 @@ impl ClaimedState {
     fn wrapper_storage_bytes(&self) -> usize {
         let Self {
             identity: _,
+            source_context: _,
             runtime: _,
             groups: _,
             journal: _,
@@ -101,6 +103,7 @@ impl AudioCandidateOwner {
         }
         let mut state = Box::new(ClaimedState {
             identity: self.identity(),
+            source_context: self.source_context(),
             runtime: None,
             groups: Vec::new(),
             journal: Vec::new(),
@@ -164,6 +167,7 @@ impl AudioCandidateAnchors {
     }
     pub fn matches_current(&self, runtime: &ClaimedAudioCandidateRuntime) -> bool {
         if self.identity() != runtime.identity()
+            || self.owner.source_context() != runtime.source_context()
             || self.owner.inner.phase != AudioCandidateDisposalPhase::Leased
         {
             return false;
@@ -209,6 +213,10 @@ impl AudioCandidateAnchors {
     }
 }
 impl ClaimedAudioCandidateRuntime {
+    pub fn source_context(&self) -> Option<crate::AudioSourceContext> {
+        self.inner.source_context
+    }
+
     /// Non-default fixture pressure on the real transfer preflight allowance.
     /// This changes no owner/location/activity flag and exposes no runtime.
     #[cfg(any(test, feature = "instrument-test-support"))]

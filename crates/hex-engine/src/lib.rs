@@ -41,7 +41,8 @@ pub use audio_preparation::{
     ArrangementClipCapacity, ArrangementReturnCapacity, ArrangementReturnMetadata,
     ArrangementRootCapacity, ArrangementTrackCapacity, ArrangementTrackMetadata,
     AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
-    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, ReturnFeedCapacity,
+    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, AudioSourceContext,
+    ReturnFeedCapacity,
 };
 pub use session_audio_preparation::SessionSourceCapacity;
 pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInventoryMetadata};

@@ -340,6 +340,7 @@ pub struct ConstructorPageLoan {
 /// scheduling, catalog clone or disposal operation is exposed.
 pub struct ProtectedStreamPages<'a> {
     pages: &'a mut StreamCallbackPages,
+    extents: &'a [StreamPageExtent],
 }
 impl MediaPages for ProtectedStreamPages<'_> {
     fn page(
@@ -347,10 +348,15 @@ impl MediaPages for ProtectedStreamPages<'_> {
         key: StreamSourceKey,
         index: u64,
     ) -> Option<hex_engine::BorrowedMediaPage<'_>> {
+        self.extents
+            .iter()
+            .any(|extent| extent.source == key && extent.page_index == index)
+            .then_some(())?;
         self.pages.page(key, index)
     }
-    fn request_page(&mut self, key: StreamSourceKey, index: u64) {
-        self.pages.request_page(key, index);
+    fn request_page(&mut self, _key: StreamSourceKey, _index: u64) {
+        // This borrow contains already protected pages only. Actual missing
+        // demand must return to readiness service, never schedule from render.
     }
 }
 impl ConstructorPageLoan {
@@ -391,6 +397,7 @@ impl ConstructorPageLoan {
             .then_some(())?;
         Some(ProtectedStreamPages {
             pages: &mut self.pages,
+            extents: &self.readiness.roles[role.index()].protected,
         })
     }
     pub fn cancel(&mut self, role: ProtectionRole, epoch: u64) -> bool {

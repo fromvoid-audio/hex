@@ -3560,3 +3560,14 @@ The focused page-edge/Play preview/capacity-refusal/repeated-handoff control kee
 committed transport and routes unchanged. This first layer does not release
 streamed native installation or readiness; final integrated evidence and remaining
 endpoint/transaction controls belong to PR237.
+
+
+PR237 metadata checkpoint: canonical Session worker views now pair the exact
+Project with the existing document generation/editor revision, retained through
+actual preparation and runtime/anchor splitting. Preview views cannot mint that
+capture, and media catalog generation remains separate. Targeted Session92,
+engine candidate8, stream allocation/worker suites, strict affected Clippy and UI
+compatibility checks pass. Protected page borrows expose only installed keys and
+cannot schedule; an insufficient caller DATA allowance refuses before readiness
+backing allocation (negative control retained externally). Native page-loan
+placement, transport/BUFFERING and installation transactions remain unfinished.
