@@ -25,6 +25,11 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.gain_recorder.blocks_edits() {
+            self.error = Some("finish or cancel gain recording before closing".into());
+            cx.notify();
+            return false;
+        }
         if self.close_prompt_open {
             return false;
         }
@@ -43,6 +48,11 @@ impl EditorView {
     }
 
     pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.gain_recorder.blocks_edits() {
+            self.error = Some("finish or cancel gain recording before quitting".into());
+            cx.notify();
+            return;
+        }
         if self.close_prompt_open {
             return;
         }

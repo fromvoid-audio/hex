@@ -109,7 +109,7 @@ fn replacement(
 }
 fn preview_gain(state: &ViewState, track: TrackId, frame: u64) -> Option<f32> {
     let source = state.project.track(track)?;
-    if source.gain_envelope().is_empty() {
+    if source.gain_envelope().is_empty() && source.gain_lane().spans().is_empty() {
         Some(source.gain())
     } else {
         state.gain_preview.as_ref().ok()?.value_at(track, frame)
@@ -136,10 +136,12 @@ fn presentation(
 }
 impl EditorView {
     pub(super) fn gain_numeric_editing(&self, cx: &Context<Self>) -> bool {
-        self.gain_lane
-            .gain
-            .as_ref()
-            .is_some_and(|binding| binding.entity.read(cx).is_editing())
+        self.gain_recorder.numeric_editing(cx)
+            || self
+                .gain_lane
+                .gain
+                .as_ref()
+                .is_some_and(|binding| binding.entity.read(cx).is_editing())
     }
 
     fn gain_action_admitted(&mut self, cx: &Context<Self>) -> bool {
@@ -178,6 +180,11 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn cancel_gain_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.gain_recorder.blocks_edits() {
+            self.cancel_gain_recording();
+            cx.notify();
+            return true;
+        }
         let interacting = [&self.gain_lane.gain].into_iter().flatten().any(|binding| {
             binding.entity.read(cx).is_interacting() || binding.entity.read(cx).is_editing()
         });
@@ -208,6 +215,17 @@ impl EditorView {
         let Some(track) = self.gain_lane.track else {
             return false;
         };
+        if state
+            .project
+            .track(track)
+            .is_some_and(|source| !source.gain_lane().spans().is_empty())
+        {
+            self.gain_lane.error = Some(
+                "recorded touch spans are read-only · clear lane before editing the base curve"
+                    .into(),
+            );
+            return false;
+        }
         if self.edit_pending()
             || self.opening_project
             || self.close_prompt_open

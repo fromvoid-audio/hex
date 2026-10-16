@@ -55,6 +55,7 @@ impl Editor {
     ) -> Result<(Created, T), E> {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_playable_routes()?;
         let prepared = prepare(&candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
         if candidate == self.project {

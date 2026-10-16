@@ -495,4 +495,82 @@ mod native {
             cx.notify();
         });
     }
+    #[gpui::test]
+    fn touch_only_lane_preview_ownership_and_display_extent_are_truthful(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        entity.update(&mut visual, |view, cx| {
+            let old = view.state.as_ref().unwrap();
+            let mut snapshot = old.project.snapshot();
+            let owner = snapshot
+                .tracks
+                .iter_mut()
+                .find(|owner| owner.id == track.value())
+                .unwrap();
+            owner.gain_envelope.clear();
+            owner.gain = 0.25;
+            owner.gain_touch_epoch = 1;
+            owner.gain_touch_spans = vec![hex_project::GainTouchSpan {
+                start: BeatTime::ONE,
+                end: BeatTime::from_quarters(100).unwrap(),
+                context: hex_project::GainTouchContext {
+                    recording_epoch: 1,
+                    project_generation: 0,
+                    canonical_revision: 1,
+                    audio_revision: 1,
+                    transport_epoch: 1,
+                    gesture_epoch: 1,
+                    gesture_serial: 1,
+                    sample_rate: 48000,
+                    loop_pass: 0,
+                },
+                steps: vec![hex_project::GainTouchStep {
+                    beat: BeatTime::ONE,
+                    gain: 0.8,
+                    origin_beat: BeatTime::ONE,
+                    source_sequence: 1,
+                }],
+            }];
+            let project = Arc::new(Project::from_snapshot(snapshot).unwrap());
+            let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
+            let content_extent = old.timeline_frames;
+            view.state = Some(Arc::new(ViewState {
+                project,
+                gain_preview: Ok(preview),
+                waveforms: old.waveforms.clone(),
+                midi_preview: old.midi_preview.clone(),
+                timeline_frames: old.timeline_frames,
+                can_undo: old.can_undo,
+                can_redo: old.can_redo,
+                revision: old.revision,
+                unsaved: old.unsaved,
+                document_path: old.document_path.clone(),
+            }));
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(preview_gain(state, track, 0), Some(0.25));
+            assert_eq!(preview_gain(state, track, 24000), Some(0.8));
+            assert_eq!(preview_gain(state, track, 2400000), Some(0.25));
+            assert!(
+                view.visible_viewport(content_extent)
+                    .fraction(2400000)
+                    .is_some()
+            );
+            assert_eq!(state.timeline_frames, content_extent);
+            view.gain_by(track, 0.1);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("automation owns gain")
+            );
+            assert!(view.last_enqueued_edit.is_none());
+            assert!(!view.begin_gain_draft(None, point(0, 0.5)));
+            assert!(view.gain_lane.error.as_ref().unwrap().contains("read-only"));
+            assert!(
+                view.gain_action_admitted(cx),
+                "clear remains an available recovery action"
+            );
+            cx.notify();
+        });
+    }
 }

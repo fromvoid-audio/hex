@@ -16,6 +16,10 @@ struct HoldRuntime {
 }
 
 impl PreparedNativeProcessor for HoldDefinition {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -79,6 +83,10 @@ struct TailDefinition {
 }
 
 impl PreparedNativeProcessor for ScaleDefinition {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -126,6 +134,10 @@ impl NativeProcessorRuntime for ScaleRuntime {
 }
 
 impl PreparedNativeProcessor for TailDefinition {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -1242,7 +1254,26 @@ fn feed_capture_includes_retired_return_tail_once_without_refeeding_it() {
         gain: 0.5,
     });
     let project = Project::from_snapshot(snapshot).unwrap();
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(hex_project::Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Return(editor.project().return_tracks()[1].id()),
+            destination: track,
+            gain: 0.5,
+        })
+        .unwrap();
+    let project = editor.project().clone();
     let mut runtime = playback(&project);
+    assert!(runtime.compensation.is_some());
+    assert_eq!(runtime.revision.arrangement().main_latency_frames(), 0);
     let source = runtime.revision.arrangement().return_buses()[0].id;
     let target = runtime.revision.arrangement().return_buses()[1].id;
     runtime.return_effect_tails.slots_mut()[0] = Some(ReturnEffectTail::new(

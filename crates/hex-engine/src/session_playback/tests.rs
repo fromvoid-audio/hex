@@ -142,6 +142,10 @@ impl hex_lattice::NativeInstrumentDefinition for ContinuityInstrumentDefinition 
 }
 
 impl hex_lattice::PreparedNativeInstrument for ContinuityInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -249,6 +253,10 @@ impl hex_lattice::NativeInstrumentDefinition for OversizedSharedContextDefinitio
 }
 
 impl hex_lattice::PreparedNativeInstrument for OversizedSharedContext {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -380,6 +388,10 @@ struct ZeroTailMutableRuntime {
 struct ZeroTailMutableFactory;
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -608,6 +620,10 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFeedbackDefinition {
 }
 
 impl hex_lattice::PreparedNativeInstrument for MutableFeedbackPrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -633,6 +649,10 @@ impl hex_lattice::PreparedNativeInstrument for MutableFeedbackPrepared {
 }
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -899,6 +919,8 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 7,
@@ -1100,6 +1122,8 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 8,

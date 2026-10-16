@@ -186,18 +186,23 @@ fn refused_commands_never_prepare_mutate_history_clear_redo_or_consume_ids() {
     assert!(e.undo());
     let before = e.project().clone();
     let mut called = false;
+    let mut invalid = span(10, 20, 1, &[(10, 1.0)]);
+    invalid.context.sample_rate = 44100;
     let result: Result<_, Invalid> = e.execute_prepared(
         Command::SpliceGainTouch {
             track: id,
             expected_epoch: 0,
-            span: span(10, 20, 1, &[(10, 1.0)]),
+            span: invalid,
         },
         |_| {
             called = true;
             Ok(())
         },
     );
-    assert_eq!(result.unwrap_err().0, GAIN_TOUCH_UNSUPPORTED);
+    assert_eq!(
+        result.unwrap_err().0,
+        "gain touch sample rate differs from project"
+    );
     assert!(!called);
     assert_eq!(e.project(), &before);
     assert!(e.can_redo());
@@ -206,8 +211,8 @@ fn refused_commands_never_prepare_mutate_history_clear_redo_or_consume_ids() {
     snapshot.tracks[0].gain_touch_epoch = 1;
     assert!(snapshot.validate_gain_lanes().is_ok());
     assert_eq!(
-        Project::from_snapshot(snapshot.clone()).unwrap_err().0,
-        GAIN_TOUCH_UNSUPPORTED
+        Project::from_snapshot(snapshot.clone()).unwrap().snapshot(),
+        snapshot
     );
     snapshot.tracks[0].gain_touch_spans[0].context.sample_rate = 44100;
     assert!(snapshot.validate_gain_lanes().is_err());
@@ -238,13 +243,12 @@ fn epoch_only_history_persists_high_water_and_removal_restores_owner_value() {
 fn unsupported_fixture_transforms_refuse_without_losing_complete_lane() {
     let (e, id) = fixture();
     let mut project = e.project().clone();
-    // Private test fixture only: production Snapshot/commands cannot admit this value.
+    // Editing the base remains explicit while recorded overlays are present.
     project.tracks[0].gain_lane = GainLane::default()
         .with_touch(0, span(10, 20, 1, &[(10, 1.0)]))
         .unwrap();
     let snapshot = project.snapshot();
     for cmd in [
-        Command::ClearTrackGainEnvelope { track: id },
         Command::ReplaceTrackGainEnvelope {
             track: id,
             points: vec![point(0, 1.0)],
@@ -289,4 +293,207 @@ fn tiny_distinct_beats_remain_authored_without_frame_quantization() {
     }
     assert_eq!(lane.spans()[0].steps.len(), 3);
     assert_eq!(lane.touch_gain_at(beat(4)), None);
+}
+
+#[test]
+fn splice_clear_and_history_adopt_the_complete_lane_and_keep_epoch_high_water() {
+    let (mut editor, id) = fixture();
+    editor
+        .execute(Command::ReplaceTrackGainEnvelope {
+            track: id,
+            points: vec![point(0, 0.2), point(100, 0.8)],
+        })
+        .unwrap();
+    let base = editor.project().track(id).unwrap().gain_envelope().to_vec();
+    editor
+        .execute(Command::SpliceGainTouch {
+            track: id,
+            expected_epoch: 0,
+            span: span(20, 80, 1, &[(20, 1.1), (50, 0.3)]),
+        })
+        .unwrap();
+    let recorded = editor.project().snapshot();
+    assert_eq!(editor.project().track(id).unwrap().gain_envelope(), base);
+    assert!(editor.undo());
+    assert!(
+        editor
+            .project()
+            .track(id)
+            .unwrap()
+            .gain_lane()
+            .spans()
+            .is_empty()
+    );
+    assert_eq!(
+        editor
+            .project()
+            .track(id)
+            .unwrap()
+            .gain_lane()
+            .recording_epoch(),
+        1
+    );
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), recorded);
+    editor
+        .execute(Command::ClearTrackGainEnvelope { track: id })
+        .unwrap();
+    assert!(
+        editor
+            .project()
+            .track(id)
+            .unwrap()
+            .gain_envelope()
+            .is_empty()
+    );
+    assert!(
+        editor
+            .project()
+            .track(id)
+            .unwrap()
+            .gain_lane()
+            .spans()
+            .is_empty()
+    );
+    assert_eq!(
+        editor
+            .project()
+            .track(id)
+            .unwrap()
+            .gain_lane()
+            .recording_epoch(),
+        1
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), recorded);
+    let mut stale = span(20, 80, 1, &[(20, 0.1)]);
+    stale.context.gesture_serial = 2;
+    assert!(
+        editor
+            .execute(Command::SpliceGainTouch {
+                track: id,
+                expected_epoch: 1,
+                span: stale
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project().snapshot(), recorded);
+}
+
+#[test]
+fn splice_refuses_project_weighted_overflow_before_candidate_preparation() {
+    let (editor, _) = fixture();
+    let mut snapshot = editor.project().snapshot();
+    let mut template = snapshot.tracks[0].clone();
+    template.gain_envelope = (0..1024).map(|i| point(i, 1.0)).collect();
+    template.instrument = None;
+    template.instrument_position = None;
+    let first_id = snapshot.next_id;
+    snapshot.tracks = (first_id..first_id + 64)
+        .map(|id| {
+            let mut track = template.clone();
+            track.id = id;
+            track
+        })
+        .collect();
+    template.id = first_id + 64;
+    template.gain_envelope.clear();
+    snapshot.tracks.push(template);
+    snapshot.next_id = first_id + 65;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let track = project.tracks()[64].id();
+    let mut editor = Editor::new(project.clone(), 1).unwrap();
+    let mut prepared = false;
+    let result = editor.execute_prepared(
+        Command::SpliceGainTouch {
+            track,
+            expected_epoch: 0,
+            span: span(10, 20, 1, &[(10, 0.5)]),
+        },
+        |_| {
+            prepared = true;
+            Ok::<(), Invalid>(())
+        },
+    );
+    assert_eq!(result.unwrap_err().0, "project gain lane limit reached");
+    assert!(!prepared);
+    assert_eq!(editor.project(), &project);
+    assert!(!editor.can_undo());
+}
+
+#[test]
+fn two_loop_passes_splice_as_one_undo_step_with_later_pass_winning_overlap() {
+    let (mut editor, track) = fixture();
+    let original = editor.project().snapshot();
+    let mut later = span(15, 25, 2, &[(15, 0.8), (20, 1.1)]);
+    later.context.loop_pass = 1;
+    editor
+        .execute(Command::SpliceGainTouchBatch {
+            track,
+            expected_epoch: 0,
+            spans: vec![span(10, 20, 1, &[(10, 0.3)]), later],
+        })
+        .unwrap();
+    let recorded = editor.project().snapshot();
+    let lane = editor.project().track(track).unwrap().gain_lane();
+    assert_eq!(lane.touch_gain_at(beat(10)), Some(0.3));
+    assert_eq!(lane.touch_gain_at(beat(15)), Some(0.8));
+    assert_eq!(lane.touch_gain_at(beat(20)), Some(1.1));
+    assert_eq!(lane.touch_gain_at(beat(25)), None);
+    assert_eq!(lane.recording_epoch(), 2);
+    assert!(editor.undo());
+    let mut expected = original;
+    expected.tracks[0].gain_touch_epoch = 2;
+    assert_eq!(editor.project().snapshot(), expected);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), recorded);
+    for (expected_epoch, spans) in [
+        (0, vec![span(30, 40, 3, &[(30, 0.2)])]),
+        (2, vec![]),
+        (
+            2,
+            vec![span(30, 40, 3, &[(30, 0.2)]), span(40, 50, 3, &[(40, 0.4)])],
+        ),
+    ] {
+        assert!(
+            editor
+                .execute(Command::SpliceGainTouchBatch {
+                    track,
+                    expected_epoch,
+                    spans
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), recorded);
+    }
+}
+
+#[test]
+fn later_pass_capacity_refusal_leaves_original_lane_history_and_redo_intact() {
+    let (editor, track) = fixture();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.tracks[0].gain_envelope = (0..1021).map(|i| point(i, 1.0)).collect();
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    editor
+        .execute(Command::ClearTrackGainEnvelope { track })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    let mut prepared = false;
+    let result = editor.execute_prepared(
+        Command::SpliceGainTouchBatch {
+            track,
+            expected_epoch: 0,
+            spans: vec![span(10, 20, 1, &[(10, 0.3)]), span(30, 40, 2, &[(30, 0.8)])],
+        },
+        |_| {
+            prepared = true;
+            Ok::<(), Invalid>(())
+        },
+    );
+    assert!(result.is_err());
+    assert!(!prepared);
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.can_redo());
+    assert!(!editor.can_undo());
 }

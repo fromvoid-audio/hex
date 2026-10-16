@@ -1,4 +1,4 @@
-//! Strict schema22 proposed touch spans. Nonempty-span decode/adoption remains closed.
+//! Strict schema22 gain touch spans, also embedded by the current schema24 writer.
 use super::gain_envelopes::{GainPointDto, InterpolationDto, bounded_gain_points};
 use super::provenance::ProvenanceDto;
 use super::return_feeds::{DocumentV20, FeedDto};
@@ -55,7 +55,9 @@ pub(super) struct TrackV22 {
     pub(super) instrument_position: Option<usize>,
     pub(super) sends: Vec<SendDtoV17>,
 }
-fn bounded_tracks<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<TrackV22>, D::Error> {
+pub(super) fn bounded_tracks<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<TrackV22>, D::Error> {
     struct Tracks;
     impl<'de> Visitor<'de> for Tracks {
         type Value = Vec<TrackV22>;
@@ -93,13 +95,6 @@ fn bounded_tracks<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<TrackV22
 }
 impl DocumentV22 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        if project
-            .tracks()
-            .iter()
-            .any(|track| !track.gain_lane().spans().is_empty())
-        {
-            return Err(StorageError::Invalid(hex_project::GAIN_TOUCH_UNSUPPORTED));
-        }
         Self::fields_for_new_envelope(project)
     }
     pub(super) fn fields_for_new_envelope(project: &Project) -> Result<Self, StorageError> {

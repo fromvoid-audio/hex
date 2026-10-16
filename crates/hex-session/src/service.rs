@@ -140,6 +140,10 @@ pub fn prepare_audio_preview(
 /// Only gain-envelope commands may cross this revision-stamped UI boundary.
 #[derive(Clone, Debug)]
 pub enum GainLaneEdit {
+    SpliceTake {
+        expected_epoch: u64,
+        spans: Vec<hex_project::GainTouchSpan>,
+    },
     Replace(Vec<hex_project::GainPoint>),
     Upsert(hex_project::GainPoint),
     Move {
@@ -152,6 +156,14 @@ pub enum GainLaneEdit {
 impl GainLaneEdit {
     fn command(self, track: hex_project::TrackId) -> Command {
         match self {
+            Self::SpliceTake {
+                expected_epoch,
+                spans,
+            } => Command::SpliceGainTouchBatch {
+                track,
+                expected_epoch,
+                spans,
+            },
             Self::Replace(points) => Command::ReplaceTrackGainEnvelope { track, points },
             Self::Upsert(point) => Command::UpsertTrackGainPoint { track, point },
             Self::Move { from, to } => Command::MoveTrackGainPoint { track, from, to },
@@ -163,6 +175,11 @@ impl GainLaneEdit {
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    ArmGainRecording {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+    },
     /// Check all stamps before preparation or history, including requests delayed in either queue.
     GainLane {
         project_generation: u64,
@@ -1311,6 +1328,30 @@ fn run_worker(
                             }
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::ArmGainRecording {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    track,
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("gain recording arm refused · project changed".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some(
+                            "gain recording arm refused · device edit is still applying".into(),
+                        );
+                    } else {
+                        match session.prepare_gain_recording(
+                            track,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok(prepared) => {
+                                restore_prepared = Some(prepared);
+                                status = Some("gain recording target prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
                     }
                 }
                 Request::GainLane {

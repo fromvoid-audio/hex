@@ -306,6 +306,9 @@ pub struct Status {
     rejected_revision_sequence: AtomicU64,
     pub position: AtomicU64,
     pub performance_frame: AtomicU64,
+    pub transport_epoch: AtomicU64,
+    pub gain_recording_fault: AtomicBool,
+    pub gain_recording_ready: AtomicBool,
     pub playing: AtomicBool,
     pub session_capability: AtomicU32,
     pub shutdown_complete: AtomicBool,
@@ -348,6 +351,9 @@ impl Status {
             rejected_revision_sequence: AtomicU64::new(0),
             position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
+            transport_epoch: AtomicU64::new(1),
+            gain_recording_fault: AtomicBool::new(false),
+            gain_recording_ready: AtomicBool::new(false),
             playing: AtomicBool::new(false),
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             shutdown_complete: AtomicBool::new(false),
@@ -634,6 +640,7 @@ pub struct Control {
     pub status: Arc<Status>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
     pub processor_audition: processor_audition::ProcessorAuditionTargetControl,
+    pub gain_recording: crate::gain_recording::Control,
     rate: u32,
     revision: u64,
     command_ticket: u64,
@@ -654,6 +661,7 @@ pub struct Callback {
     processor_audition: processor_audition::ProcessorAuditionTargetCallback,
     processor_audition_lease: Option<processor_audition::ProcessorAuditionTarget>,
     processor_audition_rejected_epoch: u64,
+    gain_recording: crate::gain_recording::Callback,
     spectrum_capture: Option<SpectrumCapture>,
     spectrum_stage: SpectrumStage,
     active: Option<Publication>,
@@ -700,6 +708,7 @@ pub fn channel_with_spectrum(
     let status = Arc::new(Status::try_new()?);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
+    let (gain_recording, callback_gain_recording) = crate::gain_recording::channel();
     Ok((
         Control {
             publications,
@@ -712,6 +721,7 @@ pub fn channel_with_spectrum(
             status: status.clone(),
             spectrum_target,
             processor_audition,
+            gain_recording,
             rate,
             revision: 0,
             command_ticket: 0,
@@ -731,6 +741,7 @@ pub fn channel_with_spectrum(
             processor_audition: callback_audition,
             processor_audition_lease: None,
             processor_audition_rejected_epoch: 0,
+            gain_recording: callback_gain_recording,
             spectrum_capture: capture,
             spectrum_stage: SpectrumStage::default(),
             active: None,
@@ -872,7 +883,9 @@ impl Control {
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
-        let reason = if self.closing.load(Acquire) {
+        let reason = if self.gain_recording.target().is_some() {
+            Some("finish gain recording before replacing playback")
+        } else if self.closing.load(Acquire) {
             Some("playback is shutting down")
         } else if playback.sample_rate() != self.rate {
             Some("playback rate differs from device")
@@ -1044,6 +1057,9 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        if self.closing.load(Acquire) {
+            self.invalidate_gain_recording(crate::gain_recording::AbortReason::Cancelled);
+        }
         self.processor_audition.begin_block();
         self.apply_processor_audition_boundary();
         self.spectrum_target.begin_block();
@@ -1391,6 +1407,7 @@ impl Callback {
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if cut.stop_through.is_some() {
+            self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
             if let Some(active) = self.active.as_mut() {
                 active.playback.apply(PlaybackCommand::Stop);
             }
@@ -1425,6 +1442,17 @@ impl Callback {
                             .publish_rejected_action(queued.ticket, error.telemetry_rejection()),
                     }
                 }
+                if invalidate_audition
+                    || matches!(
+                        queued.action,
+                        PlaybackAction::Transport(PlaybackCommand::Pause)
+                            | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Pause)
+                    )
+                {
+                    self.invalidate_gain_recording(
+                        crate::gain_recording::AbortReason::TransportChanged,
+                    );
+                }
                 if invalidate_audition {
                     self.invalidate_processor_audition_request();
                 }
@@ -1452,6 +1480,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.invalidate_gain_recording(crate::gain_recording::AbortReason::OutputFailed);
         if let Some(active) = self.active.as_mut() {
             active.playback.apply(PlaybackCommand::Stop);
         }
@@ -1474,6 +1503,9 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        if !output.is_empty() {
+            self.prepare_gain_recording_quantum();
+        }
         self.reconcile_processor_audition();
         let Some(target) = self
             .spectrum_capture
@@ -1575,6 +1607,73 @@ impl Callback {
         outcome
     }
 
+    fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
+        self.gain_recording.abort(reason);
+        if let Some(active) = self.active.as_mut() {
+            active.playback.clear_gain_recording_override();
+        }
+        if self
+            .status
+            .transport_epoch
+            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1))
+            .is_err()
+        {
+            self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+    fn prepare_gain_recording_quantum(&mut self) {
+        use crate::gain_recording::{AbortReason, Clock};
+        let transport_epoch = self.status.transport_epoch.load(Acquire);
+        let active = self.active.as_mut();
+        let live = self.gain_recording.prepare(|target| {
+            let active = active.as_ref().ok_or(AbortReason::SourceChanged)?;
+            if active.revision != target.audio_revision
+                || active.control_context_generation != target.project_generation
+                || active.playback.sample_rate() != target.sample_rate
+                || !active.playback.gain_recording_ready(target.track_id)
+            {
+                return Err(AbortReason::SourceChanged);
+            }
+            if transport_epoch != target.transport_epoch || !active.playback.playing() {
+                return Err(AbortReason::TransportChanged);
+            }
+            let (content_frame, delivery_delay, loop_pass) = active
+                .playback
+                .gain_recording_clock(target.track_id)
+                .ok_or(AbortReason::SourceChanged)?;
+            Ok(Clock {
+                performance_frame: active.playback.performance_frame(),
+                content_frame,
+                delivery_delay,
+                loop_pass,
+            })
+        });
+        if let Some(active) = active {
+            active.playback.clear_gain_recording_override();
+            if let Some((track, gain)) = live {
+                if active
+                    .playback
+                    .set_gain_recording_override(track, gain)
+                    .is_err()
+                {
+                    self.gain_recording.abort(AbortReason::SourceChanged);
+                }
+            }
+        }
+    }
+    /// Confirm the exact converted output quantum; this is sink delivery, not
+    /// physical loudspeaker playback. Failure discards the entire pending take.
+    pub fn finish_gain_recording_quantum(&mut self, output_valid: bool) {
+        let end = self
+            .active
+            .as_ref()
+            .map_or(0, |active| active.playback.performance_frame());
+        self.gain_recording.finish_quantum(end, output_valid);
+        if self.gain_recording.receipt_fault {
+            self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+
     fn publish_active_routes(&mut self, force: bool) {
         let Some(active) = self.active.as_ref() else {
             return;
@@ -1620,6 +1719,20 @@ impl Callback {
         self.published_route_key = Some(key);
     }
     fn publish_transport(&self) {
+        let ready = self.active.as_ref().is_some_and(|active| {
+            active.playback.playing()
+                && active
+                    .playback
+                    .prepared_revision()
+                    .and_then(|prepared| prepared.gain_recording_track())
+                    .is_some_and(|track| {
+                        active
+                            .playback
+                            .gain_recording_clock(track.value())
+                            .is_some()
+                    })
+        });
+        self.status.gain_recording_ready.store(ready, Release);
         if let Some(active) = self.active.as_ref() {
             self.status
                 .position
@@ -1746,6 +1859,8 @@ mod tests {
         )
         .unwrap();
         let project = CanonicalProject::from_snapshot(Snapshot {
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
@@ -1871,6 +1986,8 @@ mod tests {
             .expect("saturator curve")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
@@ -1984,6 +2101,8 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
@@ -2109,6 +2228,8 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
@@ -4076,6 +4197,8 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,
@@ -4533,6 +4656,8 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             return_feeds: Vec::new(),
             import_provenance: None,
             sample_rate: 48_000,

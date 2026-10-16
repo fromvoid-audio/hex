@@ -146,11 +146,10 @@ Imported unsaved projects use that same latest-untitled checkpoint path. Recover
 retains schema-18 original-document provenance and prepares the complete media
 and playback candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema23, the complete combined envelope for device input/output
-host gains, exact import provenance, Return feeds, base gain envelopes and
-recording-epoch metadata. Nonempty touch spans still refuse normal adoption,
-decode and save until every playback consumer supports them. The ordinary writer
-no longer selects a format based on which of those additions happens to be empty.
+New saves use schema24, the complete envelope for device input/output host gains,
+exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
+and recording epochs. All playback consumers share the admitted lane model. The
+ordinary writer does not select formats based on which fields happen to be empty.
 
 Historical versions18 and19 have two recorded shapes from independent branches.
 Decoding selects an envelope by top-level key presence, then applies its strict
@@ -166,4 +165,14 @@ still refuse state they cannot represent instead of discarding it.
 See [routing](../../docs/routing.md),
 [track gain automation](../../docs/track-gain-automation.md) and
 [gain touch metadata](../../docs/gain-touch-spans.md). This persistence integration
-does not implement recording, general MIDI routing or latency compensation.
+owns metadata preservation; audible routing, recording and latency compensation
+remain engine/audio/session responsibilities.
+
+Schema24 adds required bounded `audio_feeds` and `midi_routes` arrays to the
+complete schema23 envelope. Each audio source is explicitly tagged as Track or
+Return; destinations and MIDI endpoints use canonical stable IDs. The strict
+reader rejects unknown/duplicate fields, unsupported ports, invalid gain/identity,
+cycles and oversized lists before admitting a Project. Schemas1–23 migrate with
+empty typed inputs; schema23 retains host trims, provenance, Return feeds and
+gain-touch metadata. Explicit schema20/22 writers refuse playable routing rather
+than discarding it. Historical schema18/19 shape dispatch remains unchanged.

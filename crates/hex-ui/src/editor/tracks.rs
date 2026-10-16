@@ -887,7 +887,10 @@ impl EditorView {
                             .state
                             .as_ref()
                             .and_then(|state| state.project.track(track_id))
-                            .is_some_and(|track| !track.gain_envelope().is_empty())
+                            .is_some_and(|track| {
+                                !track.gain_envelope().is_empty()
+                                    || !track.gain_lane().spans().is_empty()
+                            })
                         {
                             view.show_gain_lane(track_id, window, cx);
                         }
@@ -903,7 +906,10 @@ impl EditorView {
                             .state
                             .as_ref()
                             .and_then(|state| state.project.track(track_id))
-                            .is_some_and(|track| !track.gain_envelope().is_empty())
+                            .is_some_and(|track| {
+                                !track.gain_envelope().is_empty()
+                                    || !track.gain_lane().spans().is_empty()
+                            })
                         {
                             view.show_gain_lane(track_id, window, cx);
                         }
@@ -917,11 +923,14 @@ impl EditorView {
                     .w(px(34.0))
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(if track.gain_envelope().is_empty() {
-                        format!("{:.0}%", track.gain() * 100.0)
-                    } else {
-                        "auto".into()
-                    })),
+                    .child(theme::text(
+                        if track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty()
+                        {
+                            format!("{:.0}%", track.gain() * 100.0)
+                        } else {
+                            "auto".into()
+                        },
+                    )),
             )
             .child(
                 button(

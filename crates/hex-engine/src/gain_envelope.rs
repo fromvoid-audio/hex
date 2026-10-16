@@ -1,8 +1,24 @@
 //! Control-prepared absolute track gains; render queries have no mutable cursor.
 use crate::{Invalid, PreparedTrackMix};
-use hex_project::{GainInterpolation, GainPoint, Project, TempoMap};
+use hex_project::{GainInterpolation, GainLane, GainPoint, Project, TempoMap};
+
+mod touch;
+use touch::PreparedTouch;
 
 pub const MAX_PREPARED_GAIN_KNOTS: usize = 327_680;
+/// Combined prepared base-knot and touch-array allocation ceiling.
+pub const MAX_PREPARED_GAIN_BYTES: usize =
+    MAX_PREPARED_GAIN_KNOTS * std::mem::size_of::<GainEnvelopeKnot>();
+
+/// One exact continuous part of the effective read-only curve. Consecutive
+/// segments can differ at their shared frame, denoting a step discontinuity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GainPreviewSegment {
+    pub start_frame: u64,
+    pub end_frame: u64,
+    pub start_gain: f32,
+    pub end_gain: f32,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct GainEnvelopeKnot {
     frame: u64,
@@ -34,9 +50,10 @@ impl GainAutomationPreview {
             .map_err(|_| Invalid("could not reserve gain preview"))?;
         for track in project.tracks() {
             if let Some(envelope) = PreparedGainEnvelope::prepare(
-                track.gain_envelope(),
+                track.gain_lane(),
                 project.tempo_map(),
                 PreparedTrackMix::new(1.0, 0.0, false)?,
+                track.gain(),
             )? {
                 tracks.push((track.id(), envelope));
             }
@@ -50,6 +67,21 @@ impl GainAutomationPreview {
             .map(|(_, envelope)| envelope.knots.as_slice())
             .unwrap_or(&[])
     }
+    /// Visit exact base-ramp and held-touch segments clipped to a frame range.
+    /// Base knots remain separately available as authored-curve metadata.
+    pub fn visit_segments(
+        &self,
+        track: hex_project::TrackId,
+        start: u64,
+        end: u64,
+        mut visit: impl FnMut(GainPreviewSegment),
+    ) -> bool {
+        let Some((_, envelope)) = self.tracks.iter().find(|(id, _)| *id == track) else {
+            return false;
+        };
+        envelope.visit_segments(start, end, &mut visit);
+        true
+    }
     pub fn value_at(&self, track: hex_project::TrackId, frame: u64) -> Option<f32> {
         self.tracks
             .iter()
@@ -62,6 +94,9 @@ pub(crate) struct PreparedGainEnvelope {
     knots: Vec<GainEnvelopeKnot>,
     mix: PreparedTrackMix,
     authored_points: usize,
+    authored_units: usize,
+    touch: PreparedTouch,
+    fallback: f32,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GainAutomationCapacity {
@@ -69,6 +104,10 @@ pub struct GainAutomationCapacity {
     pub prepared_knots: usize,
     pub allocated_knot_slots: usize,
     pub allocated_knot_bytes: usize,
+    pub authored_units: usize,
+    pub prepared_touch_spans: usize,
+    pub prepared_touch_steps: usize,
+    pub allocated_touch_bytes: usize,
 }
 
 fn markers_between(
@@ -93,39 +132,81 @@ fn knot_count(points: &[GainPoint], tempo: &TempoMap) -> Result<usize, Invalid> 
     }
     Ok(count)
 }
+fn plan_counts(lane: &GainLane, tempo: &TempoMap) -> Result<(usize, usize), Invalid> {
+    lane.validate().map_err(|error| Invalid(error.0))?;
+    let knots = knot_count(lane.base(), tempo)?;
+    let units = knots
+        .checked_add(lane.units().map_err(|e| Invalid(e.0))? - lane.base().len())
+        .ok_or(Invalid("prepared gain plan count overflow"))?;
+    let bytes = knots
+        .checked_mul(std::mem::size_of::<GainEnvelopeKnot>())
+        .and_then(|n| n.checked_add(PreparedTouch::preflight_bytes(lane)?))
+        .ok_or(Invalid("prepared gain plan byte count overflow"))?;
+    Ok((units, bytes))
+}
 pub(crate) fn validate_project(project: &Project) -> Result<(), Invalid> {
     let mut authored = 0_usize;
     let mut prepared = 0_usize;
+    let mut bytes = 0_usize;
     for track in project.tracks() {
         authored = authored
-            .checked_add(track.gain_envelope().len())
+            .checked_add(track.gain_lane().units().map_err(|e| Invalid(e.0))?)
             .ok_or(Invalid("gain point count overflow"))?;
+        let (count, size) = plan_counts(track.gain_lane(), project.tempo_map())?;
         prepared = prepared
-            .checked_add(knot_count(track.gain_envelope(), project.tempo_map())?)
+            .checked_add(count)
             .ok_or(Invalid("prepared gain knot count overflow"))?;
+        bytes = bytes
+            .checked_add(size)
+            .ok_or(Invalid("prepared gain plan byte count overflow"))?;
     }
-    if authored > hex_project::MAX_GAIN_POINTS || prepared > MAX_PREPARED_GAIN_KNOTS {
+    if authored > hex_project::MAX_GAIN_POINTS
+        || prepared > MAX_PREPARED_GAIN_KNOTS
+        || bytes > MAX_PREPARED_GAIN_BYTES
+    {
         return Err(Invalid("gain automation exceeds its bounded plan"));
     }
     Ok(())
 }
 impl PreparedGainEnvelope {
+    pub(crate) fn constant(mix: PreparedTrackMix, fallback: f32) -> Self {
+        Self {
+            knots: Vec::new(),
+            mix,
+            authored_points: 0,
+            authored_units: 0,
+            touch: PreparedTouch::default(),
+            fallback,
+        }
+    }
+    pub(crate) fn mix_with_gain(&self, gain: f32) -> PreparedTrackMix {
+        self.mix.with_absolute_gain(gain)
+    }
     pub(crate) fn prepare(
-        points: &[GainPoint],
+        lane: &GainLane,
         tempo: &TempoMap,
         mix: PreparedTrackMix,
+        fallback: f32,
     ) -> Result<Option<Self>, Invalid> {
-        if points.is_empty() {
+        let (units, bytes) = plan_counts(lane, tempo)?;
+        if !fallback.is_finite() || !(0.0..=2.0).contains(&fallback) {
+            return Err(Invalid("gain fallback must be finite and within 0..2"));
+        }
+        let points = lane.base();
+        if points.is_empty() && lane.spans().is_empty() {
             return Ok(None);
         }
         let count = knot_count(points, tempo)?;
-        if count > MAX_PREPARED_GAIN_KNOTS {
+        if units > MAX_PREPARED_GAIN_KNOTS || bytes > MAX_PREPARED_GAIN_BYTES {
             return Err(Invalid("prepared gain knot limit reached"));
         }
         let mut knots = Vec::new();
         knots
             .try_reserve_exact(count)
             .map_err(|_| Invalid("could not reserve gain automation knots"))?;
+        if knots.capacity() > count {
+            return Err(Invalid("prepared gain knot allocation exceeds its bound"));
+        }
         let mut push = |beat: hex_project::BeatTime,
                         gain: f64,
                         outgoing: GainInterpolation|
@@ -140,7 +221,9 @@ impl PreparedGainEnvelope {
                 .last()
                 .is_some_and(|old: &GainEnvelopeKnot| old.frame == frame)
             {
-                *knots.last_mut().expect("existing knot") = knot;
+                if let Some(last) = knots.last_mut() {
+                    *last = knot;
+                }
             } else {
                 knots.push(knot);
             }
@@ -164,6 +247,9 @@ impl PreparedGainEnvelope {
             knots,
             mix,
             authored_points: points.len(),
+            authored_units: lane.units().map_err(|e| Invalid(e.0))?,
+            touch: PreparedTouch::prepare(lane, tempo)?,
+            fallback,
         }))
     }
     pub(crate) fn knots(&self) -> &[GainEnvelopeKnot] {
@@ -173,6 +259,14 @@ impl PreparedGainEnvelope {
         self.mix.with_absolute_gain(self.value_at(frame))
     }
     pub(crate) fn value_at(&self, frame: u64) -> f32 {
+        self.touch
+            .value_at(frame)
+            .unwrap_or_else(|| self.base_value_at(frame))
+    }
+    fn base_value_at(&self, frame: u64) -> f32 {
+        if self.knots.is_empty() {
+            return self.fallback;
+        }
         let index = self
             .knots
             .partition_point(|knot| knot.frame <= frame)
@@ -187,13 +281,51 @@ impl PreparedGainEnvelope {
         let fraction = (frame - point.frame) as f64 / (next.frame - point.frame) as f64;
         (point.gain + (next.gain - point.gain) * fraction) as f32
     }
-    pub(crate) fn capacity(&self) -> (usize, usize, usize, usize) {
-        (
-            self.authored_points,
-            self.knots.len(),
-            self.knots.capacity(),
-            self.knots.capacity() * std::mem::size_of::<GainEnvelopeKnot>(),
-        )
+    fn visit_segments(&self, mut start: u64, end: u64, visit: &mut impl FnMut(GainPreviewSegment)) {
+        while start < end {
+            let next_knot = self
+                .knots
+                .get(self.knots.partition_point(|knot| knot.frame <= start))
+                .map_or(end, |knot| knot.frame.min(end));
+            let next = self
+                .touch
+                .next_boundary(start)
+                .map_or(next_knot, |frame| frame.min(next_knot));
+            let start_gain = self.value_at(start);
+            let held = self.touch.value_at(start).is_some()
+                || self.knots.is_empty()
+                || self.knots[self
+                    .knots
+                    .partition_point(|knot| knot.frame <= start)
+                    .saturating_sub(1)]
+                .outgoing
+                    == GainInterpolation::Step
+                || self.knots.first().is_some_and(|knot| start < knot.frame);
+            let end_gain = if held {
+                start_gain
+            } else {
+                self.base_value_at(next)
+            };
+            visit(GainPreviewSegment {
+                start_frame: start,
+                end_frame: next,
+                start_gain,
+                end_gain,
+            });
+            start = next;
+        }
+    }
+    pub(crate) fn capacity(&self) -> GainAutomationCapacity {
+        GainAutomationCapacity {
+            authored_points: self.authored_points,
+            prepared_knots: self.knots.len(),
+            allocated_knot_slots: self.knots.capacity(),
+            allocated_knot_bytes: self.knots.capacity() * std::mem::size_of::<GainEnvelopeKnot>(),
+            authored_units: self.authored_units,
+            prepared_touch_spans: self.touch.span_count(),
+            prepared_touch_steps: self.touch.step_count(),
+            allocated_touch_bytes: self.touch.allocated_bytes(),
+        }
     }
 }
 
@@ -237,17 +369,18 @@ mod tests {
         let mut totals = GainAutomationCapacity::default();
         for track in project.tracks() {
             let prepared = PreparedGainEnvelope::prepare(
-                track.gain_envelope(),
+                track.gain_lane(),
                 project.tempo_map(),
                 PreparedTrackMix::new(1.0, 0.0, false).unwrap(),
+                track.gain(),
             )
             .unwrap()
             .unwrap();
-            let (authored, count, slots, bytes) = prepared.capacity();
-            totals.authored_points += authored;
-            totals.prepared_knots += count;
-            totals.allocated_knot_slots += slots;
-            totals.allocated_knot_bytes += bytes;
+            let capacity = prepared.capacity();
+            totals.authored_points += capacity.authored_points;
+            totals.prepared_knots += capacity.prepared_knots;
+            totals.allocated_knot_slots += capacity.allocated_knot_slots;
+            totals.allocated_knot_bytes += capacity.allocated_knot_bytes;
         }
         assert_eq!(totals.authored_points, 65536);
         assert_eq!(totals.prepared_knots, 327424);

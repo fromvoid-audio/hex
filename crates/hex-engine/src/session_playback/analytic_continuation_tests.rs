@@ -102,6 +102,10 @@ fn signal(age: u64, gate: u64, gain: f64) -> [f32; 2] {
 }
 
 impl PreparedNativeInstrument for Context {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,

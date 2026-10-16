@@ -26,6 +26,7 @@ mod edit_cursor_ui_test;
 mod export;
 mod fades;
 mod gain_lane;
+mod gain_recording;
 mod header;
 mod live_set;
 mod loop_rail;
@@ -54,6 +55,7 @@ mod recovery_state;
 mod refresh;
 mod render;
 mod return_tracks;
+mod routing_controls;
 mod save;
 mod seek;
 mod selection;
@@ -416,6 +418,9 @@ pub(super) struct EditorView {
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
     gain_lane: gain_lane::GainLane,
+    gain_recorder: gain_recording::Recorder,
+    routing_open: bool,
+    routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -681,6 +686,9 @@ impl EditorView {
             offline_cursor: 0,
             selected_track: None,
             gain_lane: gain_lane::GainLane::default(),
+            gain_recorder: gain_recording::Recorder::default(),
+            routing_open: false,
+            routing_page: 0,
             selected_clip: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -926,7 +934,9 @@ impl EditorView {
             .state
             .as_ref()
             .and_then(|state| state.project.track(track))
-            .is_some_and(|track| !track.gain_envelope().is_empty())
+            .is_some_and(|track| {
+                !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
+            })
         {
             self.error = Some(
                 "automation owns gain · edit the gain lane or clear it for static fallback".into(),
@@ -977,8 +987,16 @@ impl EditorView {
             self.gain_lane
                 .track
                 .and_then(|id| state.project.track(id))
-                .and_then(|track| track.gain_envelope().last())
-                .and_then(|point| state.project.tempo_map().beat_to_frame(point.beat).ok())
+                .and_then(|track| {
+                    track
+                        .gain_envelope()
+                        .last()
+                        .map(|point| point.beat)
+                        .into_iter()
+                        .chain(track.gain_lane().spans().last().map(|span| span.end))
+                        .max()
+                })
+                .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         self.viewport

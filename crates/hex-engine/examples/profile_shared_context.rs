@@ -121,6 +121,10 @@ impl NativeInstrumentDefinition for ProfileDefinition {
 }
 
 impl PreparedNativeInstrument for ProfilePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         pitch: u8,
@@ -283,6 +287,8 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
 
     let project = Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id,

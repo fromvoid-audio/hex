@@ -78,6 +78,7 @@ pub struct PreparedRevision {
     session: Arc<PreparedSessionInventory>,
     midi_preview: Arc<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
+    gain_recording_track: Option<TrackId>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -107,6 +108,54 @@ impl PreparedRevision {
         )
     }
 
+    /// Arm one transient raw-fader target without editing canonical metadata or history.
+    /// Active processors must declare a known, bounded algorithmic latency.
+    /// Playback reports the actual fader content origin and remaining delay to Main.
+    pub fn prepare_for_gain_recording(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        track: TrackId,
+    ) -> Result<Self, Invalid> {
+        Self::prepare(project, media, sine_table, previous_session)?
+            .arm_gain_recording(project, track)
+    }
+    /// Test registry seam for callback probes; production arming uses canonical preparation.
+    #[cfg(feature = "instrument-test-support")]
+    pub fn with_test_gain_recording(
+        self,
+        project: &Project,
+        track: TrackId,
+    ) -> Result<Self, Invalid> {
+        self.arm_gain_recording(project, track)
+    }
+
+    pub(crate) fn arm_gain_recording(
+        mut self,
+        project: &Project,
+        track: TrackId,
+    ) -> Result<Self, Invalid> {
+        let canonical = project
+            .track(track)
+            .ok_or(Invalid("gain recording track no longer exists"))?;
+        let prepared = &mut self;
+        let arrangement = Arc::get_mut(&mut prepared.arrangement)
+            .ok_or(Invalid("gain recording preparation is already shared"))?;
+        let selected = arrangement
+            .tracks
+            .iter_mut()
+            .find(|candidate| candidate.canonical_track_id() == Some(track))
+            .ok_or(Invalid("gain recording compiled track is unavailable"))?;
+        selected.arm_gain_recording(canonical.gain(), canonical.balance())?;
+        prepared.gain_recording_track = Some(track);
+        Ok(self)
+    }
+
+    pub fn gain_recording_track(&self) -> Option<TrackId> {
+        self.gain_recording_track
+    }
+
     pub(crate) fn prepare_with_instrument_registry(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -114,10 +163,28 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
-        crate::gain_envelope::validate_project(project)?;
-        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        Self::prepare_with_registries(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            &effects,
+            instruments,
+        )
+    }
+
+    pub(crate) fn prepare_with_registries(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        crate::gain_envelope::validate_project(project)?;
+        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
             project,
             instruments,
@@ -135,7 +202,7 @@ impl PreparedRevision {
                 project,
                 media,
                 Some(Arc::clone(&sine_table)),
-                &effects,
+                effects,
                 instruments,
                 Some(Arc::clone(&shared_contexts)),
             )?;
@@ -169,6 +236,7 @@ impl PreparedRevision {
             session: Arc::new(session),
             midi_preview: Arc::new(midi_preview),
             mutable_track_revisions,
+            gain_recording_track: None,
         })
     }
 
@@ -191,6 +259,20 @@ impl PreparedRevision {
             previous_session,
             instruments,
         )
+    }
+
+    /// Test-only registry injection through the complete production preparation path.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn prepare_with_test_registries(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        table: Arc<SineTable>,
+        previous: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_with_registries(project, media, table, previous, effects, instruments)
     }
 
     /// Prepare Arrangement playback and the Session inventory from one mixed
@@ -259,6 +341,7 @@ impl PreparedRevision {
             session: Arc::new(session),
             midi_preview: Arc::new(midi_preview),
             mutable_track_revisions,
+            gain_recording_track: None,
         })
     }
 
@@ -441,11 +524,15 @@ fn prepare_mutable_track_revisions(
             .map_err(|_| Invalid("could not reserve mutable effect descriptors"))?;
         effects.extend(track.devices().iter().map(PreparedDeviceIdentity::from));
 
+        let source_id = project.midi_source_track(track.id());
+        let source = project
+            .track(source_id)
+            .ok_or(Invalid("mutable midi source root is missing"))?;
         let mut arrangement_midi_sources = Vec::new();
         arrangement_midi_sources
-            .try_reserve_exact(track.midi_clips().len())
+            .try_reserve_exact(source.midi_clips().len())
             .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
-        arrangement_midi_sources.extend(track.midi_clips().iter().map(|clip| {
+        arrangement_midi_sources.extend(source.midi_clips().iter().map(|clip| {
             PreparedArrangementMidiSource {
                 id: clip.id(),
                 start: clip.start(),

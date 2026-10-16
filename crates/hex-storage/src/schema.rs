@@ -1,6 +1,7 @@
 pub(crate) mod combined;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
+pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
@@ -1243,6 +1244,8 @@ impl DocumentV8 {
                 let sample_rate = document.sample_rate;
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
@@ -1276,6 +1279,8 @@ impl DocumentV8 {
                 }
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1309,6 +1314,8 @@ impl DocumentV8 {
                 }
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1349,6 +1356,8 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1389,6 +1398,8 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1429,6 +1440,8 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1469,6 +1482,8 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1527,6 +1542,8 @@ impl DocumentV8 {
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1953,6 +1970,8 @@ impl DocumentV13 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             return_feeds: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
@@ -2000,6 +2019,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 24 {
+            return playable_routing::DocumentV24::decode(bytes);
         }
         if header.version == 23 {
             return combined::decode(bytes);
@@ -2241,6 +2263,8 @@ impl DocumentV10 {
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
                     return_feeds: Vec::new(),
+                    audio_feeds: Vec::new(),
+                    midi_routes: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
@@ -2372,6 +2396,8 @@ impl DocumentV9 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             return_feeds: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,

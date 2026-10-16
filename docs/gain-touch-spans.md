@@ -1,65 +1,85 @@
-# gain touch metadata preparation
+# gain touch recording
 
-PR184 adds schema22 model/storage preparation. Actual touch recording, audible
-application acknowledgments, runtime overrides and native recording remain
-refused. This stage does not complete Pulse28.
+Pulse28 / PR184 records the native track fader through delivered audio receipts.
+The canonical lane contains an unchanged base curve, disjoint half-open touch
+spans, and a durable recording-epoch high-water mark. Track snapshots, storage,
+Undo and Redo share this value; there is no second recording project model.
 
-A Track owns one GainLane: its unchanged base GainPoint curve, a flat ordered
-list of disjoint half-open touch spans, and a durable recording-epoch high-water
-mark. TrackSnapshot and bounded Undo/Redo preserve that canonical value. There
-are no nested lanes or copied base curves. Empty spans preserve all prior
-prepared playback and preview behavior.
+A span owns `[start, end)`. Its first step holds from start; later steps replace
+the held value. At end, independently evaluated base automation or static gain
+owns the fader again. Base ramps outside the span are never flattened or
+reanchored. Preparation maps beats to nearest frames, with later beats winning
+coincident frames. A collapsed span owns no audible interval. Arrangement,
+Session and linear export use the same prepared envelope law. The preview
+visits effective segments while retaining base points as selectable metadata.
 
-A span owns `[start, end)`. Its first step holds from start; each later strictly
-ordered beat replaces the held value. At end the original base/static fallback
-owns the read again, including when end coincides with a base point. The model
-returns `None` outside spans rather than interpolating a replacement base curve.
-It preserves authored beats; no runtime frame quantization is introduced here.
+Overlapping replacement preserves left/right fragments, original event/context
+identity and origin beat; a right fragment carries its previously held event.
+The expected lane epoch must match and new recording epochs increase. Undo and
+Redo preserve an existing owner's epoch high-water mark. A completed take,
+including multiple loop passes, is one atomic history edit. Later passes replace
+earlier spans over the same content. Failed normalization or preparation leaves
+the original project and history intact.
 
-A pure proposal validates before replacing overlapping spans. Surviving left and
-right fragments retain their original context, event sequence, gain and original
-beat anchor. A right fragment carries its prior held event at the new start.
-Adjacent spans are allowed. Replacement requires the current lane epoch and a
-strictly newer recording epoch; Undo/Redo cannot rewind a surviving owner's
-high-water mark. Owner removal removes the lane and history can restore it.
+Bounds are 128 spans per track, 1022 steps per span, and 1024 weighted units per
+track: base points plus retained steps plus two endpoints per span. The project
+limit is 65536 units. Normalization counts fragments and endpoints before
+reserving candidates. Editing base points or time transforms on recorded spans
+is explicitly refused; clear removes the complete lane while retaining its
+epoch and restores manual ownership.
 
-Structural bounds are 128 spans per track, 1022 steps per individual span and
-1024 weighted units per track: base points plus retained steps plus two endpoints
-per span. The project limit is 65536 weighted units. Fragment costs are counted
-before cloning event/base vectors. These are control-model and decoding limits,
-not a proof of callback capacity, process memory, or real-time event reservation.
+## native command and receipt boundary
 
-Each span has structurally validated context metadata: recording epoch, project
-generation, canonical/audio revision, transport/gesture epochs, gesture serial,
-sample rate and loop pass. Contexts within one recording epoch must agree;
-retained event identities cannot change gain or origin beat. These stamps do not
-prove that audio applied a value. Runtime counters, the proposed 64 events plus
-terminal capacity, and successful whole-output ACKs are not implemented here.
+The gain pane's record control prepares one transient raw-fader capability for
+its TrackId, then starts playback. Arming does not create saved points, change
+history or replace the canonical preparation cache. The shared numeric touch
+control sends an absolute gain in finite linear0..2. Release returns to read;
+cancel discards the entire uncommitted take.
 
-Schema1–21 migration produces empty spans and epoch zero while preserving base
-curves, ReturnFeeds, import provenance and opaque native-device payloads. Strict
-schema22 requires span/epoch fields and rejects malformed, unknown, unordered,
-overlapping, over-capacity or inconsistent context data. Epoch-only projects can
-save/load schema22. Older writers refuse touch metadata rather than lose it.
-Normal Project adoption, splice commands and schema22 decode refuse nonempty
-spans until both prepared Arrangement/Session and export consumers support the
-complete value. Private tests serialize proposed metadata to check roundtrip;
-this is not an alternate production save/history owner.
+A target binds project generation, canonical/audio revisions, stable TrackId,
+recording/transport epochs, gesture serial and sample rate. Audio validates the
+active graph and transport before applying commands. Each callback quantum
+consumes a finite prefix; only its latest value is applied. Superseded commands
+return credits without inventing applied samples. Two capacity66 rings admit at
+most64 outstanding ordinary events and reserve terminal capacity independently.
+A take accepts at most1022 value events. Backpressure retries the latest UI value;
+a full take releases rather than overwriting or silently dropping recorded data.
 
-Existing lane transforms refuse a hypothetical nonempty span owner; base edits
-on admitted epoch-only projects preserve its epoch. No UI recording control or
-production override/ACK path is added. Linux model/math tests prove neither
-native interaction nor actual recording PCM. Worker1's endpoint-domain ownership
-escrow/reaper is not PCM/output transaction escrow or a gain-application ACK.
-The existing 256-frame render quantum versus whole hardware callback commit and
-rollback boundary remains unresolved for a future actual recording stage.
+Audio applies the override after devices, before sends and Main, preserving
+balance and mute even when saved static gain is zero. A receipt records its
+actual performance/content frame and loop pass. The native adapter confirms
+only after conversion and writing the output quantum, at most256 frames. A
+compensated receipt waits until that fader sample reaches Main. Rendering alone
+is not a delivery acknowledgment. Prior successful quantums remain delivered if
+a later quantum fails; any failure discards the complete uncommitted take.
+Receipts do not establish physical interface or loudspeaker delivery.
 
-## combined persistence integration — 16 october 2026
+Stop, Seek, Pause, graph/source changes, device failure and explicit cancellation
+abort pending takes. Priority Stop remains independent of full command queues.
+Device loss can stop callbacks entirely, so the UI discards its uncommitted state
+and releases its edit fence without waiting indefinitely for a terminal receipt.
+Recovery replaces the output through the existing lifecycle. Late old commands
+must drain their receipt credits before another take is admitted.
 
-New saves use the complete schema23 envelope. Historical schema18/19 branch
-shapes dispatch by key presence into strict readers; schemas20–22 remain readable.
-Device input/output host gains, opaque payloads, provenance, Return feeds, gain
-points and epoch metadata share one lossless snapshot path. The old ordinary
-writer selection described above is historical. See
-[storage](../crates/hex-storage/README.md). Nonempty touch-span adoption and actual
-recording remain refused; this adds no compensation.
+Control reconstructs bounded loop pieces from actual content/performance history,
+checks sample/beat round trips and submits one revision-stamped splice batch.
+The worker rechecks generation, canonical revision and lane epoch before history
+or graph publication. Project edits remain fenced during arming/touch/release.
+Window close and quit visibly require finishing or cancelling a live take.
+
+## persistence and verification
+
+Schema24 writes complete routing, gain points, spans, epoch, device host gains,
+opaque payloads and provenance. Strict schemas22/23 can read nonempty spans;
+earlier formats migrate empty spans and refuse unsupported backports rather
+than discard data. Historical main/feature schema18/19 shapes retain strict
+key-presence dispatch. The existing document ceiling and recoverable file
+publication remain unchanged.
+
+Deterministic tests cover envelope/sample boundaries, normalization, loop passes,
+single-step Undo/Redo, save/load, staleness, bounded command/receipt pressure,
+failed delivery, cancellation and priority Stop. Headless allocation probes cover
+selected native adapter scopes. Native interaction/listening and physical device
+deadlines remain separate evidence; optional tests use the exact optimized build.
+General device-parameter recording and sidechain buses are outside this track-gain
+contract. See [compensation](latency-compensation.md).

@@ -199,3 +199,14 @@ Recovery opens dirty without an overwrite association; ordinary relinked Open
 retains its original exact-byte document token. Untitled recovery retains only
 the latest project, with no history. Contracts, source tests and native gaps:
 [project recovery](../../docs/project-recovery.md).
+
+
+## Gain take coordination
+
+Arming prepares a transient raw-fader revision without changing canonical history
+or its cached compiled project. Delivered audio receipts normalize into bounded
+half-open spans using exact content/performance positions and loop passes. A
+revision-stamped splice batch rechecks generation, revision and lane epoch, then
+commits the complete take as one Undo/Redo edit. Failed/stale/cancelled takes leave
+the original lane intact. Audio owns application and receipt delivery; the UI
+owns only drafts and gestures. See [gain recording](../../docs/gain-touch-spans.md).

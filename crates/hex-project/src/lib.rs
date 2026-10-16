@@ -31,9 +31,13 @@ pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
     MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
 };
+mod playable_routing;
 mod return_feeds;
 mod returns;
 mod routing;
+pub use playable_routing::{
+    AudioFeed, AudioFeedSnapshot, MAX_AUDIO_FEEDS, MAX_MIDI_ROUTES, MidiRoute, MidiRouteSnapshot,
+};
 pub use return_feeds::{MAX_RETURN_FEEDS, ReturnFeed, ReturnFeedSnapshot};
 pub use routing::{
     MAX_AUTHORED_ROUTES, ROUTING_UNSUPPORTED, RoutingEdge, RoutingOwner, RoutingSignal,
@@ -442,6 +446,8 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub(crate) routing: Vec<ReturnFeed>,
+    pub(crate) audio_feeds: Vec<AudioFeed>,
+    pub(crate) midi_routes: Vec<MidiRoute>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
@@ -461,6 +467,8 @@ impl Project {
         }
         Ok(Self {
             routing: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             sample_rate,
             next_id: 1,
             import_provenance: None,

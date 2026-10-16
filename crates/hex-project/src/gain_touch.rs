@@ -1,7 +1,7 @@
-//! Canonical gain-lane splice proposals. Nonempty spans are not admitted to playback yet.
+//! Canonical half-open gain-lane overlays and bounded splice operations.
 use crate::{BeatTime, GainPoint, Invalid, MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope};
 
-pub const GAIN_TOUCH_UNSUPPORTED: &str = "gain touch spans require complete playback support";
+pub const GAIN_TOUCH_UNSUPPORTED: &str = "clear recorded touch spans before editing the base curve";
 pub const MAX_GAIN_TOUCH_SPANS_PER_TRACK: usize = 128;
 pub const MAX_GAIN_TOUCH_STEPS_PER_SPAN: usize = MAX_GAIN_POINTS_PER_TRACK - 2;
 
@@ -173,12 +173,49 @@ impl GainLane {
             .checked_sub(1)?;
         self.spans.get(index)?.gain_at(beat)
     }
-    /// Pure, bounded metadata construction. This does not authorize Project adoption or rendering.
+    /// Pure, bounded metadata construction; Project admission also checks the project-wide limit.
     pub fn with_touch(
         &self,
         expected_epoch: u64,
         proposed: GainTouchSpan,
     ) -> Result<Self, Invalid> {
+        let (_, span_count) = self.touch_shape(expected_epoch, &proposed)?;
+        // Reserve only the already checked normalized result.
+        let mut spans = Vec::new();
+        spans
+            .try_reserve_exact(span_count)
+            .map_err(|_| Invalid("could not reserve gain touch fragments"))?;
+        for old in &self.spans {
+            if old.end <= proposed.start || old.start >= proposed.end {
+                spans.push(old.clone());
+            } else {
+                if old.start < proposed.start {
+                    spans.push(old.fragment(old.start, proposed.start)?);
+                }
+                if old.end > proposed.end {
+                    spans.push(old.fragment(proposed.end, old.end)?);
+                }
+            }
+        }
+        let epoch = proposed.context.recording_epoch;
+        spans.push(proposed);
+        spans.sort_by_key(|span| span.start);
+        Self::new(self.base.clone(), spans, epoch)
+    }
+    /// Preflight the normalized weighted result before a Project allocates it.
+    pub(crate) fn touch_units(
+        &self,
+        expected_epoch: u64,
+        proposed: &GainTouchSpan,
+    ) -> Result<usize, Invalid> {
+        self.touch_shape(expected_epoch, proposed)
+            .map(|(units, _)| units)
+    }
+    fn touch_shape(
+        &self,
+        expected_epoch: u64,
+        proposed: &GainTouchSpan,
+    ) -> Result<(usize, usize), Invalid> {
         self.validate()?;
         proposed.validate()?;
         if expected_epoch != self.recording_epoch
@@ -217,32 +254,7 @@ impl GainLane {
         if span_count > MAX_GAIN_TOUCH_SPANS_PER_TRACK || count > MAX_GAIN_POINTS_PER_TRACK {
             return Err(Invalid("gain lane exceeds its bounded metadata"));
         }
-        // At most two surviving fragments in addition to the current span count.
-        let mut spans = Vec::new();
-        spans
-            .try_reserve_exact(
-                self.spans
-                    .len()
-                    .checked_add(2)
-                    .ok_or(Invalid("gain touch span count overflow"))?,
-            )
-            .map_err(|_| Invalid("could not reserve gain touch fragments"))?;
-        for old in &self.spans {
-            if old.end <= proposed.start || old.start >= proposed.end {
-                spans.push(old.clone());
-            } else {
-                if old.start < proposed.start {
-                    spans.push(old.fragment(old.start, proposed.start)?);
-                }
-                if old.end > proposed.end {
-                    spans.push(old.fragment(proposed.end, old.end)?);
-                }
-            }
-        }
-        let epoch = proposed.context.recording_epoch;
-        spans.push(proposed);
-        spans.sort_by_key(|span| span.start);
-        Self::new(self.base.clone(), spans, epoch)
+        Ok((count, span_count))
     }
 }
 

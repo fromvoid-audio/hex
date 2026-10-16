@@ -134,6 +134,9 @@ impl hex_lattice::NativeInstrumentDefinition for SharedContextFixtureDefinition 
 }
 
 impl hex_lattice::PreparedNativeInstrument for SharedContextFixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(
         &self,
         _: u8,
@@ -267,6 +270,9 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFixtureDefinition {
 }
 
 impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(
         &self,
         _: u8,
@@ -285,6 +291,9 @@ impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
 }
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn runtime_version(&self) -> u32 {
         1
     }

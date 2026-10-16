@@ -14,6 +14,8 @@ use std::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
+    pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
+    pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
@@ -197,6 +199,25 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            audio_feeds: self
+                .audio_feeds
+                .iter()
+                .map(|f| crate::AudioFeedSnapshot {
+                    id: f.id().value(),
+                    source: f.source(),
+                    destination: f.destination().value(),
+                    gain: f.gain(),
+                })
+                .collect(),
+            midi_routes: self
+                .midi_routes
+                .iter()
+                .map(|r| crate::MidiRouteSnapshot {
+                    id: r.id().value(),
+                    source: r.source().value(),
+                    destination: r.destination().value(),
+                })
+                .collect(),
             return_feeds: self
                 .routing
                 .iter()
@@ -392,12 +413,15 @@ impl Project {
 
     /// Validate untrusted snapshot metadata before constructing a live model.
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
+        if snapshot.audio_feeds.len() > crate::MAX_AUDIO_FEEDS
+            || snapshot.midi_routes.len() > crate::MAX_MIDI_ROUTES
+        {
+            return Err(Invalid("authored routing edge limit reached"));
+        }
         snapshot.validate_gain_lanes()?;
-        let gain_touch_unsupported = snapshot
-            .tracks
-            .iter()
-            .any(|track| !track.gain_touch_spans.is_empty());
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
+        let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
+        let midi_routes = std::mem::take(&mut snapshot.midi_routes);
         let mut project = Project::new(snapshot.sample_rate)?;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
@@ -830,13 +854,13 @@ impl Project {
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
-        if !return_feeds.is_empty() {
+        if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {
             let mut candidate = project.snapshot();
             candidate.return_feeds = return_feeds;
+            candidate.audio_feeds = audio_feeds;
+            candidate.midi_routes = midi_routes;
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
-        }
-        if gain_touch_unsupported {
-            return Err(Invalid(crate::GAIN_TOUCH_UNSUPPORTED));
+            project.adopt_playable_snapshot(&candidate)?;
         }
         Ok(project)
     }

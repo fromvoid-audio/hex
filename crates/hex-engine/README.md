@@ -463,8 +463,9 @@ with pinned ready ties in Arrangement and prepared Session/export kernels.
 Post-chain/matrix/gain/mute source output feeds destination input additively;
 current Main sums stay pinned, master runs once, and captured old chains remain
 Main-only. The no-feed loops keep their original arithmetic order. See
-[routing](../../docs/routing.md); this adds no latency compensation or native
-deadline/listening evidence.
+[routing](../../docs/routing.md) for typed track inputs, MIDI sources and graph
+validation. Production compensation aligns declared delays; native deadlines and
+listening require separate evidence.
 
 Prepared track-gain lanes apply absolute sample-offset gain once after devices
 and before Main/sends in Arrangement, Session and export. No-automation paths
@@ -495,3 +496,24 @@ on control. Both preflight and commit fill borrowed scratch and return eligibili
 so neither creates or returns large inline plans on the callback stack. Actual
 capacities and the checked preflight bound are charged to preroll storage; declined
 queries reset the valid prefix, and handoff never resizes or drops the buffers.
+
+
+## Routing, touch and compensation
+
+Typed track inputs use a combined dependency schedule with Return feeds and
+sends. MIDI source selection compiles root-authored notes into each destination's
+actual instrument; Session inventory retains canonical UI cells separately from
+bounded routed templates. Audio owner and effective MIDI owner remain distinct.
+
+The `compensation` module owns control-validated latency plans and preallocated
+transactional stereo delays; `signal_graph` binds them to actual processors,
+instrument generation, faders and Main. Exact origin stamps drive downstream
+clock/gain queries, and compatible handoffs retain in-flight state. Unsupported
+live topology/history changes explicitly require Stop. Export trims causal
+startup while retaining the requested final frame. See
+[latency compensation](../../docs/latency-compensation.md) for limits and gaps.
+
+Prepared gain touch spans override the unchanged base lane only inside their
+half-open intervals. A separately armed transient fader supports audio-owned live
+values without editing the canonical project; delivery receipts and atomic take
+history belong to audio/session. See [gain recording](../../docs/gain-touch-spans.md).

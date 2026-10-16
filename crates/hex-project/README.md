@@ -204,10 +204,29 @@ proof of valid/importable Live XML. See [live-set import](../../docs/live-set-im
 
 Routing proposals use existing owners and validate the complete DAG, including
 implicit Main paths, canonical sends and admitted Return feeds. Generic proposals
-remain closed; typed stereo Return feeds have bounded additive playback;
-see [routing](../../docs/routing.md). No MIDI/device/sidechain bus support is
+remain closed; typed stereo Return/track feeds and MIDI source selection use
+separate canonical commands; see [routing](../../docs/routing.md). No device/sidechain bus support is
 inferred from opaque state.
 
 Canonical track gain envelopes now support atomic bounded point editing/history
 with strict BeatTime order. Manual fader and affected time transforms refuse while
 a lane owns gain. See [track gain automation](../../docs/track-gain-automation.md).
+
+## Playable routing metadata
+
+Typed `AudioFeed` edges carry stable global route IDs and finite positive gains
+through 2.0. A Track or Return post-fader source adds stereo audio to a Track
+input before its effect prefix; the source retains its own Main path. Gain zero
+removes the edge. Gain edits retain identity; recreation allocates a fresh ID.
+At most 4096 inputs are admitted, and the complete audio DAG includes canonical
+sends and Return feeds, so changing any of these cannot introduce feedback.
+
+`SetMidiSource` selects one incoming MIDI bus per instrument destination; `None`
+restores local authored clips. Sources may have no instrument. Fanout is allowed;
+acyclic chains resolve to their original authored source through
+`midi_source_track`. Destination instrument/effects/mix remain local. Self routes,
+cycles, stale endpoints and duplicate destinations are refused. Removing a Track
+or Return removes incident routes in the same undoable edit; removing an
+instrument with an incoming MIDI route requires clearing that route first.
+Project owns validation/history only; engine owns bounded source scheduling,
+audio processing, latency alignment and runtime admission.

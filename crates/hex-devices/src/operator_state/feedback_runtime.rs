@@ -52,6 +52,10 @@ pub(super) fn prepare_factory(
 }
 
 impl PreparedMutableInstrumentRuntime for OperatorFeedbackFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         RUNTIME_VERSION
     }

@@ -3850,3 +3850,25 @@ workflow in [test-builds.md](test-builds.md), PR #167. The configured post-merge
 action supplies one stable app plus exact-source CI/included revisions/checklist
 and retains prior-bundle rollback. Source/packaging evidence and native owner
 approval remain separate gates on Pulse #2408.
+
+## routing, recording and compensation implementation — pulse28 / pr184
+
+The finite implementation admits typed additive stereo Track/Return inputs and
+root-resolved authored MIDI source buses, existing sends/Return feeds, native
+route editing, canonical gain-point editing and delivered native touch recording.
+One revision-stamped splice commits all loop passes as a single history edit;
+failed/cancelled/stale takes preserve the original lane. Schema24 keeps complete
+routing, automation, host trims, provenance and opaque native state.
+
+Runtime plans use actual known processor/instrument latency, checked cumulative
+arrivals, bounded twin delay/transport histories, exact origin clocks, aligned
+capture, whole-render rollback and compensated linear export extent. Safe zero-delay
+edits remain live; incompatible nonzero history/topology/timing and MIDI source
+layout changes require Stop before audible adoption. Compensation aligns paths
+without removing physical latency. Sidechains, plugin hosting, hardware MIDI and
+general device-parameter envelopes are separate capabilities.
+
+Targeted source/PCM/lifecycle/history/storage/allocation/native-widget regressions
+and strict Clippy are implemented. The final exact-source local-CI report and
+supported optimized stable delivery are PR/Pulse evidence; optional user interaction,
+listening, physical deadlines and Windows native validation remain separate.

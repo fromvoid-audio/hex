@@ -21,11 +21,15 @@ impl SessionPlayback {
             SessionPlaybackCommand::Play => self.playing = true,
             SessionPlaybackCommand::Pause => self.playing = false,
             SessionPlaybackCommand::Stop => {
+                self.clear_gain_recording_override();
                 if self.stop_transport() {
                     self.advance_route_state_generation();
                 }
             }
-            SessionPlaybackCommand::Seek(frame) => self.seek(frame)?,
+            SessionPlaybackCommand::Seek(frame) => {
+                self.seek(frame)?;
+                self.clear_gain_recording_override();
+            }
             SessionPlaybackCommand::CancelPending { track } => {
                 let mut changed = false;
                 if let Some(track) = track {
@@ -66,6 +70,9 @@ impl SessionPlayback {
             chain.reset();
         }
         self.return_effect_tails.reset();
+        if let Some(compensation) = self.compensation.as_mut() {
+            compensation.delays.reset_epoch();
+        }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
@@ -113,11 +120,7 @@ impl SessionPlayback {
             if !runtime.committed_is_quiescent() {
                 return Err(SessionPlaybackError::MutableInstrumentActive);
             }
-            let owner = self
-                .routes
-                .get(index)
-                .ok_or(SessionPlaybackError::UnknownTrack)?
-                .owner;
+            let owner = effective_midi_route(&self.revision, &self.routes, index)?.owner;
             if self.mutable_destination_has_active_occurrence(index, owner, frame)? {
                 return Err(SessionPlaybackError::MutableInstrumentChase);
             }
@@ -154,6 +157,9 @@ impl SessionPlayback {
             chain.reset();
         }
         self.return_effect_tails.reset();
+        if let Some(compensation) = self.compensation.as_mut() {
+            compensation.delays.reset_epoch();
+        }
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.reset();
         }
@@ -212,7 +218,7 @@ impl SessionPlayback {
                 let prepared = self
                     .revision
                     .session()
-                    .midi_clip(clip)
+                    .midi_clip_for_track(clip, self.routes[index].id)
                     .ok_or(SessionPlaybackError::UnknownClip)?;
                 if !prepared.instrument_enabled()
                     || !prepared.instrument_template().is_event_source()
@@ -421,38 +427,60 @@ impl SessionPlayback {
             .get(index)
             .ok_or(SessionPlaybackError::UnknownTrack)?
             .owner;
-        if self
-            .mutable_instruments
-            .get(index)
-            .and_then(Option::as_ref)
-            .is_some()
-        {
-            let next_owner =
-                self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
-            if next_owner != owner {
-                if moment.target_frame > self.performance_frame && self.playing {
-                    return Err(SessionPlaybackError::MutableInstrumentRouteBoundary);
-                }
-                if self.mutable_instruments[index]
-                    .as_ref()
-                    .is_some_and(|runtime| !runtime.committed_is_quiescent())
-                {
-                    return Err(SessionPlaybackError::MutableInstrumentActive);
-                }
-                if matches!(next_owner, RouteOwner::Arrangement)
-                    && self.mutable_destination_has_active_occurrence(
-                        index,
-                        next_owner,
-                        moment.source_frame,
-                    )?
-                {
-                    return Err(SessionPlaybackError::MutableInstrumentChase);
+        for destination in 0..self.route_scratch.len() {
+            if self.revision.arrangement().tracks()[destination]
+                .midi_source_index
+                .unwrap_or(destination)
+                != index
+            {
+                continue;
+            }
+            if self
+                .mutable_instruments
+                .get(destination)
+                .and_then(Option::as_ref)
+                .is_some()
+            {
+                let next_owner =
+                    self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
+                if next_owner != owner {
+                    if moment.target_frame > self.performance_frame && self.playing {
+                        return Err(SessionPlaybackError::MutableInstrumentRouteBoundary);
+                    }
+                    if self.mutable_instruments[destination]
+                        .as_ref()
+                        .is_some_and(|runtime| !runtime.committed_is_quiescent())
+                    {
+                        return Err(SessionPlaybackError::MutableInstrumentActive);
+                    }
+                    if matches!(next_owner, RouteOwner::Arrangement)
+                        && self.mutable_destination_has_active_occurrence(
+                            destination,
+                            next_owner,
+                            moment.source_frame,
+                        )?
+                    {
+                        return Err(SessionPlaybackError::MutableInstrumentChase);
+                    }
                 }
             }
         }
         if moment.immediate {
             if transition_captures(owner, target) {
-                self.capture_outgoing(index, owner, moment.source_frame, moment.performance_frame)?;
+                for destination in 0..self.route_scratch.len() {
+                    if self.revision.arrangement().tracks()[destination]
+                        .midi_source_index
+                        .unwrap_or(destination)
+                        == index
+                    {
+                        self.capture_outgoing(
+                            destination,
+                            owner,
+                            moment.source_frame,
+                            moment.performance_frame,
+                        )?;
+                    }
+                }
             }
             let next_owner =
                 self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
@@ -462,8 +490,16 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             route.pending = None;
             route.owner = next_owner;
-            self.suppression_scratch
-                .retain(|entry| entry.track != route.id);
+            for destination in 0..self.route_scratch.len() {
+                if self.revision.arrangement().tracks()[destination]
+                    .midi_source_index
+                    .unwrap_or(destination)
+                    == index
+                {
+                    let id = self.route_scratch[destination].id;
+                    self.suppression_scratch.retain(|entry| entry.track != id);
+                }
+            }
         } else {
             let route = self
                 .route_scratch
@@ -530,7 +566,12 @@ impl SessionPlayback {
                                     track_index: index,
                                     track_id: route.id,
                                     order: 0,
-                                    mix: track.mix_at(source_frame),
+                                    mix: gain_recording::effective_mix(
+                                        track,
+                                        source_frame,
+                                        self.revision.gain_recording_track(),
+                                        self.gain_recording_override,
+                                    ),
                                     tail_group: None,
                                     continuation: None,
                                     voice,
@@ -566,7 +607,7 @@ impl SessionPlayback {
                 let prepared = self
                     .revision
                     .session()
-                    .midi_clip(clip)
+                    .midi_clip_for_track(clip, self.routes[index].id)
                     .ok_or(SessionPlaybackError::UnknownClip)?;
                 if prepared.track != self.routes[index].id {
                     return Err(SessionPlaybackError::ClipTrackMismatch);
@@ -618,11 +659,16 @@ impl SessionPlayback {
                             .routes
                             .get(index)
                             .ok_or(SessionPlaybackError::UnknownTrack)?;
-                        let mix = arrangement
+                        let track = arrangement
                             .tracks()
                             .get(index)
-                            .ok_or(SessionPlaybackError::UnknownTrack)?
-                            .mix();
+                            .ok_or(SessionPlaybackError::UnknownTrack)?;
+                        let mix = gain_recording::effective_mix(
+                            track,
+                            source_frame,
+                            self.revision.gain_recording_track(),
+                            self.gain_recording_override,
+                        );
                         append_release(
                             &mut self.release_scratch,
                             self.release_capacity,
@@ -658,7 +704,7 @@ impl SessionPlayback {
             RouteOwner::Session { clip, .. } => self
                 .revision
                 .session()
-                .midi_clip(clip)
+                .midi_clip_for_track(clip, self.routes[index].id)
                 .map_or(0, |prepared| prepared.work.active_voices),
             RouteOwner::SessionAudio { .. } => 0,
             RouteOwner::Silence => 0,
@@ -673,7 +719,8 @@ impl SessionPlayback {
         let reserved = routes
             .iter()
             .enumerate()
-            .try_fold(0_usize, |sum, (index, route)| {
+            .try_fold(0_usize, |sum, (index, _)| {
+                let route = effective_midi_route(&self.revision, routes, index)?;
                 let pending = if route
                     .pending
                     .is_some_and(|pending| transition_captures(route.owner, pending.target))

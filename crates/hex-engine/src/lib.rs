@@ -10,6 +10,8 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+pub mod compensation;
+
 use std::{fmt, sync::Arc};
 
 mod native_device_view;
@@ -22,9 +24,11 @@ pub use native_device_view::{
 
 mod gain_envelope;
 pub use gain_envelope::{
-    GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, MAX_PREPARED_GAIN_KNOTS,
+    GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
+    MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
 mod return_feed_plan;
+mod signal_graph;
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -544,9 +548,12 @@ pub struct Track {
     instrument_bypassed: bool,
     instrument_input_gain: f32,
     instrument_output_gain: f32,
+    instrument_latency: Option<u32>,
+    instrument_runtime_latency: Option<u32>,
     instrument_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
     mutable_instrument: bool,
     mutable_looping_source: bool,
+    midi_source_index: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -685,9 +692,12 @@ impl Track {
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
+            instrument_latency: Some(0),
+            instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
+            midi_source_index: None,
         })
     }
 
@@ -732,9 +742,12 @@ impl Track {
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
+            instrument_latency: Some(0),
+            instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
+            midi_source_index: None,
         })
     }
 
@@ -760,6 +773,15 @@ impl Track {
         self
     }
 
+    pub(crate) fn with_instrument_latency(
+        mut self,
+        source: Option<u32>,
+        runtime: Option<u32>,
+    ) -> Self {
+        self.instrument_latency = source;
+        self.instrument_runtime_latency = runtime;
+        self
+    }
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
         self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
@@ -917,13 +939,15 @@ impl Track {
 
     pub(crate) fn with_gain_envelope(
         mut self,
-        points: &[hex_project::GainPoint],
+        lane: &hex_project::GainLane,
         tempo: &hex_project::TempoMap,
         balance: f32,
+        fallback: f32,
     ) -> Result<Self, Invalid> {
         let neutral =
             PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
-        self.gain_envelope = gain_envelope::PreparedGainEnvelope::prepare(points, tempo, neutral)?;
+        self.gain_envelope =
+            gain_envelope::PreparedGainEnvelope::prepare(lane, tempo, neutral, fallback)?;
         if self.gain_envelope.is_some() {
             self.source_mix = PreparedTrackMix::identity();
         }
@@ -940,6 +964,26 @@ impl Track {
         self.gain_envelope
             .as_ref()
             .map(|envelope| envelope.value_at(frame))
+    }
+    pub(crate) fn arm_gain_recording(
+        &mut self,
+        fallback: f32,
+        balance: f32,
+    ) -> Result<(), Invalid> {
+        if self.gain_envelope.is_none() {
+            let neutral =
+                PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
+            self.gain_envelope = Some(gain_envelope::PreparedGainEnvelope::constant(
+                neutral, fallback,
+            ));
+        }
+        self.source_mix = PreparedTrackMix::identity();
+        Ok(())
+    }
+    pub(crate) fn recording_mix(&self, gain: f32) -> PreparedTrackMix {
+        self.gain_envelope
+            .as_ref()
+            .map_or(self.mix, |envelope| envelope.mix_with_gain(gain))
     }
     pub(crate) fn has_gain_automation(&self) -> bool {
         self.gain_envelope.is_some()
@@ -959,6 +1003,11 @@ impl Track {
 
     pub(crate) fn has_instrument_source(&self) -> bool {
         self.instrument.is_some()
+    }
+
+    pub(crate) fn with_midi_source_index(mut self, source: Option<usize>) -> Self {
+        self.midi_source_index = source;
+        self
     }
 
     pub(crate) fn with_track_id(mut self, track: hex_project::TrackId) -> Self {
@@ -1523,6 +1572,9 @@ pub struct Project {
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
     return_feed_plan: return_feed_plan::ReturnFeedPlan,
+    signal_graph: Option<Arc<signal_graph::SignalGraph>>,
+    tempo_map: Option<hex_project::TempoMap>,
+    midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
@@ -1611,6 +1663,9 @@ impl Project {
             tracks,
             return_buses: Vec::new(),
             return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
+            signal_graph: None,
+            tempo_map: None,
+            midi_routing: Vec::new(),
             loop_region,
             master_gain,
             has_streamed_sources,
@@ -1655,14 +1710,24 @@ impl Project {
         let mut capacity = GainAutomationCapacity::default();
         for track in &self.tracks {
             if let Some(envelope) = &track.gain_envelope {
-                let (authored, count, slots, bytes) = envelope.capacity();
-                capacity.authored_points += authored;
-                capacity.prepared_knots += count;
-                capacity.allocated_knot_slots += slots;
-                capacity.allocated_knot_bytes += bytes;
+                let actual = envelope.capacity();
+                capacity.authored_points += actual.authored_points;
+                capacity.prepared_knots += actual.prepared_knots;
+                capacity.allocated_knot_slots += actual.allocated_knot_slots;
+                capacity.allocated_knot_bytes += actual.allocated_knot_bytes;
+                capacity.authored_units += actual.authored_units;
+                capacity.prepared_touch_spans += actual.prepared_touch_spans;
+                capacity.prepared_touch_steps += actual.prepared_touch_steps;
+                capacity.allocated_touch_bytes += actual.allocated_touch_bytes;
             }
         }
         capacity
+    }
+    /// Known causal startup delay; compensation does not remove physical latency.
+    pub fn main_latency_frames(&self) -> u32 {
+        self.signal_graph
+            .as_ref()
+            .map_or(0, |graph| graph.main_latency())
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -1750,6 +1815,7 @@ pub(crate) struct RendererRuntime {
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
+    compensation: Option<signal_graph::SignalRuntime>,
 }
 impl RendererRuntime {
     pub(crate) fn new(project: &Project) -> Self {
@@ -1757,6 +1823,18 @@ impl RendererRuntime {
         let mut return_chains = Vec::new();
         let mut return_scratch = Vec::new();
         let mut runtime_error = None;
+        let compensation = match project
+            .signal_graph
+            .as_ref()
+            .map(|graph| signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .transpose()
+        {
+            Ok(compensation) => compensation,
+            Err(_) => {
+                runtime_error = Some("compensation runtime storage is unavailable");
+                None
+            }
+        };
         if device_chains
             .try_reserve_exact(project.tracks.len())
             .is_err()
@@ -1793,6 +1871,7 @@ impl RendererRuntime {
                             return_chains,
                             return_scratch,
                             runtime_error,
+                            compensation,
                         };
                     }
                     instances.extend(bus.device_chain.iter().cloned());
@@ -1816,10 +1895,14 @@ impl RendererRuntime {
             return_chains,
             return_scratch,
             runtime_error,
+            compensation,
         }
     }
 
     pub(crate) fn reset(&mut self) {
+        if let Some(compensation) = self.compensation.as_mut() {
+            compensation.delays.reset_epoch();
+        }
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -2085,6 +2168,11 @@ impl RendererRuntime {
             return Ok(());
         }
         let block_start = *position;
+        if self.compensation.is_some() {
+            self.render_compensated(project, block_start, output, pages.as_deref_mut())?;
+            *position = next;
+            return Ok(());
+        }
         for chain in &mut self.device_chains {
             chain.begin_block();
         }

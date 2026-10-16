@@ -1,85 +1,84 @@
-# routing topology and first Return feeds
+# validated audio and MIDI routing
 
-Pulse28 / PR184 admits one bounded audio stage: additive Return-to-Return feeds.
-The full routing, automation editing/recording, sample-offset playback, cumulative
-latency and native acceptance ticket remains incomplete. No route UI is exposed.
+Pulse28 / PR184 uses canonical typed routes with prepared playback plans.
+Existing post-fader sends remain track-owned. Additional route records own
+monotonic global RouteIds, participate in snapshots/history, and survive strict
+schema24 save/load. There is no parallel routing project or duplicated send gain.
 
-`RoutingOwner` reuses canonical TrackId and ReturnId with one Main sink. Existing
-post-fader sends and implicit track/Return-to-Main paths participate in graph
-validation. Current regular tracks expose stereo output, Returns stereo
-input/output, and Main stereo input. Track inputs, Main outputs, MIDI buses,
-device ports and sidechains remain refused; opaque state implies no capability.
+## stereo audio
 
-## canonical Return feeds
+`SetAudioFeed` adds a Track or Return post-fader stereo output to a destination
+track's input, before its effect prefix. `SetReturnFeed` adds a Return output to
+another Return input before its chain. Source outputs still contribute to Main;
+these are additive feeds. Feed gains are finite0..2: zero removes, gain edits
+retain identity, and recreation allocates above the retained ID high-water mark.
 
-One Project-owned `ReturnFeed` record contains a global monotonic `RouteId`,
-source/destination `ReturnId`, and finite positive gain up to2. Gain edits retain
-identity, zero removes, and recreation allocates above the retained high-water
-mark. The unique DAG on16 Returns admits at most120 feeds. Missing endpoints,
-global ID collisions, duplicate pairs, malformed gains and all cycles refuse
-atomically. Removing a Return cleans both incident directions in the same edit;
-undo restores identities. `Snapshot.return_feeds` is the same canonical state
-used by history and persistence, with no parallel routing envelope.
+Validation includes all sends, Return feeds, track feeds and implicit Main paths.
+Missing owners, self/duplicate pairs, wrong port directions/channels, malformed
+gains, ID collisions, capacity excess and every cycle refuse the complete
+candidate. Adding a send or Return feed must also preserve this combined DAG.
+Track/Return removal cleans incident routes atomically; Undo restores identities.
+Main exposes no source port, and Returns expose no MIDI port. No device sidechain
+or arbitrary channel capability is inferred from opaque device state.
 
-`SetReturnFeed` and validated snapshots admit only this typed stereo contract.
-A feed adds post-source-chain/matrix/gain/mute samples to destination input
-before its chain. Source output still contributes Main. Each Return chain runs
-once, dependency-ready ties use pinned Return order, and Main sums current
-Return outputs in pinned order before its one master stage. Feed serialization
-order cannot change execution or input summation. With no feeds the original
-render loops and arithmetic order remain intact in both consumers.
+The control-prepared owner schedule runs each track/Return once in dependency
+order. Contributions use source post-device gain/mute/balance before the target
+chain. Canonical ties and Main summation order are deterministic. No-route,
+zero-latency projects retain the existing block path. Authored track feeds and
+nonzero latency use the shared graph and [compensation](latency-compensation.md).
+Compatible coefficient edits retain DSP and in-flight history; topology changes
+that cannot transfer history safely require Stop before adoption.
 
-Arrangement rendering and prepared Session/linear-export playback share a
-control-prepared plan. Return processors still require known zero algorithmic
-latency; regular processor admission retains its established policy. This stage
-adds no compensation, automation, MIDI or sidechain behavior. Edge/gain edits
-retain compatible Return-chain history. Removed/changed eligible chains retain
-zero-input Main-only residuals using their old bus coefficients, never replaying
-old feeds. Surviving destinations decay naturally after feed removal. Pause
-freezes history, Stop/Seek reset it, and transport wraps preserve it. Whole-block
-failure keeps committed histories/routes/clocks unchanged and silences output.
-Borrowed pages and post-node observations retain their existing speculative
-transaction and ownership contract.
+Detached old effect/source residuals retain their frozen transition mix and
+contribute Main only, never replaying removed feeds. Surviving target chains
+decay naturally after feed removal. Pause freezes state; Stop/Seek reset it;
+transport loops retain it. Whole-block failure silences output and preserves
+committed histories/routes/clocks. Borrowed pages, capture and observations keep
+their existing transaction and ownership boundaries.
 
-## persistence and unsupported proposals
+## MIDI sources
 
-Schema20 requires strict `routing` records tagged `return_feed`, each with
-required id/source/destination/gain, and rejects unknown fields/ports. It retains
-every project field, bounded exact import provenance and opaque device payload.
-The ordinary encoder selects20 for nonempty feeds and keeps the schema19 byte
-path for legacy projects. Explicit `encode_schema20` also handles empty feeds.
-Older envelope writers refuse nonempty canonical feeds instead of discarding
-them. All encoding remains under the existing8MiB document ceiling.
+`SetMidiSource` selects one source track for a destination instrument. `None`
+restores destination-local authored MIDI. Fanout is supported; the source need
+not contain an instrument. Source chains are acyclic and resolve to their root
+MIDI event bus, so A→B→C sends A's events to both destinations. The destination
+owns instrument construction, note bank, effects and fader; audio is not forwarded
+as a substitute for MIDI. Destination audio ownership remains independent.
 
-Schemas1–18 retain their established migrations to legacy sends/Main paths;
-schema19 still accepts only its empty structural proposal array. Nonempty old
-schema19 proposals remain unsupported rather than receiving guessed gains/IDs.
-Operator statev9/v10 and preset envelope1 are separate formats.
+Arrangement and launched Session source clips prepare against the destination's
+actual instrument through the normal registry. Source clip/note identity and
+destination runtime identity remain distinct. Fanout contributes to complete
+revision template, note-bank, event and work admission before publication.
+Source launches/stops drive all mapped destinations and retain existing bounded
+release/chase rules, including explicit refusal where mutable continuation is
+unsupported. MIDI topology edits while playing or paused require Stop. Priority
+transport Stop remains effective under full queues and clears active voices.
 
-The generic `SetRouting` proposal API checks up to4096 additional edges against
-canonical sends, admitted feeds and implicit Main paths. Missing owners,
-duplicate edges, incompatible roles/channels and all cycles refuse. Nonempty
-structural proposals still return `authored routing requires playback support`
-before mutation; only the explicit ReturnFeed command adopts playable new edges.
-Empty proposals remain no-ops. This preserves truthful refusal for other ports.
+## controls and persistence
 
-Source tests cover PCM, dependency order/permutations, partitioning, transport,
-history/IDs/removal/undo, strict save/load, opaque/provenance preservation,
-rollback, borrowed observation, callback allocation and retirement. Linux does
-not establish native routing interaction, CoreAudio deadlines, optimized macOS
-packaging, listening, Live reference behavior or full-ticket acceptance.
+The mixer strip's `routing` control opens a bounded scrollable panel in Arrangement
+or Session. For a selected track it edits additive input gains and selects local
+or upstream MIDI. A selected Return exposes Return input feeds; regular sends
+retain their shared numeric controls. All actions dispatch canonical worker
+commands and surface validation/preparation errors. Gain recording fences project
+edits until finish/cancel. No UI-local scheduler or routing state is authoritative.
 
-The next finite [track gain automation](track-gain-automation.md) stage now adds
-canonical point editing and sample-offset playback at the existing track fader.
-Recording, general parameter envelopes, further graph roles, latency and native
-acceptance remain open; its schema21 preserves the complete ReturnFeed state.
+Schema24 strictly requires audio-feed and MIDI-route arrays alongside the complete
+schema23 document. It preserves sends, Return feeds, device input/output gains,
+opaque payloads, import provenance, gain points/spans/epochs and media identity.
+Older schemas migrate empty typed routes. Older writers refuse nonempty routes
+rather than lose them. Historical main/feature schema18/19 shapes dispatch by key
+presence to strict readers; malformed mixed forms never fall through by parse
+failure. All serialization retains the8MiB document ceiling and existing
+recoverable/create-new publication.
 
-## combined persistence integration — 16 october 2026
+The generic `SetRouting` structural proposal API remains an explicit unsupported
+port proposal boundary; playable changes use the typed commands above. It does
+not silently adopt graphs that playback ignores. Source tests cover canonical
+validation/history, strict persistence, actual PCM/event routing, partitioning,
+transport, handoff, rollback and callback ownership. Exact optimized native
+interaction/listening checks remain separate from automated local CI; physical
+deadlines and Live reference parity are not established by synthetic tests.
 
-New saves use the complete schema23 envelope. Historical schema18/19 branch
-shapes dispatch by key presence into strict readers; schemas20–22 remain readable.
-Device input/output host gains, opaque payloads, provenance, Return feeds, gain
-points and epoch metadata share one lossless snapshot path. The old ordinary
-writer selection described above is historical. See
-[storage](../crates/hex-storage/README.md). Nonempty touch-span adoption and actual
-recording remain refused; this adds no compensation.
+Track gain editing and recording are specified in [track gain automation](track-gain-automation.md)
+and [gain touch recording](gain-touch-spans.md).

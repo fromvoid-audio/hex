@@ -61,10 +61,7 @@ impl SessionPlayback {
         plan: &mut ImportPlan,
     ) -> Result<bool, SessionPlaybackError> {
         plan.len = 0;
-        let old_route = previous
-            .routes
-            .get(old_index)
-            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
         if previous
             .mutable_instruments
             .get(old_index)
@@ -111,8 +108,8 @@ impl SessionPlayback {
                     && previous
                         .revision
                         .session()
-                        .midi_clip(clip)
-                        .zip(candidate.session().midi_clip(clip))
+                        .midi_clip_for_track(clip, old_route.id)
+                        .zip(candidate.session().midi_clip_for_track(clip, old_route.id))
                         .is_some_and(|(old, new)| {
                             old.source_content_matches(new) && old.track == new.track
                         })
@@ -256,7 +253,7 @@ impl SessionPlayback {
                 let prepared = previous
                     .revision
                     .session()
-                    .midi_clip(clip)
+                    .midi_clip_for_track(clip, old_route.id)
                     .ok_or(SessionPlaybackError::UnknownClip)?;
                 let end = previous
                     .performance_frame

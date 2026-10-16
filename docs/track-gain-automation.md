@@ -1,10 +1,11 @@
 # prepared track-gain automation
 
 Pulse28 / PR184 adds a bounded canonical editing and prepared-playback stage.
-The original ticket's broader graphs, automation recording, latency and native
-acceptance remain incomplete. A compact Arrangement gain-lane editor now exposes
-these commands; native interaction acceptance remains pending. There is no
-device-parameter capability expansion or recording implementation in this stage.
+A compact Arrangement gain-lane editor exposes these commands. Native touch
+recording and runtime compensation extend the same lane; see [gain touch
+recording](gain-touch-spans.md) and [latency compensation](latency-compensation.md).
+There is no general device-parameter automation capability expansion. Native
+interaction and listening are recorded separately from source checks.
 
 Each canonical Track owns one `GainLane`; its base `gain_envelope` is carried by its ordinary
 TrackSnapshot and history. Existing TrackId owns the lane; existing Q32.32
@@ -79,12 +80,9 @@ otherwise. Older envelope entry points refuse automation loss; the document
 ceiling and recoverable/create-new file behavior remain. Operator statev9/v10
 and preset envelope1 are unrelated formats.
 
-Recording still needs callback-confirmed applied values, revision/TrackId/parameter
-identity, sample rate, exact application frames and loop/transport context,
-bounded event delivery/overflow handling, touch ownership, release-to-read and
-atomic gesture history. Wall-clock UI events do not establish recording.
-Native lane discovery/editing, listening, Live reference behavior, optimized
-macOS packaging and CoreAudio/hardware deadlines require separate evidence.
+Native recording uses callback-confirmed applied values and exact content frames,
+then one atomic revision-stamped splice. Its bounded queues, cancellation, loop
+normalization and delivery semantics are specified in [gain touch recording](gain-touch-spans.md).
 
 ## selected-track gain pane
 
@@ -137,8 +135,8 @@ is expressly a prepared value; it is not an audio callback measurement.
 On the approved native machine, use the existing release/optimized packaging
 workflow against the exact candidate and its retained clean full local-CI report.
 No unoptimized normal test artifact, Linux result, or revision label substitutes
-for native acceptance. Preserve the original full Pulse28 scope and readiness
-hold; do not merge, deploy or register a passing gate to obtain an artifact.
+for native acceptance. Preserve exact source and full local-CI evidence; native interaction is separate
+from the required automated merge checks.
 
 - At minimum and normal window sizes, inspect `a`, `auto`, fallback/refusal text,
   curve/header alignment, 44 px rows, font, focus and lowercase text.
@@ -150,21 +148,9 @@ hold; do not merge, deploy or register a passing gate to obtain an artifact.
 - Listen to source ownership changes, sends/ReturnFeeds, tails and linear export
   on actual native audio. Record exact source, hardware and observed outcomes.
 
-Recording remains separate: applied-value/sample-frame/revision acknowledgments,
-bounded touch/release ownership and canonical splice/history are not implemented.
-There is deliberately no recording button. General ports, MIDI/sidechain routing,
-latency propagation and compensation remain later stages of the original ticket.
-
-Schema22 closed touch-span model/storage preparation is described in
-[gain-touch-spans.md](gain-touch-spans.md). Nonempty spans are refused at normal
-adoption/load and commands; this does not implement recording or application ACKs.
-
-## combined persistence integration — 16 october 2026
-
-New saves use the complete schema23 envelope. Historical schema18/19 branch
-shapes dispatch by key presence into strict readers; schemas20–22 remain readable.
-Device input/output host gains, opaque payloads, provenance, Return feeds, gain
-points and epoch metadata share one lossless snapshot path. The old ordinary
-writer selection described above is historical. See
-[storage](../crates/hex-storage/README.md). Nonempty touch-span adoption and actual
-recording remain refused; this adds no compensation.
+Recorded spans are read-only in the base point editor; clear provides explicit
+recovery without discarding data through an unrelated transform. Current schema24
+preserves complete routing, device trims, base points, touch spans and epochs.
+Historical schemas retain strict migration and unsupported-backport refusal.
+See [gain touch recording](gain-touch-spans.md) for actual native delivery receipts
+and [routing](routing.md) for typed graph contracts.

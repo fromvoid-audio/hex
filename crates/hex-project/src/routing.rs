@@ -64,6 +64,9 @@ impl Project {
                 RoutingOwner::Return(feed.destination()),
             ));
         }
+        for feed in self.audio_feeds() {
+            edges.insert((feed.source(), RoutingOwner::Track(feed.destination())));
+        }
         for edge in proposed {
             if !nodes.contains_key(&edge.source) || !nodes.contains_key(&edge.target) {
                 return Err(Invalid("routing owner no longer exists"));

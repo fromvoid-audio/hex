@@ -23,6 +23,8 @@ const BED_ASSET: u64 = 7;
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id: 10,
