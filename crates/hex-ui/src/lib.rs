@@ -57,7 +57,7 @@ pub fn open(cx: &mut App, output: Result<AudioOutput, String>) -> Result<(), Str
 }
 
 /// Open a disposable offline native timing window with settings under the fixture directory.
-/// The caller consumes CSV/error output after the application loop exits.
+/// The caller publishes the bounded final report before requesting application quit.
 pub fn open_time_selection_profile(
     cx: &mut App,
     directory: std::path::PathBuf,

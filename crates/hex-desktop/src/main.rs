@@ -2,60 +2,17 @@
 use gpui::{App, Application};
 use std::io::Write;
 
+mod time_selection_profile;
+
 fn main() {
     let mut arguments = std::env::args_os().skip(1);
     if arguments
         .next()
         .is_some_and(|argument| argument == "--profile-time-selection")
     {
-        let result = (|| -> Result<String, String> {
-            let directory = arguments
-                .next()
-                .ok_or("profiling requires a fixture directory")?;
-            if arguments.next().is_some() {
-                return Err("profiling accepts exactly one fixture directory".into());
-            }
-            let directory = std::path::PathBuf::from(directory);
-            if !directory.is_absolute() {
-                return Err("profiling requires an absolute fixture directory".into());
-            }
-            let directory = std::fs::canonicalize(directory).map_err(|error| error.to_string())?;
-            for name in ["1.hex", "100.hex", "shared.wav"] {
-                if !directory.join(name).is_file() {
-                    return Err(format!("profiling fixture missing: {name}"));
-                }
-            }
-            let settings = directory.join(format!("native-profile-{}", std::process::id()));
-            std::fs::create_dir(&settings).map_err(|error| {
-                format!("could not create isolated profiling settings: {error}")
-            })?;
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            Application::new().run(move |cx| {
-                if let Err(error) =
-                    hex_ui::open_time_selection_profile(cx, directory, settings, sender.clone())
-                {
-                    let _ = sender.try_send(Err(error));
-                    cx.quit();
-                }
-            });
-            receiver
-                .try_recv()
-                .map_err(|_| "profiling window closed before completion; failures=1".to_string())?
-        })();
-        match result {
-            Ok(csv) => {
-                if let Err(error) = std::io::stdout().lock().write_all(csv.as_bytes()) {
-                    let _ = writeln!(
-                        std::io::stderr().lock(),
-                        "profiling output failed; failures=1: {error}"
-                    );
-                    std::process::exit(1);
-                }
-            }
-            Err(error) => {
-                let _ = writeln!(std::io::stderr().lock(), "{error}");
-                std::process::exit(1);
-            }
+        if let Err(error) = time_selection_profile::run(arguments) {
+            let _ = writeln!(std::io::stderr().lock(), "{error}");
+            std::process::exit(1);
         }
         return;
     }

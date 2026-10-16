@@ -52,11 +52,18 @@ CSV durations are microseconds from the corresponding dispatch start:
 `project_revision` is the editable project's counter, not a Git revision. Exact
 Git/build/executable/toolkit provenance belongs in separately retained run metadata.
 Rows are collected in memory and formatted outside timed paint callbacks. A one-slot
-nonblocking final-result channel returns the report to desktop; stdout/stderr writes
-happen after the application loop exits.
+nonblocking final-result channel hands the report to a dedicated desktop writer
+thread. That thread writes and flushes stdout/stderr, then acknowledges through a
+second one-slot channel. Only successful publication permits native app quit;
+report/publication failures exit nonzero. Publication has a 30-second bound and
+performs no file or console I/O on the UI thread. macOS native termination does not
+return from `Application::run`, so post-loop output is deliberately avoided.
 Successful rows explicitly have `failures=0`; the first failure aborts with a
 nonzero exit, `failures=1`, completed count and available partial CSV on stderr.
-Closing the disposable window early also returns a nonzero exit. Native execution
+Closing the disposable window early publishes a failed partial report. External
+application termination before publication exits nonzero and may prevent output;
+it cannot count as a successful measurement. Phase timeouts include activation,
+pending request, lane geometry/epoch, paint and probe state diagnostics. Native execution
 and full final-source local CI remain separate evidence; a compiling harness does
 not establish any timing result. Record actual numbers without silently expanding
 this measurement PR into optimization work.

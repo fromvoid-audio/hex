@@ -141,13 +141,21 @@ pub(crate) fn open(
                         Ok(true) => {}
                         Ok(false) => break,
                         Err(_) => {
-                            let _ = cx.update(|_, cx| cx.quit());
+                            // A closed/lost root drops its result sender; desktop
+                            // publishes a failed report before terminating.
                             break;
                         }
                     }
                 }
             })
             .detach();
+            let close_profile = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                let _ = close_profile.update(cx, |profile, cx| {
+                    profile.finish(Some("profiling window closed before completion".into()), cx);
+                });
+                false
+            });
             profile
         })
     })
@@ -178,7 +186,7 @@ impl Profile {
         let view = self.editor.read(cx);
         !view.opening_project && Self::pending(view) == 0 && view.state.is_some()
     }
-    fn finish(&mut self, error: Option<String>, cx: &mut Context<Self>) -> bool {
+    fn finish(&mut self, error: Option<String>, _cx: &mut Context<Self>) -> bool {
         let header = "tracks,operation,iteration,warmup,selection_start_frame,selection_end_frame,selection_first_paint_us,selection_following_frame_us,operation_first_paint_us,operation_first_following_frame_us,operation_ui_completion_paint_us,operation_completion_following_frame_us,project_revision,failures\n";
         let csv = format!("{header}{}\n", self.rows.join("\n"));
         if let Some(sender) = self.result.take() {
@@ -191,7 +199,6 @@ impl Profile {
             };
             let _ = sender.try_send(outcome);
         }
-        cx.quit();
         false
     }
     fn step(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -210,8 +217,25 @@ impl Profile {
         if self.stage_started.elapsed() > TIMEOUT {
             return self.finish(
                 Some(format!(
-                    "timeout at case {} stage {}",
-                    self.index, self.stage
+                    "timeout at case {} stage {}; active={}; pending={}; opening={}; state={}; lane={:?}; lane_epoch={}; layout_generation={}; paints={}/{}; probe={:?}",
+                    self.index,
+                    self.stage,
+                    window.is_window_active(),
+                    Self::pending(self.editor.read(cx)),
+                    self.editor.read(cx).opening_project,
+                    self.editor.read(cx).state.is_some(),
+                    self.editor.read(cx).main_track_lane_bounds,
+                    self.editor.read(cx).main_track_lane_epoch,
+                    self.editor.read(cx).drag_layout_generation,
+                    self.paint_sequence,
+                    self.setup_paint,
+                    self.probe.as_ref().map(|probe| (
+                        probe.queued,
+                        probe.paint.is_some(),
+                        probe.following.is_some(),
+                        probe.feedback.is_some(),
+                        probe.feedback_following.is_some()
+                    ))
                 )),
                 cx,
             );
