@@ -3603,3 +3603,17 @@ partial/pressure behavior, observer offsets and Retry/cancel; source inspection
 and zero total/net probes retain their stated limits. Final exact full repository
 CI, PR238 seek/launch, PR239 UI composition and original #24/native acceptance remain
 open. See docs/streamed-native-readiness.md; final CI evidence is recorded externally.
+
+
+## 16 october 2026 — seek/launch projection checkpoint (pulse2543 / pr238)
+
+Recovered canonical PR238 and integrated actual PR237 merge a196631f, preserving
+its intake plan. Shared pure seek/route planning now feeds opaque move-only action
+preparation and exact projected chunk demand; existing typed commits recheck actual
+runtime/clocks/routes before reset. Two focused engine controls use warmed Utility
+history, mixed-rate source metadata, page seams, stale/Pause refusal and real
+quantized loop activation. A paused immediate launch initially projected loop
+normalization without render; its failing zero-page cursor control now passes.
+Full engine tests and strict engine Clippy pass at this checkpoint. Native stage,
+revocable prewarm, real worker pressure/allocation controls and exact final full
+repository CI remain PR238 work; broader original #24 acceptance stays open.

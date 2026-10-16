@@ -103,3 +103,31 @@ remain unchanged. This source path does not wire Session worker snapshots into
 native UI publication (PR239), complete streamed seek/launch (PR238), lift import
 limits, establish 100-track native deadlines, or certify OS Dispose success.
 Original #24/#177 broad acceptance and native listening/UI checks remain open.
+
+
+## seek and launch projection checkpoint (PR238)
+
+The engine now prepares one move-only correlated action without committing it.
+Shared legacy seek-coordinate validation and route scratch planning serve both
+preview and the existing typed commit. The opaque plan captures its exact actual
+runtime/revision, clocks, loop pass, route generation, playing state and tempo
+anchor, plus original resolved target frame/beat. Claimed runtime use additionally
+binds its actual constructor identity and captured source context. It contains no
+runtime, source owner or Arc copy and is not readiness/custody authority.
+
+Projected first chunks reuse the same source/resampling/page traversal. Future
+quantized boundaries preserve their original performance due time, including
+Arrangement loop normalization; earlier pending audio origins retain their own
+launch frame. Paused immediate actions preserve the actual cursor until rendering
+resumes. Commit revalidates the original stamp before the existing typed reset or
+route action runs once. Real warmed Utility history, visitor refusal, wrong/stale
+runtime/Pause, mixed-rate page seams, paused Seek/PlayFrom and actual quantized
+loop activation are covered in focused engine controls. A paused-loop mismatch
+was reproduced and repaired without mutating the runtime for preview.
+
+This is the pure engine checkpoint only. Native streamed commands still retain
+PR237's explicit Seek/launch refusal until the bounded staged-action and revocable
+prewarm integration is connected and validated in PR238. Future prewarm must
+observe actual PendingRoute state after scheduling; the original action stamp is
+not retained as authority while ordinary playback advances. Original #24/native
+acceptance remains open.

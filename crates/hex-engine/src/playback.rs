@@ -1119,6 +1119,13 @@ impl Playback {
         Ok(())
     }
 
+    pub(crate) fn session_runtime_mut_for_stream_action(
+        &mut self,
+    ) -> Result<&mut SessionPlayback, PlaybackActionError> {
+        self.session_runtime
+            .as_deref_mut()
+            .ok_or(PlaybackActionError::SessionNotPrepared)
+    }
     pub(crate) fn visit_next_stream_chunk(
         &self,
         maximum_frames: usize,
