@@ -432,3 +432,107 @@ impl RevisionAssembly {
         Ok(())
     }
 }
+
+impl RevisionAssembly {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<RevisionStorageView<'a>, Error> {
+        use crate::audio_storage::Owner;
+        self.capacity()?;
+        let Self {
+            owner,
+            revision_value,
+            arrangement,
+            session,
+            preview,
+            arrangement_value: _,
+            session_value: _,
+            preview_value: _,
+            mutable_descriptors,
+            handles,
+            reserved_bytes: _,
+            reserved: _,
+            extraction_attempted: _,
+            extracted: _,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+        } = self;
+        l.vec(mutable_descriptors)?;
+        if let Some(owner) = owner {
+            l.shared(
+                owner.arc(),
+                owner.parts(),
+                Owner::exclusive(owner),
+                handles[3],
+                None,
+            )?;
+        }
+        if let Some(revision) = owner
+            .as_ref()
+            .map(|r| r.as_ref())
+            .or(revision_value.as_ref())
+        {
+            let PreparedRevision {
+                arrangement,
+                session,
+                midi_preview,
+                mutable_track_revisions,
+                gain_recording_track: _,
+            } = revision;
+            l.vec(mutable_track_revisions)?;
+            l.shared(
+                arrangement.arc(),
+                arrangement.parts(),
+                Owner::exclusive(arrangement),
+                handles[0],
+                None,
+            )?;
+            l.shared(
+                session.arc(),
+                session.parts(),
+                Owner::exclusive(session),
+                handles[1],
+                None,
+            )?;
+            l.shared(
+                midi_preview.arc(),
+                midi_preview.parts(),
+                Owner::exclusive(midi_preview),
+                handles[2],
+                None,
+            )?;
+        } else {
+            if let Some(owner) = arrangement {
+                l.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(owner),
+                    handles[0],
+                    None,
+                )?;
+            }
+            if let Some(owner) = session {
+                l.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(owner),
+                    handles[1],
+                    None,
+                )?;
+            }
+            if let Some(owner) = preview {
+                l.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(owner),
+                    handles[2],
+                    None,
+                )?;
+            }
+        }
+        self.storage_view()
+    }
+}

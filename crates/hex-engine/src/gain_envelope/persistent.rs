@@ -175,3 +175,26 @@ impl GainCopyCustody {
         *mix = None;
     }
 }
+
+impl GainCopyCustody {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            knots,
+            phase: _,
+            authored: _,
+            maximum: _,
+            mix: _,
+            fallback: _,
+            growth,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+        } = self;
+        let _ = growth;
+        ledger.vec(knots)
+    }
+}

@@ -484,3 +484,66 @@ fn clone_kind(kind: &SourceKind) -> SourceKind {
         SourceKind::Streamed(metadata) => SourceKind::Streamed(metadata.clone_on_control()),
     }
 }
+
+impl SessionSourceConstruction {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            cells,
+            cache,
+            next_cell_disposal: _,
+            next_cache_disposal: _,
+            capacity,
+            #[cfg(test)]
+                fail_after_alias: _,
+            #[cfg(test)]
+                fail_name: _,
+            #[cfg(test)]
+                bad_interval: _,
+            #[cfg(test)]
+                panic_after_alias: _,
+            #[cfg(test)]
+                fail_name_reserve: _,
+        } = self;
+        l.vec(cells)?;
+        l.vec(cache)?;
+        for row in cells {
+            let CellSlot {
+                track: _,
+                scene: _,
+                clip: _,
+                asset: _,
+                cache: _,
+                handle: _,
+                start: _,
+                end: _,
+                gain: _,
+                name,
+                owner,
+                disposal: _,
+                #[cfg(test)]
+                    test_index: _,
+                #[cfg(test)]
+                    probe: _,
+            } = row;
+            l.string(name)?;
+            if let Some(source) = owner {
+                l.source(source)?;
+            }
+        }
+        for row in cache {
+            let CacheSlot {
+                source: _,
+                handle: _,
+                owner,
+                disposal: _,
+            } = row;
+            if let Some(source) = owner {
+                l.source(source)?;
+            }
+        }
+        l.growth(capacity.previous_backing_bytes)
+    }
+}

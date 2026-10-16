@@ -343,3 +343,53 @@ mod tests;
 
 #[cfg(test)]
 mod revision_tests;
+
+impl ArrangementRootAssembly {
+    pub(super) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        external: Option<&'a Project>,
+    ) -> Result<RootStorageView<'a>, AudioStorageError> {
+        let Self {
+            project,
+            tracks,
+            returns,
+            feed,
+            contexts: _,
+            has_feed: _,
+            scalars: _,
+            growth,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+        } = self;
+        let view = self.view_at(external)?;
+        l.vec(tracks)?;
+        l.vec(returns)?;
+        feed.visit_audio_storage(l)?;
+        l.growth(*growth)?;
+        if let Some(project) = project.as_ref().or(external) {
+            let Project {
+                audio_clip_views,
+                sample_rate: _,
+                tracks,
+                return_buses,
+                return_feed_plan: _,
+                signal_graph: _,
+                tempo_map: _,
+                midi_routing,
+                loop_region: _,
+                master_gain: _,
+                audible_end_frame: _,
+                has_streamed_sources: _,
+                shared_contexts: _,
+            } = project;
+            l.vec(audio_clip_views)?;
+            l.vec(tracks)?;
+            l.vec(return_buses)?;
+            l.vec(midi_routing)?;
+        }
+        Ok(view)
+    }
+}

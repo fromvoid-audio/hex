@@ -701,4 +701,131 @@ mod tests {
         );
         eprintln!("hex audio bank evidence: streamed_bank; supported-controls=completed");
     }
+    #[test]
+    fn borrowed_ledger_conserves_capacity_distinct_owners_and_caller_aliases() {
+        if !constructor_supported("borrowed_ledger_aliases") {
+            return;
+        }
+        let ids = ids();
+        let make = || {
+            let mut pcm = Vec::with_capacity(73);
+            pcm.resize(8, [0.5; 2]);
+            OwnedAudioSource::try_resident(48_000, pcm).ok().unwrap()
+        };
+        let mut bank =
+            OwnedAudioInputs::try_new(vec![(ids[0], make()), (ids[1], make())], reservation())
+                .ok()
+                .unwrap();
+        let token = bank.source_token(ids[0]).unwrap();
+        bank.alias_on_control(&token).unwrap();
+        bank.alias_on_control(&token).unwrap();
+        let expected_data = std::mem::size_of::<OwnedAudioInputs>()
+            + bank.capacity.source_container_bytes
+            + bank.capacity.alias_container_bytes
+            + bank
+                .sources
+                .iter()
+                .map(|(_, s)| {
+                    let (p, o) = crate::audio_input_storage::parts(s).unwrap();
+                    p + o
+                })
+                .sum::<usize>();
+        let r = crate::AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 16,
+            root_rows: 4,
+            max_retained_bytes: usize::MAX,
+            max_construction_peak_bytes: usize::MAX,
+        };
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(r).unwrap();
+        ledger.borrow_caller_inputs_on_control(&bank).unwrap();
+        let summary = ledger.summary().unwrap();
+        assert_eq!(summary.unresolved_handles, 4);
+        assert_eq!(summary.data_allocations, 6);
+        assert_eq!(summary.data_bytes, expected_data);
+        assert_eq!(summary.unknown_storage, 0);
+        drop(ledger);
+        assert!(bank.source_view(&token).is_ok());
+        let mut bad = crate::AudioRootStorageLedger::try_new_on_control(r).unwrap();
+        bad.borrow_caller_inputs_on_control(&bank).unwrap();
+        assert_eq!(
+            bad.borrow_caller_inputs_on_control(&bank),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert_eq!(bad.summary(), Err(AudioStorageError::UnknownStorage));
+    }
+
+    #[test]
+    fn borrowed_ledger_refuses_raw_weak_and_ambiguous_caller_costs() {
+        if !constructor_supported("borrowed_ledger_refusals") {
+            return;
+        }
+        let ids = ids();
+        let r = crate::AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 16,
+            root_rows: 4,
+            max_retained_bytes: usize::MAX,
+            max_construction_peak_bytes: usize::MAX,
+        };
+        for raw in [false, true] {
+            let mut bank = OwnedAudioInputs::try_new(
+                vec![(
+                    ids[0],
+                    OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 8])
+                        .ok()
+                        .unwrap(),
+                )],
+                reservation(),
+            )
+            .ok()
+            .unwrap();
+            let SourceKind::Resident(audio) = &mut bank.sources[0].1.kind else {
+                panic!("resident")
+            };
+            if raw {
+                audio.pcm_arc_receipt = None;
+            }
+            let observer = std::sync::Arc::downgrade(&audio.frames);
+            let pointer = bank.sources.as_ptr();
+            let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(r).unwrap();
+            assert_eq!(
+                ledger.borrow_caller_inputs_on_control(&bank),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            drop(ledger);
+            drop(observer);
+            assert_eq!(bank.sources.as_ptr(), pointer);
+            if raw {
+                let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(r).unwrap();
+                assert_eq!(
+                    ledger.borrow_caller_inputs_on_control(&bank),
+                    Err(AudioStorageError::UnknownStorage)
+                );
+            }
+            if !raw {
+                let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(r).unwrap();
+                ledger.borrow_caller_inputs_on_control(&bank).unwrap();
+                assert!(ledger.summary().unwrap().require_known_storage().is_ok());
+            }
+        }
+        let mut bank = OwnedAudioInputs::try_new(
+            vec![(
+                ids[0],
+                OwnedAudioSource::try_resident(48_000, vec![[0.0; 2]; 8])
+                    .ok()
+                    .unwrap(),
+            )],
+            reservation(),
+        )
+        .ok()
+        .unwrap();
+        bank.reservation.caller_retained_bytes = 1;
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(r).unwrap();
+        ledger.borrow_caller_inputs_on_control(&bank).unwrap();
+        assert_eq!(
+            ledger.summary().unwrap().require_known_storage(),
+            Err(crate::AudioStorageIncomplete::UnknownStorage)
+        );
+    }
 }

@@ -559,3 +559,47 @@ impl SessionStructureConstruction {
         self.scene_index[1] = self.scene_index[0];
     }
 }
+
+impl SessionStructureConstruction {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            scenes,
+            tracks,
+            cells,
+            track_index,
+            scene_index,
+            ranges,
+            scene_disposal: _,
+            track_disposal: _,
+            capacity,
+            #[cfg(test)]
+                fail_reserve: _,
+            #[cfg(test)]
+                fail_name: _,
+            #[cfg(test)]
+                extra_name_reserve: _,
+        } = self;
+        l.vec(scenes)?;
+        l.vec(tracks)?;
+        l.vec(cells)?;
+        l.vec(track_index)?;
+        l.vec(scene_index)?;
+        l.vec(ranges)?;
+        for SceneRow {
+            value,
+            disposal: _,
+            #[cfg(test)]
+                probe: _,
+        } in scenes
+        {
+            l.string(&value.name)?;
+        }
+        for TrackRow { value, disposal: _ } in tracks {
+            l.string(&value.name)?;
+        }
+        l.growth(capacity.previous_growth_backing_bytes)
+    }
+}

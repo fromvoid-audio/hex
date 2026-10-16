@@ -359,3 +359,56 @@ fn error(error: TempoMapCopyError) -> AudioStorageError {
         TempoMapCopyError::Incomplete => AudioStorageError::UnknownStorage,
     }
 }
+
+impl SessionTempoConstruction {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        let Self {
+            copy,
+            canonical,
+            inventory_owns_map: _,
+            max_micro_bpm: _,
+            expected_rate: _,
+            loop_region: _,
+            prepared,
+            periodic: _,
+            periodic_error: _,
+            source_admission_max_micro_bpm: _,
+            #[cfg(test)]
+                fail_before_install: _,
+            #[cfg(test)]
+                panic_after_install: _,
+            #[cfg(test)]
+                fail_after_copy: _,
+            #[cfg(test)]
+                panic_after_copy: _,
+        } = self;
+        let c = copy.capacity();
+        l.allocation(
+            Owner::exclusive(copy),
+            Location("tempo-copy-points", 0),
+            c.layout.point_capacity(),
+            c.layout.point_element_bytes(),
+        )?;
+        l.allocation(
+            Owner::exclusive(copy),
+            Location("tempo-copy-prefix", 0),
+            c.layout.prefix_capacity(),
+            c.layout.prefix_element_bytes(),
+        )?;
+        l.growth(c.previous_growth_backing_bytes)?;
+        if copy.phase() == hex_project::TempoMapCopyPhase::Incomplete {
+            l.unknown()?;
+        }
+        if let Some(map) = canonical {
+            l.map(map)?;
+        }
+        if let Some(map) = prepared {
+            map.visit_audio_storage(l)?;
+        }
+        Ok(())
+    }
+}

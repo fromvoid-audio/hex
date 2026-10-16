@@ -650,3 +650,83 @@ impl ArrangementClips {
         })
     }
 }
+
+impl ArrangementClips {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        project: Option<&'a crate::Project>,
+        external_preview: Option<&'a crate::MidiArrangementPreview>,
+    ) -> Result<
+        Option<
+            &'a crate::owned_shared::OwnedShared<
+                crate::shared_analytic::SharedAnalyticContextTable,
+            >,
+        >,
+        AudioStorageError,
+    > {
+        self.capacity_at(false, project, external_preview)?;
+        let Self {
+            rows,
+            tracks,
+            root,
+            returns,
+            preview,
+            phase: _,
+            growth,
+            cursor: _,
+            pending_audio,
+            pending_stream,
+            pending_metadata,
+            source_disposal: _,
+            metadata_disposal: _,
+            staged: _,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+            #[cfg(test)]
+                mismatch: _,
+            #[cfg(test)]
+                probe: _,
+        } = self;
+        l.vec(rows)?;
+        l.growth(*growth)?;
+        let view = root.visit_audio_storage(l, project)?;
+        tracks.visit_audio_storage(l, view.tracks)?;
+        returns.visit_audio_storage(l, view.returns, view.feed)?;
+        preview.visit_audio_storage(l, external_preview)?;
+        for Pair {
+            transferred: _,
+            binding: _,
+            clip,
+            metadata,
+            declaration,
+            installed_handle,
+            installed_slot: _,
+            stream,
+        } in rows
+        {
+            if let Some(clip) = clip {
+                l.clip(
+                    clip,
+                    declaration.as_ref(),
+                    installed_handle.ok_or(AudioStorageError::SourceMismatch)?,
+                )?;
+            }
+            if let Some(metadata) = metadata {
+                l.clip_metadata(metadata)?;
+            }
+            if stream.is_some() {
+                l.unknown()?;
+            }
+        }
+        if pending_audio.is_some() || pending_stream.is_some() {
+            l.unknown()?;
+        }
+        if let Some(metadata) = pending_metadata {
+            l.clip_metadata(metadata)?;
+        }
+        Ok(root.context_at(project))
+    }
+}
