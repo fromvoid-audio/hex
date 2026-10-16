@@ -14,6 +14,26 @@ pub struct OperatorFeedbackParameters {
 }
 
 impl OperatorFeedbackParameters {
+    pub(crate) fn with_oscillator_levels(mut self, levels: [f64; OPERATORS]) -> Self {
+        self.oscillator_levels = levels;
+        self
+    }
+
+    pub(crate) fn interpolate(self, target: Self, elapsed: u32, frames: u32) -> Self {
+        if elapsed == 0 {
+            return self;
+        }
+        if elapsed >= frames {
+            return target;
+        }
+        let t = f64::from(elapsed) / f64::from(frames);
+        Self {
+            oscillator_levels: interpolate(self.oscillator_levels, target.oscillator_levels, t),
+            carrier_weights: interpolate(self.carrier_weights, target.carrier_weights, t),
+            feedback_turns: interpolate(self.feedback_turns, target.feedback_turns, t),
+        }
+    }
+
     pub const fn oscillator_levels(&self) -> &[f64; OPERATORS] {
         &self.oscillator_levels
     }
@@ -418,23 +438,15 @@ impl PreparedOperatorFeedbackVoice {
     ) -> Result<f32, Invalid> {
         let frame =
             self.preflight_shared_retarget_frame(configuration, retarget, shared, elapsed_frames)?;
-        let (sample, outputs) = match self.gate_frame {
-            Some(gate_frame) => configuration.sample_with_feedback_parameters(
-                table,
-                &self.note,
-                self.age_frames,
-                gate_frame,
-                frame.parameters,
-                self.previous_outputs,
-            ),
-            None => configuration.sample_held_with_feedback_parameters(
-                table,
-                &self.note,
-                self.age_frames,
-                frame.parameters,
-                self.previous_outputs,
-            ),
-        };
+        let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
+        let (sample, outputs) = configuration.sample_with_feedback_parameters(
+            table,
+            &self.note,
+            self.age_frames,
+            gate_frame,
+            frame.parameters,
+            self.previous_outputs,
+        );
         self.previous_outputs = outputs;
         self.feedback_turns = frame.next_feedback_turns;
         self.age_frames = frame.next_age;

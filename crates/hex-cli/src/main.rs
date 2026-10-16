@@ -15,25 +15,6 @@ fn main() {
 }
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.first().is_some_and(|a| a == "import-live-set") {
-        let consent = args.len() == 4 && args[3] == "--accept-hex-balance";
-        if args.len() != 3 && !consent {
-            return Err("usage: hex-cli import-live-set <input.als> <new-project.hex> [--accept-hex-balance]".into());
-        }
-        let imported = hex_live_set::import_file(
-            Path::new(&args[1]),
-            48_000,
-            hex_live_set::Options {
-                accept_hex_balance: consent,
-            },
-        )?;
-        for diagnostic in &imported.diagnostics {
-            eprintln!("live set import: {diagnostic}");
-        }
-        hex_storage::save_new(Path::new(&args[2]), &imported.project)?;
-        println!("created imported project");
-        return Ok(());
-    }
     if args.first().is_some_and(|a| a == "recover-project") {
         if args.len() != 3 {
             return Err("usage: hex-cli recover-project <target.hex> <new-project.hex>".into());
@@ -45,6 +26,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             return Err("usage: hex-cli import-project <input.wav> <new-project.hex>".into());
         }
         return projects::import_project(Path::new(&args[1]), Path::new(&args[2]));
+    }
+    if args.first().is_some_and(|a| a == "export-project") {
+        return projects::export_project(&args);
     }
     if args.first().is_some_and(|a| a == "render-project") {
         if args.len() != 3 {

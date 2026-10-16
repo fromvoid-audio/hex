@@ -189,10 +189,6 @@ fn fingerprint_matches_independent_sha256_and_decoded_pcm_matches_resident_impor
     assert_eq!(reader.page_digests().len(), 1);
     assert_eq!(reader.page_digests()[0], *reader.fingerprint());
     assert_eq!(reader.page_manifest_bytes(), 32);
-    assert!(reader.path_capacity_bytes() >= reader.path().as_os_str().len());
-    let capacity = reader.path_capacity_bytes();
-    assert_eq!(reader.path_capacity_bytes(), capacity);
-    assert_eq!(reader.page_digests()[0], *reader.fingerprint());
 }
 
 #[test]

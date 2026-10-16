@@ -95,6 +95,7 @@ pub(in crate::editor) fn view(
                 cx.notify();
             })),
         );
+    controls = controls.child(super::super::gain_recording::controls(view, track_id, cx));
     if let Some(point) = point {
         let control = controls::numeric(view, cx);
         controls = controls.child(control);
@@ -205,7 +206,7 @@ pub(in crate::editor) fn view(
     let title = format!(
         "gain · {} · {} · static fallback {:.0}%",
         track.name(),
-        if track.gain_envelope().is_empty() {
+        if track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty() {
             "static"
         } else {
             "automation owns gain"
@@ -257,29 +258,21 @@ pub(in crate::editor) fn view(
                         }
                     }
                     if let Ok(preview) = &preview {
-                        let knots = preview.knots(track_id);
                         let mut vertices = Vec::new();
-                        if let Some(gain) = preview
-                            .value_at(track_id, viewport.start)
-                            .or(Some(static_gain))
-                        {
-                            vertices.push((0.0, gain));
-                        }
-                        for (index, knot) in knots.iter().enumerate() {
-                            if let Some(fraction) = viewport.fraction(knot.frame()) {
-                                if index > 0
-                                    && knots[index - 1].outgoing() == GainInterpolation::Step
-                                {
-                                    vertices.push((fraction, knots[index - 1].gain() as f32));
-                                }
-                                vertices.push((fraction, knot.gain() as f32));
+                        if let Some(end) = viewport.end() {
+                            let present =
+                                preview.visit_segments(track_id, viewport.start, end, |segment| {
+                                    if let (Some(start), Some(end)) = (
+                                        viewport.fraction(segment.start_frame),
+                                        viewport.fraction(segment.end_frame),
+                                    ) {
+                                        vertices.push((start, segment.start_gain));
+                                        vertices.push((end, segment.end_gain));
+                                    }
+                                });
+                            if !present {
+                                vertices.extend([(0.0, static_gain), (1.0, static_gain)]);
                             }
-                        }
-                        if let Some(end) = viewport.end()
-                            && let Some(gain) =
-                                preview.value_at(track_id, end).or(Some(static_gain))
-                        {
-                            vertices.push((1.0, gain));
                         }
                         let mut path = PathBuilder::stroke(px(1.0));
                         for (index, (x, gain)) in vertices.into_iter().enumerate() {

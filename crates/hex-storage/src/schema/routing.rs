@@ -94,26 +94,6 @@ impl OwnerDto {
     }
 }
 impl DocumentV19 {
-    pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        // The legacy codec also refuses any non-legacy authored topology.
-        let base = DocumentV18::from_project(project)?;
-        Ok(Self {
-            format: base.format,
-            sample_rate: base.sample_rate,
-            next_id: base.next_id,
-            assets: base.assets,
-            tracks: base.tracks,
-            return_tracks: base.return_tracks,
-            loop_region: base.loop_region,
-            master_gain: base.master_gain,
-            tempo_points: base.tempo_points,
-            meter_points: base.meter_points,
-            session: base.session,
-            import_provenance: base.import_provenance,
-            version: 19,
-            routing: Vec::new(),
-        })
-    }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
         if doc.format != "hex-project" || doc.version != 19 {

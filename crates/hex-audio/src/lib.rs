@@ -1,14 +1,23 @@
 mod device;
 mod render_fault;
+pub mod sample_preview;
 pub use device::PreparedOutput;
 pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
 pub use render_fault::RenderFaultSnapshot;
+mod candidate_catalog;
+mod candidate_custody;
+pub mod gain_recording;
 mod lifecycle;
+mod native_callback_owner;
+pub use candidate_catalog::CandidateDomain;
+pub use candidate_custody::{
+    AudioCandidateCustodyReport, AudioCandidateRecovery, AudioCandidateReturnKind,
+    AudioCandidateStageRefusal, AudioCandidateTicket,
+};
 pub mod processor_audition;
 pub mod spectrum;
 pub mod spectrum_target;
 pub mod spectrum_worker;
-pub mod typing;
 use cpal::{
     FromSample, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},

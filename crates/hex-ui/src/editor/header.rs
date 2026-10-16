@@ -101,6 +101,12 @@ pub(super) fn title_bar(
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .on_click(|event, window, cx| {
+            if event.standard_click() && event.click_count() == 2 {
+                cx.stop_propagation();
+                window.toggle_fullscreen();
+            }
+        })
         .child(lights)
         .child(
             div()
@@ -175,9 +181,51 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests {
-    use gpui::{TestAppContext, VisualTestContext, px, size};
+    use gpui::{
+        MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext, VisualTestContext, point, px,
+        size,
+    };
     use hex_project::Project;
     use std::sync::Arc;
+
+    #[gpui::test]
+    fn title_double_click_enters_and_exits_fullscreen(cx: &mut TestAppContext) {
+        let (handle, _editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            Project::new(48_000).expect("project"),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let title = visual.debug_bounds("project-title-label").expect("title");
+        let position = point(
+            title.origin.x + title.size.width / 2.0,
+            title.origin.y + title.size.height / 2.0,
+        );
+        for (button, click_count, expected) in [
+            (MouseButton::Left, 1, false),
+            (MouseButton::Right, 2, false),
+            (MouseButton::Left, 2, true),
+            (MouseButton::Left, 3, true),
+            (MouseButton::Left, 1, true),
+            (MouseButton::Left, 2, false),
+        ] {
+            visual.simulate_event(MouseDownEvent {
+                position,
+                modifiers: Default::default(),
+                button,
+                click_count,
+                first_mouse: false,
+            });
+            visual.simulate_event(MouseUpEvent {
+                position,
+                modifiers: Default::default(),
+                button,
+                click_count,
+            });
+            assert_eq!(visual.update(|window, _| window.is_fullscreen()), expected);
+        }
+    }
 
     #[gpui::test]
     fn compact_header_centers_project_title_and_keeps_toolbar_controls_clear_of_traffic_lights(
@@ -197,6 +245,7 @@ mod ui_tests {
             view.state = Some(Arc::new(hex_session::service::ViewState {
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: current.timeline_frames,
@@ -221,6 +270,9 @@ mod ui_tests {
         let version = visual
             .debug_bounds("application-build-version")
             .expect("build version remains visible at minimum width");
+        let debug = visual
+            .debug_bounds("open-session-log")
+            .expect("debug button remains visible beside the version");
         let toolbar = visual
             .debug_bounds("editor-toolbar")
             .expect("compact toolbar row");
@@ -254,14 +306,17 @@ mod ui_tests {
         assert!(title_label.origin.x + title_label.size.width <= version.origin.x);
         assert!(version.size.width > px(0.0));
         assert!(
-            (f32::from(
-                window.origin.x + window.size.width - version.origin.x - version.size.width
-            ) - 8.0)
+            (f32::from(window.origin.x + window.size.width - debug.origin.x - debug.size.width)
+                - 8.0)
                 .abs()
                 < 1.0
         );
         assert!(version.origin.y >= title.origin.y);
         assert!(version.origin.y + version.size.height <= title.origin.y + title.size.height);
+        assert!(version.origin.x + version.size.width <= debug.origin.x);
+        assert_eq!(debug.size.width, px(20.0));
+        assert!(debug.origin.y >= title.origin.y);
+        assert!(debug.origin.y + debug.size.height <= title.origin.y + title.size.height);
         assert!((f32::from(import.size.width) - super::CONTROL_SIZE).abs() < 1.0);
         assert!((f32::from(import.size.height) - super::CONTROL_SIZE).abs() < 1.0);
         assert!(f32::from(import.origin.x) < crate::theme::TITLEBAR_LEADING_INSET);

@@ -57,18 +57,9 @@ impl PreparedSharedAnalyticNote {
 /// `prepare_note`; `sample` borrows compact note data and must be deterministic,
 /// allocation-free, and free of interior mutation.
 pub trait PreparedSharedAnalyticContext: Send + Sync {
-    /// Explicit control-side capability; unsupported contexts must never be
-    /// armed by substituting a finite duration for a held gate.
-    fn supports_live_gate(&self) -> bool {
-        false
-    }
-    fn sample_live(
-        &self,
-        _note: &PreparedSharedAnalyticNote,
-        _age_frames: u64,
-        _gate: crate::NoteGate,
-    ) -> Result<StereoFrame, DeviceContractError> {
-        Err(DeviceContractError::UnsupportedProcessingClass)
+    /// Optional provider identity for an explicitly authorized analytic-to-mutable import.
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        None
     }
     /// Optional provider-defined coefficient continuation. Default providers
     /// retain their immutable sampler law across publication. Opted-in methods
@@ -116,19 +107,6 @@ impl fmt::Debug for PreparedAnalyticNote {
 }
 
 impl PreparedAnalyticNote {
-    /// Provider opt-in using the same prepared payload. The authored sampler
-    /// remains unchanged and the live function must implement Held explicitly.
-    pub fn into_live_sampler(
-        self,
-        sample_fn: fn(
-            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
-            u64,
-            crate::NoteGate,
-            u64,
-        ) -> StereoFrame,
-    ) -> crate::PreparedLiveAnalyticNote {
-        crate::PreparedLiveAnalyticNote::new(self.payload, self.release_frames, sample_fn)
-    }
     /// Prepare a bounded analytic note sampler. Zero release is valid for
     /// instruments with an instantaneous note-off.
     pub const fn new(
@@ -154,17 +132,27 @@ impl PreparedAnalyticNote {
     }
 }
 
+/// Control-side declaration of the entire exclusively owned provider pointee
+/// and nested heap payload. This is not allocator/RSS measurement or a DSP
+/// runtime declaration. Shared, Weak, or opaque children require Unknown.
+/// Static program storage is outside graph ownership and must be documented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedStorageDeclaration {
+    Unknown,
+    ExclusiveOnly { bytes: usize },
+}
+
 /// Immutable sample-rate-specific instrument configuration prepared on the
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
-    fn prepare_live_note(
-        &self,
-        _pitch: u8,
-        _velocity: u8,
-    ) -> Result<crate::PreparedLiveAnalyticNote, DeviceContractError> {
-        Err(DeviceContractError::UnsupportedProcessingClass)
+    /// Fixed algorithmic buffering latency at this prepared sample rate.
+    /// Unknown is explicit; envelope attack, filter phase and musical release
+    /// are not buffering latency. A mutable factory must agree with its source.
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        None
     }
+
     /// Prepare the immutable sampler for one authored pitch/velocity pair.
     /// Implementations must be deterministic for a fixed prepared instrument
     /// configuration, sample rate, pitch and velocity. The engine may intern
@@ -259,6 +247,9 @@ impl<'a> NativeInstrumentRegistry<'a> {
             }
             for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
                 descriptor.validate_descriptor()?;
+                if descriptor.id.value() >= u32::MAX - 1 {
+                    return Err(DeviceContractError::InvalidDescriptor);
+                }
                 if definition.descriptors()[..parameter_index]
                     .iter()
                     .any(|prior| prior.id == descriptor.id)
@@ -299,7 +290,9 @@ impl<'a> NativeInstrumentRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        self.validate_current(definition, definition.migrate_state(state)?)
+        self.validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
     }
 
     pub fn patch_parameter(
@@ -311,7 +304,10 @@ impl<'a> NativeInstrumentRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
         let descriptor = definition
             .descriptors()
             .iter()
@@ -319,7 +315,9 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)
+        self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
     }
 
     pub fn prepare_instrument(
@@ -330,7 +328,10 @@ impl<'a> NativeInstrumentRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self.validate_current(definition, definition.migrate_state(state)?)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_instrument(&current, sample_rate)
     }
 

@@ -557,6 +557,81 @@ fn snap_to_meter_landmark(
     best.map(|(_, raw)| BeatTime::from_raw(raw))
 }
 
+/// Directional grid lookup shares the painted meter origins and adaptive density.
+/// Audio compares converted frames, so rounded landmarks must still be distinct.
+fn adjacent_landmark(
+    project: &Project,
+    beat: BeatTime,
+    frame: Option<u64>,
+    viewport: Viewport,
+    width: f32,
+    grid: SnapGrid,
+    right: bool,
+) -> Option<BeatTime> {
+    if grid == SnapGrid::Off || !width.is_finite() || width <= 0.0 || viewport.length == 0 {
+        return None;
+    }
+    let mut best: Option<(u64, BeatTime)> = None;
+    let points = project.meter_map().points();
+    for (index, point) in points.iter().take(MAX_METER_MAP_POINTS).enumerate() {
+        let origin = point.beat().raw();
+        let end = points.get(index + 1).map(|point| point.beat().raw());
+        let step = match grid {
+            SnapGrid::Adaptive => adaptive_grid_step(
+                project,
+                viewport,
+                point.beat(),
+                4 * BeatTime::ONE.raw() / u64::from(point.meter().denominator()),
+                width,
+                adaptive_grid_spacing(width),
+            ),
+            fixed => fixed.step_raw()?,
+        }
+        .max(1);
+        let reference = end.map_or(beat.raw(), |end| beat.raw().min(end.saturating_sub(1)));
+        let lower = reference.saturating_sub(origin) / step;
+        for index in [
+            lower.saturating_sub(1),
+            lower,
+            lower.saturating_add(1),
+            lower.saturating_add(2),
+        ] {
+            let Some(raw) = index
+                .checked_mul(step)
+                .and_then(|offset| origin.checked_add(offset))
+            else {
+                continue;
+            };
+            if end.is_some_and(|end| raw >= end) {
+                continue;
+            }
+            let candidate = BeatTime::from_raw(raw);
+            let value = if frame.is_some() {
+                let Ok(value) = project.tempo_map().beat_to_frame(candidate) else {
+                    continue;
+                };
+                value
+            } else {
+                raw
+            };
+            let current = frame.unwrap_or(beat.raw());
+            if (right && value <= current) || (!right && value >= current) {
+                continue;
+            }
+            if best.is_none_or(|(previous, _)| {
+                if right {
+                    value < previous
+                } else {
+                    value > previous
+                }
+            }) {
+                best = Some((value, candidate));
+            }
+        }
+    }
+    best.map(|(_, beat)| beat)
+}
+
 fn meter_label(position: MeterPosition) -> String {
     let fraction = position.beat_fraction().raw();
     if fraction == 0 {
@@ -629,6 +704,29 @@ impl SnapGrid {
             Self::Off => Self::Adaptive,
             Self::Adaptive | Self::Quarter | Self::Eighth | Self::Sixteenth => Self::Off,
         }
+    }
+
+    pub(super) fn adjacent_beat(
+        self,
+        project: &Project,
+        beat: BeatTime,
+        viewport: Viewport,
+        width: f32,
+        right: bool,
+    ) -> Option<BeatTime> {
+        adjacent_landmark(project, beat, None, viewport, width, self, right)
+    }
+    pub(super) fn adjacent_frame(
+        self,
+        project: &Project,
+        frame: u64,
+        viewport: Viewport,
+        width: f32,
+        right: bool,
+    ) -> Option<u64> {
+        let beat = project.tempo_map().frame_to_beat(frame).ok()?;
+        let next = adjacent_landmark(project, beat, Some(frame), viewport, width, self, right)?;
+        project.tempo_map().beat_to_frame(next).ok()
     }
 
     pub(super) fn snap_frame(
@@ -862,6 +960,96 @@ mod tests {
     };
     use crate::editor::viewport::Viewport;
     use hex_project::{BeatTime, Command, Editor, Meter, Project, Tempo};
+
+    #[test]
+    fn directional_nudge_landmarks_are_distinct_off_grid_and_across_meter_tempo_seams() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(2).unwrap(),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_ratio(5, 2).unwrap(),
+                meter: Meter::new(3, 4).unwrap(),
+            })
+            .unwrap();
+        let project = editor.project();
+        let viewport = Viewport::fit(384_000);
+        assert_eq!(
+            SnapGrid::Eighth.adjacent_frame(project, 7200, viewport, 640.0, false),
+            Some(0)
+        );
+        assert_eq!(
+            SnapGrid::Eighth.adjacent_frame(project, 7200, viewport, 640.0, true),
+            Some(12000)
+        );
+        assert_eq!(
+            SnapGrid::Eighth.adjacent_frame(project, 12000, viewport, 640.0, true),
+            Some(24000)
+        );
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_frame(project, 67200, viewport, 640.0, true),
+            Some(72000)
+        );
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_frame(project, 72000, viewport, 640.0, false),
+            Some(48000)
+        );
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_frame(project, 72000, viewport, 640.0, true),
+            Some(120000)
+        );
+        for width in [160.0, 640.0, 1920.0] {
+            let lines = grid_lines(project, viewport, width, SnapGrid::Adaptive);
+            for pair in lines.windows(2) {
+                assert_eq!(
+                    SnapGrid::Adaptive.adjacent_frame(
+                        project,
+                        pair[0].frame,
+                        viewport,
+                        width,
+                        true
+                    ),
+                    Some(pair[1].frame)
+                );
+                assert_eq!(
+                    SnapGrid::Adaptive.adjacent_frame(
+                        project,
+                        pair[1].frame,
+                        viewport,
+                        width,
+                        false
+                    ),
+                    Some(pair[0].frame)
+                );
+            }
+        }
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_beat(project, BeatTime::ZERO, viewport, 640.0, false),
+            None
+        );
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_beat(
+                project,
+                BeatTime::from_raw(u64::MAX),
+                viewport,
+                640.0,
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_frame(project, u64::MAX, viewport, 640.0, true),
+            None
+        );
+        assert_eq!(
+            SnapGrid::Quarter.adjacent_frame(project, 0, viewport, f32::NAN, true),
+            None
+        );
+    }
 
     #[test]
     fn snap_choice_is_local_opt_in_and_cycles_back_to_off() {

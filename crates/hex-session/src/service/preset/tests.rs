@@ -154,16 +154,39 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
         let dir = Directory::new();
         let path = dir.0.join("Exact.hex-device-preset.json");
         let (service, added, device) = fixture(class, type_name);
+        let trimmed = added
+            .state
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+            .with_output_gain_millidb(-12_345)
+            .unwrap()
+            .with_input_gain_millidb(-6_789)
+            .unwrap();
+        service
+            .submit(Request::Edit(Command::ReplaceDeviceState {
+                device,
+                state: trimmed,
+            }))
+            .unwrap();
+        let added = event(&service);
+        assert!(added.error.is_none());
         let original = added.state.project.clone();
         let mut state = original.device(device).unwrap().state().clone();
         let mut edits = vec![(1, ParameterValue::Float(0.37))];
         if class == NativeDeviceClass::Instrument {
             assert_eq!(
                 state.state_version(),
-                8,
-                "canonical enable-state history is required"
+                11,
+                "current canonical filter and enable-state history is required"
             );
-            assert_eq!(state.payload().len(), 380, "complete v8 suffix retained");
+            assert_eq!(
+                state.payload().len(),
+                416,
+                "complete current payload retained"
+            );
             // Non-default values span level, tuning, envelope, signed routing
             // and supported LFO fields. Compare complete opaque state below.
             edits.extend([
@@ -215,6 +238,17 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
             .unwrap();
         let loaded = event(&service);
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
+        assert_eq!(
+            loaded
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .input_gain_millidb(),
+            -6_789,
+            "loading must retain the target's host input trim",
+        );
         assert_eq!(loaded.state.project, authored.state.project);
         assert_eq!(loaded.state.revision, reset.state.revision + 1);
         service.submit(Request::Undo).unwrap();
@@ -232,6 +266,17 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
                 .unwrap()
                 .state()
                 .clone()
+                .without_host_gains()
+        );
+        assert_eq!(
+            redone
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .output_gain_millidb(),
+            -12_345
         );
         assert_eq!(redone.state.project.device(device).unwrap().id(), device);
     }

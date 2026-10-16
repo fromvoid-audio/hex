@@ -8,12 +8,15 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
+    pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
+    pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
@@ -56,6 +59,7 @@ pub struct SessionAudioClipSnapshot {
     pub asset: u64,
     pub source_start: u64,
     pub source_end: u64,
+    pub gain: crate::ClipGain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
@@ -86,6 +90,8 @@ pub struct AssetSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
     pub gain_envelope: Vec<crate::GainPoint>,
+    pub gain_touch_spans: Vec<crate::GainTouchSpan>,
+    pub gain_touch_epoch: u64,
     pub id: u64,
     pub name: String,
     pub gain: f32,
@@ -188,13 +194,34 @@ pub struct ClipSnapshot {
     pub source_length: u64,
     pub looping: bool,
     pub source_phase: u64,
+    pub edit: Option<crate::AudioClipEdit>,
     pub fade: ClipFade,
+    pub gain: crate::ClipGain,
 }
 
 impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            audio_feeds: self
+                .audio_feeds
+                .iter()
+                .map(|f| crate::AudioFeedSnapshot {
+                    id: f.id().value(),
+                    source: f.source(),
+                    destination: f.destination().value(),
+                    gain: f.gain(),
+                })
+                .collect(),
+            midi_routes: self
+                .midi_routes
+                .iter()
+                .map(|r| crate::MidiRouteSnapshot {
+                    id: r.id().value(),
+                    source: r.source().value(),
+                    destination: r.destination().value(),
+                })
+                .collect(),
             return_feeds: self
                 .routing
                 .iter()
@@ -224,7 +251,9 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
-                    gain_envelope: track.gain_envelope.clone(),
+                    gain_envelope: track.gain_lane.base.clone(),
+                    gain_touch_spans: track.gain_lane.spans.clone(),
+                    gain_touch_epoch: track.gain_lane.recording_epoch,
                     id: track.id.0,
                     name: track.name.clone(),
                     gain: track.gain,
@@ -260,7 +289,9 @@ impl Project {
                                 source_length: clip.source_length,
                                 looping: clip.looping,
                                 source_phase: clip.source_phase,
+                                edit: clip.audio_edit().cloned(),
                                 fade: clip.fade,
+                                gain: clip.gain,
                             })
                             .collect(),
                         midi_clips: track
@@ -373,6 +404,7 @@ impl Project {
                                     asset: clip.asset().value(),
                                     source_start: clip.source_start(),
                                     source_end: clip.source_end(),
+                                    gain: clip.gain(),
                                 })
                             }
                         },
@@ -388,17 +420,15 @@ impl Project {
 
     /// Validate untrusted snapshot metadata before constructing a live model.
     pub fn from_snapshot(mut snapshot: Snapshot) -> Result<Self, Invalid> {
-        let mut gain_points = 0_usize;
-        for track in &snapshot.tracks {
-            crate::validate_gain_envelope(&track.gain_envelope)?;
-            gain_points = gain_points
-                .checked_add(track.gain_envelope.len())
-                .ok_or(Invalid("gain point count overflow"))?;
-            if gain_points > crate::MAX_GAIN_POINTS {
-                return Err(Invalid("project gain envelope point limit reached"));
-            }
+        if snapshot.audio_feeds.len() > crate::MAX_AUDIO_FEEDS
+            || snapshot.midi_routes.len() > crate::MAX_MIDI_ROUTES
+        {
+            return Err(Invalid("authored routing edge limit reached"));
         }
+        snapshot.validate_gain_lanes()?;
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
+        let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
+        let midi_routes = std::mem::take(&mut snapshot.midi_routes);
         let mut project = Project::new(snapshot.sample_rate)?;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
@@ -588,7 +618,9 @@ impl Project {
                     source_length: clip.source_length,
                     looping: clip.looping,
                     source_phase: clip.source_phase,
+                    edit: clip.edit.map(Arc::new),
                     fade: clip.fade,
+                    gain: clip.gain,
                 });
             }
             let mut compiled_midi = Vec::with_capacity(midi_clips.len());
@@ -677,7 +709,11 @@ impl Project {
                 });
             }
             tracks.push(Track {
-                gain_envelope: track.gain_envelope,
+                gain_lane: crate::GainLane::new(
+                    track.gain_envelope,
+                    track.gain_touch_spans,
+                    track.gain_touch_epoch,
+                )?,
                 id: TrackId(track.id),
                 name: track.name,
                 gain: track.gain,
@@ -807,6 +843,7 @@ impl Project {
                         asset: AssetId(clip.asset),
                         source_start: clip.source_start,
                         source_end: clip.source_end,
+                        gain: clip.gain,
                     })
                 }
             };
@@ -827,10 +864,24 @@ impl Project {
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
-        if !return_feeds.is_empty() {
+        for track in &project.tracks {
+            for clip in track.clips() {
+                if let Some(edit) = &clip.edit {
+                    let frames = project
+                        .asset(clip.asset)
+                        .ok_or(Invalid("audio domain media missing"))?
+                        .playback_frames();
+                    edit.validate(clip, project.tempo_map(), frames)?;
+                }
+            }
+        }
+        if !return_feeds.is_empty() || !audio_feeds.is_empty() || !midi_routes.is_empty() {
             let mut candidate = project.snapshot();
             candidate.return_feeds = return_feeds;
+            candidate.audio_feeds = audio_feeds;
+            candidate.midi_routes = midi_routes;
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
+            project.adopt_playable_snapshot(&candidate)?;
         }
         Ok(project)
     }
@@ -845,4 +896,32 @@ fn insert_id(id: u64, seen: &mut BTreeSet<u64>, max_id: &mut u64) -> Result<(), 
     }
     *max_id = (*max_id).max(id);
     Ok(())
+}
+
+impl Snapshot {
+    /// Structural proposal validation is separate from live Project admission.
+    pub fn validate_gain_lanes(&self) -> Result<(), Invalid> {
+        let mut units = 0_usize;
+        for track in &self.tracks {
+            let count = crate::validate_gain_lane_parts(
+                &track.gain_envelope,
+                &track.gain_touch_spans,
+                track.gain_touch_epoch,
+            )?;
+            for span in &track.gain_touch_spans {
+                if span.context.sample_rate != self.sample_rate {
+                    return Err(Invalid(
+                        "gain touch context sample rate differs from project",
+                    ));
+                }
+            }
+            units = units
+                .checked_add(count)
+                .ok_or(Invalid("gain lane count overflow"))?;
+            if units > crate::MAX_GAIN_POINTS {
+                return Err(Invalid("project gain lane limit reached"));
+            }
+        }
+        Ok(())
+    }
 }

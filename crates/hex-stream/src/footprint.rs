@@ -1,15 +1,12 @@
-//! Allocation-capacity accounting, not admission policy or process RSS.
-use crate::CatalogFootprint;
-
-/// Actual reserved element capacity, including unused slots. Does not include
-/// allocator rounding/headers. Products and sums fail explicitly on overflow.
+//! Listed stream DATA capacities. Opaque std/allocator/thread costs are separate
+//! obligations, never zero-cost claims or aggregate admission.
+use crate::types::StreamRuntimeError;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AllocationCapacity {
+pub struct AllocationData {
     pub capacity: usize,
     pub element_bytes: usize,
 }
-
-impl AllocationCapacity {
+impl AllocationData {
     pub(crate) fn of<T>(capacity: usize) -> Self {
         Self {
             capacity,
@@ -20,26 +17,22 @@ impl AllocationCapacity {
         self.capacity.checked_mul(self.element_bytes)
     }
 }
-
-fn sum(values: &[usize]) -> Option<usize> {
-    values
-        .iter()
-        .try_fold(0_usize, |total, value| total.checked_add(*value))
+pub(crate) fn add(a: usize, b: usize) -> Result<usize, StreamRuntimeError> {
+    a.checked_add(b).ok_or(StreamRuntimeError::AllocationFailed)
 }
-
-/// Exclusively owned by one page endpoint. Cache slots hold page pointers:
-/// their page objects/PCM are charged once to the shared pool, not here again.
+pub(crate) fn sum(values: impl IntoIterator<Item = usize>) -> Option<usize> {
+    values.into_iter().try_fold(0usize, usize::checked_add)
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EndpointAllocationFootprint {
-    pub cache: AllocationCapacity,
-    pub pending: AllocationCapacity,
-    pub source_keys: AllocationCapacity,
-    pub held_returns: AllocationCapacity,
-    pub max_cached_pages: usize,
+pub struct EndpointData {
+    pub cache: AllocationData,
+    pub pending: AllocationData,
+    pub source_keys: AllocationData,
+    pub held_returns: AllocationData,
 }
-impl EndpointAllocationFootprint {
+impl EndpointData {
     pub fn bytes(self) -> Option<usize> {
-        sum(&[
+        sum([
             self.cache.bytes()?,
             self.pending.bytes()?,
             self.source_keys.bytes()?,
@@ -47,173 +40,213 @@ impl EndpointAllocationFootprint {
         ])
     }
 }
-
-/// Shared transport storage: each queue object/slot allocation is charged once
-/// despite its producer/consumer handles. Pool objects/PCM are charged once
-/// regardless of their current location (worker, cache, queues or held slots).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TransportAllocationFootprint {
-    pub page_objects: AllocationCapacity,
-    pub pcm_frames: AllocationCapacity,
-    pub request_slots: AllocationCapacity,
-    pub ready_slots: AllocationCapacity,
-    pub return_slots: AllocationCapacity,
-    pub failure_slots: AllocationCapacity,
-    pub queue_object_bytes: usize,
-    pub catalog_owner_object_bytes: usize,
-    pub stop_flag_object_bytes: usize,
-    /// Largest observed pre-boxing frame Vec capacity. Construction-only:
-    /// bounds a possible old/new overlap when excess capacity is discarded.
-    /// Pages are constructed sequentially; never charge this per pool page.
-    pub page_boxing_peak_extra: AllocationCapacity,
+pub struct TransportData {
+    pub page_objects: usize,
+    pub pcm_boxes: usize,
+    /// Audited constructor declaration, NOT an observed Vec capacity. Unknown
+    /// unless observed pinned source and supported std family match within the
+    /// repository fixed-Cargo-invocation class and exact required CI.
+    pub queue_slot_data_declared: usize,
+    pub queue_object_data: usize,
+    pub catalog_owner_data: usize,
+    pub stop_flag_data: usize,
+    pub pair_owner_data: usize,
+    pub page_boxing_overlap: usize,
+    pub queue_constructor_supported: bool,
 }
-impl TransportAllocationFootprint {
+impl TransportData {
     pub fn bytes(self) -> Option<usize> {
-        sum(&[
-            self.page_objects.bytes()?,
-            self.pcm_frames.bytes()?,
-            self.request_slots.bytes()?,
-            self.ready_slots.bytes()?,
-            self.return_slots.bytes()?,
-            self.failure_slots.bytes()?,
-            self.queue_object_bytes,
-            self.catalog_owner_object_bytes,
-            self.stop_flag_object_bytes,
+        self.queue_constructor_supported.then_some(())?;
+        sum([
+            self.page_objects,
+            self.pcm_boxes,
+            self.queue_slot_data_declared,
+            self.queue_object_data,
+            self.catalog_owner_data,
+            self.stop_flag_data,
+            self.pair_owner_data,
         ])
     }
 }
-
-/// Worker and immutable catalog allocations retained once per actual catalog.
-/// `source_slots` includes inline reader objects AND their fixed 64KiB scratch;
-/// do not add the legacy scratch subcomponent again. Shared kernel data/weights
-/// are counted once per reused kernel, not once per plan or lease. Catalog
-/// membership metadata is an independent allocation and is charged separately.
+/// Constructor-captured scalar capacities for the fixed worker DATA reservation.
+/// Not live field addresses or a worker/handle lifetime receipt. Terminal state
+/// observations invalidate the report; racing completion only releases storage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CatalogAllocationFootprint {
-    pub source_slots: AllocationCapacity,
-    pub definition_path_bytes: usize,
-    pub reader_path_bytes: usize,
-    pub manifest_bytes: usize,
-    pub kernel_object_bytes: usize,
-    pub kernel_weight_bytes: usize,
-    pub membership_slots: AllocationCapacity,
-    pub catalog_object_bytes: usize,
-    pub source_scratch: AllocationCapacity,
-    pub free_page_handles: AllocationCapacity,
-    pub held_page_handles: AllocationCapacity,
-    pub held_failures: AllocationCapacity,
+pub struct WorkerData {
+    pub constructor_complete: bool,
+    pub source_slots: AllocationData,
+    pub definition_paths: usize,
+    pub reader_paths: usize,
+    pub manifests: usize,
+    pub kernel_objects: usize,
+    pub kernel_weights: usize,
+    pub kernel_handles: usize,
+    pub source_scratch: AllocationData,
+    pub free_page_handles: AllocationData,
+    pub held_page_handles: AllocationData,
+    pub held_failures: AllocationData,
+    pub membership: AllocationData,
+    pub catalog_object: usize,
+    pub construction_definition_slots: AllocationData,
+    pub construction_kernel_cache: AllocationData,
+    pub construction_cache_old_backings: usize,
 }
-impl CatalogAllocationFootprint {
+impl WorkerData {
     pub fn bytes(self) -> Option<usize> {
-        sum(&[
+        self.constructor_complete.then_some(())?;
+        sum([
             self.source_slots.bytes()?,
-            self.definition_path_bytes,
-            self.reader_path_bytes,
-            self.manifest_bytes,
-            self.kernel_object_bytes,
-            self.kernel_weight_bytes,
-            self.membership_slots.bytes()?,
-            self.catalog_object_bytes,
+            self.definition_paths,
+            self.reader_paths,
+            self.manifests,
+            self.kernel_objects,
+            self.kernel_weights,
             self.source_scratch.bytes()?,
             self.free_page_handles.bytes()?,
             self.held_page_handles.bytes()?,
             self.held_failures.bytes()?,
+            self.membership.bytes()?,
+            self.catalog_object,
+        ])
+    }
+    pub fn construction_extra(self) -> Option<usize> {
+        sum([
+            self.construction_definition_slots.bytes()?,
+            self.construction_kernel_cache.bytes()?,
+            self.construction_cache_old_backings,
         ])
     }
 }
-
-/// Observed construction-only vector capacities plus the existing conservative
-/// kernel-table construction reservation. This is a bound, not a sampled peak:
-/// definitions/cache can overlap retained allocations; their lifetimes need
-/// not overlap each other. No transient is added to the retained total.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ConstructionAllocationFootprint {
-    pub definition_slots: AllocationCapacity,
-    pub kernel_cache_slots: AllocationCapacity,
-    pub kernel_table_peak_bound_bytes: usize,
+/// Complete only within the explicitly listed DATA contract inherited from
+/// PR177 8d444c06 docs/page-delivery.md. Arc control blocks, mpsc/thread/OS
+/// machinery, allocator rounding/headers and stack/thread locals are excluded
+/// HERE and MUST remain explicit obligations in the aggregate façade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamDataFootprint {
+    pub endpoint: EndpointData,
+    pub transport: TransportData,
+    pub worker: WorkerData,
 }
-
-/// Full capacity report for one endpoint/catalog pairing. Queries allocate,
-/// clone and mutate nothing. Not an aggregate ledger/admission decision.
-/// Excludes opaque allocator/Arc/channel/thread/OS bookkeeping, thread/stack
-/// locals, caller graph/history/export allocations and caller-owned handles.
-/// Includes data in heap objects and all owned buffer/vector capacities below.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct StreamAllocationFootprint {
-    pub endpoint: EndpointAllocationFootprint,
-    pub transport: TransportAllocationFootprint,
-    pub catalog: CatalogAllocationFootprint,
-    pub construction: ConstructionAllocationFootprint,
-    /// Legacy payload/subcomponent report; not an extra additive allocation.
-    pub legacy_catalog: CatalogFootprint,
-}
-impl StreamAllocationFootprint {
-    pub fn retained_bytes(self) -> Option<usize> {
-        sum(&[
+impl StreamDataFootprint {
+    pub fn listed_data_bytes(self) -> Option<usize> {
+        sum([
             self.endpoint.bytes()?,
             self.transport.bytes()?,
-            self.catalog.bytes()?,
+            self.worker.bytes()?,
         ])
     }
-    pub fn construction_peak_bound_bytes(self) -> Option<usize> {
-        // Replace retained table bytes with their construction reservation;
-        // adding both would double-charge the same kernel weight allocation.
-        let table_extra = self
-            .construction
-            .kernel_table_peak_bound_bytes
-            .checked_sub(self.catalog.kernel_weight_bytes)?;
-        // Vec growth can temporarily retain the old cache allocation. Twice
-        // its final capacity bounds old + new without assuming a growth factor.
-        let cache_peak = self
-            .construction
-            .kernel_cache_slots
-            .bytes()?
-            .checked_mul(2)?;
-        sum(&[
-            self.retained_bytes()?,
-            self.construction.definition_slots.bytes()?,
-            cache_peak,
-            table_extra,
-            self.transport.page_boxing_peak_extra.bytes()?,
+    /// Conservative old/new construction overlap, not sampled process peak.
+    /// The whole retained domain is charged once; no cached subset is removed.
+    pub fn listed_construction_peak(self) -> Option<usize> {
+        sum([
+            self.listed_data_bytes()?,
+            self.transport.page_boxing_overlap,
+            self.worker.construction_extra()?,
         ])
     }
+}
+pub(crate) fn queue_family_supported() -> bool {
+    cfg!(hex_stream_rtrb_source_observation_matches)
+        && hex_engine::audio_storage_constructor_layout_supported()
 }
 
 #[cfg(test)]
-mod tests {
+mod checked_data_tests {
     use super::*;
+    fn complete_empty() -> StreamDataFootprint {
+        StreamDataFootprint {
+            endpoint: EndpointData::default(),
+            transport: TransportData {
+                queue_constructor_supported: true,
+                ..Default::default()
+            },
+            worker: WorkerData {
+                constructor_complete: true,
+                ..Default::default()
+            },
+        }
+    }
     #[test]
-    fn capacity_products_sums_and_peak_replacement_refuse_overflow() {
-        assert_eq!(
-            AllocationCapacity {
-                capacity: usize::MAX,
-                element_bytes: 2
-            }
-            .bytes(),
-            None
+    fn overflow_and_unknown_constructor_cannot_produce_a_data_bound() {
+        let mut data = complete_empty();
+        assert_eq!(data.listed_data_bytes(), Some(0));
+        data.endpoint.cache = AllocationData {
+            capacity: usize::MAX,
+            element_bytes: 2,
+        };
+        assert_eq!(data.listed_data_bytes(), None);
+        let mut data = complete_empty();
+        data.worker.reader_paths = usize::MAX;
+        data.worker.manifests = 1;
+        assert_eq!(data.listed_data_bytes(), None);
+        let mut data = complete_empty();
+        data.transport.pcm_boxes = usize::MAX;
+        data.transport.page_objects = 1;
+        assert_eq!(data.listed_data_bytes(), None);
+        let mut data = complete_empty();
+        data.worker.construction_definition_slots = AllocationData {
+            capacity: usize::MAX,
+            element_bytes: 2,
+        };
+        assert_eq!(data.listed_data_bytes(), Some(0));
+        assert_eq!(data.listed_construction_peak(), None);
+        let mut data = complete_empty();
+        data.transport.queue_constructor_supported = false;
+        assert_eq!(data.listed_data_bytes(), None);
+        let mut data = complete_empty();
+        data.worker.constructor_complete = false;
+        assert_eq!(data.listed_data_bytes(), None);
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod constructor_tests {
+    use super::*;
+    use crate::{
+        StreamFailure,
+        endpoint::{PageBuffer, PageRequest},
+    };
+    use std::{alloc::Layout, sync::atomic::AtomicUsize};
+    fn probe<T>(capacity: usize) {
+        let owner = Layout::array::<AtomicUsize>(2)
+            .unwrap()
+            .extend(Layout::new::<rtrb::RingBuffer<T>>())
+            .unwrap()
+            .0
+            .pad_to_align()
+            .size();
+        let slots = capacity.checked_mul(std::mem::size_of::<T>()).unwrap();
+        let observed = allocation_counter::measure(|| {
+            let (producer, consumer) = rtrb::RingBuffer::<T>::new(capacity);
+            assert_eq!(producer.buffer().capacity(), capacity);
+            assert!(std::ptr::eq(producer.buffer(), consumer.buffer()));
+            drop((producer, consumer));
+        });
+        assert_eq!(observed.count_total, 2);
+        assert_eq!(observed.bytes_total as usize, owner + slots);
+        assert_eq!(observed.count_current, 0);
+        assert_eq!(observed.bytes_current, 0);
+    }
+    #[test]
+    fn all_four_actual_queue_message_constructors_match_pinned_requested_allocations() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            assert!(!queue_family_supported());
+            eprintln!("stream queue constructor: unsupported compiler remains Unknown");
+            return;
+        }
+        assert!(
+            queue_family_supported(),
+            "observed pinned source must match the supported fixed-invocation class"
         );
-        let mut report = StreamAllocationFootprint::default();
-        report.catalog.definition_path_bytes = usize::MAX;
-        report.catalog.reader_path_bytes = 1;
-        assert_eq!(report.retained_bytes(), None);
-        report.catalog.reader_path_bytes = 0;
-        report.construction.definition_slots = AllocationCapacity::of::<u8>(1);
-        assert_eq!(report.construction_peak_bound_bytes(), None);
-        report.catalog.definition_path_bytes = 0;
-        report.catalog.kernel_weight_bytes = 10;
-        report.construction.kernel_table_peak_bound_bytes = 9;
-        assert_eq!(report.construction_peak_bound_bytes(), None);
-        report.construction.kernel_table_peak_bound_bytes = 30;
-        assert_eq!(report.retained_bytes(), Some(10));
-        assert_eq!(report.construction_peak_bound_bytes(), Some(31));
-        // A representable retained report can still overflow its transient
-        // cache-growth bound. No wrapping/saturation authorizes a false budget.
-        report.construction.kernel_cache_slots = AllocationCapacity::of::<u8>(usize::MAX);
-        assert_eq!(report.retained_bytes(), Some(10));
-        assert_eq!(report.construction_peak_bound_bytes(), None);
-        report.construction.kernel_cache_slots = AllocationCapacity::default();
-        report.transport.page_boxing_peak_extra = AllocationCapacity::of::<u8>(usize::MAX);
-        assert_eq!(report.retained_bytes(), Some(10));
-        assert_eq!(report.construction_peak_bound_bytes(), None);
+        for capacity in [1, 3, 6, 1024, 2048, 8192] {
+            probe::<PageRequest>(capacity);
+            probe::<Box<PageBuffer>>(capacity); // ready
+            probe::<Box<PageBuffer>>(capacity); // return
+            probe::<StreamFailure>(capacity);
+        }
+        eprintln!(
+            "stream queue constructor: supported pinned source; four actual message types; 24 capacity/type controls"
+        );
     }
 }

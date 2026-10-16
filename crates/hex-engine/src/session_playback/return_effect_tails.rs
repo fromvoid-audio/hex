@@ -293,6 +293,9 @@ impl ReturnEffectTailPlan {
         Ok(plan)
     }
 
+    pub(super) fn captures_bus(&self) -> bool {
+        self.capture.iter().any(Option::is_some)
+    }
     pub(super) fn inherit_bus(&self, index: usize) -> bool {
         self.inherit_bus.get(index).copied().unwrap_or(false)
     }
@@ -400,7 +403,7 @@ fn reserve_chain(
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
     match chain
-        .output_tail_for_range(0..chain.len())
+        .zero_input_drain_for_range(0..chain.len())
         // The full range is validated by this caller; `None` therefore means
         // its serial finite declarations overflowed their aggregate bound.
         .ok_or(SessionPlaybackError::ReleaseBankFull)?

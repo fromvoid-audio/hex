@@ -21,6 +21,12 @@ share the same sample at the absolute performance boundary. Mutable feedback/LFO
 uses the same fixed five-millisecond coefficient ramp without resetting phases,
 clock, onset age or gate. The ordinary built-in zero-feedback path remains analytic.
 
+A stopped/reset runtime (not playing, performance frame zero) has no audible
+boundary to continue. Analytic enable edits there use the target endpoint on
+next Play; no old oscillator level is introduced into a fresh note. Pause after
+rendering preserves the frozen performance boundary and its five-millisecond
+continuity on resume.
+
 Two fixed-length transition tables are allocated on control using fallible
 reservation, require exactly `MAX_TRACKS` capacity, and never resize or exchange
 allocation ownership in callback handoff/render. Both capacities are charged to
@@ -313,3 +319,51 @@ fixture; removing that token changes no runtime/test semantics and retains stric
 warnings. Full run operator-enable-final-preset-20261011 has clean unchanged
 digest0a24fbbef5fb4cb73c5290a4fdde7e892be4b60755598a0916d07afe57a99129;
 steps14–16 were not run. Exact featureClippy and fresh full16 remain required.
+
+## current-main continuation
+
+The next canonical PR164 candidate integrates frozen PR186
+`4286997a495b857123874ca59578e8fa99506313`, including main
+`5785bf7c47c5c8a168cfec33bfe1ecbe3aa72c1c`. It retains exact numeric-draft and
+retired-preview fixes by original history, without importing PR187's user-preset
+feature. Native type/state remain `hex.instrument.operator`, version8/380bytes;
+the displayed product name is now `vector`.
+
+Mouse badge clicks toggle the canonical enable Boolean and select its context.
+The latest accepted controls-first contract keeps Enter/Space on an oscillator
+badge navigation-only, matching other section selectors; neither key changes
+sound, enable state or project history. This supersedes the older ticket sentence
+requesting keyboard enable toggles. Current numeric/text ownership, Tab order,
+hidden-context guards and invalid-draft refusal remain intact. Native four-state
+focus/enable appearance must be reviewed on the actual optimized candidate.
+
+Capture identity/epoch and native device metering coexist without changing
+ownership, clocks or storage caps. The existing meter-only, unordered,
+no-stateful-effects/no-sends analytic branch already contains track mix. Main and
+capture share that exact predicate, so capture does not apply gain/balance twice.
+Other hybrid prefix/suffix, nonlinear send/return and release paths retain their
+mixing order. The bounded correction and independent PCM tests reuse PR187
+`25519021750a8934ac88fc90b1411d87f6b09085` provenance, not its preset feature.
+
+Current generic registry patching preserves host-owned output trim while changing
+an enable flag. Non-neutral trim, canonical history/save/reopen and navigation-only
+keyboard regressions cover this boundary. Retained earlier failures and source
+passes remain historical; the canonical PR report records new exact-source local
+checks and pending native acceptance. No old build or check is transferred to this
+integrated candidate, and live typing acceptance stays explicitly deferred.
+
+## committed endpoint retirement — 16 october 2026
+
+Active analytic ramps are removed once a successful complete render commits at
+or beyond their exact endpoint. The current prepared context then supplies the
+same target samples through the ordinary path. Refused renders preserve the ramp
+and clock, including a requested block that would cross its endpoint. Detached
+voices keep their own captured transition and context until their existing
+ownership lifecycle retires them; this does not clear historical owners.
+
+The independent coefficient fixture reproduced retained active ramps before the
+repair. Arrangement/Session and held/released cases now verify exact-boundary
+retirement, partition-independent PCM through reversal and subsequent endpoint
+samples. The refusal fixture requests a block crossing the endpoint and confirms
+unchanged transition/clock and invalidated captures. Full exact-source checks are
+recorded with the focused fix PR; no physical timing or native acceptance is claimed.

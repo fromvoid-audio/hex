@@ -23,6 +23,11 @@ pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
 const MAX_MUTABLE_TAIL_SECONDS: u64 = 10;
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
+/// Combined declared DSP storage for committed/scratch pairs in one active
+/// graph or one retained-tail bank. Variable-size instrument requirements draw
+/// from this pool; the separate 4 KiB effect-twin limit is not an instrument cap.
+/// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
+pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MutableOccurrenceKey {
@@ -202,7 +207,7 @@ impl MutableInstrumentTrackRuntime {
         let pair_bytes = prepared.declared_twin_bytes().checked_mul(2)?;
         if prepared.runtime_version() == 0
             || prepared.declared_twin_bytes() == 0
-            || pair_bytes > hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2
+            || pair_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
             || prepared.max_events_per_block() == 0
             || prepared.max_events_per_block() > MAX_MUTABLE_EVENTS_PER_QUERY
             || prepared.max_active_occurrences() == 0
@@ -227,7 +232,7 @@ impl MutableInstrumentTrackRuntime {
         let pair = NativeInstrumentRuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
-                max_pair_bytes: hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2,
+                max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
                 max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
                 max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
                 max_tail_frames,
@@ -287,12 +292,9 @@ impl MutableInstrumentTrackRuntime {
         !self.pair.committed_is_quiescent()
     }
 
+    #[cfg(test)]
     pub(crate) fn next_occurrence_id(&self) -> u64 {
         self.next_id
-    }
-    pub(crate) fn reserve_occurrence_id_floor(&mut self, floor: u64) {
-        self.next_id = self.next_id.max(floor);
-        self.next_id_scratch = self.next_id;
     }
 
     #[cfg(test)]
@@ -308,6 +310,37 @@ impl MutableInstrumentTrackRuntime {
     #[cfg(test)]
     pub(crate) fn occurrence_proofs(&self) -> &[MutableOccurrence] {
         &self.primary
+    }
+
+    pub(crate) fn can_import_analytic(
+        &self,
+        seeds: &[hex_lattice::NativeInstrumentAnalyticSeed],
+    ) -> bool {
+        self.primary.is_empty()
+            && self.scratch.is_empty()
+            && self.primary.capacity() >= seeds.len()
+            && self.scratch.capacity() >= seeds.len()
+            && self.pair.can_import_analytic(seeds)
+    }
+    pub(crate) fn import_analytic(
+        &mut self,
+        seeds: &[hex_lattice::NativeInstrumentAnalyticSeed],
+        proofs: &[Option<MutableOccurrence>],
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if seeds.len() != proofs.len()
+            || !self.can_import_analytic(seeds)
+            || proofs.iter().any(Option::is_none)
+        {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        self.pair
+            .import_analytic(seeds)
+            .map_err(map_runtime_error)?;
+        self.primary.extend(proofs.iter().flatten().copied());
+        self.scratch.extend_from_slice(&self.primary);
+        self.next_id = seeds.len() as u64;
+        self.next_id_scratch = self.next_id;
+        Ok(())
     }
 
     /// Check whether this freshly prepared owner can take the exact committed
@@ -429,9 +462,6 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn proofs(&self) -> impl Iterator<Item = MutableOccurrence> + '_ {
         self.primary.iter().copied()
     }
-    pub(crate) fn speculative_proofs(&self) -> impl Iterator<Item = MutableOccurrence> + '_ {
-        self.scratch.iter().copied()
-    }
 
     /// Cut still-gated occurrences at a publication boundary when the
     /// candidate has no enabled instrument. The runtime receives the matching
@@ -485,46 +515,6 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        self.process_segment_with_live(
-            track,
-            performance_start,
-            source_start,
-            frames,
-            onsets,
-            suppressions,
-            events,
-            clock,
-            None,
-        )
-    }
-    pub(crate) fn allocate_live_id(&mut self) -> Result<u64, crate::Invalid> {
-        self.next_id_scratch = self
-            .next_id_scratch
-            .checked_add(1)
-            .ok_or(crate::Invalid("live occurrence identity exhausted"))?;
-        Ok(self.next_id_scratch)
-    }
-    pub(crate) fn preflight_live_publication_ids(&self) -> Result<(), crate::Invalid> {
-        // A publication may expose one complete bounded event query and its
-        // already queued typing prefix. Future queries check again before commit.
-        self.next_id
-            .checked_add((MAX_MUTABLE_EVENTS_PER_QUERY + 32) as u64)
-            .ok_or(crate::Invalid("publication occurrence identity exhausted"))?;
-        Ok(())
-    }
-    #[allow(clippy::too_many_arguments)] // Same prepared segment plus its explicit transient source.
-    pub(crate) fn process_segment_with_live(
-        &mut self,
-        track: TrackId,
-        performance_start: u64,
-        source_start: u64,
-        frames: &mut [[f32; 2]],
-        onsets: &mut MutableOnsetBuffer,
-        suppressions: &[MidiOccurrenceSuppression],
-        events: &mut Vec<NativeInstrumentEvent>,
-        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        live: Option<&crate::live_input::TypingPerformance>,
-    ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
         let performance_end = performance_start
@@ -573,21 +563,20 @@ impl MutableInstrumentTrackRuntime {
             }
             self.scratch
                 .retain(|proof| !proof.note_off_sent || proof.quiet_deadline_frame > onset_frame);
-            if self.scratch.iter().any(|active| {
-                if live.is_some() {
-                    active.signature == signature
-                } else {
-                    active.signature.key == onset.key
-                }
-            }) || onsets.iter().take(onset_index).any(|previous| {
-                previous.key == onset.key
-                    && !has_mutable_suppression(
-                        suppressions,
-                        MutableOccurrenceSignature::new(previous),
-                        performance_start
-                            .saturating_add(previous.source_start.saturating_sub(source_start)),
-                    )
-            }) {
+            if self
+                .scratch
+                .iter()
+                .any(|active| active.signature.key == onset.key)
+                || onsets.iter().take(onset_index).any(|previous| {
+                    previous.key == onset.key
+                        && !has_mutable_suppression(
+                            suppressions,
+                            MutableOccurrenceSignature::new(previous),
+                            performance_start
+                                .saturating_add(previous.source_start.saturating_sub(source_start)),
+                        )
+                })
+            {
                 return Err(MutableInstrumentRuntimeError::DuplicateOccurrence);
             }
             self.next_id_scratch = self
@@ -631,12 +620,7 @@ impl MutableInstrumentTrackRuntime {
                 // Gateoffs at the exclusive block end are emitted at offset
                 // zero of the next segment, preserving half-open semantics.
             }
-            if self
-                .scratch
-                .len()
-                .checked_add(live.map_or(0, |live| live.speculative_voices()))
-                .is_none_or(|count| count >= MAX_MUTABLE_OCCURRENCE_PROOFS)
-            {
+            if self.scratch.len() >= MAX_MUTABLE_OCCURRENCE_PROOFS {
                 return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
             }
             let quiet_deadline_frame = gate_end_frame
@@ -652,10 +636,6 @@ impl MutableInstrumentTrackRuntime {
             });
         }
 
-        if let Some(live) = live {
-            live.append_native_events(performance_start, events)
-                .map_err(|_| MutableInstrumentRuntimeError::OccurrenceCapacity)?;
-        }
         events.sort_unstable_by_key(|event| {
             let (offset, is_on, occurrence_id) = match *event {
                 NativeInstrumentEvent::NoteOff {
@@ -836,7 +816,8 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances with two 4 KiB twins each.
+/// admits at most 256 stateful instances. Effects retain their separate 4 KiB
+/// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
     existing_bytes: usize,
@@ -850,8 +831,7 @@ pub(crate) fn validate_mutable_graph_budget(
         .checked_add(pair_bytes)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if total_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-        || total_bytes
-            > hex_lattice::MAX_STATEFUL_PROCESSORS * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2
+        || total_bytes > MAX_STATEFUL_RUNTIME_PAIR_BYTES
     {
         return Err(MutableInstrumentRuntimeError::Budget);
     }

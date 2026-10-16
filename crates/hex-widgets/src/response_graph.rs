@@ -1,5 +1,6 @@
 //! Bounded response graph with reusable node hit targets and pointer capture.
 use crate::ControlStyle;
+use crate::focus_marker::corner_markers;
 use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -99,6 +100,7 @@ pub struct ResponseGraph {
     drag: Option<Drag>,
     press: Option<Press>,
     editable: bool,
+    tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
 }
@@ -135,8 +137,20 @@ impl ResponseGraph {
             drag: None,
             press: None,
             editable: false,
+            tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
+        }
+    }
+
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.tab_navigation = enabled;
+        let tab_stop = self.tab_navigation && self.editable;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            cx.notify();
         }
     }
 
@@ -179,6 +193,10 @@ impl ResponseGraph {
     pub fn set_editable(&mut self, editable: bool, cx: &mut Context<Self>) {
         if self.editable != editable {
             self.editable = editable;
+            let tab_stop = self.tab_navigation && self.editable;
+            if self.focus.tab_stop != tab_stop {
+                self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            }
             cx.notify();
         }
     }
@@ -388,10 +406,25 @@ impl ResponseGraph {
             return;
         }
         let modifiers = event.keystroke.modifiers;
-        if !self.editable || modifiers.platform || modifiers.control || modifiers.alt {
+        let node_cycle = event.keystroke.key == "tab"
+            && (if self.focus.tab_stop {
+                modifiers.control
+            } else {
+                !modifiers.control
+            });
+        if !self.editable
+            || modifiers.platform
+            || modifiers.alt
+            || (modifiers.control && !node_cycle)
+        {
             return;
         }
-        if event.keystroke.key == "tab" {
+        // Owners opting into Tab traversal use Ctrl-Tab to cycle graph nodes.
+        // Plain Tab/Shift-Tab bubble to the owner; other graphs retain their keys.
+        if event.keystroke.key == "tab" && !node_cycle {
+            return;
+        }
+        if node_cycle {
             let selected = self.model.nodes.iter().position(|node| node.selected);
             let Some(next) = cycle_node(
                 selected,
@@ -558,6 +591,10 @@ impl gpui::Render for ResponseGraph {
                 .absolute()
                 .inset_0()
                 .size_full(),
+            )
+            .when(
+                self.focus.tab_stop && self.focus.is_focused(window),
+                |root| root.child(corner_markers(&self.id, style.focus_marker)),
             )
             .child(ResponseGraphCaptureElement {
                 entity: cx.entity(),

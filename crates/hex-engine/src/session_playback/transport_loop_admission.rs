@@ -20,22 +20,6 @@ pub(super) fn admit_track(
     declared_max_events: usize,
     declared_max_voices: usize,
 ) -> Result<(), SessionPlaybackError> {
-    let (voices, events) = measure_track(track, region, release_tail_frames)?;
-    if declared_max_voices == 0
-        || declared_max_events == 0
-        || voices > declared_max_voices.min(MAX_VOICES)
-        || events > declared_max_events.min(MAX_EVENTS)
-    {
-        return Err(SessionPlaybackError::MutableInstrumentLoopDensity);
-    }
-    Ok(())
-}
-
-pub(super) fn measure_track(
-    track: &Track,
-    region: LoopRegion,
-    release_tail_frames: u64,
-) -> Result<(usize, usize), SessionPlaybackError> {
     let period = region
         .end()
         .checked_sub(region.start())
@@ -49,7 +33,7 @@ pub(super) fn measure_track(
     let mut repeats = Vec::new();
     let mut arithmetic_failure = false;
     track
-        .for_each_authored_midi_span(0, region.end(), |span| {
+        .for_each_mutable_midi_span(0, region.end(), |span| {
             if span.start >= region.end() {
                 return;
             }
@@ -123,7 +107,12 @@ pub(super) fn measure_track(
     if span_overflow {
         return Err(SessionPlaybackError::MutableInstrumentLoopDensity);
     }
-    let event_limit = MAX_EVENTS;
+    let voice_limit = declared_max_voices.min(MAX_VOICES);
+    let event_limit = declared_max_events.min(MAX_EVENTS);
+    if voice_limit == 0 || event_limit == 0 {
+        return Err(SessionPlaybackError::MutableInstrumentLoopDensity);
+    }
+
     let mut repeated_edges = Vec::new();
     repeated_edges
         .try_reserve_exact(
@@ -149,21 +138,20 @@ pub(super) fn measure_track(
     }
     let first_seam_edge_max =
         maximum_first_seam_event_edges(&intro, &repeated_edges, first_pass, period, event_limit)?;
-    let voices = crate::midi_template::admit_transport_loop_density(
-        &intro,
-        &repeats,
-        first_pass,
-        period,
-        release_tail_frames,
-    )
-    .map_err(|_| SessionPlaybackError::MutableInstrumentLoopDensity)?;
-    let events = intro_edge_max
-        .max(periodic_edge_max)
-        .max(first_seam_edge_max);
-    if events > MAX_EVENTS || voices > MAX_VOICES {
+    if first_seam_edge_max > event_limit
+        || crate::midi_template::admit_transport_loop_density(
+            &intro,
+            &repeats,
+            first_pass,
+            period,
+            release_tail_frames,
+        )
+        .map_err(|_| SessionPlaybackError::MutableInstrumentLoopDensity)?
+            > voice_limit
+    {
         return Err(SessionPlaybackError::MutableInstrumentLoopDensity);
     }
-    Ok((voices, events))
+    Ok(())
 }
 
 fn maximum_linear_event_edges(

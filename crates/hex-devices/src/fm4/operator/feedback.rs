@@ -44,6 +44,18 @@ impl PreparedOperatorConfiguration {
 }
 
 impl PreparedOperatorFeedbackVoice {
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn filter_seed(
+        &self,
+    ) -> Option<(PreparedOperatorNote, u64, Option<u64>, [f64; 4], [f64; 4])> {
+        Some((
+            self.note,
+            self.age_frames,
+            self.gate_frame,
+            self.previous_outputs,
+            self.feedback_turns,
+        ))
+    }
     /// Current note-relative frame; advances once after each successful sample.
     pub const fn age_frames(&self) -> u64 {
         self.age_frames
@@ -95,13 +107,11 @@ impl PreparedOperatorFeedbackVoice {
                 "operator feedback voice does not match its prepared configuration",
             ));
         }
+        let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
         let (sample, outputs) = if self.feedback_turns == [0.0; OPERATORS] {
             // Preserve the existing analytic sampling route bit-for-bit.
             (
-                match self.gate_frame {
-                    Some(frame) => configuration.sample(table, &self.note, self.age_frames, frame),
-                    None => configuration.sample_held(table, &self.note, self.age_frames),
-                },
+                configuration.sample(table, &self.note, self.age_frames, gate_frame),
                 [0.0; OPERATORS],
             )
         } else {
@@ -109,7 +119,7 @@ impl PreparedOperatorFeedbackVoice {
                 table,
                 &self.note,
                 self.age_frames,
-                self.gate_frame,
+                gate_frame,
                 self.feedback_turns,
                 self.previous_outputs,
             )

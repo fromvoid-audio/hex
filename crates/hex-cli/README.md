@@ -18,7 +18,10 @@ Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
 Project rendering validates original source rate/count, prepares project-rate PCM
 with the saved converter contract and validates playback length before opening
 the output. Input is capped at 64 MiB / 8,000,000 source frames per file; referenced
-prepared PCM is separately capped at 8,000,000 frames. Output never overwrites.
+prepared PCM is separately capped at 8,000,000 frames. Legacy render-project
+never overwrites. The explicit export-project command supports controlled ranges,
+canonical captures, stems and explicit destructive overwrite;
+see [the export contract](../../docs/export.md).
 
 Recover a retained prior generation without replacing either original file:
 
@@ -37,18 +40,3 @@ Saved instrument tracks render the original bounded sine instrument through
 hex-engine. MIDI-only projects require no decoded media bank. Export length uses
 the compiled audio/MIDI clip and release-tail horizon; unrenderable candidates
 fail before creating output. Piano-roll authoring remains a native UI work item.
-
-Import the finite Live-set subset into a new 48 kHz Hex project:
-
-```sh
-cargo run -p hex-cli -- import-live-set /path/minimal.als /path/new.hex
-```
-
-Nonneutral pan is refused by default. `--accept-hex-balance` explicitly selects
-Hex's unverified stereo balance law and emits a diagnostic. Device-free MIDI
-retains notes with no instrument, preserving silence. Local matching-rate WAVs
-are validated and the complete candidate compiles before create-new publication;
-existing outputs survive failure. Exact original ALS bytes persist in schema 18.
-See [live-set import](../../docs/live-set-import.md) for the fixture/version field
-table, resource bounds, refusal cases and native/listening gaps. No editable ALS
-export or broad Live-fidelity claim is made.

@@ -11,6 +11,9 @@ instrument-test-support = ["hex-engine/instrument-test-support"]
 [dependencies]
 hex-engine = { path = "../hex-engine" }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "=1.1.5", features = ["fs"] }
+
 [dev-dependencies]
 hex-project = { path = "../hex-project" }
 hex-lattice = { path = "../hex-lattice" }

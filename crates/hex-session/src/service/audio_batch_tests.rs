@@ -251,7 +251,7 @@ fn worker_gesture_refusal_keeps_active_gesture_and_current_project() {
 }
 
 #[test]
-fn additive_batch_keeps_stable_typing_owner_shared_prepared_revision_and_generation() {
+fn additive_batch_preserves_target_identity_and_cancels_the_old_keyboard_lease_on_publication() {
     let files = Files::new();
     let audio = files.wav("audio.wav", 48_000, &[1; 8]);
     let (s, _) = service();
@@ -269,16 +269,14 @@ fn additive_batch_keeps_stable_typing_owner_shared_prepared_revision_and_generat
         .instrument()
         .unwrap()
         .id();
-    let target = hex_engine::live_input::TypingTarget {
+    let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    s.submit(Request::PrepareComputerKeyboard {
         project_generation: 0,
-        project_revision: added.state.revision,
+        revision: added.state.revision,
         track,
-        device,
-    };
-    s.submit(Request::ArmMusicalTyping {
-        target,
-        epoch: 1,
-        bridge_bytes: 31_088,
+        request_id: 7,
+        input: Arc::clone(&input),
     })
     .unwrap();
     let armed = event(&s);
@@ -296,11 +294,22 @@ fn additive_batch_keeps_stable_typing_owner_shared_prepared_revision_and_generat
     assert!(imported.error.is_none(), "{:?}", imported.error);
     assert!(!imported.project_replaced);
     assert_eq!(imported.state.revision, armed.state.revision + 1);
-    let playback = imported.playback.unwrap();
+    let mut previous = armed.playback.unwrap();
+    let mut pcm = [[0.0; 2]; 256];
+    previous.render(&mut pcm).unwrap();
+    assert!(pcm.iter().flatten().any(|sample| sample.abs() > 1e-6));
+    let mut playback = imported.playback.unwrap();
     assert!(playback.prepared_revision().is_some());
-    let admission = playback.typing_admission().unwrap();
-    assert!(admission.armed);
-    assert_eq!(admission.owner, target.owner().unwrap());
+    playback.try_inherit_runtime_from(&mut previous).unwrap();
+    assert!(
+        input.is_cancelled(),
+        "ordinary graph replacement cancels the old audition lease"
+    );
+    playback.render(&mut pcm).unwrap();
+    assert_eq!(
+        pcm, [[0.0; 2]; 256],
+        "stopped playback cannot resurrect the held input"
+    );
     assert_eq!(control.progress().phase, AudioBatchPhase::Completed);
     assert_eq!(
         imported

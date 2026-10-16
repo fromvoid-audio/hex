@@ -4,8 +4,15 @@
 
 Bounded control-side import of supported RIFF/WAVE audio into validated engine
 audio buffers, plus versioned sample-rate conversion. The decoder accepts PCM
-16/24/32-bit and IEEE float32, mono or stereo, at sample rates from 8 kHz through
-192 kHz. Mono is duplicated to stereo. Conversion uses a centered Hann-windowed
+8/16/24/32-bit, IEEE float32/64, extensible PCM/float, G.711 A-law/mu-law and
+Microsoft/IMA ADPCM, mono or stereo, at sample rates from 8 kHz through 192 kHz.
+Mono is duplicated to stereo. Extensible files validate their subtype GUID,
+valid-bit count and mono/stereo channel mask (including an unspecified mask).
+Broadcast metadata/unknown RIFF chunks are skipped with bounded header scanning.
+ADPCM validates block dimensions, predictor headers and file-supplied Microsoft
+coefficient pairs; the optional `fact` sample count trims only final-block padding.
+Float64 is converted to engine float32 and rejected if that conversion is nonfinite.
+All file-byte and decoded-frame ceilings remain in force before PCM allocation. Conversion uses a centered Hann-windowed
 sinc filter and runs only on a control worker; it does not alter the audio
 callback. Identity conversion shares the original immutable PCM allocation.
 
@@ -29,7 +36,10 @@ exact source `PathBuf`; it does not normalize case or rewrite the path.
 `WavFrameReader` is a separate control-side API for bounded random-access reads
 from classic RIFF/WAVE files. Its `WavReaderLimits` independently cap file bytes,
 source frames, scanned chunk headers and decoded-window frames. Opening scans and
-validates RIFF chunk topology without reading audio payloads; `read_frames_into`
+validates RIFF chunk topology without reading audio payloads. Both seekable
+readers support the fixed-frame formats above, including extensible headers,
+PCM8, float64 and G.711. Block-compressed ADPCM is supported by resident import
+only and is explicitly refused at reader open; `read_frames_into`
 uses fixed-size scratch storage and clears the complete caller buffer if a read
 fails. `read_frames` is a fallibly allocated convenience for one bounded window.
 The reader owns the opened file descriptor and keeps the caller's path spelling.
@@ -115,11 +125,3 @@ extrema hierarchy. `peaks_for_frames` performs bounded allocation-free cache
 queries; sample ranges of at most 64 frames inspect shared immutable PCM for
 exact deep-zoom detail. `cached_bin_count` includes hierarchy bins for resident
 accounting. Source data is not copied into a second PCM allocation.
-
-Read-only streaming capacity queries expose `VerifiedWavReader::path_capacity_bytes`
-for its separately owned path and `ResampleKernel::shared_object_bytes` for the
-one shared kernel object's data size. Existing manifest/table APIs report their
-allocated payload capacities. The fixed reader scratch is inline in the reader;
-count it once with the owning object, and count a shared kernel/table once across
-handles. These queries allocate, clone and mutate nothing; they exclude opaque
-allocator/Arc headers and provide reporting, not new import/admission policy.

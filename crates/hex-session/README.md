@@ -14,8 +14,6 @@ paste compiles before history commit. Successful project opening clears it.
 
 ## Dependencies
 
-`hex-live-set` prepares bounded Arrangement import candidates on the worker;
-no current project is replaced before canonical/media compilation succeeds.
 
 `hex-project` owns canonical project state and history. `hex-media` decodes WAV
 files into validated audio, converts source rates and supplies cached peak summaries. `hex-engine`
@@ -199,3 +197,25 @@ Recovery opens dirty without an overwrite association; ordinary relinked Open
 retains its original exact-byte document token. Untitled recovery retains only
 the latest project, with no history. Contracts, source tests and native gaps:
 [project recovery](../../docs/project-recovery.md).
+
+
+## Gain take coordination
+
+Arming prepares a transient raw-fader revision without changing canonical history
+or its cached compiled project. Delivered audio receipts normalize into bounded
+half-open spans using exact content/performance positions and loop passes. A
+revision-stamped splice batch rechecks generation, revision and lane epoch, then
+commits the complete take as one Undo/Redo edit. Failed/stale/cancelled takes leave
+the original lane intact. Audio owns application and receipt delivery; the UI
+owns only drafts and gestures. See [gain recording](../../docs/gain-touch-spans.md).
+
+## Operator listening fixture
+
+`cargo run -p hex-session --example operator_enable_fixture -- <mode> <new.hex>`
+writes a disposable media-free native project for the held-note enable retest.
+Modes are `analytic`, `serial`, `feedback`, `free` and `sync`; it uses registered
+canonical device state, prepares the project before create-new publication, and
+introduces no live-input or production playback API. See
+[the finite native checklist](../../docs/operator-enable-retest.md). Fixture tests
+run explicitly with `cargo test -p hex-session --example operator_enable_fixture`;
+they do not establish native listening acceptance.

@@ -29,9 +29,11 @@ All prepared members feed one private candidate, one graph preparation and one
 history commit. No partial media/project event is published. Failure preserves
 project, IDs, history, dirty state, resident accounting and current playback.
 Successful Undo/Redo covers the whole batch without reopening source files.
-The existing shared playback-source finalization preserves stable typing owners,
-prepared revision/preview identity and ordinary project-replacement semantics.
-Additive audio import does not retarget or reset musical typing.
+The existing shared playback-source finalization preserves target track/device
+identities, prepared revision/preview identity and ordinary project-replacement
+semantics. As with other graph replacements, publishing the imported graph
+cancels the old computer keyboard audition lease. Release and press a key again
+to rearm; additive import does not create a new keyboard target.
 
 The status bar displays bounded phase/member progress and a `cancel import`
 control; Escape also cancels a pending import. Cancellation uses a metadata-only
@@ -53,6 +55,6 @@ rendered tests invoke the real drop adapter at painted window geometry.
 Native acceptance remains pending on an exact optimized macOS candidate: verify
 one/multiple supported files on a lane/gap/empty/trailing area, payload order and
 snapping/modifiers, mixed-rate duration/source paths, unsupported middle/end and
-missing-file refusal, progress/cancel/too-late behavior, prior clips/typing owner,
+missing-file refusal, progress/cancel/too-late behavior, prior clips/keyboard lease cancellation,
 whole Undo/Redo, source-byte preservation and save/reopen. No native acceptance,
 whole-ticket review readiness, merge or release is claimed by Linux checks.

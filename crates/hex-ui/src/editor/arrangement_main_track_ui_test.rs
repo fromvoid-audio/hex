@@ -41,6 +41,7 @@ fn completed_event(state: &ViewState) -> Event {
         state: Arc::new(ViewState {
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
@@ -54,10 +55,12 @@ fn completed_event(state: &ViewState) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        computer_keyboard_complete: None,
         audio_batch_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,
@@ -156,6 +159,7 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
             view.state = Some(Arc::new(ViewState {
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::default(),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 384_000,

@@ -3,6 +3,10 @@
 Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
 Repository documents retain contracts, acceptance evidence and request order.
 
+Pulse #22 retains [native interaction acceptance](native-interaction.md): finite
+prior approvals, remaining staged user checks and exact artifact limits.
+The 16 October consolidation adds no native results or runtime behavior.
+
 ## active work unit — lattice native devices, 9 October 2026
 
 The user reprioritized the native DSP system, device panel and first devices
@@ -3821,6 +3825,18 @@ keeps its inheritance refusal. Required final-source local CI and native/manual
 acceptance remain separate gates; this implementation does not finish export30.
 Pulse cannot link the prerequisite while30's workflow is active; no bypass.
 
+### export — pulse30 / pr152
+
+The finite [export contract](export.md) consumes canonical capture from verified
+PR159 source 3f1ef2279696de0acb7dec2941dfdbe5fe53c6e2. It adds progress/cancel,
+half-open frame ranges with bounded stateful preroll, explicit Main/track/Return
+scopes, separately named stems, and safe staged publication with concrete overwrite
+consent. On11October user acceptance revised normal replacement to destructive
+overwrite with native-dialog confirmation only, no routine backup, and a user-folder
+picker default. Exceptional external races remain explicit errors preserving
+unexpected displaced data. Capture dependencies remain separate PRs.
+Listening, native macOS behavior and sustained physical throughput require their
+own acceptance evidence; Linux source checks do not establish them.
 
 ## Pulse25 — finite project recovery contract, 11 October2026
 
@@ -3842,7 +3858,35 @@ native checks remain separate gates. No merge is authorized by this task.
 ## stable optimized test delivery — Pulse #2408
 
 The existing native bundler now delegates to the guarded optimized delivery
-workflow in [test-builds.md](test-builds.md), PR #167. The configured post-merge
-action supplies one stable app plus exact-source CI/included revisions/checklist
-and retains prior-bundle rollback. Source/packaging evidence and native owner
-approval remain separate gates on Pulse #2408.
+workflow in [test-builds.md](test-builds.md), PR #167. The repository-owned
+installer supplies one stable app plus exact-source CI/included PR revisions/checklist. As of #2627 it retains no new rollback app
+copy; historical bundles remain untouched. Pulse manages tickets only. Native
+acceptance remains separate from source/packaging evidence.
+
+## routing, recording and compensation implementation — pulse28 / pr184
+
+The finite implementation admits typed additive stereo Track/Return inputs and
+root-resolved authored MIDI source buses, existing sends/Return feeds, native
+route editing, canonical gain-point editing and delivered native touch recording.
+One revision-stamped splice commits all loop passes as a single history edit;
+failed/cancelled/stale takes preserve the original lane. Schema24 keeps complete
+routing, automation, host trims, provenance and opaque native state.
+
+Runtime plans use actual known processor/instrument latency, checked cumulative
+arrivals, bounded twin delay/transport histories, exact origin clocks, aligned
+capture, whole-render rollback and compensated linear export extent. Safe zero-delay
+edits remain live; incompatible nonzero history/topology/timing and MIDI source
+layout changes require Stop before audible adoption. Compensation aligns paths
+without removing physical latency. Sidechains, plugin hosting, hardware MIDI and
+general device-parameter envelopes are separate capabilities.
+
+Targeted source/PCM/lifecycle/history/storage/allocation/native-widget regressions
+and strict Clippy are implemented. The final exact-source local-CI report and
+supported optimized stable delivery are PR/Pulse evidence; optional user interaction,
+listening, physical deadlines and Windows native validation remain separate.
+
+The final diff excludes the historical draft Live-set adapter and separate
+streaming wrappers. Their own canonical PR150/177 retain implementation history.
+Only neutral provenance preservation/migration and the engine's borrowed
+pages/observer seam needed for routing tests remain. Native streaming stays
+disabled and existing resident limits stay enforced.

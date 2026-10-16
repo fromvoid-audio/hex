@@ -4,6 +4,7 @@ use crate::{
     compile::PreparedAudioSource,
 };
 use hex_devices::SineTable;
+pub(crate) mod assembly;
 use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
@@ -21,7 +22,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
-            state: device.state().clone(),
+            state: device.state().clone().without_host_gains(),
             bypassed: device.bypassed(),
         }
     }
@@ -74,10 +75,11 @@ impl PreparedMutableTrackRevision {
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
-    arrangement: Arc<PlaybackProject>,
-    session: Arc<PreparedSessionInventory>,
-    midi_preview: Arc<MidiArrangementPreview>,
+    arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
+    session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
+    midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
+    gain_recording_track: Option<TrackId>,
 }
 
 impl std::fmt::Debug for PreparedRevision {
@@ -107,6 +109,68 @@ impl PreparedRevision {
         )
     }
 
+    /// Arm one transient raw-fader target without editing canonical metadata or history.
+    /// Active processors must declare a known, bounded algorithmic latency.
+    /// Playback reports the actual fader content origin and remaining delay to Main.
+    pub fn prepare_for_gain_recording(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        track: TrackId,
+    ) -> Result<Self, Invalid> {
+        Self::prepare(project, media, sine_table, previous_session)?
+            .arm_gain_recording(project, track)
+    }
+    /// Prepare transient recording with the control worker's existing transform lifecycle.
+    pub fn prepare_for_gain_recording_with_audio_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        track: TrackId,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_with_audio_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            transforms,
+        )?
+        .arm_gain_recording(project, track)
+    }
+
+    /// Test registry seam for callback probes; production arming uses canonical preparation.
+    #[cfg(feature = "instrument-test-support")]
+    pub fn with_test_gain_recording(
+        self,
+        project: &Project,
+        track: TrackId,
+    ) -> Result<Self, Invalid> {
+        self.arm_gain_recording(project, track)
+    }
+
+    pub(crate) fn arm_gain_recording(
+        mut self,
+        project: &Project,
+        track: TrackId,
+    ) -> Result<Self, Invalid> {
+        let canonical = project
+            .track(track)
+            .ok_or(Invalid("gain recording track no longer exists"))?;
+        let prepared = &mut self;
+        prepared
+            .arrangement
+            .arm_gain_recording(track, canonical.gain(), canonical.balance())?;
+        prepared.gain_recording_track = Some(track);
+        Ok(self)
+    }
+
+    pub fn gain_recording_track(&self) -> Option<TrackId> {
+        self.gain_recording_track
+    }
+
     pub(crate) fn prepare_with_instrument_registry(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -114,61 +178,128 @@ impl PreparedRevision {
         previous_session: Option<&PreparedSessionInventory>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     ) -> Result<Self, Invalid> {
-        crate::gain_envelope::validate_project(project)?;
-        crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let effects = hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?;
-        let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
-            project,
-            instruments,
-            previous_session.map(|previous| previous.shared_contexts().as_ref()),
-        )?;
-        if shared_contexts.payload_bytes()
-            > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
-        {
-            return Err(Invalid(
-                "shared instrument context revision budget exceeded",
-            ));
-        }
-        let (arrangement, midi_preview) =
-            crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
-                project,
-                media,
-                Some(Arc::clone(&sine_table)),
-                &effects,
-                instruments,
-                Some(Arc::clone(&shared_contexts)),
-            )?;
-        let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+        Self::prepare_with_registries(
             project,
             media,
             sine_table,
             previous_session,
+            &effects,
             instruments,
-            shared_contexts,
-        )?;
-        crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
-            .map_err(|_| Invalid("active effect and mutable instrument runtime budget exceeded"))?;
-        let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
-        let midi_bank_bytes = arrangement
-            .midi_note_bank_storage_bytes()?
-            .checked_add(session.midi_note_bank_storage_bytes())
-            .ok_or(Invalid("complete revision midi bank byte count overflow"))?;
-        let midi_bank_references = arrangement
-            .midi_note_sampler_reference_count()?
-            .checked_add(session.midi_note_bank_reference_count())
-            .ok_or(Invalid(
-                "complete revision midi bank reference count overflow",
-            ))?;
-        crate::midi_note_bank::PreparedMidiNoteBank::validate_complete_revision_budget(
-            midi_bank_bytes,
-            midi_bank_references,
-        )?;
-        Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
-            mutable_track_revisions,
+        )
+    }
+
+    pub(crate) fn prepare_with_registries(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        Self::prepare_with_registries_and_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            effects,
+            instruments,
+            &transforms,
+        )
+    }
+
+    pub fn prepare_with_audio_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_registries_and_transforms(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            transforms,
+        )
+    }
+
+    fn prepare_with_registries_and_transforms(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+    ) -> Result<Self, Invalid> {
+        transforms.compile_transaction(|| {
+            crate::gain_envelope::validate_project(project)?;
+            crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
+            let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
+                project,
+                instruments,
+                previous_session.map(|previous| previous.shared_contexts().as_ref()),
+            )?;
+            if shared_contexts.payload_bytes()
+                > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
+            {
+                return Err(Invalid(
+                    "shared instrument context revision budget exceeded",
+                ));
+            }
+            let (arrangement, midi_preview) =
+                crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
+                    project,
+                    media,
+                    Some(Arc::clone(&sine_table)),
+                    effects,
+                    instruments,
+                    Some(Arc::clone(&shared_contexts)),
+                    Some(transforms),
+                )?;
+            let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+                project,
+                media,
+                sine_table,
+                previous_session,
+                instruments,
+                shared_contexts,
+            )?;
+            crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
+                .map_err(|_| {
+                    Invalid("active effect and mutable instrument runtime budget exceeded")
+                })?;
+            let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
+            let midi_bank_bytes = arrangement
+                .midi_note_bank_storage_bytes()?
+                .checked_add(session.midi_note_bank_storage_bytes())
+                .ok_or(Invalid("complete revision midi bank byte count overflow"))?;
+            let midi_bank_references = arrangement
+                .midi_note_sampler_reference_count()?
+                .checked_add(session.midi_note_bank_reference_count())
+                .ok_or(Invalid(
+                    "complete revision midi bank reference count overflow",
+                ))?;
+            crate::midi_note_bank::PreparedMidiNoteBank::validate_complete_revision_budget(
+                midi_bank_bytes,
+                midi_bank_references,
+            )?;
+            Ok(Self {
+                arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+                session: crate::owned_shared::OwnedShared::new_owned(session),
+                midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
+                mutable_track_revisions,
+                gain_recording_track: None,
+            })
         })
     }
 
@@ -191,6 +322,20 @@ impl PreparedRevision {
             previous_session,
             instruments,
         )
+    }
+
+    /// Test-only registry injection through the complete production preparation path.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn prepare_with_test_registries(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        table: Arc<SineTable>,
+        previous: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_with_registries(project, media, table, previous, effects, instruments)
     }
 
     /// Prepare Arrangement playback and the Session inventory from one mixed
@@ -226,6 +371,7 @@ impl PreparedRevision {
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
                 Some(Arc::clone(&shared_contexts)),
+                None,
             )?;
         let session =
             PreparedSessionInventory::prepare_with_prepared_audio_sources_and_shared_contexts(
@@ -255,10 +401,11 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
+            arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+            session: crate::owned_shared::OwnedShared::new_owned(session),
+            midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
+            gain_recording_track: None,
         })
     }
 
@@ -276,28 +423,6 @@ impl PreparedRevision {
 
     pub fn contains_streamed_sources(&self) -> bool {
         self.arrangement.contains_streamed_sources() || self.session.contains_streamed_sources()
-    }
-
-    /// Borrow every streamed binding without allocating or cloning an owner.
-    /// Arrangement bindings follow compiled track/clip order, then Session
-    /// bindings follow `audio_clips()` inventory order. Repeated references to
-    /// one source are yielded separately; resident audio and MIDI are omitted.
-    /// Metadata remains immutable and borrowed from this exact revision.
-    pub fn streamed_sources(&self) -> impl Iterator<Item = &crate::StreamedSourceMetadata> + '_ {
-        self.arrangement
-            .tracks
-            .iter()
-            .flat_map(|track| &track.clips)
-            .filter_map(|clip| clip.metadata.as_ref()?.streamed.as_deref())
-            .chain(
-                self.session
-                    .audio_clips()
-                    .iter()
-                    .filter_map(|clip| match clip.source() {
-                        PreparedAudioSource::Streamed(source) => Some(source.as_ref()),
-                        PreparedAudioSource::Resident(_) => None,
-                    }),
-            )
     }
 
     /// Whether the compiled Arrangement owns any enabled mutable instrument.
@@ -320,7 +445,7 @@ impl PreparedRevision {
         self.arrangement
             .tracks()
             .iter()
-            .any(|track| track.has_mutable_instrument() || track.has_stateful_devices())
+            .any(|track| track.has_mutable_instrument() || track.has_device_chain())
             || self.arrangement.return_buses().iter().any(|bus| {
                 bus.device_chain
                     .iter()
@@ -398,10 +523,19 @@ fn prepare_mutable_track_revisions(
             "mutable revision descriptors do not match compiled tracks",
         ));
     }
+    // Keep bounded source/topology evidence for providers that authorize a
+    // future analytic import as well as for existing mutable owners.
+    let needs_descriptor = |track: &crate::Track| {
+        track.has_mutable_instrument()
+            || track
+                .instrument_id
+                .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
+                .is_some_and(|owner| owner.context().import_identity().is_some())
+    };
     let mutable_track_count = arrangement
         .tracks()
         .iter()
-        .filter(|track| track.has_mutable_instrument())
+        .filter(|track| needs_descriptor(track))
         .count();
     let mut revisions = Vec::new();
     revisions
@@ -420,7 +554,7 @@ fn prepare_mutable_track_revisions(
                 "mutable revision descriptor track ordering is inconsistent",
             ));
         }
-        if !compiled.has_mutable_instrument() {
+        if !needs_descriptor(compiled) {
             continue;
         }
         if track.devices().len() > MAX_DEVICES_PER_TRACK {
@@ -432,11 +566,15 @@ fn prepare_mutable_track_revisions(
             .map_err(|_| Invalid("could not reserve mutable effect descriptors"))?;
         effects.extend(track.devices().iter().map(PreparedDeviceIdentity::from));
 
+        let source_id = project.midi_source_track(track.id());
+        let source = project
+            .track(source_id)
+            .ok_or(Invalid("mutable midi source root is missing"))?;
         let mut arrangement_midi_sources = Vec::new();
         arrangement_midi_sources
-            .try_reserve_exact(track.midi_clips().len())
+            .try_reserve_exact(source.midi_clips().len())
             .map_err(|_| Invalid("could not reserve mutable midi source descriptors"))?;
-        arrangement_midi_sources.extend(track.midi_clips().iter().map(|clip| {
+        arrangement_midi_sources.extend(source.midi_clips().iter().map(|clip| {
             PreparedArrangementMidiSource {
                 id: clip.id(),
                 start: clip.start(),

@@ -19,21 +19,20 @@ impl PageBuffer {
     pub(crate) fn new() -> Result<Box<Self>, ()> {
         Self::new_with_capacity().map(|(page, _)| page)
     }
-
     pub(crate) fn new_with_capacity() -> Result<(Box<Self>, usize), ()> {
         let mut frames = Vec::new();
         frames
             .try_reserve_exact(STREAM_PAGE_FRAMES)
             .map_err(|_| ())?;
         frames.resize(STREAM_PAGE_FRAMES, [0.0; 2]);
-        let capacity = frames.capacity();
+        let old_capacity = frames.capacity();
         Ok((
             Box::new(Self {
                 key: None,
                 frames: frames.into_boxed_slice(),
                 valid_frames: 0,
             }),
-            capacity,
+            old_capacity,
         ))
     }
 }
@@ -90,20 +89,32 @@ pub struct EndpointStats {
 }
 
 impl Endpoint {
-    pub(crate) fn allocation_footprint(&self) -> crate::EndpointAllocationFootprint {
-        crate::EndpointAllocationFootprint {
-            cache: crate::AllocationCapacity::of::<CacheSlot>(self.cache.capacity()),
-            pending: crate::AllocationCapacity::of::<PendingSlot>(self.pending.capacity()),
-            source_keys: crate::AllocationCapacity::of::<StreamSourceKey>(
-                self.source_keys.capacity(),
-            ),
-            held_returns: crate::AllocationCapacity::of::<Box<PageBuffer>>(
-                self.held_returns.capacity(),
-            ),
-            max_cached_pages: self.max_cached_pages,
+    /// Control-only after worker join. Reserve for the entire actual pool before
+    /// entering cleanup. Never destroy a page while collecting/conserving it.
+    pub(crate) fn collect_disposal_pages(
+        &mut self,
+        output: &mut Vec<Box<PageBuffer>>,
+    ) -> Option<(usize, usize)> {
+        let mut ready = 0;
+        while !self.ready_rx.is_empty() {
+            if output.len() == output.capacity() {
+                return None;
+            }
+            let page = self.ready_rx.pop().ok()?;
+            output.push(page);
+            ready += 1;
         }
+        let mut held = 0;
+        while !self.held_returns.is_empty() {
+            if output.len() == output.capacity() {
+                return None;
+            }
+            let page = self.held_returns.pop()?;
+            output.push(page);
+            held += 1;
+        }
+        Some((ready, held))
     }
-
     pub(crate) fn new(
         cache_pages: usize,
         request_capacity: usize,
@@ -516,6 +527,40 @@ fn page_slot(key: PageKey, mask: usize) -> usize {
     let mut hasher = FastHasher(0xcbf2_9ce4_8422_2325);
     key.hash(&mut hasher);
     hasher.finish() as usize & mask
+}
+
+impl Endpoint {
+    pub(crate) fn data_footprint(&self) -> crate::EndpointData {
+        let Self {
+            cache,
+            max_cached_pages: _,
+            cache_count: _,
+            eviction_cursor: _,
+            pending,
+            pending_mask: _,
+            source_keys,
+            request_tx: _,
+            ready_rx: _,
+            return_tx: _,
+            failure_rx: _,
+            held_returns,
+            misses: _,
+            queued_requests: _,
+            coalesced_requests: _,
+            rejected_requests: _,
+            stale_pages: _,
+            #[cfg(test)]
+                cache_probe_count: _,
+            #[cfg(test)]
+                pending_probe_count: _,
+        } = self;
+        crate::EndpointData {
+            cache: crate::AllocationData::of::<CacheSlot>(cache.capacity()),
+            pending: crate::AllocationData::of::<PendingSlot>(pending.capacity()),
+            source_keys: crate::AllocationData::of::<StreamSourceKey>(source_keys.capacity()),
+            held_returns: crate::AllocationData::of::<Box<PageBuffer>>(held_returns.capacity()),
+        }
+    }
 }
 
 #[cfg(test)]

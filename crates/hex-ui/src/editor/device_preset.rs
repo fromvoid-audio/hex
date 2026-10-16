@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub(super) fn actions(
     device: DeviceId,
     class: NativeDeviceClass,
+    selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
     let mut actions = div().flex().items_center().gap(px(2.0));
@@ -20,7 +21,7 @@ pub(super) fn actions(
         (false, "↑", "load device preset (.hex-device-preset.json)"),
     ] {
         actions = actions.child(
-            super::device_panel::action_button_sized(
+            super::device_panel::action_button(
                 format!(
                     "device-preset-{}-{}",
                     if save { "save" } else { "load" },
@@ -28,8 +29,8 @@ pub(super) fn actions(
                 ),
                 icon,
                 label,
-                theme::color(theme::PaletteRole::SecondaryText),
-                12.0,
+                theme::DeviceActionRole::Normal,
+                selected,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 view.device_preset_dialog(device, class, save, cx);
@@ -115,8 +116,8 @@ impl EditorView {
                     view.preset_dialog_open = false;
                     match picked {
                         Ok(Ok(Some(path))) => view.choose_device_preset(owner, path, true, cx),
-                        Ok(Err(error)) => {
-                            view.error = Some(format!("device preset dialog failed: {error}"))
+                        Ok(Err(_)) => {
+                            view.error = Some("device preset dialog failed · try again".into())
                         }
                         _ => {}
                     }
@@ -143,8 +144,8 @@ impl EditorView {
                                 view.choose_device_preset(owner, path, false, cx);
                             }
                         }
-                        Ok(Err(error)) => {
-                            view.error = Some(format!("device preset dialog failed: {error}"))
+                        Ok(Err(_)) => {
+                            view.error = Some("device preset dialog failed · try again".into())
                         }
                         _ => {}
                     }

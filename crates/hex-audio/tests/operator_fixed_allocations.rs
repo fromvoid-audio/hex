@@ -131,7 +131,7 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
 fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     for sync in [false, true] {
-        operator_modulation_allocations(Some(sync), true)?;
+        operator_modulation_allocations(Some(sync), false, false, true)?;
     }
     Ok(())
 }
@@ -139,18 +139,43 @@ fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 #[test]
 fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, true)
+    operator_modulation_allocations(None, false, false, true)
+}
+
+#[test]
+fn registered_operator_filter_render_retarget_and_shutdown_allocate_nothing_on_callback()
+-> Result<(), Box<dyn Error>> {
+    for sync in [None, Some(false), Some(true)] {
+        operator_modulation_allocations(sync, true, false, true)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn operator_filter_first_activation_import_allocates_and_deallocates_nothing()
+-> Result<(), Box<dyn Error>> {
+    for (sync, feedback) in [
+        (None, false),
+        (None, true),
+        (Some(false), true),
+        (Some(true), true),
+    ] {
+        operator_modulation_allocations(sync, true, true, feedback)?;
+    }
+    Ok(())
 }
 
 #[test]
 fn registered_operator_analytic_enable_reversals_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, false)
+    operator_modulation_allocations(None, false, false, false)
 }
 
 fn operator_modulation_allocations(
     lfo_sync: Option<bool>,
-    feedback_active: bool,
+    filter: bool,
+    activate_later: bool,
+    feedback: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
@@ -178,10 +203,7 @@ fn operator_modulation_allocations(
         (36, ParameterValue::Float(0.0)),
         (37, ParameterValue::Float(0.001)),
         (38, ParameterValue::Float(0.005)),
-        (
-            78,
-            ParameterValue::Float(if feedback_active { 0.4 } else { 0.0 }),
-        ),
+        (78, ParameterValue::Float(if feedback { 0.4 } else { 0.0 })),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,
@@ -189,6 +211,22 @@ fn operator_modulation_allocations(
             ParameterId::from_static(id),
             value,
         )?;
+    }
+    if filter && !activate_later {
+        for (id, value) in [
+            (20_001, ParameterValue::Bool(true)),
+            (20_002, ParameterValue::Choice(4)),
+            (20_005, ParameterValue::Float(800.0)),
+            (20_006, ParameterValue::Float(75.0)),
+            (20_007, ParameterValue::Float(35.0)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )?;
+        }
     }
     if let Some(sync) = lfo_sync {
         for (id, value) in [
@@ -251,6 +289,7 @@ fn operator_modulation_allocations(
             6 | 47 => Some((513, ParameterValue::Bool(true))),
             10 | 48 if lfo_sync.is_some() => Some((89, ParameterValue::Bool(false))),
             11 | 49 if lfo_sync.is_some() => Some((89, ParameterValue::Bool(true))),
+            2..=4 if filter => Some((20005, ParameterValue::Float(200.0 * block as f32))),
             2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
             _ => None,
         };
@@ -267,6 +306,16 @@ fn operator_modulation_allocations(
                 ParameterId::from_static(parameter),
                 value,
             )?;
+            let state = if filter && activate_later && block == 2 {
+                hex_engine::patch_native_device_parameter_for_class(
+                    class,
+                    &state,
+                    ParameterId::from_static(20_001),
+                    ParameterValue::Bool(true),
+                )?
+            } else {
+                state
+            };
             editor.execute(Command::ReplaceDeviceState { device, state })?;
             let next = Arc::new(PreparedRevision::prepare(
                 editor.project(),

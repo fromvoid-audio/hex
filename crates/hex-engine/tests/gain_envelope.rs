@@ -557,3 +557,6 @@ fn readonly_preview_matches_compiled_pcm_law_at_tempo_cuts_and_coincident_frames
         2
     );
 }
+
+#[path = "gain_envelope/touch.rs"]
+mod touch;
