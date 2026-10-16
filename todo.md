@@ -8,6 +8,40 @@ No live input/recording implementation or listening acceptance is claimed.
 Exact candidate checks, optimized delivery and user results are recorded with the
 PR and Pulse issue; held/releasing-note correctness remains open until tested.
 
+## utility completion candidate — #18 / PR250, 16 october 2026
+
+The remaining focused correctness fix suppresses warmed DC/bass-filter residuals
+after Utility mute while histories continue advancing through the zeroed input.
+Canonical playback regression also reproduced an audible old tail surviving a
+mute handoff. Stateful mute now zeroes processor input/output with a stable matrix
+and strictly mute-only history retargeting. Track/Return DC, bass-side and audition
+silence/unmute continuity and actual Return callback allocation coverage protect
+the repair; broader filter-setting transitions retain existing policy.
+Service coverage edits all fourteen controls, checks per-edit undo/redo, and
+saves/reopens their canonical state and stable identity. Existing merged DSP,
+panel, shared layout and theme implementations are preserved.
+See [the native checklist and reference unknowns](docs/utility-acceptance.md).
+Exact candidate local CI, optimized delivery and native results are recorded in
+PR250/Pulse18; no native acceptance or measured Live filter parity is claimed.
+
+## 16 October 2026 — native parameter metadata admission (#16 / PR249)
+
+- Recovered canonical issue linkage through supported Start Task; prior staged
+  runtime/device history remains preserved.
+- Shared descriptor validation rejects Unicode uppercase/control text, empty or
+  oversized units/choice labels, and selectors exceeding 256 alternatives. The
+  existing 128-byte label limit now covers each display field; lowercase Unicode
+  at the exact UTF-8 byte limit remains valid. Effect and instrument registries
+  already invoke this boundary; no state/schema or processing change is needed.
+- Regression reproduced the prior acceptance of an empty unit before the repair.
+  Contract/lattice/device checks pass (252 tests; two opt-in timing probes
+  ignored). Exact-source full local CI follows on the committed candidate.
+- Reconciled stale lattice documentation with the integrated mutable runtime,
+  ordered instrument and shared render/retirement source coverage.
+- Parent #16 remains open for its separately recorded acceptance. This focused
+  metadata stage supplies no new native listening, physical deadline, broad
+  scalability or device-parity evidence.
+
 ## device lane drops integration — #2333 / PR183, 16 october 2026
 
 The existing canonical device-drop implementation now integrates current main.
