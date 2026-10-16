@@ -21,7 +21,10 @@ impl AudioPolicy {
                     64 * 1024 * 1024,
                     8_000_000,
                     32,
-                    hex_engine::STREAM_PAGE_FRAMES,
+                    // Output pages are not source windows: downsampling also
+                    // needs the resampler halo. The worker already reserves
+                    // and accounts this bounded source scratch before decode.
+                    stream.source_scratch_frames,
                 ),
                 stream.max_manifest_bytes,
             ),

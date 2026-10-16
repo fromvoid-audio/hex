@@ -12,6 +12,16 @@
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
 
+## native downsample reader window — pulse2655 / PR271, 17 october 2026
+
+- Native verified reader limits now use the already reserved source-scratch
+  allowance instead of confusing 4096 output frames with source frames. Existing
+  worker window validation and file/source/page/runtime limits stay unchanged.
+- A small actual Session→native adapter 48 kHz→44.1 kHz control reproduces the old
+  catalog-capacity refusal in 0.37 s, then checks actual applied PCM and zero
+  total/net callback allocations after repair. Full 100-track/native listening
+  acceptance remains separately tracked by PR240/241; no physical claim here.
+
 ## connected verified document audio — pulse2544 / PR239, 17 october 2026
 
 - Desktop composes the actual Session worker/source snapshot with persistent

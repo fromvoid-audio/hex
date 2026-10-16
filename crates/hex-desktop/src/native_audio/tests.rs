@@ -12,10 +12,13 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+// The actual native constructor retains the process-wide output lease.
+static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     change_source_after_capture: Option<PathBuf>,
+    preparation_diagnostic: String,
 }
 // A read-only test observer around the actual sink, not an alternate source,
 // graph, publication or ownership path.
@@ -70,6 +73,39 @@ impl WorkerAudioSink for ObservedSink {
             self.observation.lock().unwrap().latest =
                 Some((context, domain, usage.occupied_domains));
         }
+        let preparation = self.inner.preparation.as_ref().map(|p| {
+            (
+                p.token,
+                p.snapshot.context(),
+                p.bound,
+                p.built,
+                p.cancelling,
+                p.domain,
+            )
+        });
+        let domains = self
+            .inner
+            .domains
+            .each_ref()
+            .map(|d| d.as_ref().map(|d| (d.token, d.ready, d.retiring)));
+        let root = self
+            .inner
+            .output
+            .as_mut()
+            .and_then(|o| o.publication.control())
+            .map(|c| {
+                (
+                    c.audio_candidate_claims_available(),
+                    c.audio_candidate_domain_usage().map(|u| u.occupied_domains),
+                )
+            });
+        self.observation.lock().unwrap().preparation_diagnostic = format!(
+            "desired={:?} last={:?} blocked={:?} state={:?} preparation={preparation:?} domains={domains:?} root={root:?}",
+            self.inner.desired.as_ref().map(|s| s.context()),
+            self.inner.last_context,
+            self.inner.blocked,
+            self.inner.last_state
+        );
     }
     fn close(&mut self) {
         self.inner.close();
@@ -124,9 +160,15 @@ struct Harness {
 }
 impl Harness {
     fn new() -> Self {
-        Self::with_wait(Duration::from_secs(10))
+        Self::with_rate(48000)
+    }
+    fn with_rate(default_rate: u32) -> Self {
+        Self::with_settings(default_rate, Duration::from_secs(10))
     }
     fn with_wait(wait: Duration) -> Self {
+        Self::with_settings(48000, wait)
+    }
+    fn with_settings(default_rate: u32, wait: Duration) -> Self {
         let backend = Arc::new(Mutex::new(None));
         let factory_backend = Arc::clone(&backend);
         // One queue row deliberately permits publication-event saturation.
@@ -137,7 +179,7 @@ impl Harness {
             if slot.is_some() {
                 return Ok(None);
             }
-            match hex_audio::worker_fixture::open(rate.unwrap_or(48000)) {
+            match hex_audio::worker_fixture::open(rate.unwrap_or(default_rate)) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
                     Ok(Some(output))
@@ -364,6 +406,7 @@ fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
 
 #[test]
 fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_lost_submitted() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
     let files = Files::new();
     let path = files.wav(24000, 240000);
     let mut h = Harness::new();
@@ -602,11 +645,122 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
     }
 }
 
+#[test]
+fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let source = files.wav(48000, 9600);
+    let mut h = Harness::with_rate(44100);
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let event = h.run(Request::Import(source.clone()));
+    assert!(event.playback.is_none());
+    assert_eq!(event.state.project.sample_rate(), 44100);
+    let context = h.context.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.render();
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+            .is_some_and(|a| a.context == context)
+        {
+            break;
+        }
+        // Fail at the actual preparation refusal, rather than waiting out an
+        // unrelated large-workload hash/control deadline.
+        for event in h.events.try_iter() {
+            if let EditorAudioEvent::Publication {
+                state: EditorPublicationState::Refused(error) | EditorPublicationState::Fault(error),
+                ..
+            } = event
+            {
+                panic!("downsample refused: {error}");
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "downsample install did not complete"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    loop {
+        let output = h.render();
+        if output
+            .iter()
+            .all(|frame| frame.iter().all(|sample| (*sample - 0.25).abs() < 0.0001))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "actual downsample worker PCM missing"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.render_fault.load(Acquire));
+    assert!(status.position.load(Acquire) >= 64);
+    // An explicitly insufficient reader allowance must still fail at the worker
+    // guard; composing the normal caller policy does not bypass that limit.
+    let mut insufficient = AudioPolicy::source_reservation();
+    insufficient.reader.reader.max_window_frames = hex_engine::STREAM_PAGE_FRAMES;
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(insufficient),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    h.run(Request::Import(source));
+    let refused_context = h.context.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut observations = Vec::new();
+    loop {
+        h.render();
+        let refused = h.events.try_iter().inspect(|event| {
+            if let EditorAudioEvent::Publication { context, state, .. } = event { observations.push(format!("{context:?}: {state:?}")); }
+        }).any(|event| matches!(event,
+            EditorAudioEvent::Publication { context, state: EditorPublicationState::Refused(ref error), .. }
+            if context == refused_context && error.contains("CatalogFailed(CapacityExhausted)")));
+        if refused {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "undersized reader window was not refused: {observations:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(
+        !status
+            .applied_audio_source()
+            .is_some_and(|a| a.context == refused_context)
+    );
+    assert!(!status.render_fault.load(Acquire));
+}
+
 /// Explicit ~1 GB generated workload smoke. Not part of ordinary CI and not a
 /// physical-device, sustained real-time or listening result.
 #[test]
 #[ignore = "requires create-new generated workload and HEX_STREAMING_WORKLOAD_PROJECT"]
 fn generated_100_track_project_uses_actual_verified_service_and_callback() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
     let path = PathBuf::from(
         std::env::var_os("HEX_STREAMING_WORKLOAD_PROJECT").expect("fixture project path"),
     );
@@ -633,7 +787,42 @@ fn generated_100_track_project_uses_actual_verified_service_and_callback() {
     );
     let rate = event.state.project.sample_rate();
     h.open();
-    let actual = h.applied(h.context.unwrap());
+    eprintln!(
+        "canonical100-source load complete after {:?}; verifying native domain",
+        started.elapsed()
+    );
+    let context = h.context.unwrap();
+    let deadline = Instant::now() + h.wait;
+    let actual = loop {
+        h.render();
+        if let Some(actual) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+            && actual.context == context
+        {
+            break actual;
+        }
+        for event in h.events.try_iter() {
+            if let EditorAudioEvent::Publication {
+                context: observed,
+                state: EditorPublicationState::Refused(error) | EditorPublicationState::Fault(error),
+                ..
+            } = event
+                && observed == context
+            {
+                panic!("full workload preparation refused: {error}");
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "full workload actual install missing"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
     h.audio
         .as_mut()
         .unwrap()
@@ -670,4 +859,50 @@ fn generated_100_track_project_uses_actual_verified_service_and_callback() {
         .command(PlaybackCommand::Stop)
         .unwrap();
     h.render();
+}
+
+#[test]
+fn rapid_new_verified_then_import_reports_actual_preparation_progress() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let path = files.wav(48000, 9600);
+    let mut h = Harness::with_rate(44100);
+    h.next();
+    h.open();
+    for attempt in 0..8 {
+        h.run(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        });
+        h.open();
+        // Deliberately no empty graph ACK: actual import supersedes preparation.
+        h.run(Request::Import(path.clone()));
+        let context = h.context.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut observations = Vec::new();
+        loop {
+            h.render();
+            if h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source()
+                .is_some_and(|a| a.context == context)
+            {
+                break;
+            }
+            for event in h.events.try_iter() {
+                if let EditorAudioEvent::Publication { context, state, .. } = event {
+                    observations.push(format!("{context:?}: {state:?}"));
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "rapid attempt={attempt} context={context:?} events={observations:?} sink={}",
+                h.observation.lock().unwrap().preparation_diagnostic
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 }

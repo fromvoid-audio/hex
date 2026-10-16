@@ -15,7 +15,12 @@ frame counts use the canonical checked conversion function. No resident frame
 charge is fabricated and the resident duration ceiling is unchanged. Each source
 still obeys 64 MiB / 8,000,000 source-frame ceilings. Caller reservations also
 bound retained source count, actual path capacity, verification manifest capacity,
-header count and read window. Retained history consumes those reservations even
+header count and read window. Native reader windows use the existing stream
+source-scratch frame allowance, not the 4096-frame output page size. Downsampling
+48 kHz to 44.1 kHz requires up to 4530 source frames including the resampler halo.
+The worker still validates this source window against both reader and actual
+scratch bounds before catalog readiness; file/source/page/runtime caps remain
+unchanged. Retained history consumes those reservations even
 when Undo removes all current clips. Verification/readiness failure never adopts
 a partial canonical edit; valid canonical edits do not certify native admission.
 
