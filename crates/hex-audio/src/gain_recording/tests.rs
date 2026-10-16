@@ -214,3 +214,73 @@ fn delivery_clock_overflow_releases_the_in_hand_value_credit_before_abort() {
     ));
     assert!(!callback.receipt_fault);
 }
+
+#[test]
+fn split_admission_rolls_back_enqueue_failure_and_stale_terminal_cannot_release_new_take() {
+    let status = std::sync::Arc::new(crate::prepared::Status::default());
+    // The factory's split marker is set by the split boundary; this fixture
+    // exercises the same measured Status without cloning an endpoint.
+    status.set_split_for_test();
+    let (mut control, mut callback) = channel();
+    control.bind_status(status.clone());
+    for _ in 0..CAPACITY {
+        control
+            .commands
+            .push(Command {
+                target: target(),
+                sequence: 0,
+                kind: Kind::Cancel,
+            })
+            .ok()
+            .unwrap();
+    }
+    assert!(control.begin(target(), 0.5).is_err());
+    assert!(control.target().is_none());
+    assert!(status.publication_reserve_for_test());
+    status.publication_clear_for_test();
+    while callback.commands.pop().is_ok() {}
+    control.begin(target(), 0.5).unwrap();
+    let old = target();
+    callback
+        .receipts
+        .push(Receipt::Aborted {
+            target: old,
+            reason: AbortReason::Cancelled,
+        })
+        .unwrap();
+    assert!(matches!(
+        control.try_receipt(),
+        Some(Receipt::Aborted { .. })
+    ));
+    let mut next = old;
+    next.recording_epoch += 1;
+    // A real previous receipt must drain the outstanding Begin reservation.
+    callback
+        .receipts
+        .push(Receipt::Superseded {
+            target: old,
+            sequence: 1,
+        })
+        .unwrap();
+    control.try_receipt().unwrap();
+    control.begin(next, 0.5).unwrap();
+    callback
+        .receipts
+        .push(Receipt::Aborted {
+            target: old,
+            reason: AbortReason::Cancelled,
+        })
+        .unwrap();
+    control.try_receipt().unwrap();
+    assert_eq!(control.target(), Some(next));
+    assert!(!status.publication_reserve_for_test());
+    callback
+        .receipts
+        .push(Receipt::Aborted {
+            target: next,
+            reason: AbortReason::Cancelled,
+        })
+        .unwrap();
+    control.try_receipt().unwrap();
+    assert!(status.publication_reserve_for_test());
+}

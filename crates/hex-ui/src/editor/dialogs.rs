@@ -17,7 +17,11 @@ impl ImportPromptTarget {
 }
 
 impl EditorView {
-    pub(super) fn open_dialog(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_dialog(
+        &mut self,
+        mode: hex_session::DocumentAudioMode,
+        cx: &mut Context<Self>,
+    ) {
         if !super::device_panel::finalize_controls(self, cx) {
             return;
         }
@@ -25,7 +29,7 @@ impl EditorView {
             return;
         }
         if let Some(path) = self.pending_open_path.take() {
-            self.begin_open(path);
+            self.begin_open(path, mode);
             cx.notify();
             return;
         }
@@ -33,7 +37,12 @@ impl EditorView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("open project".into()),
+            prompt: Some(match mode {
+                hex_session::DocumentAudioMode::Resident => "open project".into(),
+                hex_session::DocumentAudioMode::VerifiedStreaming => {
+                    "open project as verified streaming".into()
+                }
+            }),
         });
         cx.spawn(async move |this, cx| {
             let picked = response.await;
@@ -42,7 +51,7 @@ impl EditorView {
                     Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
                         if let Some(path) = paths.pop() {
                             if super::device_panel::finalize_controls(view, cx) {
-                                view.choose_project(path);
+                                view.choose_project(path, mode);
                             }
                         }
                     }
@@ -55,7 +64,11 @@ impl EditorView {
         .detach();
     }
 
-    pub(super) fn choose_project(&mut self, path: std::path::PathBuf) {
+    pub(super) fn choose_project(
+        &mut self,
+        path: std::path::PathBuf,
+        mode: hex_session::DocumentAudioMode,
+    ) {
         if path.as_os_str().len() > 4_096 {
             self.error = Some("project path exceeds the 4096-byte limit".into());
             return;
@@ -67,26 +80,86 @@ impl EditorView {
         let project = &state.project;
         let has_content = !project.tracks().is_empty() || project.assets().next().is_some();
         if has_content || state.can_undo || state.can_redo {
-            if self.pending_open_path.as_ref() == Some(&path) {
-                self.begin_open(path);
+            if self.pending_open_path.as_ref() == Some(&path)
+                && self.pending_open_mode == Some(mode)
+            {
+                self.begin_open(path, mode);
                 return;
             }
             self.pending_open_path = Some(path);
+            self.pending_open_mode = Some(mode);
             self.status = "replace project · open again to confirm".into();
             self.error = None;
             return;
         }
-        self.begin_open(path);
+        self.begin_open(path, mode);
     }
 
-    fn begin_open(&mut self, path: std::path::PathBuf) {
-        self.begin_open_request(Request::Open(path));
+    fn begin_open(&mut self, path: std::path::PathBuf, mode: hex_session::DocumentAudioMode) {
+        let request = match mode {
+            hex_session::DocumentAudioMode::Resident => Request::Open(path),
+            hex_session::DocumentAudioMode::VerifiedStreaming => {
+                let Some(reservation) = self.source_reservation else {
+                    self.error = Some("verified streaming is unavailable".into());
+                    return;
+                };
+                Request::OpenWithAudioMode {
+                    source: hex_session::service::ProjectSource::Saved(path),
+                    relinks: std::collections::BTreeMap::new(),
+                    mode,
+                    reservation: Some(reservation),
+                }
+            }
+        };
+        self.begin_open_request(request);
+    }
+
+    pub(super) fn new_project(&mut self, mode: hex_session::DocumentAudioMode) {
+        if self.opening_project {
+            return;
+        }
+        let has_content = self.state.as_ref().is_some_and(|state| {
+            state.unsaved
+                || !state.project.tracks().is_empty()
+                || state.project.assets().next().is_some()
+        });
+        if has_content && self.pending_new_mode != Some(mode) {
+            self.pending_new_mode = Some(mode);
+            self.status = "replace project · choose new project again to confirm".into();
+            self.error = None;
+            return;
+        }
+        self.pending_new_mode = None;
+        let Some(reservation) = self.source_reservation else {
+            if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+                self.error = Some("verified streaming is unavailable".into());
+                return;
+            }
+            self.begin_open_request(Request::NewWithAudioMode {
+                mode,
+                reservation: None,
+            });
+            return;
+        };
+        self.begin_open_request(Request::NewWithAudioMode {
+            mode,
+            reservation: (mode == hex_session::DocumentAudioMode::VerifiedStreaming)
+                .then_some(reservation),
+        });
     }
 
     pub(super) fn begin_open_request(&mut self, request: Request) {
+        let requested_mode = match &request {
+            Request::NewWithAudioMode { mode, .. } | Request::OpenWithAudioMode { mode, .. } => {
+                Some(*mode)
+            }
+            _ => None,
+        };
         self.pending_open_path = None;
+        self.pending_open_mode = None;
         self.cancel_duplicate_chain();
         if self.enqueue(request) {
+            self.requested_audio_mode = requested_mode;
             self.opening_project = true;
             self.pending_audio_commands.clear();
             self.pending_seek_ticket = None;

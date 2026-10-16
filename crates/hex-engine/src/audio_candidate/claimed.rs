@@ -76,32 +76,28 @@ impl AudioCandidateOwner {
     /// existing control-side fatal-OOM convention. The host must preflight and
     /// charge this wrapper plus all simultaneous anchor/runtime storage first.
     pub fn split_constructor_on_control(
-        mut self,
+        self,
     ) -> Result<
         (ClaimedAudioCandidateRuntime, AudioCandidateAnchors),
         Box<AudioCandidateSplitRefusal>,
     > {
+        match self.prepare_constructor_split() {
+            Ok(state) => Ok(self.commit_constructor_split(state)),
+            Err(reason) => Err(Box::new(AudioCandidateSplitRefusal {
+                reason,
+                owner: self,
+            })),
+        }
+    }
+    fn prepare_constructor_split(&self) -> Result<Box<ClaimedState>, AudioStorageError> {
         if self.inner.phase != AudioCandidateDisposalPhase::Owned
             || self.inner.runtime_receipt.is_some()
         {
-            return Err(Box::new(AudioCandidateSplitRefusal {
-                reason: AudioStorageError::SourceMismatch,
-                owner: self,
-            }));
+            return Err(AudioStorageError::SourceMismatch);
         }
-        if let Err(reason) = self.inner.validate_groups() {
-            return Err(Box::new(AudioCandidateSplitRefusal {
-                reason,
-                owner: self,
-            }));
-        }
-        if let Err(reason) = self.inner.validate_fresh_origins() {
-            return Err(Box::new(AudioCandidateSplitRefusal {
-                reason,
-                owner: self,
-            }));
-        }
-        let mut state = Box::new(ClaimedState {
+        self.inner.validate_groups()?;
+        self.inner.validate_fresh_origins()?;
+        let state = Box::new(ClaimedState {
             identity: self.identity(),
             source_context: self.source_context(),
             runtime: None,
@@ -112,16 +108,40 @@ impl AudioCandidateOwner {
             owned_runtime_bytes: self.inner.constructor_data.map(|s| s.owned_runtime_bytes),
         });
         let _actual_wrapper_bytes = state.wrapper_storage_bytes();
+        Ok(state)
+    }
+    fn commit_constructor_split(
+        mut self,
+        mut state: Box<ClaimedState>,
+    ) -> (ClaimedAudioCandidateRuntime, AudioCandidateAnchors) {
         // Only fixed moves after every check/allocation. The actual Runtime Box
         // and the original outer preparation wrapper both keep their addresses.
         state.runtime = self.inner.runtime.take();
         state.groups = std::mem::take(&mut self.inner.groups);
         state.journal = std::mem::take(&mut self.inner.journal);
         self.inner.phase = AudioCandidateDisposalPhase::Leased;
-        Ok((
+        (
             ClaimedAudioCandidateRuntime { inner: state },
             AudioCandidateAnchors { owner: self },
-        ))
+        )
+    }
+}
+impl AudioCandidatePreparation {
+    /// Final transfer to the native host's already-reserved publication receiver.
+    /// Every fallible validation/allocation borrows the rooted owner; an error
+    /// leaves it in this cell. The caller must immediately retain BOTH resulting
+    /// halves before granting any installation authority.
+    pub fn split_for_publication_on_control(
+        &mut self,
+    ) -> Result<(ClaimedAudioCandidateRuntime, AudioCandidateAnchors), AudioStorageError> {
+        let state = self
+            .owner_on_control()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .prepare_constructor_split()?;
+        let owner = self
+            .take_preflighted_owner()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        Ok(owner.commit_constructor_split(state))
     }
 }
 impl AudioCandidateAnchors {

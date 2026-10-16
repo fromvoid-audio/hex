@@ -122,8 +122,7 @@ fn eq8_project() -> (
 #[gpui::test]
 fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut TestAppContext) {
     let window = cx.add_window(|window, cx| {
-        let service =
-            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     let (project, track, device, other_track) = eq8_project();
@@ -233,8 +232,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
 #[gpui::test]
 fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut TestAppContext) {
     let window = cx.add_window(|window, cx| {
-        let service =
-            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     let project = Arc::new(Project::new(48_000).expect("project"));
@@ -265,8 +263,7 @@ fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut Test
 #[gpui::test]
 fn worker_snapshots_and_undo_keep_the_last_user_detail_focus(cx: &mut TestAppContext) {
     let window = cx.add_window(|window, cx| {
-        let service =
-            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     let (project, track, _, clip) = super::super::clip_drag_ui_test::midi_project();
@@ -323,8 +320,7 @@ fn receive_worker_event(view: &mut EditorView) {
 #[gpui::test]
 fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut TestAppContext) {
     let window = cx.add_window(|window, cx| {
-        let service =
-            Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     let mut project = Editor::new(Project::new(48_000).expect("project"), 8).expect("editor");
@@ -423,8 +419,7 @@ fn arrangement_growth_keeps_auto_fit_span_and_explicit_fit_tracks_current_horizo
     cx: &mut TestAppContext,
 ) {
     let window = cx.add_window(|window, cx| {
-        let service =
-            Service::new(48_000, 16, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+        let service = Service::new(48_000, 16, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     window
@@ -532,7 +527,7 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
     cx: &mut TestAppContext,
 ) {
     let window = cx.add_window(|window, cx| {
-        let service = Service::new(48_000, 8, super::super::MAX_RESIDENT_FRAMES).unwrap();
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
         EditorView::new(window, cx, service, Err("offline test".into()))
     });
     window

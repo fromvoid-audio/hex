@@ -107,17 +107,15 @@ for root_view in ('app.rs', 'editor/render.rs'):
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
 # The shared compact title row reserves balanced space for native controls;
-# editor startup and the loaded editor both use that component. The generated
-# demo still owns its separate toolbar and retains the same leading inset.
+# one EditorView renders both pending-backend startup and the loaded editor.
+# The generated demo retains its separate toolbar with the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
 if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
     errors.append('editor/header.rs: center title with balanced native-control insets')
-for top_row in ('editor/bootstrap.rs', 'editor/render.rs'):
+for top_row in ('editor/render.rs',):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
     if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
         errors.append(f'{top_row}: use the shared title row')
-if 'header::loading_toolbar' not in (ROOT / 'crates/hex-ui/src/editor/bootstrap.rs').read_text():
-    errors.append('editor/bootstrap.rs: align startup toolbar with editor toolbar geometry')
 demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')

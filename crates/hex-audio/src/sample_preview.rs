@@ -17,6 +17,24 @@ struct Preview {
     position: usize,
 }
 
+/// A synchronous refusal retains the caller's exact PCM owner.
+pub struct PublishRefusal {
+    pub reason: Invalid,
+    pub audio: Audio,
+}
+impl std::fmt::Debug for PublishRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishRefusal")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for PublishRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.reason.fmt(f)
+    }
+}
+impl std::error::Error for PublishRefusal {}
 pub struct Control {
     incoming: Producer<Preview>,
     retired: Consumer<Preview>,
@@ -25,6 +43,7 @@ pub struct Control {
     rate: u32,
     last_generation: u64,
     closing: bool,
+    status: Option<Arc<crate::prepared::Status>>,
 }
 
 pub(crate) struct Callback {
@@ -47,6 +66,7 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             rate,
             last_generation: 0,
             closing: false,
+            status: None,
         },
         Callback {
             incoming: consumer,
@@ -58,16 +78,30 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
 }
 
 impl Control {
+    pub(crate) fn bind_status(&mut self, status: Arc<crate::prepared::Status>) {
+        self.status = Some(status);
+    }
+    fn permitted(&self) -> bool {
+        !self.closing
+            && self
+                .status
+                .as_ref()
+                .is_none_or(|status| status.preview_permitted())
+    }
+
     /// Silence the previous request, including queued PCM, before decode starts.
     /// The returned token is scoped to this output instance.
     pub fn request(&mut self) -> Result<u64, Invalid> {
-        if self.closing {
+        if !self.permitted() {
             return Err(Invalid("sample preview output is closing"));
         }
         let generation = self
             .last_generation
             .checked_add(1)
             .ok_or(Invalid("sample preview request counter exhausted"))?;
+        if let Some(status) = &self.status {
+            status.mark_preview_used();
+        }
         self.last_generation = generation;
         self.generation.store(generation, Release);
         self.pending = None;
@@ -76,15 +110,27 @@ impl Control {
     }
 
     /// Admit immutable, validated PCM. Stale completions are disposed on control.
-    pub fn publish(&mut self, generation: u64, audio: Audio) -> Result<(), Invalid> {
-        if self.closing {
-            return Err(Invalid("sample preview output is closing"));
+    pub fn publish(&mut self, generation: u64, audio: Audio) -> Result<(), PublishRefusal> {
+        if !self.permitted() {
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview output is closing"),
+                audio,
+            });
+        }
+        if generation == 0 {
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview requires a valid request"),
+                audio,
+            });
         }
         if generation != self.generation.load(Acquire) {
             return Ok(());
         }
         if audio.sample_rate() != self.rate {
-            return Err(Invalid("sample preview rate does not match audio output"));
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview rate does not match audio output"),
+                audio,
+            });
         }
         self.pending = Some(Preview {
             generation,
@@ -123,6 +169,15 @@ impl Control {
 }
 
 impl Callback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        ChannelStorage::ring(self.incoming.buffer())?
+            .plus(ChannelStorage::ring(self.retired.buffer())?)?
+            .plus(ChannelStorage::paired_payload(self.generation.as_ref()))
+    }
+
     pub(crate) fn begin_block(&mut self, closing: bool) {
         let generation = self.generation.load(Acquire);
         let retire_active = self.active.as_ref().is_some_and(|preview| {

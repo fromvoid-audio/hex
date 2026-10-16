@@ -5,7 +5,8 @@ use crate::arrangement_seek::{
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
-use crate::{PreparedImport, Session, SessionError};
+use crate::verified_import::VerifiedImportDestination;
+use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
@@ -13,15 +14,20 @@ use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 #[cfg(test)]
 mod audio_batch_tests;
+mod audio_sink;
 mod canonical_audio_source;
+pub use audio_sink::WorkerAudioSink;
+use audio_sink::WorkerEvents;
 pub mod preset;
 mod recovery;
+#[cfg(test)]
+mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
-use recovery::{absolute_document_path, checkpoint_project, open_source, project_for_save};
+use recovery::{absolute_document_path, checkpoint_project, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -54,7 +60,7 @@ pub struct AudioClipWaveform {
 pub struct ViewState {
     /// Present only for a canonical worker snapshot. Preview views cannot mint
     /// source freshness for streamed constructor publication.
-    pub canonical_audio_source: Option<CanonicalAudioSourceSnapshot>,
+    pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
@@ -229,6 +235,12 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Reopen the worker-owned output for this canonical document generation.
+    /// This does not edit the Project or replay transport/publication state.
+    RestartAudio {
+        project_generation: u64,
+        request_id: u64,
+    },
     /// Ephemeral same-revision audition graph; no project/history mutation.
     PrepareComputerKeyboard {
         project_generation: u64,
@@ -319,6 +331,17 @@ pub enum Request {
         track: hex_project::TrackId,
         scene: hex_project::SceneId,
     },
+    /// Select a fresh document mode before any media preparation.
+    NewWithAudioMode {
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+    },
+    OpenWithAudioMode {
+        source: ProjectSource,
+        relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+    },
     Open(PathBuf),
     /// Recovery/relink opens prepare a complete candidate before adoption.
     OpenWith {
@@ -377,7 +400,13 @@ impl Request {
     }
 
     pub fn is_project_open(&self) -> bool {
-        matches!(self, Self::Open(_) | Self::OpenWith { .. })
+        matches!(
+            self,
+            Self::NewWithAudioMode { .. }
+                | Self::OpenWithAudioMode { .. }
+                | Self::Open(_)
+                | Self::OpenWith { .. }
+        )
     }
 }
 
@@ -518,6 +547,28 @@ impl Service {
         )
     }
 
+    /// Compose the desktop audio adapter without opening a device on the caller.
+    /// The existing worker negotiates the actual rate before creating Session;
+    /// failed output setup retains canonical editing/saving in offline mode.
+    pub fn with_audio_sink(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        audio: Box<dyn WorkerAudioSink>,
+    ) -> Result<Self, ServiceError> {
+        Self::start_with_audio(
+            48_000,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
+                    .map_err(|error| error.to_string().to_lowercase())
+            }),
+            Some(audio),
+        )
+    }
+
     fn with_exporter_and_recovery(
         sample_rate: u32,
         history_capacity: usize,
@@ -525,10 +576,34 @@ impl Service {
         recovery: Option<PathBuf>,
         exporter: Exporter,
     ) -> Result<Self, ServiceError> {
+        Self::start_with_audio(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            exporter,
+            None,
+        )
+    }
+
+    fn start_with_audio(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        exporter: Exporter,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+    ) -> Result<Self, ServiceError> {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let session = Session::new(sample_rate, history_capacity, max_resident_frames)
-            .map_err(ServiceError::Session)?
-            .with_shutdown(Arc::clone(&shutdown));
+        let session = if audio.is_none() {
+            Some(
+                Session::new(sample_rate, history_capacity, max_resident_frames)
+                    .map_err(ServiceError::Session)?
+                    .with_shutdown(Arc::clone(&shutdown)),
+            )
+        } else {
+            None
+        };
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -541,14 +616,33 @@ impl Service {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
             .map_err(ServiceError::Worker)?;
+        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             .spawn(move || {
+                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
+                let session = match session {
+                    Some(session) => session,
+                    None => {
+                        let (rate, error) = match events.initialize() {
+                            Ok(rate) => (rate, None),
+                            Err(error) => (48_000, Some(error)),
+                        };
+                        let Ok(session) = Session::new(rate, history_capacity, max_resident_frames)
+                        else {
+                            return;
+                        };
+                        if let Some(error) = error {
+                            events.startup_failed(error);
+                        }
+                        session.with_shutdown(worker_shutdown)
+                    }
+                };
                 run_worker(
                     session,
                     history_capacity,
                     request_rx,
-                    event_tx,
+                    events,
                     export_work_tx,
                     actor_export_events,
                     recovery,
@@ -689,11 +783,12 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
-        canonical_audio_source: Some(CanonicalAudioSourceSnapshot::capture(
+        canonical_audio_source: Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
             &project,
             project_generation,
             revision,
-        )),
+            session,
+        ))),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
@@ -793,15 +888,11 @@ fn native_playback(prepared: Arc<PreparedRevision>) -> Playback {
     }
 }
 
-fn send_event(sender: &SyncSender<Event>, event: Event) -> bool {
-    sender.send(event).is_ok()
-}
-
 fn run_worker(
     mut session: Session,
     history_capacity: usize,
     requests: Receiver<Request>,
-    events: SyncSender<Event>,
+    mut events: WorkerEvents,
     export_work: SyncSender<ExportWork>,
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
@@ -826,7 +917,7 @@ fn run_worker(
     );
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut device_gesture = GestureMachine::default();
-    let initial = match compile(&session, None) {
+    let mut initial = match compile(&session, None) {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
             state = view_state(
@@ -882,11 +973,15 @@ fn run_worker(
             active_device_gesture: None,
         },
     };
-    if !send_event(&events, initial) {
+    let audio_error = events.take_startup_error();
+    if audio_error.is_some() && initial.error.is_none() {
+        initial.error = audio_error;
+    }
+    if !events.send(initial) {
         return;
     }
 
-    while let Ok(request) = requests.recv() {
+    while let Some(request) = events.next_request(&requests) {
         let mut computer_keyboard_complete = None;
         let mut computer_keyboard_playback = None;
         let mut audio_batch_complete = None;
@@ -913,6 +1008,8 @@ fn run_worker(
             &request,
             Request::Open(_)
                 | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }
+                | Request::NewWithAudioMode { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
@@ -970,6 +1067,19 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                Request::RestartAudio {
+                    project_generation: expected,
+                    request_id,
+                } => {
+                    if expected != project_generation || request_id == 0 {
+                        error = Some("audio restart request is stale".into());
+                    } else {
+                        match events.restart_audio(project_generation, request_id) {
+                            Ok(()) => status = Some("restarting audio".into()),
+                            Err(reason) => error = Some(reason),
+                        }
+                    }
+                }
                 Request::DeviceGesture(gesture) => {
                     gesture_request = true;
                     gesture_protocol_ack = true;
@@ -1284,14 +1394,63 @@ fn run_worker(
                     }
                     Err(reason) => error = Some(reason),
                 },
-                request @ (Request::Open(_) | Request::OpenWith { .. }) => {
+                Request::NewWithAudioMode { mode, reservation } => {
                     open_complete = true;
-                    let (source, relinks) = match request {
-                        Request::Open(path) => (ProjectSource::Saved(path), BTreeMap::new()),
-                        Request::OpenWith { source, relinks } => (source, relinks),
+                    let candidate = Session::new_with_audio_mode(
+                        session.project().sample_rate(),
+                        history_capacity,
+                        session.max_resident_frames(),
+                        mode,
+                        reservation,
+                    )
+                    .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
+                    .map_err(|reason| reason.to_string());
+                    match candidate.and_then(|candidate| {
+                        compile(&candidate, None).map(|prepared| (candidate, prepared))
+                    }) {
+                        Ok((candidate, prepared)) => {
+                            session = candidate;
+                            journal = None;
+                            media_base = None;
+                            document = None;
+                            unsaved = false;
+                            project_replaced = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("new project".into());
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                request @ (Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }) => {
+                    open_complete = true;
+                    let (source, relinks, mode, reservation) = match request {
+                        Request::Open(path) => (
+                            ProjectSource::Saved(path),
+                            BTreeMap::new(),
+                            DocumentAudioMode::Resident,
+                            None,
+                        ),
+                        Request::OpenWith { source, relinks } => {
+                            (source, relinks, DocumentAudioMode::Resident, None)
+                        }
+                        Request::OpenWithAudioMode {
+                            source,
+                            relinks,
+                            mode,
+                            reservation,
+                        } => (source, relinks, mode, reservation),
                         _ => continue,
                     };
-                    match open_source(&session, history_capacity, &source, &relinks) {
+                    match recovery::open_source_with_mode(
+                        &session,
+                        history_capacity,
+                        &source,
+                        &relinks,
+                        mode,
+                        reservation,
+                    ) {
                         Ok((candidate, candidate_base, candidate_document, dirty)) => {
                             match compile(
                                 &candidate,
@@ -1719,20 +1878,24 @@ fn run_worker(
                         .as_ref()
                         .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
                         .unwrap_or(0);
-                    let job = match (compiled.as_ref(), clip_end) {
-                        (_, 0) => Err("nothing to export".to_owned()),
-                        (Some((compiled_revision, prepared)), frames)
-                            if *compiled_revision == revision =>
-                        {
-                            Ok(ExportJob {
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: None,
-                            })
+                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        Err("offline export is unavailable for verified streaming".to_owned())
+                    } else {
+                        match (compiled.as_ref(), clip_end) {
+                            (_, 0) => Err("nothing to export".to_owned()),
+                            (Some((compiled_revision, prepared)), frames)
+                                if *compiled_revision == revision =>
+                            {
+                                Ok(ExportJob {
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: None,
+                                })
+                            }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
                     };
                     match job {
                         Ok(job) => export_job = Some(job),
@@ -1753,28 +1916,34 @@ fn run_worker(
                     control,
                     overwrite,
                 } => {
-                    let job = match compiled.as_ref() {
-                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                            let frames = frames.unwrap_or_else(|| {
-                                prepared
-                                    .arrangement()
-                                    .audible_end_frame()
-                                    .unwrap_or(0)
-                                    .saturating_sub(start)
-                            });
-                            if frames == 0 || start.checked_add(frames).is_none() {
-                                Err("invalid export range".to_owned())
-                            } else {
-                                Ok(ExportJob {
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some((start, signal, control, overwrite)),
-                                })
+                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        Err("offline export is unavailable for verified streaming".to_owned())
+                    } else {
+                        match compiled.as_ref() {
+                            Some((compiled_revision, prepared))
+                                if *compiled_revision == revision =>
+                            {
+                                let frames = frames.unwrap_or_else(|| {
+                                    prepared
+                                        .arrangement()
+                                        .audible_end_frame()
+                                        .unwrap_or(0)
+                                        .saturating_sub(start)
+                                });
+                                if frames == 0 || start.checked_add(frames).is_none() {
+                                    Err("invalid export range".to_owned())
+                                } else {
+                                    Ok(ExportJob {
+                                        revision,
+                                        path: path.clone(),
+                                        prepared: Arc::clone(prepared),
+                                        frames,
+                                        controlled: Some((start, signal, control, overwrite)),
+                                    })
+                                }
                             }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
                     };
                     match job {
                         Ok(job) => {
@@ -1947,7 +2116,9 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback = if computer_keyboard_playback.is_some() {
+        let playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+            None
+        } else if computer_keyboard_playback.is_some() {
             computer_keyboard_playback
         } else if let Some(prepared) = canonical_prepared {
             Some(native_playback(prepared))
@@ -1956,30 +2127,27 @@ fn run_worker(
         } else {
             restore_prepared.map(native_playback)
         };
-        if !send_event(
-            &events,
-            Event {
-                state: Arc::clone(&state),
-                playback,
-                status,
-                error,
-                request_complete: true,
-                computer_keyboard_complete,
-                audio_batch_complete,
-                save_complete,
-                open_complete,
-                project_replaced,
-                stopped_playback_restore_complete,
-                created,
-                duplicate_complete,
-                restore_complete,
-                device_preview,
-                gesture_ack,
-                gesture_protocol_ack,
-                gesture_request,
-                active_device_gesture: device_gesture.snapshot(),
-            },
-        ) {
+        if !events.send(Event {
+            state: Arc::clone(&state),
+            playback,
+            status,
+            error,
+            request_complete: true,
+            computer_keyboard_complete,
+            audio_batch_complete,
+            save_complete,
+            open_complete,
+            project_replaced,
+            stopped_playback_restore_complete,
+            created,
+            duplicate_complete,
+            restore_complete,
+            device_preview,
+            gesture_ack,
+            gesture_protocol_ack,
+            gesture_request,
+            active_device_gesture: device_gesture.snapshot(),
+        }) {
             return;
         }
         if let Some(job) = export_job {
@@ -2070,6 +2238,22 @@ fn import(
     path: PathBuf,
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::NewTrack {
+                    before: None,
+                    start: 0,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());
@@ -2110,6 +2294,23 @@ fn import_to_track(
     previous: Option<&PreparedRevision>,
     overwrite: bool,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::Track {
+                    track,
+                    start,
+                    overwrite,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());
@@ -2153,6 +2354,22 @@ fn import_to_new_track(
     start: u64,
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::NewTrack {
+                    before: before_track,
+                    start,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let project = session.project();
     if project.tracks().len() >= hex_project::MAX_TRACKS {
         return Err("track limit reached".into());
@@ -2202,6 +2419,19 @@ fn import_to_session(
     scene: hex_project::SceneId,
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::Session { track, scene },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());

@@ -31,6 +31,78 @@ struct Source {
     plan: ResamplePlan,
 }
 
+pub(crate) fn preparation_data_bound(
+    config: StreamConfig,
+    definitions: &[SourceDefinition],
+    definition_capacity: usize,
+) -> Option<(usize, usize)> {
+    let count = definitions.len();
+    let paths = definitions
+        .iter()
+        .try_fold(0usize, |n, d| n.checked_add(d.path.capacity()))?;
+    if paths > config.max_catalog_path_bytes {
+        return None;
+    }
+    let mut manifests = 0usize;
+    let mut kernel_count = 0usize;
+    let mut table_reservation = 0usize;
+    for (index, definition) in definitions.iter().enumerate() {
+        let pages = definition
+            .reader_limits
+            .reader
+            .max_file_bytes
+            .checked_add(hex_media::VERIFIED_WAV_PAGE_BYTES as u64 - 1)?
+            / hex_media::VERIFIED_WAV_PAGE_BYTES as u64;
+        let manifest = usize::try_from(pages)
+            .ok()?
+            .checked_mul(32)?
+            .min(definition.reader_limits.max_manifest_bytes);
+        manifests = manifests.checked_add(manifest)?;
+        let pair = (
+            definition.metadata.source_rate(),
+            definition.metadata.project_rate(),
+        );
+        if !definitions[..index]
+            .iter()
+            .any(|d| (d.metadata.source_rate(), d.metadata.project_rate()) == pair)
+        {
+            kernel_count = kernel_count.checked_add(1)?;
+            if pair.0 != pair.1 {
+                table_reservation =
+                    table_reservation.checked_add(ResampleKernel::max_table_payload_bytes())?;
+            }
+        }
+    }
+    if table_reservation > config.max_kernel_table_bytes {
+        return None;
+    }
+    let data = crate::footprint::sum([
+        count.checked_mul(std::mem::size_of::<Source>())?,
+        paths,
+        paths,
+        manifests.min(config.max_manifest_bytes),
+        kernel_count.checked_mul(ResampleKernel::owner_payload_bytes())?,
+        table_reservation,
+        config
+            .source_scratch_frames
+            .checked_mul(std::mem::size_of::<hex_engine::Frame>())?,
+        config
+            .page_buffers
+            .checked_mul(2)?
+            .checked_mul(std::mem::size_of::<Box<PageBuffer>>())?,
+        config
+            .request_capacity
+            .checked_mul(2)?
+            .checked_mul(std::mem::size_of::<StreamFailure>())?,
+        count.checked_mul(std::mem::size_of::<StreamedSourceMetadata>())?,
+        std::mem::size_of::<VerifiedCatalog>(),
+    ])?;
+    let extra = definition_capacity
+        .checked_mul(std::mem::size_of::<SourceDefinition>())?
+        .checked_add(count.checked_mul(std::mem::size_of::<(u32, u32, ResampleKernel)>())?)?;
+    Some((data, data.checked_add(extra)?))
+}
+
 #[cfg(test)]
 // Observe actual worker publication/holding without exposing a production API.
 // The gate also honors Stop, so a failed test cannot strand a paused worker.
@@ -263,6 +335,11 @@ fn build_catalog(
         .try_reserve_exact(definitions.len())
         .map_err(|_| StreamFailureKind::DecodeFailed)?;
     let mut kernels: Vec<(u32, u32, ResampleKernel)> = Vec::new();
+    // Its finite maximum is known before any reader/kernel construction; avoid
+    // repeated old backing overlap while a pending Root owns this constructor.
+    kernels
+        .try_reserve_exact(definitions.len())
+        .map_err(|_| StreamFailureKind::CapacityExhausted)?;
     let mut manifest_bytes = 0_usize;
     let mut kernel_bytes = 0_usize;
     let mut kernel_budget_reserved = 0_usize;

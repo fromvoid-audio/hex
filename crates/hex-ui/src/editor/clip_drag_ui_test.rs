@@ -99,8 +99,7 @@ pub(super) fn editor_window(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 32, super::MAX_RESIDENT_FRAMES)
-                .expect("disposable test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline ui test".into()))
             });

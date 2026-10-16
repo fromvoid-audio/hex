@@ -1,6 +1,12 @@
 //! Constructor-owned runtime custody, independent of cost/admission authority.
 //! Teardown follows original177 claims_teardown's Pending-before-take protocol.
 mod claimed;
+mod draft;
+mod preparation;
+mod reservation;
+pub use draft::AudioCandidateDraft;
+pub use preparation::AudioCandidatePreparation;
+pub use reservation::AudioCandidateReservationQuote;
 mod storage;
 pub use storage::AudioCandidateConstructorSummary;
 pub(crate) mod groups;
@@ -416,104 +422,44 @@ impl CandidateState {
         custody: AudioPreparationCustody,
         token: AudioPreparationToken,
     ) -> Result<Self, Box<AudioCandidateRefusal>> {
-        let result = (|| {
-            let runtime_id = crate::audio_only_inputs::handle()?;
-            let (root, incarnation, revision) = custody.candidate_root(&token)?;
-            let identity = AudioCandidateIdentity {
-                root,
-                incarnation,
-                runtime: runtime_id,
-            };
-            let sample_rate = revision.arrangement().sample_rate();
-            let runtime = Playback::new_audio_candidate(revision)?;
-            let mut count = 0_usize;
-            runtime.visit_candidate_groups(&mut |kind, _, present| {
-                validate_supported_location(kind, present)?;
-                count = count.checked_add(1).ok_or(AudioStorageError::Overflow)?;
-                Ok(())
-            })?;
-            let mut groups = Vec::new();
-            groups
-                .try_reserve_exact(count)
-                .map_err(|_| AudioStorageError::Allocation)?;
-            runtime.validate_candidate_runtime_storage(
-                groups
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<Group>())
-                    .and_then(|n| n.checked_add(std::mem::size_of::<RuntimeOwner>()))
-                    .and_then(|n| n.checked_add(std::mem::size_of::<CandidateState>()))
-                    .ok_or(AudioStorageError::Overflow)?,
-            )?;
-            runtime.visit_candidate_groups(&mut |kind, index, present| {
-                groups.push(Group {
-                    location: (kind, index),
-                    present,
-                    closed: false,
-                    origin: present.then_some(groups::Origin {
-                        runtime: identity,
-                        member: groups.len(),
-                    }),
-                });
-                Ok(())
-            })?;
-            let archive = groups::Archive::prepare(identity, &groups)?;
-            let mut journal = Vec::new();
-            journal
-                .try_reserve_exact(count)
-                .map_err(|_| AudioStorageError::Allocation)?;
-            let extra = archive
-                .metadata_bytes()?
-                .checked_add(
-                    journal
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<groups::TransferRow>())
-                        .ok_or(AudioStorageError::Overflow)?,
-                )
-                .ok_or(AudioStorageError::Overflow)?;
-            runtime.validate_candidate_runtime_storage(
-                extra
-                    .checked_add(
-                        groups
-                            .capacity()
-                            .checked_mul(std::mem::size_of::<Group>())
-                            .ok_or(AudioStorageError::Overflow)?,
-                    )
-                    .and_then(|n| n.checked_add(std::mem::size_of::<RuntimeOwner>()))
-                    .and_then(|n| n.checked_add(std::mem::size_of::<CandidateState>()))
-                    .ok_or(AudioStorageError::Overflow)?,
-            )?;
-            Ok((
-                identity,
-                sample_rate,
-                Box::new(RuntimeOwner {
-                    playback: runtime,
-                    #[cfg(any(test, feature = "instrument-test-support"))]
-                    probe: None,
-                }),
-                groups,
-                journal,
-                archive,
-            ))
-        })();
-        match result {
-            Ok((identity, sample_rate, runtime, groups, journal, archive)) => Ok(Self {
-                identity,
-                custody,
-                token,
-                runtime: Some(runtime),
-                groups,
-                journal,
-                archive,
-                runtime_receipt: None,
-                phase: AudioCandidateDisposalPhase::Owned,
-                first_panic: None,
-                receipt_taken: false,
-                sample_rate,
-                recovered_inputs: None,
-                inputs_drop_pending: false,
-                inputs_disposed: false,
-                constructor_data: None,
-            }),
+        let mut draft = AudioCandidateDraft::new_on_control();
+        // Preserve the existing consuming compatibility contract. The new Root
+        // preparation route instead calls the borrowed, persistent draft API.
+        match draft.build_on_control(&custody, &token, 0, || Ok(())) {
+            Ok(()) => {
+                let Some(archive) = draft.archive.take() else {
+                    return Err(Box::new(AudioCandidateRefusal {
+                        reason: AudioStorageError::SourceMismatch,
+                        custody,
+                        token,
+                    }));
+                };
+                let Some(identity) = draft.identity else {
+                    return Err(Box::new(AudioCandidateRefusal {
+                        reason: AudioStorageError::SourceMismatch,
+                        custody,
+                        token,
+                    }));
+                };
+                Ok(Self {
+                    identity,
+                    custody,
+                    token,
+                    runtime: draft.runtime.take(),
+                    groups: std::mem::take(&mut draft.groups),
+                    journal: std::mem::take(&mut draft.journal),
+                    archive,
+                    runtime_receipt: None,
+                    phase: AudioCandidateDisposalPhase::Owned,
+                    first_panic: None,
+                    receipt_taken: false,
+                    sample_rate: draft.sample_rate,
+                    recovered_inputs: None,
+                    inputs_drop_pending: false,
+                    inputs_disposed: false,
+                    constructor_data: None,
+                })
+            }
             Err(reason) => Err(Box::new(AudioCandidateRefusal {
                 reason,
                 custody,

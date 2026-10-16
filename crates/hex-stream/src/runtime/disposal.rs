@@ -49,13 +49,23 @@ impl PreparedStreamDisposal {
         {
             return Err(StreamDisposalError::PairMismatch);
         }
-        let expected_pages = control.owner.config.page_buffers;
+        Self::reserve_for_pair(
+            Arc::clone(&control.pair_id),
+            control.owner.config.page_buffers,
+        )
+    }
+    /// Factory-only reservation before any source worker starts. The actual
+    /// pair ID is created by that same factory and never escapes independently.
+    pub(super) fn reserve_for_pair(
+        pair: Arc<()>,
+        expected_pages: usize,
+    ) -> Result<Self, StreamDisposalError> {
         let mut endpoint_pages = Vec::new();
         endpoint_pages
             .try_reserve_exact(expected_pages)
             .map_err(|_| StreamDisposalError::Capacity)?;
         Ok(Self {
-            pair: Arc::clone(&control.pair_id),
+            pair,
             control: None,
             pages: None,
             worker: None,
@@ -69,6 +79,27 @@ impl PreparedStreamDisposal {
             held_count: 0,
             report: None,
         })
+    }
+    #[cfg(test)]
+    pub(super) fn test_identity(&self) -> (usize, usize, usize) {
+        (
+            Arc::as_ptr(&self.pair) as usize,
+            self.endpoint_pages.as_ptr() as usize,
+            self.endpoint_pages.capacity(),
+        )
+    }
+    pub(super) fn matches_prepared_pair(
+        &self,
+        control: &StreamControl,
+        pages: &StreamCallbackPages,
+    ) -> bool {
+        self.phase == StreamDisposalPhase::Prepared
+            && self.control.is_none()
+            && self.pages.is_none()
+            && self.expected_pages == control.owner.config.page_buffers
+            && Arc::ptr_eq(&self.pair, &control.pair_id)
+            && Arc::ptr_eq(&self.pair, &pages.pair_id)
+            && self.endpoint_pages.capacity() >= self.expected_pages
     }
     /// On refusal the original pair remains in the caller's persistent slot.
     pub fn begin_on_control(
@@ -225,7 +256,7 @@ impl PreparedStreamDisposal {
 }
 
 #[cfg(test)]
-thread_local! { static WORKER_PANIC: std::cell::RefCell<Option<Box<dyn Any + Send>>> = std::cell::RefCell::new(None); }
+thread_local! { pub(super) static WORKER_PANIC: std::cell::RefCell<Option<Box<dyn Any + Send>>> = std::cell::RefCell::new(None); }
 #[cfg(test)]
 pub(super) fn take_worker_test_panic() -> Option<Box<dyn Any + Send>> {
     WORKER_PANIC.with(|p| p.borrow_mut().take())

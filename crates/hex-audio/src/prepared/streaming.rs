@@ -46,7 +46,7 @@ impl Callback {
         }
     }
     fn stage_stream_action(&mut self, action: PlaybackAction, ticket: u64) {
-        if self.publication_pending.load(Acquire) || self.stream_pending_play.is_some() {
+        if self.status.publication_pending.load(Acquire) || self.stream_pending_play.is_some() {
             self.status
                 .publish_rejected_action(ticket, PlaybackActionRejection::StreamActionBusy);
             return;
@@ -67,7 +67,8 @@ impl Callback {
         }
     }
     pub(super) fn streamed_transport_mode(&self) -> bool {
-        matches!(self.active.as_ref(), Some(ActivePublication::Eligible(active)) if active.contains_streamed_sources())
+        self.status.verified_streaming_mode.load(Acquire)
+            || matches!(self.active.as_ref(), Some(ActivePublication::Eligible(active)) if active.streaming_enabled())
             || self.deferred_eligible.as_ref().is_some_and(|next| next.streaming_enabled())
             || self.publications.peek().is_ok_and(|next| matches!(next, QueuedPublication::Eligible(next) if next.streaming_enabled()))
     }
@@ -137,8 +138,8 @@ impl Callback {
     }
     pub(super) fn consume_stream_commands(&mut self) {
         let cut = command_cut(
-            self.admitted_ticket.load(Acquire),
-            self.pending_stop_marker.swap(0, AcqRel),
+            self.status.admitted_ticket.load(Acquire),
+            self.status.pending_stop_marker.swap(0, AcqRel),
         );
         if let Some(stop) = cut.stop_through {
             self.cancel_active_stream_action();

@@ -1127,8 +1127,7 @@ mod tests {
         let handle = *bootstrap;
         let editor = cx
             .update_window(handle, |_, window, cx| {
-                let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                    .expect("test service");
+                let service = Service::new(48_000, 32, 8_000_000).expect("test service");
                 let editor = window.replace_root(cx, |window, cx| {
                     EditorView::new_for_test_with_theme_preferences_path(
                         window,
