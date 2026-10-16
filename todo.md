@@ -12,6 +12,28 @@ checklist and limits are in docs/midi.md. Positive-latency monitoring remains
 explicitly refused and tracked as #2644 / PR260; native listening/input acceptance
 remains open, without MIDI recording or hardware output claims.
 
+## controlled CLAP fixture tooling — PR199 / #20, 16 october 2026
+
+Integrated the isolated format-owned supervisor/native helpers and preserved
+scoped dependency/process boundaries. Official pinned CLAP headers/MIT notice and
+compiler/header/runtime closure are verified. All53 explicit Linux native cases,
+default protocol/unit tests and strict crate Clippy pass. Final exact-head native
+rerun/full CI are recorded with PR199. Mac's8 tests, SDK/toolchain/enrollment
+acceptance and production third-party/application hosting remain open. No guards
+were weakened or Linux results relabeled as Darwin evidence. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
+## controlled VST3 fixture tooling — PR193 / #21, 16 october 2026
+
+Integrated the isolated Linux scanner/offline helper crate and scoped hash,
+process and signal boundaries. Official pinned SDK/submodules, MIT notices,
+compiler/header/runtime closure and fixture receipts were verified. All10 scanner
+and12 offline native fixture tests pass, as do default protocol tests and strict
+crate Clippy. Final exact-head rerun/full CI are recorded in PR193. Production
+third-party containment, application hosting, real-time/editor/state integration,
+Mac/native/reference/listening and physical deadlines remain open. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
 ## eq8 response measurement tooling — PR198 / #2251, 16 october 2026
 
 Reviewed actual prepared-response export and the bounded uncertainty comparator.
