@@ -269,3 +269,11 @@ not require a duplicate restart request. Readiness/failure is correlated by the
 Desktop adapter, not a new Session-owned device endpoint. Snapshot preparation
 can target the native host's already-rooted construction cell without extracting
 its source bank, draft or runtime into Session ownership.
+
+## Native streaming workload generation
+
+The control-only `native_streaming_fixture` example writes create-new original
+100-source mixed-rate WAVs in bounded blocks and canonical44.1/48kHz projects.
+It uses existing verified-reader fingerprints and storage APIs, without changing
+Session/media limits. See `docs/streaming-100-track-workload.md` for its explicit
+large headless smoke and separate required native/listening acceptance.
