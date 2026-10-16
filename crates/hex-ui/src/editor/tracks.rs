@@ -296,6 +296,8 @@ impl EditorView {
         let mut midi_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
         for clip in track.midi_clips() {
+            let _diagnostic =
+                super::render_diagnostic::scope(super::render_diagnostic::Kind::MidiBuild);
             let Some(preview) = state.midi_preview.get(clip.id()) else {
                 continue;
             };

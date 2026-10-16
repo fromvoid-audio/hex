@@ -84,6 +84,11 @@ struct Profile {
     sample: Sample,
     rows: Vec<String>,
     failure: Option<String>,
+    diagnostic: bool,
+    diagnostics: Vec<String>,
+    first_diagnostic: Option<super::render_diagnostic::Stats>,
+    following_diagnostic: Option<super::render_diagnostic::Stats>,
+    frame_started: Option<Instant>,
 }
 
 pub(crate) fn open(
@@ -92,6 +97,8 @@ pub(crate) fn open(
     settings: PathBuf,
     result: SyncSender<Result<String, String>>,
 ) -> Result<(), String> {
+    let diagnostic =
+        std::env::var_os("HEX_TIME_SELECTION_DIAGNOSTIC").is_some_and(|value| value == "1");
     super::configure_editor_app(cx)?;
     let service = Service::new(48_000, 8, 8_000_000).map_err(|error| error.to_string())?;
     cx.open_window(super::editor_window_options(cx), move |window, cx| {
@@ -131,6 +138,11 @@ pub(crate) fn open(
                 sample: Sample::default(),
                 rows: Vec::with_capacity((WARMUPS + MEASURED) * CASES),
                 failure: None,
+                diagnostic,
+                diagnostics: Vec::with_capacity(8),
+                first_diagnostic: None,
+                following_diagnostic: None,
+                frame_started: None,
             };
             cx.spawn_in(window, async move |this, cx| {
                 loop {
@@ -189,6 +201,17 @@ impl Profile {
     fn finish(&mut self, error: Option<String>, _cx: &mut Context<Self>) -> bool {
         let header = "tracks,operation,iteration,warmup,selection_start_frame,selection_end_frame,selection_first_paint_us,selection_following_frame_us,operation_first_paint_us,operation_first_following_frame_us,operation_ui_completion_paint_us,operation_completion_following_frame_us,project_revision,failures\n";
         let csv = format!("{header}{}\n", self.rows.join("\n"));
+        let error = if self.diagnostic {
+            let active = super::render_diagnostic::snapshot(true).map(|stats| stats.report());
+            let first = self.first_diagnostic.take().map(|stats| stats.report());
+            let following = self.following_diagnostic.take().map(|stats| stats.report());
+            Some(format!(
+                "diagnostic-only; original_error={error:?}; active={active:?}; inflight_first={first:?}; inflight_following={following:?}\n{}",
+                self.diagnostics.join("\n")
+            ))
+        } else {
+            error
+        };
         if let Some(sender) = self.result.take() {
             let outcome = match error {
                 Some(error) => Err(format!(
@@ -210,6 +233,9 @@ impl Profile {
         }
         if let Some(error) = self.failure.take() {
             return self.finish(Some(error), cx);
+        }
+        if self.diagnostic && self.index == CASES {
+            return self.finish(None, cx);
         }
         if self.index == (WARMUPS + MEASURED) * CASES {
             return self.finish(None, cx);
@@ -315,6 +341,23 @@ impl Profile {
                 .as_ref()
                 .is_some_and(|probe| probe.following.is_some()) =>
             {
+                if self.diagnostic {
+                    let following = self.following_diagnostic.take().map(|stats| stats.report());
+                    let cache = self
+                        .editor
+                        .read(cx)
+                        .waveform_geometry_cache
+                        .try_borrow()
+                        .ok()
+                        .map(|cache| cache.diagnostic_occupancy());
+                    self.diagnostics.push(format!(
+                        "case={},tracks={},operation={},cache={cache:?},first_paint={:?},following={following:?}",
+                        self.index,
+                        self.tracks(),
+                        self.operation().name(),
+                        self.first_diagnostic.take().map(|stats| stats.report())
+                    ));
+                }
                 let view = self.editor.read(cx);
                 let Some(range) = view.normalized_time_selection() else {
                     return self
@@ -472,6 +515,9 @@ impl Profile {
             && !probe.completion
         {
             probe.started = Instant::now();
+            if self.diagnostic {
+                super::render_diagnostic::begin();
+            }
         }
         window.dispatch_input(
             PlatformInput::MouseDown(MouseDownEvent {
@@ -544,6 +590,12 @@ impl Profile {
         });
     }
     fn paint(&mut self, at: Instant, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(started) = self.frame_started.take() {
+            super::render_diagnostic::record(
+                super::render_diagnostic::Kind::FrameCpu,
+                at.duration_since(started),
+            );
+        }
         self.paint_sequence += 1;
         let operation = self.operation();
         let view = self.editor.read(cx);
@@ -572,6 +624,9 @@ impl Profile {
         }
         if first_complete {
             probe.paint = Some(at.duration_since(probe.started));
+            if self.diagnostic && !probe.completion {
+                self.first_diagnostic = super::render_diagnostic::snapshot(false);
+            }
         }
         let index = self.index;
         let completion = probe.completion;
@@ -593,6 +648,10 @@ impl Profile {
                             probe.feedback_following = Some(elapsed);
                         } else {
                             probe.following = Some(elapsed);
+                            if profile.diagnostic && !completion {
+                                profile.following_diagnostic =
+                                    super::render_diagnostic::snapshot(true);
+                            }
                         }
                     }
                 })
@@ -604,6 +663,9 @@ impl Profile {
 impl Render for Profile {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        if self.diagnostic {
+            self.frame_started = Some(Instant::now());
+        }
         let content = self.editor.clone();
         div().size_full().relative().child(content).child(
             canvas(

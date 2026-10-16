@@ -122,6 +122,8 @@ fn waveform_canvas(
     waveform_surface(canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
+            let _diagnostic =
+                super::render_diagnostic::scope(super::render_diagnostic::Kind::WavePaint);
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
             if visible_start >= visible_end || width <= 0.0 || height <= 0.0 {
