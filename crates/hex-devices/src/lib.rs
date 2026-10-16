@@ -134,6 +134,10 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
 }
 
 impl PreparedNativeInstrument for PreparedSineInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         pitch: u8,
@@ -213,6 +217,16 @@ impl SineTable {
         }
         samples[TABLE_SIZE] = samples[0];
         Self { samples }
+    }
+
+    /// Control-only exclusive leaf declaration; shared wrapper/handles are
+    /// separate. New owning fields require this module's explicit audit.
+    pub fn control_storage_declaration(&self) -> hex_lattice::PreparedStorageDeclaration {
+        let Self { samples } = self;
+        let _: &[f32; TABLE_SIZE + 1] = samples;
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<Self>(),
+        }
     }
 
     pub fn prepare_voice(
@@ -361,3 +375,5 @@ mod tests {
         }
     }
 }
+
+mod operator_filter;

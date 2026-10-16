@@ -19,7 +19,7 @@ impl EditorView {
             .child(self.control_icon(
                 "↑",
                 "export wav · cmd+shift+e",
-                |view, _, cx| view.export_dialog(cx),
+                |view, window, cx| view.export_dialog(window, cx),
                 cx,
             ))
             .child(self.icon(
@@ -29,6 +29,20 @@ impl EditorView {
                 cx,
             ))
             .child(self.icon("■", "stop · escape", Stop, cx))
+            .child(
+                self.control_icon(
+                    "m",
+                    "toggle metronome",
+                    |view, _, _| view.toggle_metronome(),
+                    cx,
+                )
+                .opacity(if self.metronome_pending() { 0.45 } else { 1.0 })
+                .text_color(rgb(theme::color(if self.metronome_enabled() {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Muted
+                }))),
+            )
             .child(
                 self.control_icon(
                     "↻",

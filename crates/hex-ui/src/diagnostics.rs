@@ -1,5 +1,5 @@
 //! Control-side event forwarding; filesystem ownership stays in hex-diagnostics.
-use gpui::{App, BorrowAppContext, Global};
+use gpui::{App, AppContext, BorrowAppContext, Global, PromptLevel, Window};
 use hex_diagnostics::DiagnosticsHandle;
 
 struct SessionDiagnostics {
@@ -7,6 +7,7 @@ struct SessionDiagnostics {
     last_status: String,
     last_error: Option<String>,
     reported_failure: bool,
+    opening_log: bool,
 }
 impl Global for SessionDiagnostics {}
 
@@ -17,7 +18,79 @@ pub fn install_session_log(cx: &mut App, handle: Result<DiagnosticsHandle, Strin
         last_status: String::new(),
         last_error: None,
         reported_failure: false,
+        opening_log: false,
     });
+}
+
+/// Open the active session's latest log without filesystem/process work on the UI thread.
+pub(crate) fn open_session_log(window: &mut Window, cx: &mut App) {
+    let Some(diagnostics) = cx.try_global::<SessionDiagnostics>() else {
+        show_open_error(window, cx, "session logging is unavailable");
+        return;
+    };
+    if diagnostics.opening_log {
+        return;
+    }
+    let path = match &diagnostics.handle {
+        Ok(handle) => handle.path(),
+        Err(error) => {
+            let error = error.clone();
+            show_open_error(window, cx, &error);
+            return;
+        }
+    };
+    cx.global_mut::<SessionDiagnostics>().opening_log = true;
+    let window_handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move {
+                let mut command = std::process::Command::new(if cfg!(target_os = "macos") {
+                    "/usr/bin/open"
+                } else {
+                    "xdg-open"
+                });
+                if cfg!(target_os = "macos") {
+                    // Select the default text editor rather than the .log file association.
+                    command.arg("-t");
+                }
+                let output = command
+                    .arg(&path)
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "text editor could not open the log ({}): {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ))
+                }
+            })
+            .await;
+        let _ = cx.update(|cx| {
+            cx.global_mut::<SessionDiagnostics>().opening_log = false;
+        });
+        if let Err(error) = result {
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                show_open_error(window, cx, &error);
+            });
+        }
+    })
+    .detach();
+}
+
+fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
+    let answer = crate::theme::text("ok");
+    let answers: [&str; 1] = [answer.as_ref()];
+    drop(window.prompt(
+        PromptLevel::Warning,
+        &crate::theme::text("could not open session log"),
+        Some(&crate::theme::text(error)),
+        &answers,
+        cx,
+    ));
 }
 
 pub(crate) fn record_state(cx: &mut App, status: &str, error: &Option<String>) -> Option<String> {

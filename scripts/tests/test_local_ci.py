@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
 import hashlib
 import json
 import os
@@ -85,6 +86,173 @@ class LocalCiRunnerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def release_attempt(self, run_id, *, adopt=False):
+        runner = self.runner(run_id)
+        with runner.guarded_release(adopt=adopt) as report:
+            target = Path(runner.cargo_identity["target_directory"])
+            target.mkdir(exist_ok=True)
+            artifact = target / "release-fixture"
+            artifact.write_bytes(b"optimized fixture")
+            argv = ["cargo", "build", "--release"]
+            report["build_argv"] = argv
+            report["build_exit_code"] = 0
+            report["artifact"] = runner.identify_release_artifact(artifact, argv)
+        return runner, report
+
+    def test_release_unknown_pending_and_explicit_recovery(self):
+        target = self.repo / "cargo-target"
+        target.mkdir()
+        (target / "untouched").write_bytes(b"history")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "ownership is unknown"):
+            self.release_attempt("unknown")
+        runner, report = self.release_attempt("adopted", adopt=True)
+        self.assertEqual(report["cleanup_argv"][3], "release")
+        self.assertEqual((target / "untouched").read_bytes(), b"history")
+        owner = Path(report["owner_path"])
+        record = json.loads(owner.read_text())
+        record["state"] = "pending"
+        owner.write_text(json.dumps(record))
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "pending"):
+            self.release_attempt("pending")
+        self.release_attempt("recovered", adopt=True)
+        self.assertIsNone(runner.target_lock)
+
+    def test_release_cleanup_failure_and_interruption_keep_pending(self):
+        _, report = self.release_attempt("first")
+        owner = Path(report["owner_path"])
+        failing = self.runner("failed")
+        failing.env["FAIL_MATCH"] = "clean"
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "cleanup failed"):
+            with failing.guarded_release(adopt=True):
+                self.fail("failed cleanup entered build")
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+        interrupted = self.runner("interrupted")
+        with patch.object(local_ci.subprocess, "run", wraps=subprocess.run) as command:
+            original = command._mock_wraps
+            def invoke(argv, **kwargs):
+                if argv[:2] == ["cargo", "clean"]:
+                    raise local_ci.InterruptedRun()
+                return original(argv, **kwargs)
+            command.side_effect = invoke
+            with self.assertRaises(local_ci.InterruptedRun):
+                with interrupted.guarded_release(adopt=True):
+                    self.fail("interrupted cleanup entered build")
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+        self.assertIsNone(interrupted.target_lock)
+        self.release_attempt("after-interruption", adopt=True)
+
+    def test_release_and_dev_contend_on_same_lock_and_summary_failure_unlocks(self):
+        runner = self.runner("holder")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "identification"):
+            with runner.guarded_release():
+                self.assertEqual(self.runner("denied-dev").run(), 1)
+                with self.assertRaisesRegex(local_ci.TargetCacheError, "already in use"):
+                    with self.runner("denied-release").guarded_release():
+                        self.fail("contender acquired target")
+        other = self.runner("summary-failure")
+        with patch.object(other, "_write_summary", side_effect=OSError("summary unavailable")):
+            with self.assertRaisesRegex(OSError, "summary unavailable"):
+                with other.guarded_release(adopt=True):
+                    raise ValueError("build refused")
+        self.assertIsNone(other.target_lock)
+        self.release_attempt("after-summary-failure", adopt=True)
+
+    def test_release_malformed_recreated_target_and_changed_source_refuse(self):
+        runner, report = self.release_attempt("first")
+        owner = Path(report["owner_path"])
+        owner.write_text('{"schema_version":1}')
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "malformed"):
+            self.release_attempt("malformed")
+        _, report = self.release_attempt("recover", adopt=True)
+        target = self.repo / "cargo-target"
+        target.rename(self.repo / "retained-target")
+        target.mkdir()
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "identity"):
+            self.release_attempt("recreated")
+        self.release_attempt("recreated-recover", adopt=True)
+        modified = self.runner("modified")
+        original = modified._capture_repository_state
+        def capture(key):
+            result = original(key)
+            if key == "release_end_tree":
+                modified.summary[key]["commit"] = "changed"
+            return result
+        with patch.object(modified, "_capture_repository_state", side_effect=capture):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "source changed"):
+                with modified.guarded_release() as report:
+                    artifact = target / "release-fixture"
+                    report["build_argv"] = ["cargo", "build", "--release"]
+                    report["build_exit_code"] = 0
+                    report["artifact"] = modified.identify_release_artifact(artifact, report["build_argv"])
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+
+    def test_release_external_name_collision_refuses_before_marker_or_cleanup(self):
+        runner = self.runner("collision")
+        original = local_ci.command_output
+        def command(argv, cwd, env):
+            result = original(argv, cwd, env)
+            if argv[:2] == ["cargo", "metadata"] and "--no-deps" not in argv:
+                metadata = json.loads(result.stdout)
+                metadata["packages"].append({"id":"external fixture 0.2.0", "name":"fixture", "version":"0.2.0"})
+                result.stdout = json.dumps(metadata)
+            return result
+        with patch.object(local_ci, "command_output", side_effect=command):
+            with self.assertRaisesRegex(local_ci.TargetCacheError, "overlap"):
+                with runner.guarded_release():
+                    self.fail("ambiguous clean selection accepted")
+        self.assertFalse(list(self.target_state_dir.glob("*.release-owner.json")))
+        self.assertNotIn("cargo clean", self.call_log.read_text())
+
+    def test_release_artifact_mutation_and_consumer_failure_stay_pending(self):
+        runner = self.runner("mutated-artifact")
+        with self.assertRaisesRegex(local_ci.TargetCacheError, "artifact changed"):
+            with runner.guarded_release() as report:
+                target = Path(runner.cargo_identity["target_directory"])
+                target.mkdir()
+                artifact = target / "fixture"
+                artifact.write_bytes(b"original")
+                report["build_argv"] = ["cargo", "build", "--release"]
+                report["build_exit_code"] = 0
+                report["artifact"] = runner.identify_release_artifact(artifact, report["build_argv"])
+                artifact.write_bytes(b"changed")
+        self.assertEqual(json.loads(Path(report["owner_path"]).read_text())["state"], "pending")
+
+        recovering = self.runner("failed-consumer")
+        with self.assertRaisesRegex(ValueError, "staging refused"):
+            with recovering.guarded_release(adopt=True):
+                raise ValueError("staging refused")
+        self.assertIsNone(recovering.target_lock)
+        self.assertEqual(json.loads(Path(report["owner_path"]).read_text())["state"], "pending")
+
+    def test_release_ancestor_alias_accepts_but_target_symlinks_and_escape_refuse(self):
+        runner = self.runner("path-alias")
+        ancestor_alias = self.base / "platform-alias"
+        ancestor_alias.symlink_to(self.repo, target_is_directory=True)
+        with runner.guarded_release() as report:
+            target = Path(runner.cargo_identity["target_directory"])
+            (target / "release").mkdir(parents=True)
+            artifact = target / "release/fixture"
+            artifact.write_bytes(b"actual optimized artifact")
+            argv = ["cargo", "build", "--release"]
+            alias_path = ancestor_alias / "cargo-target/release/fixture"
+            identified = runner.identify_release_artifact(alias_path, argv)
+            self.assertEqual(identified, runner.identify_release_artifact(artifact, argv))
+            self.assertEqual(identified["path"], str(artifact.resolve()))
+            (target / "artifact-link").symlink_to(artifact)
+            (target / "directory-link").symlink_to(target / "release", target_is_directory=True)
+            (target / "root-link").symlink_to(target, target_is_directory=True)
+            outside = self.base / "outside-artifact"
+            outside.write_bytes(b"outside target")
+            (target / "escape").symlink_to(outside)
+            for rejected in (target / "artifact-link", target / "directory-link/fixture",
+                             target / "root-link/release/fixture", target / "escape", outside,
+                             ancestor_alias / "cargo-target/directory-link/fixture"):
+                with self.subTest(path=rejected):
+                    with self.assertRaises(local_ci.TargetCacheError):
+                        runner.identify_release_artifact(rejected, argv)
+            report.update(build_argv=argv, build_exit_code=0, artifact=identified)
+        self.assertEqual(report["state"], "ready")
 
     def summary(self, run_id: str = "case") -> dict[str, object]:
         return json.loads((self.repo / "artifacts/local-ci" / run_id / "summary.json").read_text())
@@ -275,6 +443,45 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(cargo_identity["target_source"], "environment")
         self.assertEqual(cargo_identity["configured_target_value"], "relative/ignored-by-metadata")
         self.assertIn(f"[target={expected_target}]", self.call_log.read_text())
+
+    def test_dependency_guard_runs_without_python311_tomllib(self) -> None:
+        guard = SCRIPT.with_name("check-dependency-patches.py")
+        ast.parse(guard.read_text(), feature_version=(3, 9))
+        # Python 3.9 has no tomllib. An isolated stdlib-only subprocess with that
+        # import unavailable reproduces the original guard failure on any host.
+        code = """import builtins, runpy, sys
+original_import = builtins.__import__
+def without_tomllib(name, *args, **kwargs):
+    if name == 'tomllib':
+        raise ModuleNotFoundError('No module named tomllib')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = without_tomllib
+runpy.run_path(sys.argv[1], run_name='__main__')
+"""
+        result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(guard)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("dependency patches passed", result.stdout)
+
+    def test_full_pipeline_claims_fresh_target_before_python_cargo_wrapper(self) -> None:
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        _lock, owner = local_ci.target_state_paths(target.resolve(), self.target_state_dir)
+        python = self.bin / "python3"
+        python.write_text(FAKE_TOOL.replace(
+            'echo "completed $tool $*"',
+            'if [ "$1" = scripts/check-dependency-future-lints.py ]; then\n'
+            '  [ -f "$EXPECTED_OWNER" ] || exit 12\n'
+            '  /bin/mkdir -p "$CARGO_TARGET_DIR/debug"\n'
+            '  echo fixture > "$CARGO_TARGET_DIR/debug/fixture.rlib"\n'
+            'fi\necho "completed $tool $*"',
+        ))
+        runner = self.runner("python-cargo", env={**self.env, "EXPECTED_OWNER": str(owner)},
+                             steps=local_ci.FULL_STEPS)
+        self.assertEqual(runner.run(), 0)
+        summary = self.summary("python-cargo")
+        self.assertEqual(summary["target_cache"]["action"], "claim-empty")
+        self.assertTrue((target / "debug/fixture.rlib").is_file())
+        self.assertNotIn("cargo clean", self.call_log.read_text())
 
     def test_unknown_nonempty_target_fails_closed_without_removing_or_using_it(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"])

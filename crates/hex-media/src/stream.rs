@@ -62,6 +62,7 @@ impl WavFrameReader {
         }
         let captured_modified = before.modified()?;
         let layout = wav::scan(&mut file, captured_len, limits.max_header_count)?;
+        layout.format.require_fixed_frames()?;
         if layout.frames > limits.max_source_frames {
             return Err(ImportError::LimitExceeded("source frames"));
         }

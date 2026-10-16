@@ -56,6 +56,7 @@ pub(super) fn graph(
                     style,
                 );
                 graph.set_editable(true, graph_cx);
+                graph.set_tab_navigation(true, graph_cx);
                 graph
             });
             let subscription =

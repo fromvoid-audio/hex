@@ -14,6 +14,10 @@ struct HoldRuntime {
     held: [f32; 2],
 }
 impl PreparedNativeProcessor for FiniteHold {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -69,6 +73,7 @@ fn chain(entries: usize, bounds: &[u64]) -> NativeRuntimeChain {
     let mut chain = NativeRuntimeChain::new(
         (0..entries)
             .map(|index| PreparedProcessorInstance {
+                meter: Default::default(),
                 owner: ProcessorChainOwner::Track(1),
                 device_id: index as u64 + 1,
                 device_type: DeviceTypeId::from_static("test.finite-hold"),

@@ -34,6 +34,7 @@ pub(super) fn clip_intersects_exclusions(clip: &Clip, exclusions: [Option<(u64, 
 pub(super) fn clip_fragments_outside(
     clip: &Clip,
     exclusions: [Option<(u64, u64)>; 2],
+    tempo: &hex_project::TempoMap,
 ) -> [Option<Clip>; 3] {
     let Some(clip_end) = clip.start().checked_add(clip.duration()) else {
         return [None, None, None];
@@ -42,7 +43,8 @@ pub(super) fn clip_fragments_outside(
     let mut result = [None, None, None];
     for (index, interval) in intervals.into_iter().enumerate() {
         if let Some((start, end)) = interval {
-            result[index] = hex_project::preview_clip_fragment(clip, start, end, start).ok();
+            result[index] =
+                hex_project::preview_clip_fragment_with_tempo(clip, start, end, start, tempo).ok();
         }
     }
     result

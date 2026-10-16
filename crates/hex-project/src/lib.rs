@@ -1,5 +1,12 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+mod audio_edit;
+pub use audio_edit::{
+    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
+    BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
+    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
+    audio_projection_frame, default_audio_warp,
+};
 mod clip_copy;
 mod clip_fragment;
 mod conversion;
@@ -9,17 +16,39 @@ pub use device::{
     default_instrument_state,
 };
 mod edit;
-pub use clip_fragment::preview_clip_fragment;
+pub use clip_fragment::{preview_clip_fragment, preview_clip_fragment_with_tempo};
 pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod provenance;
+pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
 pub use time_range::{RangeClipboard, TimeRange};
+mod gain_envelope;
+mod gain_touch;
+pub use gain_touch::{
+    GAIN_TOUCH_UNSUPPORTED, GainLane, GainTouchContext, GainTouchSpan, GainTouchStep,
+    MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, validate_gain_lane_parts,
+};
 mod midi;
 mod midi_batch;
 mod midi_playback;
+pub use gain_envelope::{
+    AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
+    MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
+};
+mod playable_routing;
+mod return_feeds;
 mod returns;
+mod routing;
+pub use playable_routing::{
+    AudioFeed, AudioFeedSnapshot, MAX_AUDIO_FEEDS, MAX_MIDI_ROUTES, MidiRoute, MidiRouteSnapshot,
+};
+pub use return_feeds::{MAX_RETURN_FEEDS, ReturnFeed, ReturnFeedSnapshot};
+pub use routing::{
+    MAX_AUTHORED_ROUTES, ROUTING_UNSUPPORTED, RoutingEdge, RoutingOwner, RoutingSignal,
+};
 mod session;
 mod snapshot;
 mod split_tracks;
@@ -27,7 +56,7 @@ pub use session::{
     Scene, SessionAudioClip, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
 };
 pub mod timebase;
-pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate};
+pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
 pub use midi_playback::{
@@ -40,10 +69,12 @@ pub use snapshot::{
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
-    BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterPoint, MeterPosition,
-    Tempo, TempoMap, TempoPoint,
+    BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
+    MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
+    Tempo, TempoMap, TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase,
+    TempoMapOwnedAllocationLayout, TempoPoint, query_beat_pulses,
 };
 
 pub const MAX_TRACKS: usize = 256;
@@ -72,6 +103,7 @@ identifier!(NoteId);
 identifier!(SceneId);
 identifier!(DeviceId);
 identifier!(ReturnId);
+identifier!(RouteId);
 
 /// Optional half-open timeline region used by prepared playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +285,34 @@ impl ClipFade {
     }
 }
 
+/// Saved audio-clip gain in integer millidecibels, before track processing.
+/// The finite -60..=24 dB range does not imply normalization or output limiting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClipGain(i32);
+impl ClipGain {
+    pub const MIN_MILLIDB: i32 = -60_000;
+    pub const MAX_MILLIDB: i32 = 24_000;
+    pub const UNITY: Self = Self(0);
+
+    pub fn new(millidb: i32) -> Result<Self, Invalid> {
+        if !(Self::MIN_MILLIDB..=Self::MAX_MILLIDB).contains(&millidb) {
+            return Err(Invalid("clip gain must be within -60..24 db"));
+        }
+        Ok(Self(millidb))
+    }
+    pub fn millidb(self) -> i32 {
+        self.0
+    }
+    /// Control-side coefficient conversion; prepare once, never per audio sample.
+    pub fn linear(self) -> f32 {
+        if self == Self::UNITY {
+            1.0
+        } else {
+            10.0_f64.powf(f64::from(self.0) / 20_000.0) as f32
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
     pub(crate) id: ClipId,
@@ -264,6 +324,8 @@ pub struct Clip {
     pub(crate) looping: bool,
     pub(crate) source_phase: u64,
     pub(crate) fade: ClipFade,
+    pub(crate) gain: ClipGain,
+    pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
     pub fn id(&self) -> ClipId {
@@ -294,6 +356,38 @@ impl Clip {
     pub fn fade(&self) -> ClipFade {
         self.fade
     }
+    pub fn gain(&self) -> ClipGain {
+        self.gain
+    }
+    /// Authored fade in its retained reference-frame domain. A musical fade is
+    /// not a newly linear frame fade; use its read-only projected gain for geometry.
+    pub fn retained_fade(&self) -> ClipFade {
+        self.edit
+            .as_ref()
+            .map_or(self.fade, |edit| edit.domain.fade)
+    }
+
+    pub fn audio_edit(&self) -> Option<&AudioClipEdit> {
+        self.edit.as_deref()
+    }
+
+    pub(crate) fn audio_edit_mut(&mut self) -> Option<&mut AudioClipEdit> {
+        self.edit.as_mut().map(Arc::make_mut)
+    }
+
+    pub fn preview_edge_trim_with_tempo(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        if self.edit.is_some() {
+            crate::audio_edit::trim_view(self, edge, frame, tempo)
+        } else {
+            self.preview_edge_trim(edge, frame, asset_playback_frames)
+        }
+    }
 
     /// Return canonical edge-trim metadata for UI preview without cloning the project.
     /// `frame` is an absolute timeline frame and `asset_playback_frames` is the
@@ -310,6 +404,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) gain_lane: GainLane,
     pub(crate) id: TrackId,
     pub(crate) name: String,
     pub(crate) gain: f32,
@@ -325,6 +420,12 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    pub fn gain_lane(&self) -> &GainLane {
+        &self.gain_lane
+    }
+    pub fn gain_envelope(&self) -> &[GainPoint] {
+        self.gain_lane.base()
+    }
     pub fn id(&self) -> TrackId {
         self.id
     }
@@ -415,6 +516,10 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) routing: Vec<ReturnFeed>,
+    pub(crate) audio_feeds: Vec<AudioFeed>,
+    pub(crate) midi_routes: Vec<MidiRoute>,
+    pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
     pub(crate) assets: BTreeMap<AssetId, Asset>,
@@ -432,8 +537,12 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            routing: Vec::new(),
+            audio_feeds: Vec::new(),
+            midi_routes: Vec::new(),
             sample_rate,
             next_id: 1,
+            import_provenance: None,
             assets: BTreeMap::new(),
             tracks: Vec::new(),
             returns: Vec::new(),

@@ -11,6 +11,7 @@ pub(crate) fn audio_to(
         .clip(clip_id)
         .cloned()
         .ok_or(Invalid("clip no longer exists"))?;
+    crate::audio_edit::move_clip(&mut copied, start, project.tempo_map())?;
     let end = start
         .checked_add(copied.duration)
         .ok_or(Invalid("timeline end overflow"))?;
@@ -27,7 +28,6 @@ pub(crate) fn audio_to(
         return Err(Invalid("clip limit reached"));
     }
     copied.id = ClipId(project.allocate_id()?);
-    copied.start = start;
     let copied_id = copied.id;
     let clips = project.audio_clips_mut(track)?;
     clips
