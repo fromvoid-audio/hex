@@ -90,8 +90,8 @@ whole-app native behavior and physical deadlines remain unverified.
 Cloud checks and final commit identity are retained in Pulse2143 and PR153.
 Full exact-commit Mac local CI and a fresh locked release build without the two
 specified notices remain required on the pushed implementation. Linux checks
-cannot establish native/macOS acceptance. PR153 stays draft; merge is not
-within this task's authorization.
+cannot establish native/macOS acceptance. Source merge follows the standing reviewed-PR policy in AGENTS.md; native
+acceptance remains separate and open until renewed on the final source.
 
 Linux full validation on `6838df4` with verified rootless native prerequisites
 reproduced the independent xattr/libc errno failure. The already-merged PR161

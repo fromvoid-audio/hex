@@ -30,3 +30,32 @@ pub fn preview_clip_fragment(
     fragment.start = destination_start;
     Ok(fragment)
 }
+
+/// Tempo-aware preview retaining full transformed analysis and fade context.
+pub fn preview_clip_fragment_with_tempo(
+    original: &Clip,
+    start: u64,
+    end: u64,
+    destination_start: u64,
+    tempo: &crate::TempoMap,
+) -> Result<Clip, Invalid> {
+    if original.audio_edit().is_none() {
+        return preview_clip_fragment(original, start, end, destination_start);
+    }
+    let original_end = original
+        .start()
+        .checked_add(original.duration())
+        .ok_or(Invalid("fragment end overflow"))?;
+    if start >= end || start < original.start() || end > original_end {
+        return Err(Invalid("audio fragment must be inside the original clip"));
+    }
+    let mut fragment = original.clone();
+    if start > fragment.start() {
+        fragment = crate::edit::split_clip_at_tempo(&fragment, start, fragment.id(), tempo)?.1;
+    }
+    if end < original_end {
+        fragment = crate::edit::split_clip_at_tempo(&fragment, end, fragment.id(), tempo)?.0;
+    }
+    crate::audio_edit::move_clip(&mut fragment, destination_start, tempo)?;
+    Ok(fragment)
+}

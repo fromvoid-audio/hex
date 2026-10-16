@@ -76,6 +76,19 @@ unchanged control entries plus snapshot reads. Render/validation checks stay
 outside timing; no CPAL stream is opened. See docs/performance.md for methodology,
 retained outliers and the separate physical deadline gate.
 
+## Browser sample preview
+
+`prepared::Control::sample_preview` accepts finite, output-rate `Audio` prepared
+on a background worker. `request` silences older generations before decoding;
+`publish` coalesces a latest pending owner behind the one-slot input queue.
+The existing callback adds the one-shot at unity after project master output,
+including while project transport is stopped or paused. Project Stop is separate.
+Two return slots carry exhausted/stale PCM to the ordinary control reclamation
+poll; full return storage retains ownership and stale PCM stays silent. Shutdown
+waits for preview owners too. No extra stream, callback allocation, locking or
+final PCM drop is needed. The media decoder and browser input remain outside
+this crate. See [runtime](../../docs/runtime.md#browser-sample-playback--pulse2637--pr254).
+
 ## Output spectrum analysis
 
 `spectrum` provides the fixed 4096-frame stereo FFT kernel; `spectrum_worker`
@@ -114,7 +127,10 @@ headless microbenchmark, not a physical-device deadline or native UI test.
 
 ## Dependencies
 
-hex-engine; CPAL for CoreAudio output; rtrb for SPSC commands. Tests use
+hex-engine; hex-stream for exact catalog/pair custody and control-side stream
+disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow production
+stream edge does not expose pages to the renderer or admit native streamed
+candidates. Tests use
 hex-project as a dev-dependency to build canonical prepared revisions for the
 callback boundary. The non-default `allocation-probe` feature also activates
 hex-engine's hidden `instrument-test-support` preparation seam and uses
@@ -148,3 +164,33 @@ backend telemetry. This observational FFT is separate from musical device DSP
 in `hex-devices`; construction and analysis belong on control/worker threads.
 It does not capture audio, own a rolling stream window, schedule a worker or
 render a UI. See [spectrum analysis](../../docs/spectrum-analysis.md).
+
+
+## Delivered gain recording
+
+`gain_recording` owns bounded value/receipt rings:64 outstanding ordinary events,
+independent terminal reservation, and1022 events per take. Targets bind stable
+track and project/audio/transport/gesture identities. Callback consumption applies
+only the latest boundary value; superseded events release credits without an
+applied receipt. `finish_gain_recording_quantum` runs after native conversion and
+write, deferring acknowledgments until the compensated sample reaches Main.
+Failed output, transport reset and cancellation abort the uncommitted take.
+Priority Stop stays independent of queue saturation. No record or receipt owns a
+graph, allocates, blocks or drops final owners in the callback. Take normalization
+and saved history belong to session/project. See
+[gain recording](../../docs/gain-touch-spans.md) for quantum and physical-delivery
+limits and selected headless allocation coverage.
+
+## never-installed candidate custody
+
+`Control::stage_audio_candidate` accepts an opaque constructor-owned candidate
+only with the real native terminal receiver already anchored. The existing queue
+returns this admission-pending variant before installation; legacy publication
+behavior is unchanged. Persistent slots retain root/runtime identities, actual
+catalog leases/pairs and original-bank recovery until normal lifecycle-worker
+destruction. UI return ingestion/polling cannot invoke the new worker join or
+candidate destructors; READY recovery moves the already-restored bank only.
+Coupled callback guards move their exact Boxes to control after both final
+releases; build errors after backend exposure remain uncertain. No complete-cost,
+native admission or final-active quiescence claim follows. See
+[never-installed disposal](../../docs/never-installed-audio-disposal.md).

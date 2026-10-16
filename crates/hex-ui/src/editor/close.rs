@@ -25,6 +25,11 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.gain_recorder.blocks_edits() {
+            self.error = Some("finish or cancel gain recording before closing".into());
+            cx.notify();
+            return false;
+        }
         if self.close_prompt_open {
             return false;
         }
@@ -37,12 +42,18 @@ impl EditorView {
             self.show_close_prompt(window, cx, false);
             false
         } else {
+            self.cancel_browser_sample_playback();
             self.stop();
             true
         }
     }
 
     pub(super) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.gain_recorder.blocks_edits() {
+            self.error = Some("finish or cancel gain recording before quitting".into());
+            cx.notify();
+            return;
+        }
         if self.close_prompt_open {
             return;
         }
@@ -54,6 +65,7 @@ impl EditorView {
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, true);
         } else {
+            self.cancel_browser_sample_playback();
             self.stop();
             cx.quit();
         }
@@ -109,6 +121,10 @@ impl EditorView {
                 editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
+                        view.cancel_browser_sample_playback();
+                        if let Some(control) = &view.export_control {
+                            control.cancel();
+                        }
                         view.stop();
                     } else {
                         cx.notify();
@@ -221,7 +237,9 @@ mod window_tests {
                     view.state = Some(Arc::new(ViewState {
                         project: Arc::new(hex_project::Project::new(48_000).expect("test project")),
                         waveforms: Default::default(),
+                        audio_clip_waveforms: std::collections::BTreeMap::new(),
                         midi_preview: Arc::new(Default::default()),
+                        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                         timeline_frames: 384_000,
                         can_undo: false,
                         can_redo: false,
@@ -271,7 +289,9 @@ mod window_tests {
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::clone(&state.project),
                     waveforms: state.waveforms.clone(),
+                    audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                     midi_preview: Arc::clone(&state.midi_preview),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: state.timeline_frames,
                     can_undo: state.can_undo,
                     can_redo: state.can_redo,
@@ -415,7 +435,9 @@ mod window_tests {
                     view.state = Some(Arc::new(ViewState {
                         project: Arc::clone(&state.project),
                         waveforms: state.waveforms.clone(),
+                        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                         midi_preview: Arc::clone(&state.midi_preview),
+                        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                         timeline_frames: state.timeline_frames,
                         can_undo: false,
                         can_redo: false,

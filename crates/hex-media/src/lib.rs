@@ -7,11 +7,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod adpcm;
 mod resample;
 mod resample_kernel;
 mod stream;
 mod verified_stream;
 mod wav;
+
+#[cfg(test)]
+mod wav_tests;
 
 #[cfg(test)]
 mod resample_stream_tests;
@@ -25,9 +29,11 @@ mod resample_plan_tests;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 pub use resample::{ResampleLimits, ResamplePlan, resample};
-pub use resample_kernel::ResampleKernel;
+pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
 pub use stream::{WavFrameReader, WavReaderLimits};
-pub use verified_stream::{VERIFIED_WAV_PAGE_BYTES, VerifiedWavReader, VerifiedWavReaderLimits};
+pub use verified_stream::{
+    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavReader, VerifiedWavReaderLimits,
+};
 
 /// Caller-owned resource ceilings for a single import operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,7 +314,7 @@ mod tests {
         let valid = wav(1, 1, 16, &[0, 64]);
         assert!(decode_wav(&valid[..valid.len() - 1], LIMITS).is_err());
         assert!(decode_wav(&wav(6, 1, 16, &[0, 0]), LIMITS).is_err());
-        assert!(decode_wav(&wav(1, 1, 8, &[0]), LIMITS).is_err());
+        assert!(decode_wav(&wav(1, 1, 12, &[0]), LIMITS).is_err());
         assert!(decode_wav(&wav(1, 3, 16, &[0, 0, 0, 0, 0, 0]), LIMITS).is_err());
         assert!(decode_wav(&wav(3, 1, 32, &[0, 0, 192, 127]), LIMITS).is_err());
 
