@@ -57,8 +57,8 @@ device-specific layout or parameter semantics.
 Every device uses one `device_frame`/`device_header` geometry: 14px header,
 3px horizontal header inset, 2px header gaps, 4px outer radius and 1px border.
 The header and surround both paint the injected `surface`, with no bottom rule.
-`with_device_selection` transforms only the frame's supplied palette; pass the
-original layout/control styles to the body and controls to retain their colors.
+`with_device_selection` returns independent header paint without transforming
+the neutral frame palette; body/control styles remain unchanged.
 There is no compact/standard frame switch or device-selected header density.
 
 Build the body with `device_body` (3px horizontal inset, 4px layout gutters),
@@ -85,6 +85,23 @@ The body uses the same mechanism with 3px side borders and rounded lower corners
 Header side borders protect the inner rounded top corners and clip oversized
 caller title/actions. The surface and border paint retain their actual radii.
 Numeric readouts retain the separate `CONTROL_CORNER_RADIUS` token.
+
+`device_compact_section` uses the same 3px rounded surface with 4px vertical
+structural insets instead of horizontal insets. Use it for narrow full-width
+controls; it preserves their width while containing paint/hits above and below.
+`device_dense_section` and `device_compact_row` use 1px corners and vertical
+insets when a tightly packed column or short row needs its full control height.
+Pick one boundary for a region, rather than nesting section insets. These are
+reusable density/containment policies, never device identities.
+
+`device_action` supplies the shared 12px compact action geometry, and
+`device_segment` adds the common readout rounding for direct selection.
+`DeviceActionStyle` injects foreground/background for both idle and hover; the
+product is responsible for contrast. `device_badge`, `device_identity_marker`,
+`device_focus_target`, `device_caption`, `device_inline_caption` and
+`device_divider` keep stateless device chrome inside this library. Captions
+separate full-column headings from intrinsic-width inline labels. Owners attach
+IDs, focus, handlers/tooltips and semantic colors; widgets own no device state.
 
 Extend this library first when a device needs a new visual capability. Add a
 small generic semantic primitive/layout option and rendered boundary coverage,

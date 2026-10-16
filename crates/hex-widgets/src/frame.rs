@@ -68,6 +68,42 @@ pub enum DeviceSectionSurface {
 /// so even full-height child artwork stays out of the rounded corner cutouts.
 /// Children may choose row/column/grid layout and explicit height independently.
 pub fn device_section(style: ControlStyle, surface: DeviceSectionSurface) -> Div {
+    section(
+        style,
+        surface,
+        DEVICE_SECTION_RADIUS,
+        DEVICE_SECTION_INSET,
+        false,
+    )
+}
+
+/// Rounded section with vertical structural insets instead of horizontal ones.
+/// Useful for narrow full-width controls: callers keep their width, and the
+/// top/bottom borders keep descendant paint and hits out of rounded corners.
+/// Use one section boundary; do not nest another inset around the same content.
+pub fn device_compact_section(style: ControlStyle, surface: DeviceSectionSurface) -> Div {
+    section(
+        style,
+        surface,
+        DEVICE_SECTION_RADIUS,
+        DEVICE_SECTION_INSET,
+        true,
+    )
+}
+
+/// Dense full-width sections use one-pixel corners/insets for tightly packed
+/// columns. This preserves fourteen/fifty-two-pixel controls at fixed heights.
+pub fn device_dense_section(style: ControlStyle, surface: DeviceSectionSurface) -> Div {
+    section(style, surface, 1.0, 1.0, true)
+}
+
+fn section(
+    style: ControlStyle,
+    surface: DeviceSectionSurface,
+    radius: f32,
+    inset: f32,
+    vertical: bool,
+) -> Div {
     let color = match surface {
         DeviceSectionSurface::Surround => style.surface,
         DeviceSectionSurface::Rail => style.rail,
@@ -77,12 +113,35 @@ pub fn device_section(style: ControlStyle, surface: DeviceSectionSurface) -> Div
         .min_w_0()
         .min_h_0()
         .relative()
-        .rounded(px(DEVICE_SECTION_RADIUS))
+        .rounded(px(radius))
         .overflow_hidden()
-        .border_l(px(DEVICE_SECTION_INSET))
-        .border_r(px(DEVICE_SECTION_INSET))
+        .when(vertical, |section| {
+            section.border_t(px(inset)).border_b(px(inset))
+        })
+        .when(!vertical, |section| {
+            section.border_l(px(inset)).border_r(px(inset))
+        })
         .border_color(rgb(color))
         .bg(rgb(color))
+}
+
+/// A short selectable row with one-pixel rounding and vertical containment.
+/// Fourteen-pixel controls fit in a seventeen-pixel row without width changes.
+pub fn device_compact_row(style: ControlStyle, active: bool) -> Div {
+    section(
+        style,
+        if active {
+            DeviceSectionSurface::Surround
+        } else {
+            DeviceSectionSurface::Rail
+        },
+        1.0,
+        1.0,
+        true,
+    )
+    .flex()
+    .items_center()
+    .gap(px(DEVICE_ROW_GUTTER))
 }
 
 /// A rail's shared surround and row gutters. Width/height belong to composition.

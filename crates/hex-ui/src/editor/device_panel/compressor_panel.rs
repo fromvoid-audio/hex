@@ -142,7 +142,10 @@ pub(super) fn render_body(
         .min_h_0();
     match curve {
         Ok(curve) => {
-            if let Some(plot) = hex_widgets::curve_plot(curve.points, super::control_style()) {
+            if let Some(plot) = hex_widgets::curve_plot(
+                curve.points,
+                theme::device_style(theme::DeviceStyleRole::Display),
+            ) {
                 graph = graph.child(plot);
             }
         }
@@ -156,63 +159,46 @@ pub(super) fn render_body(
             .child(theme::text(label))
             .child(control)
     };
-    hex_widgets::device_body(super::device_layout_style())
+    let rail = crate::device_composition::dense_rail(
+        crate::device_composition::rail_column()
+            .w(px(64.0))
+            .flex_shrink_0()
+            .child(ratio)
+            .child(attack)
+            .child(release),
+    )
+    .w(px(64.0))
+    .flex_shrink_0();
+    let toolbar = div()
+        .h(px(14.0))
+        .flex_shrink_0()
+        .flex()
+        .justify_between()
+        .child(field("thresh", threshold))
+        .child(field("out", output));
+    let footer = crate::device_composition::rail_column()
+        .child(
+            div()
+                .h(px(10.0))
+                .flex_shrink_0()
+                .text_size(px(7.0))
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                .child(theme::text("in -60…0 db · out -66…24 db")),
+        )
+        .child(
+            div()
+                .h(px(14.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(field("knee", knee))
+                .child(theme::text("static curve")),
+        );
+    let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
+    crate::device_composition::split_body(rail, main)
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
-        .w_full()
-        .h(px(super::DEVICE_FRAME_BODY_HEIGHT))
-        .flex()
-        .gap(px(4.0))
-        .py(px(3.0))
-        .child(
-            div()
-                .w(px(64.0))
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(ratio)
-                .child(attack)
-                .child(release),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .text_size(px(8.0))
-                .child(
-                    div()
-                        .h(px(14.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_between()
-                        .child(field("thresh", threshold))
-                        .child(field("out", output)),
-                )
-                .child(graph)
-                .child(
-                    div()
-                        .h(px(10.0))
-                        .flex_shrink_0()
-                        .text_size(px(7.0))
-                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                        .child(theme::text("in -60…0 db · out -66…24 db")),
-                )
-                .child(
-                    div()
-                        .h(px(14.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(field("knee", knee))
-                        .child(theme::text("static curve")),
-                ),
-        )
 }

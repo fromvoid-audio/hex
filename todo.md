@@ -1,3 +1,27 @@
+## production device compositions — pulse2473 / PR208, 16 october 2026
+
+The pure `hex-ui/src/device_composition.rs` slot seam supplies production
+geometry for Vector/Operator, Utility, Saturator, EQ8 and the other existing
+specialized/registered fallback panels, ready for the separate Pulse2474 gallery
+migration. Generic widget extensions provide rounded vertical/dense sections,
+short rows, intrinsic/full-width captions, identity/focus chrome, segments and
+one 12px header-action footprint. Product theme roles resolve idle/selected and
+hover text contrast; no device-ID header metric/style branch remains. Generic
+fallback slots receive dense rounded sections without width/control-footprint
+changes (+2px section row pitch); all three unsupported-state paths use the
+same semantic padded/scrollable ErrorDisplay composition.
+
+Utility retains its two 64px columns at 144px frame width; tightly packed dial
+columns retain their 52px controls. Operator geometry, page slots, focus/tab
+ownership, invalid-draft barriers and gestures remain unchanged. No DSP, schema,
+parameter laws/IDs, devices or features were added. Existing dated appearance
+history is preserved with current theme policy clarified. All 51 widget tests,
+86 device-panel tests and two device-theme tests pass; existing native review
+examples compile. Architecture/UI-style/GPUI-patch guards and formatting/diff
+checks pass. The coordinator owns final exact-source local CI, merge and
+optimized stable-path delivery. Optional native appearance/input acceptance is
+separate; no automated native interaction or listening claim is made.
+
 ## simple stable app installation — #2627 / PR246, 16 october 2026
 
 The repository installer stages and validates the optimized app before replacing

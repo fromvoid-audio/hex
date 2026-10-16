@@ -16,7 +16,7 @@ use hex_widgets::{
     ControlStyle, DialLayout, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
     NumericSpec, Selector, SelectorChanged, SelectorConfig, Toggle, ToggleChanged, ToggleConfig,
-    device_body, device_frame,
+    device_frame,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -52,9 +52,7 @@ const DEVICE_FRAME_HEIGHT: f32 = DEVICE_PANEL_HEIGHT
     - DEVICE_PANEL_BORDER_WIDTH
     - DEVICE_PANEL_HEADER_HEIGHT
     - (DEVICE_CHAIN_PADDING * 2.0);
-const DEVICE_FRAME_BODY_HEIGHT: f32 = DEVICE_FRAME_HEIGHT
-    - hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
-    - (hex_widgets::DEVICE_FRAME_BORDER_WIDTH * 2.0);
+const DEVICE_FRAME_BODY_HEIGHT: f32 = crate::device_composition::BODY_HEIGHT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct ParameterKey {
@@ -1335,7 +1333,7 @@ fn render_effect(
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
                 .map_err(|error| error.to_string().to_lowercase())
         });
-    let header_actions = device_actions(track, effects, index, cx);
+    let header_actions = device_actions(track, effects, index, selected, cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -1363,21 +1361,8 @@ fn render_effect(
                     sample_rate,
                 )
             } else {
-                let mut body = device_body(device_layout_style())
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(hex_widgets::DEVICE_ROW_GUTTER));
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
+                let controls = device_view.parameters.iter().map(|parameter| {
+                    parameter_control(
                         view,
                         cx,
                         device_id,
@@ -1386,9 +1371,14 @@ fn render_effect(
                             type_id: device_view.type_id,
                         },
                         parameter,
-                    ));
-                }
-                body
+                    )
+                });
+                crate::device_composition::wrapped_body(controls)
+                    .id(ElementId::Name(
+                        format!("device-body-{}", device_id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", device_id.value()))
+                    .overflow_y_scroll()
             };
             device_frame(
                 device_drag_title(
@@ -1404,19 +1394,13 @@ fn render_effect(
             )
         }
         Err(error) => {
-            let body = device_body(device_layout_style())
-                .id(ElementId::Name(
-                    format!("device-body-{}", device_id.value()).into(),
-                ))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .w_full()
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                .min_h_0()
-                .overflow_y_scroll()
-                .p(px(5.0))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .child(theme::text(format!("unsupported device state · {error}")));
+            let body = crate::device_composition::unsupported_body(theme::text(format!(
+                "unsupported device state · {error}"
+            )))
+            .id(ElementId::Name(
+                format!("device-body-{}", device_id.value()).into(),
+            ))
+            .debug_selector(move || format!("device-body-{}", device_id.value()));
             let title = theme::text(
                 device
                     .state()
@@ -1846,7 +1830,7 @@ fn render_instrument(
             .map_err(|error| error.to_string().to_lowercase())
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
-    let header_actions = instrument_actions(track, device, cx);
+    let header_actions = instrument_actions(track, device, selected, cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
@@ -1864,24 +1848,8 @@ fn render_instrument(
                     body,
                 )
             } else {
-                let mut body = device_body(device_layout_style())
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(hex_widgets::DEVICE_ROW_GUTTER));
-                if device_view.parameters.is_empty() {
-                    body = body.child(menu_message("no parameters"));
-                }
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
+                let controls = device_view.parameters.iter().map(|parameter| {
+                    parameter_control(
                         view,
                         cx,
                         device_id,
@@ -1890,7 +1858,16 @@ fn render_instrument(
                             type_id: device_view.type_id,
                         },
                         parameter,
-                    ));
+                    )
+                });
+                let mut body = crate::device_composition::wrapped_body(controls)
+                    .id(ElementId::Name(
+                        format!("device-body-{}", device_id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", device_id.value()))
+                    .overflow_y_scroll();
+                if device_view.parameters.is_empty() {
+                    body = body.child(menu_message("no parameters"));
                 }
                 device_frame(
                     device_drag_title(
@@ -1907,21 +1884,13 @@ fn render_instrument(
             }
         }
         Err(error) => {
-            let body = device_body(device_layout_style())
-                .id(ElementId::Name(
-                    format!("device-body-{}", device_id.value()).into(),
-                ))
-                .debug_selector(move || format!("device-body-{}", device_id.value()))
-                .w_full()
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                .min_h_0()
-                .overflow_y_scroll()
-                .p(px(5.0))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .child(theme::text(format!(
-                    "unsupported instrument state · {error}"
-                )));
+            let body = crate::device_composition::unsupported_body(theme::text(format!(
+                "unsupported instrument state · {error}"
+            )))
+            .id(ElementId::Name(
+                format!("device-body-{}", device_id.value()).into(),
+            ))
+            .debug_selector(move || format!("device-body-{}", device_id.value()));
             device_frame(
                 device_drag_title(
                     view,
@@ -1977,6 +1946,7 @@ fn render_instrument(
 fn instrument_actions(
     track: TrackId,
     device: &hex_project::Device,
+    selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
     let id = device.id();
@@ -1988,10 +1958,11 @@ fn instrument_actions(
             if bypassed { "⊘" } else { "●" },
             "toggle instrument bypass",
             if bypassed {
-                theme::color(theme::PaletteRole::Muted)
+                theme::DeviceActionRole::Muted
             } else {
-                theme::color(theme::PaletteRole::SecondaryText)
+                theme::DeviceActionRole::Normal
             },
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -2008,7 +1979,8 @@ fn instrument_actions(
             format!("instrument-replace-{}", id.value()),
             "↻",
             "replace instrument",
-            theme::color(theme::PaletteRole::Text),
+            theme::DeviceActionRole::Normal,
+            selected,
         )
         .on_click(cx.listener(|view, _, _, cx| {
             view.device_panel.add_menu_open = true;
@@ -2020,7 +1992,8 @@ fn instrument_actions(
             format!("instrument-remove-{}", id.value()),
             "×",
             "remove instrument",
-            theme::color(theme::PaletteRole::Primary),
+            theme::DeviceActionRole::Destructive,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -2126,34 +2099,27 @@ fn device_actions(
     track: TrackId,
     devices: &[hex_project::Device],
     index: usize,
+    selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
     let device = &devices[index];
     let id = device.id();
-    let action_size = if matches!(
-        device.state().type_id().as_str(),
-        Ok("hex.utility" | "hex.saturator" | "hex.compressor" | "hex.gate" | "hex.auto-pan")
-    ) {
-        12.0
-    } else {
-        14.0
-    };
     let bypassed = device.bypassed();
     let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
     let after_down = devices.get(index + 2).map(|device| device.id());
     let has_down = index + 1 < devices.len();
     let mut actions = div().flex().items_center().gap(px(2.0));
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("device-bypass-{}", id.value()),
             if bypassed { "⊘" } else { "●" },
             "toggle device bypass",
             if bypassed {
-                theme::color(theme::PaletteRole::Muted)
+                theme::DeviceActionRole::Muted
             } else {
-                theme::color(theme::PaletteRole::SecondaryText)
+                theme::DeviceActionRole::Normal
             },
-            action_size,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -2166,12 +2132,12 @@ fn device_actions(
         })),
     );
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("device-up-{}", id.value()),
             "‹",
             "move device left",
-            theme::color(theme::PaletteRole::Text),
-            action_size,
+            theme::DeviceActionRole::Normal,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if let Some(before) = before_up
@@ -2187,12 +2153,12 @@ fn device_actions(
         })),
     );
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("device-down-{}", id.value()),
             "›",
             "move device right",
-            theme::color(theme::PaletteRole::Text),
-            action_size,
+            theme::DeviceActionRole::Normal,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if has_down && finalize_controls(view, cx) {
@@ -2206,12 +2172,12 @@ fn device_actions(
         })),
     );
     actions.child(
-        action_button_sized(
+        action_button(
             format!("device-remove-{}", id.value()),
             "×",
             "remove device",
-            theme::color(theme::PaletteRole::Primary),
-            action_size,
+            theme::DeviceActionRole::Destructive,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -2226,36 +2192,22 @@ fn action_button(
     id: String,
     icon: &'static str,
     tooltip: &'static str,
-    color: u32,
+    role: theme::DeviceActionRole,
+    selected: bool,
 ) -> Stateful<Div> {
-    action_button_sized(id, icon, tooltip, color, 14.0)
-}
-
-fn action_button_sized(
-    id: String,
-    icon: &'static str,
-    tooltip: &'static str,
-    color: u32,
-    size: f32,
-) -> Stateful<Div> {
-    div()
-        .id(ElementId::Name(id.clone().into()))
-        .debug_selector(move || id.clone())
-        .size(px(size))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(if size <= 12.0 { 8.0 } else { 10.0 }))
-        .text_color(rgb(color))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-        .cursor(gpui::CursorStyle::PointingHand)
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::transport::MiniTooltip {
-                description: tooltip.into(),
-            })
-            .into()
+    hex_widgets::device_action(
+        theme::text(icon),
+        theme::device_header_action_style(selected, role),
+    )
+    .id(ElementId::Name(id.clone().into()))
+    .debug_selector(move || id.clone())
+    .cursor(gpui::CursorStyle::PointingHand)
+    .tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            description: tooltip.into(),
         })
-        .child(theme::text(icon))
+        .into()
+    })
 }
 
 fn parameter_control(

@@ -980,6 +980,35 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
         visual.debug_bounds(regular_body).is_some(),
         "regular EQ8 body"
     );
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry("device-plot-section")
+            .expect("shared rounded EQ8 graph")
+            .0
+            .top_left,
+        px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+    );
+    let eq_body = visual.debug_bounds(regular_body).unwrap();
+    for id in [3, 4, 5, 202] {
+        let bounds = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{id}", regular_device.value()).into_boxed_str(),
+            ))
+            .expect("selected-band control");
+        assert_eq!(
+            bounds.size,
+            size(
+                px(hex_widgets::MICRO_DIAL_WIDTH),
+                px(hex_widgets::MICRO_DIAL_HEIGHT)
+            )
+        );
+        assert!(bounds.origin.x >= eq_body.origin.x && bounds.right() <= eq_body.right());
+        assert!(
+            bounds.origin.y >= eq_body.origin.y
+                && bounds.bottom_left().y <= eq_body.bottom_left().y
+        );
+    }
     editor.update(cx, |view, cx| {
         view.focused_return = Some(return_track);
         cx.notify();
@@ -2556,6 +2585,29 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     let output = visual.debug_bounds(output_selector).expect("output column");
     assert_eq!(input.size.width, px(64.0));
     assert_eq!(output.size.width, px(64.0));
+    let scale = visual.update(|window, _| window.scale_factor());
+    for section in ["device-input-section", "device-output-section"] {
+        let bounds = visual
+            .debug_bounds(section)
+            .expect("shared rounded Utility section");
+        assert_eq!(
+            bounds.size.width,
+            px(64.0),
+            "rounded sections preserve control width"
+        );
+        let corners = visual
+            .rendered_surface_geometry(section)
+            .expect("painted rounded section")
+            .0;
+        assert_eq!(
+            corners.top_left,
+            px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+        );
+        assert_eq!(
+            visual.rendered_background(section),
+            Some(gpui::Background::from(rgb(device_layout_style().rail)))
+        );
+    }
     let body_selector = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     let body = visual.debug_bounds(body_selector).expect("Utility body");
     assert_eq!(body.size.width, px(140.0));

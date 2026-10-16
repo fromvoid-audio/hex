@@ -378,3 +378,154 @@ fn selection_changes_only_header_paint_without_moving_or_recoloring_the_frame(
         );
     }
 }
+
+struct CompactSectionFixture {
+    masks: Masks,
+}
+impl Render for CompactSectionFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut column = device_layout(DeviceLayout::Column).gap(px(2.0));
+        for name in ["dense-first", "dense-middle", "dense-last"] {
+            column = column.child(
+                div()
+                    .debug_selector(move || name.into())
+                    .w(px(64.0))
+                    .h(px(52.0))
+                    .flex_shrink_0()
+                    .bg(rgb(0x112233)),
+            );
+        }
+        div()
+            .flex()
+            .gap(px(8.0))
+            .child(
+                device_compact_section(STYLE, DeviceSectionSurface::Rail)
+                    .debug_selector(|| "vertical-section".into())
+                    .w(px(64.0))
+                    .h(px(162.0))
+                    .child(probe("vertical", &self.masks))
+                    .child(
+                        div()
+                            .debug_selector(|| "full-width-control".into())
+                            .w(px(64.0))
+                            .h(px(52.0))
+                            .bg(rgb(0x112233)),
+                    ),
+            )
+            .child(
+                device_dense_section(STYLE, DeviceSectionSurface::Rail)
+                    .debug_selector(|| "dense-section".into())
+                    .w(px(64.0))
+                    .h(px(162.0))
+                    .child(probe("dense", &self.masks))
+                    .child(column),
+            )
+            .child(
+                device_compact_row(STYLE, true)
+                    .debug_selector(|| "short-row".into())
+                    .w(px(92.0))
+                    .h(px(17.0))
+                    .child(
+                        div()
+                            .debug_selector(|| "short-control".into())
+                            .w(px(64.0))
+                            .h(px(14.0)),
+                    ),
+            )
+            .child(
+                device_action(
+                    "×".into(),
+                    DeviceActionStyle {
+                        background: 0x123456,
+                        text: 0xffffff,
+                        hover_background: 0xabcdef,
+                        hover_text: 0x000000,
+                    },
+                )
+                .id("shared-action")
+                .debug_selector(|| "shared-action".into()),
+            )
+    }
+}
+
+#[gpui::test]
+fn vertical_and_dense_sections_preserve_control_widths_heights_and_action_hover(
+    cx: &mut TestAppContext,
+) {
+    let masks: Masks = Rc::new(RefCell::new(Vec::new()));
+    let handle = cx.add_window(|_, _| CompactSectionFixture {
+        masks: masks.clone(),
+    });
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for (section, mask_name, inset, radius) in [
+        (
+            "vertical-section",
+            "vertical",
+            DEVICE_SECTION_INSET,
+            DEVICE_SECTION_RADIUS,
+        ),
+        ("dense-section", "dense", 1.0, 1.0),
+    ] {
+        let bounds = visual.debug_bounds(section).expect("section");
+        let mask = masks
+            .borrow()
+            .iter()
+            .find(|(name, _)| *name == mask_name)
+            .unwrap()
+            .1;
+        assert_eq!(bounds.size.width, px(64.0));
+        assert_eq!(mask.origin.x, bounds.origin.x, "no horizontal width tax");
+        assert_eq!(mask.size.width, bounds.size.width);
+        assert_eq!(mask.origin.y, bounds.origin.y + px(inset));
+        assert_eq!(mask.size.height, bounds.size.height - px(inset * 2.0));
+        assert_eq!(
+            visual
+                .rendered_surface_geometry(section)
+                .unwrap()
+                .0
+                .top_left,
+            px(radius).scale(scale)
+        );
+        assert_eq!(
+            visual.rendered_background(section),
+            Some(gpui::Background::from(rgb(STYLE.rail)))
+        );
+    }
+    for name in [
+        "full-width-control",
+        "dense-first",
+        "dense-middle",
+        "dense-last",
+    ] {
+        assert_eq!(
+            visual.debug_bounds(name).unwrap().size,
+            size(px(64.0), px(52.0))
+        );
+    }
+    let dense = visual.debug_bounds("dense-section").unwrap();
+    assert_eq!(
+        visual.debug_bounds("dense-last").unwrap().bottom_left().y,
+        dense.bottom_left().y - px(1.0)
+    );
+    assert_eq!(
+        visual.debug_bounds("short-control").unwrap().size.height,
+        px(14.0)
+    );
+    let action = visual.debug_bounds("shared-action").unwrap();
+    assert_eq!(
+        action.size,
+        size(px(DEVICE_HEADER_ACTION_SIZE), px(DEVICE_HEADER_ACTION_SIZE))
+    );
+    assert_eq!(
+        visual.rendered_background("shared-action"),
+        Some(gpui::Background::from(rgb(0x123456)))
+    );
+    visual.simulate_mouse_move(action.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background("shared-action"),
+        Some(gpui::Background::from(rgb(0xabcdef)))
+    );
+}

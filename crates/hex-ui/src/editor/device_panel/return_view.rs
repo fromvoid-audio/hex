@@ -201,29 +201,21 @@ pub(super) fn render_return_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let bypassed = device.bypassed();
-    let action_size = if matches!(
-        device.state().type_id().as_str(),
-        Ok("hex.utility" | "hex.saturator" | "hex.compressor" | "hex.gate" | "hex.auto-pan")
-    ) {
-        12.0
-    } else {
-        14.0
-    };
     let before_up = index.checked_sub(1).map(|previous| devices[previous].id());
     let after_down = devices.get(index + 2).map(|device| device.id());
     let has_down = index + 1 < devices.len();
     let mut actions = div().flex().items_center().gap(px(2.0));
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("device-bypass-{}", id.value()),
             if bypassed { "⊘" } else { "●" },
             "toggle device bypass",
             if bypassed {
-                theme::color(theme::PaletteRole::Muted)
+                theme::DeviceActionRole::Muted
             } else {
-                theme::color(theme::PaletteRole::SecondaryText)
+                theme::DeviceActionRole::Normal
             },
-            action_size,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -237,12 +229,12 @@ pub(super) fn render_return_effect(
     );
     if let Some(before) = before_up {
         actions = actions.child(
-            action_button_sized(
+            action_button(
                 format!("return-device-up-{}", id.value()),
                 "‹",
                 "move effect left",
-                theme::color(theme::PaletteRole::Text),
-                action_size,
+                theme::DeviceActionRole::Normal,
+                selected,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 if finalize_controls(view, cx) {
@@ -257,12 +249,12 @@ pub(super) fn render_return_effect(
     }
     if has_down {
         actions = actions.child(
-            action_button_sized(
+            action_button(
                 format!("return-device-down-{}", id.value()),
                 "›",
                 "move effect right",
-                theme::color(theme::PaletteRole::Text),
-                action_size,
+                theme::DeviceActionRole::Normal,
+                selected,
             )
             .on_click(cx.listener(move |view, _, _, cx| {
                 if finalize_controls(view, cx) {
@@ -276,12 +268,12 @@ pub(super) fn render_return_effect(
         );
     }
     actions = actions.child(
-        action_button_sized(
+        action_button(
             format!("return-device-remove-{}", id.value()),
             "×",
             "remove effect",
-            theme::color(theme::PaletteRole::Primary),
-            action_size,
+            theme::DeviceActionRole::Destructive,
+            selected,
         )
         .on_click(cx.listener(move |view, _, _, cx| {
             if finalize_controls(view, cx) {
@@ -315,21 +307,8 @@ pub(super) fn render_return_effect(
                         .map_or(48_000, |state| state.project.sample_rate()),
                 )
             } else {
-                let mut body = device_body(device_layout_style())
-                    .id(ElementId::Name(
-                        format!("device-body-{}", id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", id.value()))
-                    .w_full()
-                    .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap(px(hex_widgets::DEVICE_ROW_GUTTER));
-                for parameter in &device_view.parameters {
-                    body = body.child(parameter_control(
+                let controls = device_view.parameters.iter().map(|parameter| {
+                    parameter_control(
                         view,
                         cx,
                         id,
@@ -338,9 +317,14 @@ pub(super) fn render_return_effect(
                             type_id: device_view.type_id,
                         },
                         parameter,
-                    ));
-                }
-                body
+                    )
+                });
+                crate::device_composition::wrapped_body(controls)
+                    .id(ElementId::Name(
+                        format!("device-body-{}", id.value()).into(),
+                    ))
+                    .debug_selector(move || format!("device-body-{}", id.value()))
+                    .overflow_y_scroll()
             };
             device_frame(
                 device_drag_title(
@@ -364,11 +348,13 @@ pub(super) fn render_return_effect(
                     .as_str()
                     .unwrap_or("unknown device"),
             );
-            let body = device_body(device_layout_style())
-                .h(px(DEVICE_FRAME_BODY_HEIGHT))
-                .text_xs()
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .child(theme::text(format!("unsupported device state · {error}")));
+            let body = crate::device_composition::unsupported_body(theme::text(format!(
+                "unsupported device state · {error}"
+            )))
+            .id(ElementId::Name(
+                format!("device-body-{}", id.value()).into(),
+            ))
+            .debug_selector(move || format!("device-body-{}", id.value()));
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
                 theme::device_frame_style(selected),
