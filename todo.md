@@ -1,3 +1,18 @@
+## browser sample playback — #2637 / PR254, 16 october 2026
+
+Click and result-focused Right restart one-shot WAV audition on the existing
+output. Search arrows, result selection, folder navigation and Enter import
+retain their own behavior. Background decode is bounded and latest request wins;
+output recovery and accepted close invalidate old work. Audition mixes after the
+project master, independent of project/history and transport Stop. PCM returns
+through fixed queues for control-side reclamation, including completion/shutdown.
+See [runtime](docs/runtime.md#browser-sample-playback--pulse2637--pr254) for bounds,
+queue ownership and test coverage. Exact-candidate local CI/optimized delivery
+are recorded with PR254. Native acceptance remains: click/reclick a WAV, select
+another and press Right, rapidly change samples including an invalid file, verify
+search caret/folders/Enter, and listen with project stopped and playing. No native
+listening or physical deadline claim is made by source tests.
+
 ## combined mutable loop acceptance — #2165 / PR251, 16 october 2026
 
 Source-loop PR98/#2214 and transport-loop PR100/#2215 remain the original

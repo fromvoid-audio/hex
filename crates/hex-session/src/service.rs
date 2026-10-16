@@ -122,17 +122,7 @@ pub fn prepare_audio_preview(
     path: impl AsRef<Path>,
     project_sample_rate: u32,
 ) -> Result<AudioPreview, String> {
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let audio = hex_media::resample(
-        decoded.audio(),
-        project_sample_rate,
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: IMPORT_FRAME_LIMIT,
-        },
-    )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = prepare_sample_preview(path, project_sample_rate)?;
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
     let waveform = Arc::new(
@@ -144,6 +134,26 @@ pub fn prepare_audio_preview(
         sample_rate: project_sample_rate,
         waveform,
     })
+}
+
+/// Decode a bounded browser one-shot on a background worker, independent of
+/// canonical project/history. PCM is finite stereo at the actual output rate.
+pub fn prepare_sample_preview(
+    path: impl AsRef<Path>,
+    output_sample_rate: u32,
+) -> Result<hex_engine::Audio, String> {
+    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = hex_media::resample(
+        decoded.audio(),
+        output_sample_rate,
+        ResampleLimits {
+            max_source_frames: IMPORT_FRAME_LIMIT,
+            max_output_frames: IMPORT_FRAME_LIMIT,
+        },
+    )
+    .map_err(|error| error.to_string().to_lowercase())?;
+    Ok(audio)
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
@@ -2770,6 +2780,24 @@ mod service_tests {
         assert_eq!(preview.waveform.source_frames, 48);
         assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
         assert!(!preview.waveform.bins.is_empty());
+    }
+
+    #[test]
+    fn browser_sample_playback_decodes_at_output_rate_and_reports_bad_sources() {
+        let directory = TestDir::new();
+        let path = directory.0.join("tone.WAV");
+        fs::write(&path, wav_mono(&[4_000; 96])).unwrap();
+        let pcm = prepare_sample_preview(&path, 24_000).unwrap();
+        assert_eq!(pcm.sample_rate(), 24_000);
+        assert_eq!(pcm.frames().len(), 48);
+        assert!(
+            pcm.frames()
+                .iter()
+                .all(|frame| { frame[0] > 0.0 && frame[0] == frame[1] && frame[0].is_finite() })
+        );
+        assert!(prepare_sample_preview(directory.0.join("missing.wav"), 48_000).is_err());
+        fs::write(&path, b"bad wave").unwrap();
+        assert!(prepare_sample_preview(&path, 48_000).is_err());
     }
 
     #[test]
