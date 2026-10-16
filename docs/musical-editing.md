@@ -34,16 +34,21 @@ The click is a monitoring signal after the musical mix, independent of track
 and master gain. It is not a separate hardware cue output or a physical timing
 acceptance claim.
 
-Captured Arrangement clip move/copy, browser-audio and audio/MIDI edge trims now
-scroll horizontally while a held pointer is within a timeline lane's 24 px edge
-bands (capped to a quarter of narrow lanes). Scrolling uses the existing viewport
-horizon, at 1.5 viewport lengths per second, with at most 50 ms credited to a
-single delayed UI tick. It does not extend the horizon or scroll vertically.
-Each payload shares its internally advanced viewport with the native drag;
-source grab offsets and musical anchors remain captured. Preview recalculation
-does not edit project/history. Release still uses the existing canonical edit;
-manual viewport changes, source revision changes, busy edits and canceled drags
-cannot apply a stale preview. Entering the browser or toolbar does not scroll.
+Captured Arrangement clip move/copy and browser-audio drags scroll horizontally
+inside a timeline lane's 24 px edge bands (capped to a quarter of narrow lanes)
+and scroll the pinned track list vertically inside the Arrangement track body's
+top/bottom 24 px bands. Vertical ticks move at most one row per 50 ms and clamp
+to the first and last row. Browser imports retain their existing insert/append
+targeting. Horizontal scrolling keeps the existing viewport horizon and advances
+at 1.5 viewport lengths per second, crediting at most 50 ms to a delayed tick.
+Scrolls only change view state; they do not edit project/history.
+Audio/MIDI edge trims retain horizontal scrolling and do not scroll vertically.
+Native-device and piano-roll drags do not participate. Source grab offsets and
+musical anchors remain captured. A vertical scroll invalidates painted lane and
+insertion geometry immediately; drop preview resumes after the next paint, and
+a release before that paint cannot commit using old row positions. Manual
+viewport changes, source revision changes, busy edits and canceled drags cannot
+apply stale previews. Entering the browser or toolbar does not scroll.
 Time-selection/range scrolling retains its existing independent contract.
 
 Ruler scrubbing is drag seeking through the existing transport, preserving the
@@ -223,7 +228,8 @@ the clean final commit before readiness/merge; targeted development runs and
 source guards do not replace it. Include the callback allocation probes for
 metronome and clip gain. New tests cover click timing/partitioning/seek/loop/
 inheritance/export refusal, rendered clip scrolling and stale cancellation,
-bounded delayed ticks, and the gain cases listed in clip view.
+bounded delayed horizontal and vertical ticks, and the gain cases listed in
+clip view.
 
 The optimized exact-source candidate should be checked with this finite list:
 
@@ -231,9 +237,11 @@ The optimized exact-source candidate should be checked with this finite list:
   waveform height and verify Undo/Redo and save/reopen.
 - Enable the metronome while stopped and playing; check bar accents and tempo/
   meter changes, seek, pause, Stop and transport-loop wrap. Export stays click-free.
-- Hold a clip move/copy or audio/MIDI trim near each horizontal edge; preview
-  follows scrolling and release makes one edit. Cancel and Undo preserve source.
-- Drag browser audio near an edge; the final import uses the scrolled destination.
+- Hold a clip move/copy near horizontal and vertical edges; preview follows
+  scrolling and release makes one edit on the painted target track. Check both
+  ends of the track list, Cancel and Undo. Audio/MIDI trims scroll horizontally.
+- Drag browser audio near horizontal and vertical edges; the final import uses
+  the scrolled destination.
 - Check ruler drag seeking and final release after queued or prepared seeks.
 - Adjust pitch and source gain, split a loop with a nonzero phase/fade, move its
   tail to beat zero, Undo/Redo and save/reopen; check accepted output peaks.

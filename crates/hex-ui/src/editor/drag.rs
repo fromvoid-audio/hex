@@ -1117,6 +1117,13 @@ impl super::EditorView {
             self.drop_clip_to_new_track(drag, window, cx);
             return;
         }
+        if self.arrangement_bounds_epoch != self.drag_layout_generation
+            || self.drag_lane_epochs.get(&target_track) != Some(&self.drag_layout_generation)
+        {
+            clear(self);
+            cx.notify();
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             clear(self);
             return;
