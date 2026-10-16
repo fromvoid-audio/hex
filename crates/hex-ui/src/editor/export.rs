@@ -5,6 +5,20 @@ use hex_session::service::{ExportControl, ExportSignal, Request, Stem};
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
+    pub(super) fn selected_export_tracks(&self) -> Vec<Stem> {
+        self.state().map_or_else(Vec::new, |state| {
+            self.selected_track_ids()
+                .into_iter()
+                .filter_map(|id| {
+                    state.project.track(id).map(|track| Stem {
+                        id: hex_engine::OutputCaptureId::Track(id),
+                        name: track.name().to_owned(),
+                    })
+                })
+                .collect()
+        })
+    }
+
     pub(super) fn export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.export_pending {
             if let Some(control) = &self.export_control {
@@ -35,10 +49,7 @@ impl EditorView {
         let range = self.normalized_time_selection();
         let start = range.as_ref().map_or(0, |range| range.start());
         let frames = range.as_ref().map(|range| range.end() - range.start());
-        let selected: Vec<_> = range
-            .as_ref()
-            .map(|range| range.tracks().to_vec())
-            .unwrap_or_else(|| self.selected_track.into_iter().collect());
+        let selected = self.selected_track_ids();
         let returns: Vec<_> = self
             .state()
             .map(|state| {
@@ -51,22 +62,15 @@ impl EditorView {
             })
             .unwrap_or_default();
         let stems: Vec<_> = self
-            .state()
-            .map(|state| {
-                selected
-                    .iter()
-                    .filter_map(|id| state.project.track(*id))
-                    .map(|track| Stem {
-                        id: hex_engine::OutputCaptureId::Track(track.id()),
-                        name: track.name().to_owned(),
-                    })
-                    .chain(state.project.return_tracks().iter().map(|bus| Stem {
-                        id: hex_engine::OutputCaptureId::Return(bus.id()),
-                        name: bus.name().to_owned(),
-                    }))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .selected_export_tracks()
+            .into_iter()
+            .chain(self.state().into_iter().flat_map(|state| {
+                state.project.return_tracks().iter().map(|bus| Stem {
+                    id: hex_engine::OutputCaptureId::Return(bus.id()),
+                    name: bus.name().to_owned(),
+                })
+            }))
+            .collect();
         let handle = window.window_handle();
         let scope = window.prompt(
             PromptLevel::Info,

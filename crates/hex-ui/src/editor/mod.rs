@@ -79,6 +79,8 @@ mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
 mod time_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_selection_ui_test;
 mod tracks;
 mod transport;
 mod trim;
@@ -428,6 +430,7 @@ pub(super) struct EditorView {
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
+    track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
     gain_recorder: gain_recording::Recorder,
     routing_open: bool,
@@ -712,6 +715,7 @@ impl EditorView {
             recovery: RecoveryState::default(),
             offline_cursor: 0,
             selected_track: None,
+            track_selection: selection::TrackSelection::default(),
             gain_lane: gain_lane::GainLane::default(),
             gain_recorder: gain_recording::Recorder::default(),
             routing_open: false,
@@ -874,6 +878,18 @@ impl EditorView {
     }
 
     pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        if self
+            .track_selection
+            .select(&state.project, track, false, false)
+        {
+            self.focus_selected_track(track, window);
+        }
+    }
+
+    pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
         self.midi_hit_cycle = None;
@@ -885,6 +901,7 @@ impl EditorView {
         self.focused_return = None;
         self.selected_clip = None;
         self.midi_selection.clear();
+        self.update_track_selection_status();
     }
 
     pub(super) fn toggle_play(&mut self) {
@@ -1077,6 +1094,13 @@ impl EditorView {
             }
         }
         self.selected_track = Some(track);
+        if !self.track_selection.contains(track)
+            && let Some(state) = self.state.as_ref()
+        {
+            self.track_selection
+                .select(&state.project, track, false, false);
+            self.update_track_selection_status();
+        }
         self.selected_clip = Some(clip);
         true
     }
