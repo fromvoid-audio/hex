@@ -14,8 +14,37 @@ pub mod compensation;
 
 use std::{fmt, sync::Arc};
 
+mod audio_input_storage;
+mod audio_only_inputs;
+mod audio_preparation;
+mod session_audio_preparation;
+mod session_shared_preparation;
+mod session_structure_preparation;
+pub use session_shared_preparation::SessionSharedCapacity;
+mod session_tempo_preparation;
+pub use audio_preparation::{
+    ArrangementClipCapacity, ArrangementReturnCapacity, ArrangementReturnMetadata,
+    ArrangementRootCapacity, ArrangementTrackCapacity, ArrangementTrackMetadata,
+    AudioArrangementCapacity, AudioArrangementInput, AudioArrangementRefusal,
+    AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, ReturnFeedCapacity,
+};
+pub use session_audio_preparation::SessionSourceCapacity;
+pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInventoryMetadata};
+pub use session_structure_preparation::SessionStructureCapacity;
+pub use session_tempo_preparation::SessionTempoCapacity;
 pub mod audio_transform;
 mod native_device_view;
+pub use audio_input_storage::{
+    AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
+};
+pub use audio_only_inputs::{
+    AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
+    AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
+    ResidentSourceRefusal, StreamedSourceRefusal,
+};
+mod owned_shared;
+mod pcm_arc;
+pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
@@ -299,6 +328,7 @@ impl Tempo {
 pub struct Audio {
     sample_rate: u32,
     frames: Arc<AudioData>,
+    pcm_arc_receipt: Option<pcm_arc::PcmArcReceipt>,
 }
 #[derive(Debug)]
 struct AudioData {
@@ -322,6 +352,7 @@ impl Audio {
         }
         Ok(Self {
             sample_rate,
+            pcm_arc_receipt: None,
             frames: Arc::new(AudioData {
                 values: frames,
                 _derived: Some(reservation),
@@ -350,6 +381,7 @@ impl Audio {
         }
         Ok(Self {
             sample_rate,
+            pcm_arc_receipt: None,
             frames: Arc::new(AudioData {
                 values: frames,
                 _derived: None,
@@ -1679,7 +1711,7 @@ pub struct Project {
     master_gain: PreparedMasterGain,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
-    shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
     /// Worker-only observation of accepted transformed PCM, independent of cache residency.
@@ -1775,7 +1807,9 @@ impl Project {
             loop_region,
             master_gain,
             has_streamed_sources,
-            shared_contexts: Arc::new(shared_analytic::SharedAnalyticContextTable::default()),
+            shared_contexts: owned_shared::OwnedShared::new_owned(
+                shared_analytic::SharedAnalyticContextTable::default(),
+            ),
         })
     }
 
@@ -1789,7 +1823,7 @@ impl Project {
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
         project.return_buses = return_buses;
-        project.shared_contexts = shared_contexts;
+        project.shared_contexts = owned_shared::OwnedShared::untracked(shared_contexts);
         project.audible_end_frame = project
             .tracks
             .iter()
@@ -2846,6 +2880,7 @@ pub use playback::{
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
 };
 pub use prepared_revision::PreparedRevision;
+pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
 pub use prepared_tempo::{
     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
 };

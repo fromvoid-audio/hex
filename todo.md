@@ -15,6 +15,57 @@ appearance/input/listening and other-platform/reference parity remain separate,
 optional evidence; source/scene tests do not establish them. Historical PR,
 acceptance and delivery records remain intact. No native input was automated.
 
+## private streaming roots integrated with current main — #2537 / PR232
+
+Current routing, gain recording, transforms, UI and schema25 behavior remain intact.
+Private resident sources use the canonical Arc<AudioData> plus retained Vec and
+charge both allocation locations, including spare capacity and distinct handles.
+Session meter metadata uses the same persistent copy/normal cleanup discipline
+as tempo. Nonunity Arrangement/Session clip gains are preserved; unrepresented
+touch/transform/input-route graphs refuse before source moves. The root ownership
+and actual-supported-constructor fault suite passes69 tests. Full exact-source
+CI and remaining downstream accounting/native streaming acceptance stay separate.
+See [integration evidence](docs/streaming-prerequisite-integration.md).
+
+## 2026-10-15 — #2537 private PreparedRevision root checkpoint
+
+- Composed four actual shared owners around the existing sealed Project, Session
+  and preview. Reserved their four handles/layouts before source-bank movement;
+  no compiler rerun or public owner escape. Reports follow actual final storage.
+- Constructor-paired control restoration retains identical owners on refusal,
+  validates all restoration slots before moves and preserves partial custody,
+  original input-bank identity and the first destructor panic without retry.
+- Eight focused final-root controls plus the preparation suite and private
+  teardown seam cover supported constructors and unsupported-origin refusal.
+  All526 engine tests across22 test processes pass (four existing ignored), with
+  strict engine Clippy and source guards. Exact-source full local CI, guarded delivery and all downstream accounting/
+  native admission obligations remain open with the primary.
+
+## 2026-10-15 — #2537 private Arrangement root checkpoint
+
+- Extracted preparation-only source and constructor declarations from the exact
+  published foundation; current native/media/UI behavior remains separate.
+- Private Project-root assembly now owns actual final Track/Return containers,
+  feeds and shared context. Reports follow moved owners; teardown validates the
+  full restoration batch before normal child disposal.
+- Existing54 preparation tests and six new root tests pass on actual supported
+  Rust1.94 constructors. Pinned that verified toolchain for normal checks/builds;
+  other compiler origins retain refusal. Final shared PreparedRevision roots,
+  exact full CI and guarded delivery remain open.
+
+## 2026-10-15 — #2537 approved backend prerequisite extraction
+
+- Ported required routing/Return-feed/gain-envelope backend contracts from the
+  retained foundation, with neutral provenance metadata for lossless old saves;
+  no importer, typing, presets, accessibility or associated UI was imported.
+- Normal save schema23 preserves both host gains and selected backend fields.
+  Frozen main17–19 and foundation18–22 readers preserve their distinct shapes.
+  Five golden byte fixtures were generated with the exact original encoders.
+- Project/storage tests, targeted gain/Return playback and metered automation
+  capture tests, affected strict Clippy and architecture/GPUI/UI guards pass.
+  This is a source checkpoint; full final CI, tracked roots and downstream
+  delivery remain open. See docs/streaming-prerequisite-integration.md.
+
 ## production-backed device catalog and guard — #2474 / PR209, 16 october 2026
 
 The native layout_review catalog now includes the actual production composition

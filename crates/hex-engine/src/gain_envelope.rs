@@ -168,6 +168,54 @@ pub(crate) fn validate_project(project: &Project) -> Result<(), Invalid> {
     }
     Ok(())
 }
+pub(crate) mod persistent;
+fn fill_knots(
+    knots: &mut Vec<GainEnvelopeKnot>,
+    points: &[GainPoint],
+    tempo: &TempoMap,
+    mut fault: impl FnMut(usize) -> Result<(), Invalid>,
+) -> Result<(), Invalid> {
+    let mut attempts = 0;
+    let mut push = |beat: hex_project::BeatTime,
+                    gain: f64,
+                    outgoing: GainInterpolation|
+     -> Result<(), Invalid> {
+        let frame = tempo.beat_to_frame(beat).map_err(|e| Invalid(e.0))?;
+        let knot = GainEnvelopeKnot {
+            frame,
+            gain,
+            outgoing,
+        };
+        if knots
+            .last()
+            .is_some_and(|old: &GainEnvelopeKnot| old.frame == frame)
+        {
+            if let Some(last) = knots.last_mut() {
+                *last = knot;
+            }
+        } else {
+            knots.push(knot);
+        }
+        fault(attempts)?;
+        attempts += 1;
+        Ok(())
+    };
+    for (index, point) in points.iter().enumerate() {
+        push(point.beat, f64::from(point.gain), point.outgoing)?;
+        if point.outgoing == GainInterpolation::Linear
+            && let Some(next) = points.get(index + 1)
+        {
+            for marker in markers_between(tempo, point.beat, next.beat) {
+                let fraction = (marker.beat().raw() - point.beat.raw()) as f64
+                    / (next.beat.raw() - point.beat.raw()) as f64;
+                let gain = f64::from(point.gain)
+                    + (f64::from(next.gain) - f64::from(point.gain)) * fraction;
+                push(marker.beat(), gain, GainInterpolation::Linear)?;
+            }
+        }
+    }
+    Ok(())
+}
 impl PreparedGainEnvelope {
     pub(crate) fn constant(mix: PreparedTrackMix, fallback: f32) -> Self {
         Self {
@@ -207,42 +255,7 @@ impl PreparedGainEnvelope {
         if knots.capacity() > count {
             return Err(Invalid("prepared gain knot allocation exceeds its bound"));
         }
-        let mut push = |beat: hex_project::BeatTime,
-                        gain: f64,
-                        outgoing: GainInterpolation|
-         -> Result<(), Invalid> {
-            let frame = tempo.beat_to_frame(beat).map_err(|e| Invalid(e.0))?;
-            let knot = GainEnvelopeKnot {
-                frame,
-                gain,
-                outgoing,
-            };
-            if knots
-                .last()
-                .is_some_and(|old: &GainEnvelopeKnot| old.frame == frame)
-            {
-                if let Some(last) = knots.last_mut() {
-                    *last = knot;
-                }
-            } else {
-                knots.push(knot);
-            }
-            Ok(())
-        };
-        for (index, point) in points.iter().enumerate() {
-            push(point.beat, f64::from(point.gain), point.outgoing)?;
-            if point.outgoing == GainInterpolation::Linear
-                && let Some(next) = points.get(index + 1)
-            {
-                for marker in markers_between(tempo, point.beat, next.beat) {
-                    let fraction = (marker.beat().raw() - point.beat.raw()) as f64
-                        / (next.beat.raw() - point.beat.raw()) as f64;
-                    let gain = f64::from(point.gain)
-                        + (f64::from(next.gain) - f64::from(point.gain)) * fraction;
-                    push(marker.beat(), gain, GainInterpolation::Linear)?;
-                }
-            }
-        }
+        fill_knots(&mut knots, points, tempo, |_| Ok(()))?;
         Ok(Some(Self {
             knots,
             mix,
@@ -251,6 +264,21 @@ impl PreparedGainEnvelope {
             touch: PreparedTouch::prepare(lane, tempo)?,
             fallback,
         }))
+    }
+    pub(crate) fn checked_backing_bytes(&self) -> Result<usize, Invalid> {
+        let Self {
+            knots,
+            mix: _,
+            authored_points: _,
+            authored_units: _,
+            touch,
+            fallback: _,
+        } = self;
+        knots
+            .capacity()
+            .checked_mul(std::mem::size_of::<GainEnvelopeKnot>())
+            .and_then(|bytes| bytes.checked_add(touch.allocated_bytes()))
+            .ok_or(Invalid("gain capacity overflow"))
     }
     pub(crate) fn knots(&self) -> &[GainEnvelopeKnot] {
         &self.knots

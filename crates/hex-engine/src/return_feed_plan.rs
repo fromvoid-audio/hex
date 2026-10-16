@@ -1,5 +1,6 @@
 //! Control-side plan for the admitted stereo, post-Return additive feed DAG.
 //! Existing track sends and Main summation remain owned by their old kernels.
+pub(crate) mod persistent;
 use crate::{Frame, Invalid};
 
 #[derive(Clone, Copy, Debug)]
@@ -15,6 +16,11 @@ pub(crate) struct ReturnFeedPlan {
     outgoing: Vec<Vec<Feed>>,
 }
 impl ReturnFeedPlan {
+    pub(crate) fn has_no_owned_storage(&self) -> bool {
+        let Self { order, outgoing } = self;
+        order.capacity() == 0 && outgoing.capacity() == 0
+    }
+
     pub(crate) fn prepare(project: &hex_project::Project) -> Result<Self, Invalid> {
         if project.authored_routing().is_empty() {
             return Ok(Self::default());
@@ -67,6 +73,20 @@ impl ReturnFeedPlan {
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.order.is_empty()
+    }
+    pub(crate) fn edges(&self) -> impl Iterator<Item = (usize, usize, u64, f32)> + '_ {
+        self.outgoing
+            .iter()
+            .enumerate()
+            .flat_map(|(source, feeds)| {
+                feeds
+                    .iter()
+                    .map(move |feed| (source, feed.destination, feed.id, feed.gain))
+            })
+    }
+    #[cfg(test)]
+    pub(crate) fn test_edges(&self) -> impl Iterator<Item = (usize, usize, u64, f32)> + '_ {
+        self.edges()
     }
     pub(crate) fn order(&self) -> &[usize] {
         &self.order

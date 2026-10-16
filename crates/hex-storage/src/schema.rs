@@ -2,6 +2,7 @@ pub(crate) mod branch_audio;
 pub(crate) mod combined;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
+mod host_gain;
 pub(crate) mod musical_audio;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
@@ -2045,10 +2046,10 @@ impl DocumentV11 {
             return playable_routing::DocumentV24::decode(bytes);
         }
         if header.version == 23 {
-            return combined::decode(bytes);
+            return host_gain::decode_historical(bytes, 23);
         }
         if header.version == 22 {
-            return gain_touch::DocumentV22::decode(bytes);
+            return host_gain::decode_historical(bytes, 22);
         }
         if header.version == 21 {
             return gain_envelopes::DocumentV21::decode(bytes);

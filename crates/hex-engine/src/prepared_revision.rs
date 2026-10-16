@@ -4,6 +4,7 @@ use crate::{
     compile::PreparedAudioSource,
 };
 use hex_devices::SineTable;
+pub(crate) mod assembly;
 use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
@@ -74,9 +75,9 @@ impl PreparedMutableTrackRevision {
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
-    arrangement: Arc<PlaybackProject>,
-    session: Arc<PreparedSessionInventory>,
-    midi_preview: Arc<MidiArrangementPreview>,
+    arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
+    session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
+    midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
     gain_recording_track: Option<TrackId>,
 }
@@ -159,14 +160,9 @@ impl PreparedRevision {
             .track(track)
             .ok_or(Invalid("gain recording track no longer exists"))?;
         let prepared = &mut self;
-        let arrangement = Arc::get_mut(&mut prepared.arrangement)
-            .ok_or(Invalid("gain recording preparation is already shared"))?;
-        let selected = arrangement
-            .tracks
-            .iter_mut()
-            .find(|candidate| candidate.canonical_track_id() == Some(track))
-            .ok_or(Invalid("gain recording compiled track is unavailable"))?;
-        selected.arm_gain_recording(canonical.gain(), canonical.balance())?;
+        prepared
+            .arrangement
+            .arm_gain_recording(track, canonical.gain(), canonical.balance())?;
         prepared.gain_recording_track = Some(track);
         Ok(self)
     }
@@ -298,9 +294,9 @@ impl PreparedRevision {
                 midi_bank_references,
             )?;
             Ok(Self {
-                arrangement: Arc::new(arrangement),
-                session: Arc::new(session),
-                midi_preview: Arc::new(midi_preview),
+                arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+                session: crate::owned_shared::OwnedShared::new_owned(session),
+                midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
                 mutable_track_revisions,
                 gain_recording_track: None,
             })
@@ -405,9 +401,9 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
-            arrangement: Arc::new(arrangement),
-            session: Arc::new(session),
-            midi_preview: Arc::new(midi_preview),
+            arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
+            session: crate::owned_shared::OwnedShared::new_owned(session),
+            midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
             gain_recording_track: None,
         })
