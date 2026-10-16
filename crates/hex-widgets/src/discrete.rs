@@ -277,6 +277,7 @@ impl gpui::Render for Toggle {
                 .bg(gpui::rgba(0))
                 .child(
                     div()
+                        .debug_selector(|| format!("{}-indicator", self.id))
                         .size(px(marker_size))
                         .border_1()
                         .border_color(rgb(if self.focus.is_focused(window) {
@@ -841,6 +842,7 @@ pub fn panel_tab(label: gpui::SharedString, active: bool, style: ControlStyle) -
         .gap(gpui::px(3.0))
         .border_b_1()
         .border_color(gpui::rgb(if active { style.accent } else { style.border }))
+        .focus(move |focus| focus.border_color(gpui::rgb(style.focus_marker)))
         .text_size(gpui::px(8.0))
         .text_color(gpui::rgb(style.text))
         .child(

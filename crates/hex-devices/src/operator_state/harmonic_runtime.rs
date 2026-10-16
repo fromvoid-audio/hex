@@ -139,6 +139,9 @@ impl PreparedInstrumentHistoryRetarget for Target {
     }
 }
 impl PreparedMutableInstrumentRuntime for Factory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn runtime_version(&self) -> u32 {
         3
     }

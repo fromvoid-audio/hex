@@ -26,6 +26,15 @@ widgets = (
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',
+    # Generic device layout components accept already-themed child elements.
+    'hex_widgets::device_display(', 'hex_widgets::device_body(',
+    'hex_widgets::device_section(', 'hex_widgets::device_layout(',
+    'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
+    'hex_widgets::device_split(',
+    # Shared production composition slots are already-bound native view elements.
+    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'range)', 'footer)', 'rail)',
+    'first)', 'second)', 'preview)', 'tabs)', 'rails)',
+    'hex_widgets::device_divider(', 'hex_widgets::device_identity_marker(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
@@ -33,11 +42,14 @@ widgets = (
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
-    'source_adjust_button(',
+    'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    'super::waveform::prepared_waveform_view_cached(',
+    'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
+    'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
@@ -67,6 +79,9 @@ widgets = (
     'super::device_panel::bottom_bar(', 'overview)',
     # Shared host meter strip supplies lowercase tooltip text through theme::text.
     'gain_meters::render(', 'super::gain_meters::render(',
+    # Typed routing/recording components normalize their labels at the boundary.
+    'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    'binding.entity.clone())', 'super::super::gain_recording::controls(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

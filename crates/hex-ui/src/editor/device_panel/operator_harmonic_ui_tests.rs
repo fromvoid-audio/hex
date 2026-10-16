@@ -37,6 +37,11 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     let bounds = visual
         .debug_bounds(graph_id)
         .expect("64-column painter is visible");
+    // Harmonic tools must stay above the fixed page tabs and below the painter.
+    let tools = visual.debug_bounds("operator-harmonic-tools").unwrap();
+    let tab_bounds = visual.debug_bounds(tab).unwrap();
+    assert!(bounds.bottom() <= tools.top());
+    assert!(tools.bottom() <= tab_bounds.top());
     let from = point(
         bounds.origin.x + px(1.0),
         bounds.origin.y + bounds.size.height * 0.75,

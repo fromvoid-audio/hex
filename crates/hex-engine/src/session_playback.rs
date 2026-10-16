@@ -298,6 +298,8 @@ impl SessionHandoffReport {
 pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
+    gain_recording_override: Option<f32>,
+    compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
@@ -337,6 +339,7 @@ pub struct SessionPlayback {
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
     spans: MidiSpanBuffer,
+    analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
@@ -360,6 +363,29 @@ impl fmt::Debug for SessionPlayback {
             .field("candidate_admission_open", &self.candidate_admission_open)
             .finish()
     }
+}
+
+fn effective_midi_route(
+    revision: &PreparedRevision,
+    routes: &[TrackRoute],
+    index: usize,
+) -> Result<TrackRoute, SessionPlaybackError> {
+    let mut route = *routes
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    let track = revision
+        .arrangement()
+        .tracks()
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    if let Some(source) = track.midi_source_index {
+        let source = routes
+            .get(source)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        route.owner = source.owner;
+        route.pending = source.pending;
+    }
+    Ok(route)
 }
 
 impl SessionPlayback {
@@ -806,9 +832,18 @@ impl SessionPlayback {
             .try_reserve_exact(release_capacity)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let compensation = revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .transpose()
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
+            gain_recording_override: None,
+            compensation,
             device_metering: false,
             revision,
             periodic_tempo,
@@ -844,6 +879,7 @@ impl SessionPlayback {
             suppressions,
             suppression_scratch,
             spans: MidiSpanBuffer::default(),
+            analytic_import: analytic_import::ImportPlan::new()?,
             performance_frame: 0,
             arrangement_frame: 0,
             arrangement_loop_pass: 0,
@@ -1208,3 +1244,12 @@ mod render_diagnostic_tests {
         );
     }
 }
+mod gain_recording;
+#[cfg(test)]
+mod return_feed_tests;
+
+#[cfg(test)]
+mod compensation_tests;
+
+#[cfg(test)]
+mod routing_tests;

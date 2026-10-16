@@ -17,7 +17,9 @@ The waveform overview follows the authored spectrum, range and Repeat.
 
 A stroke uses the existing 64-parameter snapshot gesture: preview is transient,
 commit adds one history entry, and save/Undo/navigation use existing gesture
-barriers. Cached User values, range and Repeat survive Undo, Redo and save/open.
+barriers. Snapshot patching preserves host input/output gain staging through
+metadata migration. The harmonic tool row stays inside the graph area, above
+the shared stationary page tabs; rendered bounds guard against overlap. Cached User values, range and Repeat survive Undo, Redo and save/open.
 Painting a builtin seeds its magnitudes and selects User. Choosing a builtin
 retains the last User bank; choosing User restores it. Painting a builtin again
 starts a fresh bank from that builtin. Sine seeds the fundamental, saw 1/n,
@@ -77,7 +79,9 @@ FM sidebands are not a complete anti-aliasing solution. Eight independent
 Clenshaw residues evaluate the sine series. A process-lifetime immutable
 131,073-f64 phase basis (1,048,584 payload bytes) is initialized on control and
 borrowed directly during sampling. It contains no authored values and has no
-callback reclamation. Original builtin tables and builtin endpoints are retained.
+callback reclamation. Original builtin tables and builtin endpoints are retained. Filter preparation
+propagates invalid settings/rates rather than panicking, and interrupted painter
+ownership cancels the gesture through the ordinary control path.
 
 ## Verification and limits
 

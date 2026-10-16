@@ -1386,6 +1386,7 @@ impl EditorView {
                         label: name.clone(),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
+                        scroll: Default::default(),
                         snap_grid,
                         snap_modifier: Rc::new(Cell::new(false)),
                         copy_modifier: Rc::new(Cell::new(false)),

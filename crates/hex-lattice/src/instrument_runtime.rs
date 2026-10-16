@@ -9,6 +9,14 @@ use std::{any::Any, fmt};
 /// No device owns this clock or constructs a project tempo map on the callback.
 pub trait NativeInstrumentClock {
     fn beat_at_offset(&self, offset: usize) -> Option<u64>;
+    /// Optional exact content-frame origin and loop pass at an aligned input.
+    /// None is explicit warmup/unavailable timing, never a guessed frame zero.
+    fn arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
+    fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
 }
 
 /// One note-on or note-off event in caller-owned block storage.
@@ -93,6 +101,13 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Fixed algorithmic buffering latency at this prepared sample rate.
+    /// Unknown is explicit; envelope attack, filter phase and musical release
+    /// are not buffering latency. A mutable factory must agree with its source.
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        None
+    }
+
     /// Opt-in, allocation-free exact source-law authorization. Other providers
     /// retain the no-chase policy. The host also proves source/route identity.
     fn can_import_analytic_context(

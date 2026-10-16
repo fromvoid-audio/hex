@@ -153,6 +153,7 @@ pub struct CatalogFootprint {
 /// descriptor validation and finite-source admission have completed.
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedCatalog {
+    pub(crate) data: crate::WorkerData,
     pub(crate) footprint: CatalogFootprint,
     pub(crate) sources: Vec<StreamedSourceMetadata>,
 }

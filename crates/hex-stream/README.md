@@ -64,3 +64,22 @@ Project editing, persistence, UI, CPAL, device callbacks, WAV parsing or hashing
 It does not replace the resident media bank or make streamed playback available
 to the native application until the `hex-audio` and project/session publication
 paths explicitly own and retain its endpoint/catalog.
+
+## Borrowed DATA inventory
+
+The control-only `AudioStreamStorageLedger` composes the engine's sealed borrowed
+root ledger with actual control/pages pairs and explicitly borrowed caller leases.
+It captures actual constructor capacities, counts an entire actual domain once,
+and preserves separate owning-handle, source-binding and retirement obligations.
+Only the named listed DATA contract can be complete; excluded opaque costs remain
+explicit obligations and `require_complete` refuses. No generic page provider can
+mint this report, and no publication/lifecycle capability follows. Queries use the
+existing control mutexes; never call them from a callback.
+
+Queue slot DATA declarations cover only the fixed repository Cargo invocation
+with pinned compiler/Cargo.lock, observed source-file checks and exact required
+CI/allocation probes. Build-only sha2 checks those observed files; build.rs cannot
+attest resolved sources for arbitrary custom Cargo `--config`/source replacement.
+Unsupported observations stay Unknown. Ordinary runtime behavior and all
+component limits remain unchanged. See the exhaustive
+[DATA/obligation manifest](../../docs/audio-only-storage-accounting.md).

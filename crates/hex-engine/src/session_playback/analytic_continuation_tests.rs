@@ -102,6 +102,10 @@ fn signal(age: u64, gate: u64, gain: f64) -> [f32; 2] {
 }
 
 impl PreparedNativeInstrument for Context {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -421,7 +425,7 @@ fn provider_render_refusal_rolls_back_absolute_clock_and_seek_resets_transition(
 
 #[test]
 fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
-    let runtime = playing(&fixture(1, 0, 0, 8 << 32), false);
+    let mut runtime = playing(&fixture(1, 0, 0, 8 << 32), false);
     assert_eq!(
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
         344
@@ -431,6 +435,17 @@ fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
     assert_eq!(runtime.analytic_continuation_scratch.len(), MAX_TRACKS);
     assert_eq!(runtime.analytic_continuation_scratch.capacity(), MAX_TRACKS);
     let actual = runtime.accounted_runtime_storage_bytes().unwrap();
+    let seeds = std::mem::take(&mut runtime.analytic_import.seeds);
+    let proofs = std::mem::take(&mut runtime.analytic_import.proofs);
+    let without_import = runtime.accounted_runtime_storage_bytes().unwrap();
+    assert_eq!(
+        actual - without_import,
+        seeds.capacity() * std::mem::size_of::<hex_lattice::NativeInstrumentAnalyticSeed>()
+            + proofs.capacity()
+                * std::mem::size_of::<Option<crate::mutable_instrument::MutableOccurrence>>()
+    );
+    runtime.analytic_import.seeds = seeds;
+    runtime.analytic_import.proofs = proofs;
     let admitted =
         super::super::preroll::arrangement_runtime_storage_preflight_bytes(&runtime.revision)
             .unwrap();

@@ -3,6 +3,8 @@
 // moves through the bounded worker, ready and return queues.
 #![allow(clippy::vec_box)]
 
+mod footprint;
+pub use footprint::{AllocationData, EndpointData, StreamDataFootprint, TransportData, WorkerData};
 mod endpoint;
 mod runtime;
 mod types;
@@ -10,8 +12,11 @@ mod worker;
 
 pub use endpoint::EndpointStats;
 pub use runtime::{
-    CatalogLease, PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
-    StreamPairMismatch, StreamRuntime,
+    AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
+    AudioStreamStorageSummary, CatalogLease, OpaqueStreamCost, OpaqueStreamHandleGroup,
+    PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
+    StreamHandleLocation, StreamOwningHandleObligation, StreamPairMismatch, StreamRuntime,
+    StreamSourceDomainObligation,
 };
 pub use types::{
     CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,

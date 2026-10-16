@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
 mod device_reorder_tests;
+mod device_theme_tests;
 mod gate_ui_tests;
 mod navigation_ui_tests;
 mod operator_enable_ui_tests;
@@ -227,6 +228,20 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let bodies: Vec<_> = [instrument, effect]
+        .into_iter()
+        .map(|device| {
+            let selector: &'static str =
+                Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+            (
+                selector,
+                visual.debug_bounds(selector).expect("device body"),
+                visual
+                    .rendered_background(selector)
+                    .expect("device body paint"),
+            )
+        })
+        .collect();
     for (prefix, device) in [("instrument-device", instrument), ("effect-device", effect)] {
         let bounds = visual
             .debug_bounds(Box::leak(
@@ -241,6 +256,10 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
             assert_eq!(view.state.as_ref().expect("state").revision, revision);
             assert_eq!(view.worker_requests_pending, 0);
         });
+        for (selector, bounds, paint) in &bodies {
+            assert_eq!(visual.debug_bounds(selector), Some(*bounds));
+            assert_eq!(visual.rendered_background(selector), Some(*paint));
+        }
     }
     // Right-clicking a different card must not change the left-click selection.
     let bounds = visual
@@ -289,6 +308,11 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let body: &'static str = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let body_bounds = visual.debug_bounds(body).expect("return device body");
+    let body_paint = visual
+        .rendered_background(body)
+        .expect("return device body paint");
     let knob = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
@@ -303,6 +327,14 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(body), Some(body_bounds));
+    assert_eq!(visual.rendered_background(body), Some(body_paint));
+    assert_eq!(
+        visual.rendered_background("device-frame-header"),
+        Some(gpui::Background::from(gpui::rgb(
+            device_layout_style().accent
+        )))
+    );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device))
     });
@@ -950,6 +982,35 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
         visual.debug_bounds(regular_body).is_some(),
         "regular EQ8 body"
     );
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry("device-plot-section")
+            .expect("shared rounded EQ8 graph")
+            .0
+            .top_left,
+        px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+    );
+    let eq_body = visual.debug_bounds(regular_body).unwrap();
+    for id in [3, 4, 5, 202] {
+        let bounds = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{id}", regular_device.value()).into_boxed_str(),
+            ))
+            .expect("selected-band control");
+        assert_eq!(
+            bounds.size,
+            size(
+                px(hex_widgets::MICRO_DIAL_WIDTH),
+                px(hex_widgets::MICRO_DIAL_HEIGHT)
+            )
+        );
+        assert!(bounds.origin.x >= eq_body.origin.x && bounds.right() <= eq_body.right());
+        assert!(
+            bounds.origin.y >= eq_body.origin.y
+                && bounds.bottom_left().y <= eq_body.bottom_left().y
+        );
+    }
     editor.update(cx, |view, cx| {
         view.focused_return = Some(return_track);
         cx.notify();
@@ -2527,6 +2588,29 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     let output = visual.debug_bounds(output_selector).expect("output column");
     assert_eq!(input.size.width, px(64.0));
     assert_eq!(output.size.width, px(64.0));
+    let scale = visual.update(|window, _| window.scale_factor());
+    for section in ["device-input-section", "device-output-section"] {
+        let bounds = visual
+            .debug_bounds(section)
+            .expect("shared rounded Utility section");
+        assert_eq!(
+            bounds.size.width,
+            px(64.0),
+            "rounded sections preserve control width"
+        );
+        let corners = visual
+            .rendered_surface_geometry(section)
+            .expect("painted rounded section")
+            .0;
+        assert_eq!(
+            corners.top_left,
+            px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+        );
+        assert_eq!(
+            visual.rendered_background(section),
+            Some(gpui::Background::from(rgb(device_layout_style().rail)))
+        );
+    }
     let body_selector = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     let body = visual.debug_bounds(body_selector).expect("Utility body");
     assert_eq!(body.size.width, px(140.0));
@@ -3472,7 +3556,9 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
         view.state = Some(Arc::new(ViewState {
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -3783,7 +3869,9 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
         view.state = Some(Arc::new(ViewState {
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -3940,7 +4028,9 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -4078,7 +4168,9 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -4969,7 +5061,9 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
     let changed_state = Arc::new(ViewState {
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
+        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
         timeline_frames: state.timeline_frames,
         can_undo: project_editor.can_undo(),
         can_redo: project_editor.can_redo(),
@@ -5046,4 +5140,40 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
         &clipped_card,
         Some(&viewport),
     ));
+}
+
+#[gpui::test]
+fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("sine")
+        .id();
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [1280.0, 880.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        visual.run_until_parked();
+        for device in [instrument, effect] {
+            let title = visual
+                .debug_bounds(Box::leak(
+                    format!("device-drag-title-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("title");
+            let body = visual
+                .debug_bounds(Box::leak(
+                    format!("device-body-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("body");
+            assert_eq!(
+                title.size.height,
+                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+            );
+            assert_eq!(body.origin.y, title.bottom_left().y);
+            assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
+        }
+    }
 }
