@@ -1,7 +1,11 @@
 # controller input
 
-The native editor's **controller input ↻** control discovers up to 127 CoreMIDI
-input endpoints. Choose a port and channel 1–16. The selected enabled instrument
+The existing editor status bar's **midi** button opens a temporary controller
+panel above the bar. **controller input · discover ↻** discovers up to 127
+CoreMIDI input endpoints; choose a port and channel 1–16 in the panel. Outside
+click or Escape dismisses it and restores focus. The midi button highlights while
+connected and its tooltip reports off, pending or connected. The panel takes no
+editing viewport height. The selected enabled instrument
 receives channel pressure, pitch bend and CC1; hardware notes, sustain, recording
 and MPE are outside this workflow. Input is off by default and is not persisted.
 Unsupported instruments or legacy Vector modes are rejected before port opening.

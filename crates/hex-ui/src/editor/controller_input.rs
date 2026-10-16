@@ -1,7 +1,9 @@
 //! Optional controller selection; no hardware notes, recording, sustain or MPE.
 use super::EditorView;
 use crate::theme;
-use gpui::{AppContext, Context, Div, Entity, div, prelude::*, px};
+use gpui::{
+    AppContext, Context, Div, Entity, FocusHandle, MouseButton, Window, div, prelude::*, px, rgb,
+};
 use hex_engine::live_expression::LiveExpressionInput;
 use hex_widgets::{Selector, SelectorChanged, SelectorConfig};
 use std::sync::Arc;
@@ -21,6 +23,8 @@ pub(super) struct ControllerInput {
     activation: u64,
     discovery: u64,
     blocked_for_streaming: bool,
+    menu_focus: Option<FocusHandle>,
+    previous_focus: Option<FocusHandle>,
 }
 impl ControllerInput {
     fn connection_event(
@@ -310,14 +314,158 @@ impl EditorView {
             self.error = Some(error.into());
         }
     }
+    pub(super) fn controller_input_is_open(&self) -> bool {
+        self.controller_input.menu_focus.is_some()
+    }
+    fn close_controller_input_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.controller_input.menu_focus = None;
+        window.focus(
+            self.controller_input
+                .previous_focus
+                .take()
+                .as_ref()
+                .unwrap_or(&self.focus),
+        );
+        cx.notify();
+    }
+    fn open_controller_input_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.controller_input_is_open() {
+            self.close_controller_input_menu(window, cx);
+            return;
+        }
+        self.controller_input.previous_focus = window.focused(cx);
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.controller_input.menu_focus = Some(focus);
+        cx.notify();
+    }
     pub(super) fn controller_input_row(&self, cx: &mut Context<Self>) -> Div {
-        div().h(px(26.0)).flex().gap(px(8.0)).items_center().px(px(8.0))
-            .child(div().id("controller-input-refresh").cursor_pointer().child(theme::text("controller input ↻"))
-                .tooltip(|_, cx| cx.new(|_| super::transport::MiniTooltip { description: "pressure, pitch bend and mod wheel for the selected instrument · click to discover ports · hardware notes, sustain, recording and mpe are not included".into() }).into())
-                .on_click(cx.listener(|view, _, _, cx| view.refresh_controller_inputs(cx))))
+        let connection = if self.controller_input.connected {
+            "connected"
+        } else if self.controller_input.selected_port.is_some()
+            && self
+                .controller_input
+                .input
+                .as_ref()
+                .is_some_and(|input| !input.is_cancelled())
+        {
+            "pending"
+        } else {
+            "off"
+        };
+        let description = theme::text(format!(
+            "controller input {connection} · pressure, pitch bend and mod wheel for the selected instrument · click to choose port and channel · hardware notes, sustain, recording and mpe are not included"
+        ));
+        div().w(px(46.0)).flex_shrink_0().children([div()
+            .id("controller-input-menu")
+            .debug_selector(|| "controller-input-menu".into())
+            .h(px(20.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_color(rgb(theme::color(if self.controller_input.connected {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+            .child(theme::text("midi"))
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: description.clone(),
+                })
+                .into()
+            })
+            .on_click(
+                cx.listener(|view, _, window, cx| view.open_controller_input_menu(window, cx)),
+            )])
+    }
+    pub(super) fn controller_input_overlay(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let focus = self.controller_input.menu_focus.as_ref()?;
+        let panel = div()
+            .id("controller-input-panel")
+            .debug_selector(|| "controller-input-panel".into())
+            .absolute()
+            .bottom(px(24.0))
+            .right(px(4.0))
+            .w(px(300.0))
+            .p(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .border_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .shadow_md()
+            .text_xs()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("controller-input-refresh")
+                    .debug_selector(|| "controller-input-refresh".into())
+                    .h(px(22.0))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .child(theme::text("controller input · discover ↻"))
+                    .on_click(cx.listener(|view, _, _, cx| view.refresh_controller_inputs(cx))),
+            )
             .children(self.controller_input.port_selector.clone())
-            .children(self.controller_input.channel_selector.clone())
-            .child(theme::text(if self.controller_input.connected { "connected" } else { "off" }))
+            .children(self.controller_input.channel_selector.clone());
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .occlude()
+                .track_focus(focus)
+                .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                    // A selector handles Escape while its own popup is open.
+                    // Once closed, Escape dismisses the containing menu even
+                    // while that selector retains keyboard focus.
+                    let selector_open = [
+                        &view.controller_input.port_selector,
+                        &view.controller_input.channel_selector,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|selector| selector.read(cx).is_open());
+                    if event.keystroke.key.as_str() == "escape" && !selector_open {
+                        cx.stop_propagation();
+                        view.close_controller_input_menu(window, cx);
+                    }
+                }))
+                .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    if event.keystroke.key.as_str() == "escape" {
+                        view.close_controller_input_menu(window, cx);
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.close_controller_input_menu(window, cx);
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.close_controller_input_menu(window, cx);
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(|view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.close_controller_input_menu(window, cx);
+                    }),
+                )
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .children([panel]),
+        )
     }
 }
 
@@ -366,6 +514,162 @@ mod tests {
         assert!(input.is_cancelled());
         assert!(!state.connected);
     }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn controller_input_menu_preserves_viewport_and_dismisses_without_editor_actions(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::{Modifiers, VisualTestContext, point, size};
+    let (handle, editor) = super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+    let viewport = visual.debug_bounds("arrangement-content").unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.install_controller_selectors(
+            vec![hex_midi::Port {
+                id: 1,
+                name: "a synthetic endpoint with a deliberately long display name".into(),
+            }],
+            cx,
+        );
+        // Display the longest endpoint without activating any hardware.
+        view.controller_input
+            .port_selector
+            .as_ref()
+            .unwrap()
+            .update(cx, |selector, cx| {
+                selector.set_selected(1, cx).expect("synthetic port choice");
+            });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("arrangement-content").unwrap(),
+        viewport
+    );
+    let status = visual.debug_bounds("editor-status-bar").unwrap();
+    assert_eq!(status.size.height, px(22.0));
+    let message = visual.debug_bounds("editor-status-message").unwrap();
+    assert!(message.size.width >= px(50.0), "message={message:?}");
+    let revision = visual.debug_bounds("editor-revision-status").unwrap();
+    assert_eq!(revision.size.width, px(176.0));
+    assert!(revision.origin.x + revision.size.width <= status.origin.x + status.size.width);
+    assert!(visual.debug_bounds("controller-input-panel").is_none());
+    let previous_focus = visual.update(|window, cx| window.focused(cx));
+    let open = |visual: &mut VisualTestContext| {
+        let button = visual.debug_bounds("controller-input-menu").unwrap();
+        let position = point(button.origin.x + px(10.0), button.origin.y + px(10.0));
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
+    open(&mut visual);
+    let panel = visual.debug_bounds("controller-input-panel").unwrap();
+    assert!(panel.origin.y + panel.size.height <= status.origin.y);
+    for id in [
+        "controller-input-refresh",
+        "controller-input-port",
+        "controller-input-channel",
+    ] {
+        let control = visual
+            .debug_bounds(id)
+            .expect("controller control is visible");
+        assert!(control.origin.y >= panel.origin.y);
+        assert!(control.origin.y + control.size.height <= panel.origin.y + panel.size.height);
+        assert!(control.origin.x >= panel.origin.x);
+        assert!(control.origin.x + control.size.width <= panel.origin.x + panel.size.width);
+    }
+    assert_eq!(
+        visual.debug_bounds("arrangement-content").unwrap(),
+        viewport
+    );
+    // The deferred selector popup remains interactive above the menu backdrop.
+    let channel = visual.debug_bounds("controller-input-channel").unwrap();
+    let position = point(channel.origin.x + px(10.0), channel.origin.y + px(10.0));
+    visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("controller-input-panel").is_some());
+    assert!(
+        visual
+            .debug_bounds("controller-input-channel-popup")
+            .is_none()
+    );
+    visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let option = visual
+        .debug_bounds("controller-input-channel-option-15")
+        .unwrap();
+    let position = point(option.origin.x + px(10.0), option.origin.y + px(9.0));
+    visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.controller_input.channel, 15);
+        assert!(view.controller_input_is_open());
+        assert!(
+            view.controller_input.handle.is_none(),
+            "menu/choices do not discover hardware"
+        );
+    });
+    let port = visual.debug_bounds("controller-input-port").unwrap();
+    let position = point(port.origin.x + px(10.0), port.origin.y + px(10.0));
+    visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let off = visual
+        .debug_bounds("controller-input-port-option-0")
+        .unwrap();
+    let position = point(off.origin.x + px(10.0), off.origin.y + px(9.0));
+    visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert!(view.controller_input_is_open());
+        assert_eq!(
+            view.controller_input
+                .port_selector
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .selected(),
+            0
+        );
+        assert!(view.controller_input.selected_port.is_none());
+        assert!(view.controller_input.handle.is_none());
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("controller-input-panel").is_none());
+    visual.update(|window, _| {
+        if let Some(focus) = &previous_focus {
+            assert!(focus.is_focused(window));
+        }
+    });
+    open(&mut visual);
+    visual.simulate_mouse_down(
+        point(px(5.0), px(100.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(px(5.0), px(100.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("controller-input-panel").is_none());
+    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

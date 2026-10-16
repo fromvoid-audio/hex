@@ -32,17 +32,17 @@ fn routing_window(
 #[gpui::test]
 fn typed_units_keep_every_character_without_editor_shortcuts(cx: &mut TestAppContext) {
     let (mut visual, editor, _, device, _) = routing_window(cx);
-    let parameter = hex_lattice_contract::ParameterId::from_static(25);
-    enter_typed_value(&mut visual, device, parameter, "-7.99 turns");
+    let parameter = hex_lattice_contract::ParameterId::from_static(635);
+    enter_typed_value(&mut visual, device, parameter, "7.99 st");
     editor.read_with(cx, |view, cx| {
         let ParameterControl::Float { entity, .. } =
             &view.device_panel.controls[&ParameterKey { device, parameter }]
         else {
-            panic!("numeric phase")
+            panic!("numeric bend")
         };
         entity.read_with(cx, |control, _| {
             assert!(control.is_editing());
-            assert_eq!(control.display_text(), "-7.99 turns");
+            assert_eq!(control.display_text(), "7.99 st");
         });
     });
 }
@@ -53,8 +53,8 @@ fn typed_units_do_not_mutate_canonical_solo_or_history(cx: &mut TestAppContext) 
     enter_typed_value(
         &mut visual,
         device,
-        hex_lattice_contract::ParameterId::from_static(25),
-        "-7.99 turns",
+        hex_lattice_contract::ParameterId::from_static(635),
+        "7.99 st",
     );
     // A worker round trip fences any accidentally enqueued shortcut command.
     editor.update(cx, |view, _| {
@@ -87,7 +87,7 @@ fn typed_units_do_not_mutate_canonical_solo_or_history(cx: &mut TestAppContext) 
     });
 }
 
-fn phase_control(
+fn bend_control(
     editor: &gpui::Entity<EditorView>,
     cx: &TestAppContext,
     device: DeviceId,
@@ -95,9 +95,9 @@ fn phase_control(
     editor.read_with(cx, |view, _| {
         let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
             device,
-            parameter: hex_lattice_contract::ParameterId::from_static(25),
+            parameter: hex_lattice_contract::ParameterId::from_static(635),
         }] else {
-            panic!("phase control")
+            panic!("bend control")
         };
         entity.clone()
     })
@@ -109,7 +109,7 @@ fn numeric_text_owns_uppercase_space_and_direct_solo_actions(cx: &mut TestAppCon
     enter_typed_value(
         &mut visual,
         device,
-        hex_lattice_contract::ParameterId::from_static(25),
+        hex_lattice_contract::ParameterId::from_static(635),
         "s l ",
     );
     visual.simulate_keystrokes("shift-s");
@@ -118,7 +118,7 @@ fn numeric_text_owns_uppercase_space_and_direct_solo_actions(cx: &mut TestAppCon
         window.dispatch_action(Box::new(crate::editor::AdditiveSolo), cx);
     });
     visual.run_until_parked();
-    phase_control(&editor, cx, device)
+    bend_control(&editor, cx, device)
         .read_with(cx, |control, _| assert_eq!(control.display_text(), "s l S"));
     editor.update(cx, |view, _| {
         assert!(view.enqueue(Request::Edit(Command::RenameTrack {
@@ -147,7 +147,7 @@ fn numeric_text_owns_uppercase_space_and_direct_solo_actions(cx: &mut TestAppCon
 #[gpui::test]
 fn numeric_clipboard_cancel_commit_and_single_undo_preserve_owner(cx: &mut TestAppContext) {
     let (mut visual, editor, track, device, revision) = routing_window(cx);
-    let parameter = hex_lattice_contract::ParameterId::from_static(25);
+    let parameter = hex_lattice_contract::ParameterId::from_static(635);
     let original = editor.read_with(cx, |view, _| {
         view.state
             .as_ref()
@@ -164,22 +164,22 @@ fn numeric_clipboard_cancel_commit_and_single_undo_preserve_owner(cx: &mut TestA
         NativeDeviceClass::Instrument,
         &original,
         parameter,
-        ParameterValue::Float(-7.99),
+        ParameterValue::Float(7.99),
     )
     .unwrap();
-    enter_typed_value(&mut visual, device, parameter, "-7.99 turns");
+    enter_typed_value(&mut visual, device, parameter, "7.99 st");
     visual.simulate_keystrokes("cmd-a cmd-c cmd-x cmd-v");
     visual.run_until_parked();
-    phase_control(&editor, cx, device).read_with(cx, |control, _| {
-        assert_eq!(control.display_text(), "-7.99 turns")
+    bend_control(&editor, cx, device).read_with(cx, |control, _| {
+        assert_eq!(control.display_text(), "7.99 st")
     });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().revision, revision)
     });
-    phase_control(&editor, cx, device).read_with(cx, |control, _| assert!(!control.is_editing()));
-    enter_typed_value(&mut visual, device, parameter, "-7.99 turns");
+    bend_control(&editor, cx, device).read_with(cx, |control, _| assert!(!control.is_editing()));
+    enter_typed_value(&mut visual, device, parameter, "7.99 st");
     // Existing owner-finalization path must still commit exactly once.
     editor.update(cx, |view, cx| assert!(super::finalize_controls(view, cx)));
     pump_until(&editor, cx, |view| {
@@ -220,7 +220,7 @@ fn numeric_clipboard_cancel_commit_and_single_undo_preserve_owner(cx: &mut TestA
             &original
         )
     });
-    enter_typed_value(&mut visual, device, parameter, "-7.99 turns");
+    enter_typed_value(&mut visual, device, parameter, "7.99 st");
     visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.state.as_ref().unwrap().revision == revision + 3
@@ -248,7 +248,7 @@ fn plain_and_shift_s_still_solo_outside_numeric_text_edit(cx: &mut TestAppContex
     enter_typed_value(
         &mut visual,
         device,
-        hex_lattice_contract::ParameterId::from_static(25),
+        hex_lattice_contract::ParameterId::from_static(635),
         "0",
     );
     visual.simulate_keystrokes("escape");

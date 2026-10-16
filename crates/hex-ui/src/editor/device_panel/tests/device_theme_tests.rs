@@ -139,27 +139,27 @@ fn device_theme_refresh_keeps_open_selector_and_navigation_state(cx: &mut TestAp
         cx.notify();
     });
     visual.run_until_parked();
-    let parameter = hex_lattice_contract::ParameterId::from_static(61);
+    let parameter = hex_lattice_contract::ParameterId::from_static(601);
     let key = ParameterKey { device, parameter };
     let choice = editor.read_with(cx, |view, _| {
         let ParameterControl::Choice { entity, .. } = &view.device_panel.controls[&key] else {
-            panic!("algorithm selector")
+            panic!("voices selector")
         };
         entity.clone()
     });
     let bounds = visual
-        .debug_bounds(selector(format!("device-{}-parameter-61", device.value())))
+        .debug_bounds(selector(format!("device-{}-parameter-601", device.value())))
         .unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
-    let popup = selector(format!("device-{}-parameter-61-popup", device.value()));
+    let popup = selector(format!("device-{}-parameter-601-popup", device.value()));
     assert!(visual.debug_bounds(popup).is_some());
     theme::apply_preferences(light_palette());
     editor.update(cx, |_, cx| cx.notify());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let ParameterControl::Choice { entity, .. } = &view.device_panel.controls[&key] else {
-            panic!("retained algorithm selector")
+            panic!("retained voices selector")
         };
         assert_eq!(entity.entity_id(), choice.entity_id());
         assert_eq!(

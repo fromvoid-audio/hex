@@ -76,7 +76,7 @@ order belongs to the caller; note occurrences retain independent identities.
 
 Connected MIDI controllers provide pressure, bend and wheel through a separate
 identity-bound lease for Arrangement, Session and computer-keyboard notes.
-Choose a source/channel in the native controller-input row; input starts off.
+Open the status bar’s midi menu, discover ports and choose a source/channel; input starts off.
 See [controller input](controller-input.md) for coalescing, cancellation, channel
 scope and lifecycle limits. Physical MIDI notes, sustain, MPE and editable or
 recorded clip controller lanes are outside this change. Native port behavior and
