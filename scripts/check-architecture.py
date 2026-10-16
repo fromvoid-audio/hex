@@ -22,6 +22,7 @@ ALLOWED = {
     'hex-library': set(),
     'hex-preferences': set(),
     'hex-widgets': set(),
+    # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
     'hex-ui': {'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio'},
