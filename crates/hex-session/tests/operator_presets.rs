@@ -42,6 +42,9 @@ fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
         (87, ParameterValue::Float(100.0)),
         (88, ParameterValue::Bool(false)),
         (89, ParameterValue::Bool(false)),
+        (90, ParameterValue::Bool(false)),
+        (91, ParameterValue::Bool(false)),
+        (92, ParameterValue::Bool(false)),
     ] {
         let before = session.project().device(device).unwrap().state().clone();
         graph = session

@@ -287,6 +287,8 @@ fn operator_modulation_allocations(
         let edit = match block {
             5 | 46 => Some((513, ParameterValue::Bool(false))),
             6 | 47 => Some((513, ParameterValue::Bool(true))),
+            10 | 48 if lfo_sync.is_some() => Some((89, ParameterValue::Bool(false))),
+            11 | 49 if lfo_sync.is_some() => Some((89, ParameterValue::Bool(true))),
             2..=4 if filter => Some((20005, ParameterValue::Float(200.0 * block as f32))),
             2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
             _ => None,

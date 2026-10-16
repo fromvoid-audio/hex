@@ -11,7 +11,10 @@ const OPERATOR: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operato
 
 #[test]
 fn lfo_arrangement_session_partitions_seek_and_loop_share_the_prepared_law() {
-    for sync in [false, true] {
+    for (sync, selected) in [false, true]
+        .into_iter()
+        .flat_map(|sync| [false, true].map(|selected| (sync, selected)))
+    {
         let mut fixture = fixture();
         let mut state = operator_state(1.0);
         for (id, value) in [
@@ -19,6 +22,7 @@ fn lfo_arrangement_session_partitions_seek_and_loop_share_the_prepared_law() {
             (84, ParameterValue::Bool(sync)),
             (85, ParameterValue::Float(7.0)),
             (87, ParameterValue::Float(75.0)),
+            (89, ParameterValue::Bool(selected)),
         ] {
             state = hex_engine::patch_native_device_parameter_for_class(
                 hex_engine::NativeDeviceClass::Instrument,
@@ -54,7 +58,7 @@ fn lfo_arrangement_session_partitions_seek_and_loop_share_the_prepared_law() {
             );
             let lfo =
                 (TAU * index as f64 * if sync { 2.0 / 48_000.0 } else { 7.0 / 48_000.0 }).sin();
-            phase += 440.0 / 48_000.0 * (0.75 * lfo).exp2();
+            phase += 440.0 / 48_000.0 * if selected { (0.75 * lfo).exp2() } else { 1.0 };
         }
         let mut sought = start_route(Arc::clone(&revision), None);
         assert!(

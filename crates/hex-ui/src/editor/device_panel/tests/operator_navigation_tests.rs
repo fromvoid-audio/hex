@@ -33,6 +33,146 @@ fn selector(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
 }
 
+#[gpui::test]
+fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, _, track, device) = operator_fixture();
+    let path = std::env::temp_dir().join(format!("hex-lfo-mapping-{}.hex", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    service.submit(Request::SaveNew(path.clone())).unwrap();
+    let saved = receive_service_event(&service);
+    assert!(saved.error.is_none());
+    let (handle, editor) = actor_editor_window(cx, service, saved.state.clone(), track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
+    let tab = tab_bounds(&mut visual, device, "lfo", "lfo");
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-lfo-destinations-{}",
+                device.value()
+            )))
+            .is_some()
+    );
+    for parameter in 89..=92 {
+        let bounds = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}",
+                device.value()
+            )))
+            .unwrap();
+        let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+        let detail = visual
+            .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+            .unwrap();
+        assert!(
+            bounds.bottom() <= rail.top() || bounds.top() >= rail.bottom(),
+            "destination control overlaps shared navigation: {bounds:?} rail={rail:?}"
+        );
+        assert!(
+            bounds.bottom() <= detail.bottom() && bounds.right() <= detail.right(),
+            "destination control is clipped: {bounds:?} detail={detail:?}"
+        );
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(true)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        visual.run_until_parked();
+        let selected = ["a", "b", "c", "d"][(parameter - 88) as usize..].join(" ");
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "operator-lfo-selected-{}-{selected}",
+                    device.value()
+                )))
+                .is_some(),
+            "selected readout must follow each canonical destination edit"
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-lfo-selected-{}-",
+                device.value()
+            )))
+            .is_some(),
+        "all-off selected readout follows canonical destination values"
+    );
+    let detail = visual
+        .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+        .unwrap();
+    let depth = visual
+        .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
+        .unwrap();
+    assert!(
+        depth.bottom() <= detail.bottom() && depth.right() <= detail.right(),
+        "pitch-depth explanation is clipped: {depth:?} detail={detail:?}"
+    );
+    enter_typed_value(
+        &mut visual,
+        device,
+        hex_lattice_contract::ParameterId::from_static(87),
+        "50",
+    );
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 87) == ParameterValue::Float(50.0)
+            })
+    });
+    let mapped = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+    });
+    editor.update(cx, |view, cx| view.save_project(cx));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view.saving_project
+            && view.state.as_ref().is_some_and(|state| !state.unsaved)
+    });
+    let reload = Service::new(48_000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert_eq!(
+        reopened.state.project.device(device).unwrap().state(),
+        &mapped
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
 // The legacy fallback lets this exact regression execute on the unfixed source:
 // it detects the vertical jump, rather than merely failing a renamed selector.
 fn tab_bounds(
