@@ -598,7 +598,7 @@ fn dispose_stream_and_native_on_control<S>(
     }
     Ok(true)
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "allocation-probe"))]
 pub(crate) fn test_dispose_backend<S>(
     stream: &mut Option<S>,
     pending: &mut bool,

@@ -21,7 +21,7 @@ pub(crate) struct NativeCallbackOwner {
     probe: Option<DropProbe>,
 }
 impl NativeCallbackOwner {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
         self.probe = Some(DropProbe(Box::new(probe)));
     }
@@ -45,7 +45,7 @@ impl Drop for DropProbe {
     }
 }
 impl ErrorCallbackOwner {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
         self.probe = Some(DropProbe(Box::new(probe)));
     }
@@ -299,7 +299,7 @@ impl NativeRetirement {
             root,
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_extracted_identity(&self) -> Option<hex_engine::AudioCandidateIdentity> {
         self.final_active.as_ref().map(|value| value.identity())
     }

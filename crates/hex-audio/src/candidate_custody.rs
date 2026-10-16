@@ -148,7 +148,7 @@ pub(crate) struct ActiveCandidate {
     pub(crate) owner: AudioCandidateOwner,
 }
 impl FinalActiveReturn {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn identity(&self) -> AudioCandidateIdentity {
         self.owner.identity()
     }
