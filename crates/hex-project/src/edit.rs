@@ -9,6 +9,58 @@ use std::{collections::HashMap, path::PathBuf};
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Atomically splice a bounded touch span, preserving the underlying base curve.
+    SpliceGainTouch {
+        track: TrackId,
+        expected_epoch: u64,
+        span: crate::GainTouchSpan,
+    },
+    /// One completed take, including loop passes, commits as one history edit.
+    SpliceGainTouchBatch {
+        track: TrackId,
+        expected_epoch: u64,
+        spans: Vec<crate::GainTouchSpan>,
+    },
+    ReplaceTrackGainEnvelope {
+        track: TrackId,
+        points: Vec<crate::GainPoint>,
+    },
+    UpsertTrackGainPoint {
+        track: TrackId,
+        point: crate::GainPoint,
+    },
+    MoveTrackGainPoint {
+        track: TrackId,
+        from: crate::BeatTime,
+        to: crate::BeatTime,
+    },
+    RemoveTrackGainPoint {
+        track: TrackId,
+        beat: crate::BeatTime,
+    },
+    /// Clear base and recorded overlays, retaining the recording epoch high-water mark.
+    ClearTrackGainEnvelope {
+        track: TrackId,
+    },
+    /// Validate proposed metadata, then refuse non-legacy adoption until playback support.
+    SetRouting(Vec<crate::RoutingEdge>),
+    /// Add/change a post-fader stereo feed to a track input; zero removes it.
+    SetAudioFeed {
+        source: crate::RoutingOwner,
+        destination: TrackId,
+        gain: f32,
+    },
+    /// Select authored MIDI from another track; None restores local MIDI.
+    SetMidiSource {
+        destination: TrackId,
+        source: Option<TrackId>,
+    },
+    /// Adopt or change a bounded additive stereo Return feed; zero removes it.
+    SetReturnFeed {
+        source: ReturnId,
+        destination: ReturnId,
+        gain: f32,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -624,6 +676,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
+            gain_lane: crate::GainLane::default(),
             id,
             name,
             gain: 1.0,
@@ -1078,6 +1131,106 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SpliceGainTouchBatch {
+                track,
+                expected_epoch,
+                spans,
+            } => {
+                if spans.is_empty() || spans.len() > crate::MAX_GAIN_TOUCH_SPANS_PER_TRACK {
+                    return Err(Invalid("gain touch take span count is outside its bound"));
+                }
+                if self
+                    .track(track)
+                    .ok_or(Invalid("track no longer exists"))?
+                    .gain_lane
+                    .recording_epoch
+                    != expected_epoch
+                {
+                    return Err(Invalid("gain touch replacement epoch is stale"));
+                }
+                let mut epoch = expected_epoch;
+                for span in &spans {
+                    span.validate()?;
+                    if span.context.recording_epoch <= epoch {
+                        return Err(Invalid("gain touch take epochs must strictly increase"));
+                    }
+                    if span.context.sample_rate != self.sample_rate {
+                        return Err(Invalid("gain touch sample rate differs from project"));
+                    }
+                    epoch = span.context.recording_epoch;
+                }
+                // Project::apply runs only on Editor's isolated candidate. A
+                // later refusal discards every earlier pass and all its IDs.
+                let mut epoch = expected_epoch;
+                for span in spans {
+                    let next = span.context.recording_epoch;
+                    self.apply(Command::SpliceGainTouch {
+                        track,
+                        expected_epoch: epoch,
+                        span,
+                    })?;
+                    epoch = next;
+                }
+                Ok(Created::None)
+            }
+            Command::SpliceGainTouch {
+                track,
+                expected_epoch,
+                span,
+            } => {
+                let owner = self.track(track).ok_or(Invalid("track no longer exists"))?;
+                if span.context.sample_rate != self.sample_rate {
+                    return Err(Invalid("gain touch sample rate differs from project"));
+                }
+                let proposed_units = owner.gain_lane.touch_units(expected_epoch, &span)?;
+                let other = self
+                    .tracks()
+                    .iter()
+                    .filter(|owner| owner.id() != track)
+                    .try_fold(0_usize, |count, owner| {
+                        count
+                            .checked_add(owner.gain_lane.units()?)
+                            .ok_or(Invalid("gain lane count overflow"))
+                    })?;
+                if other
+                    .checked_add(proposed_units)
+                    .is_none_or(|count| count > crate::MAX_GAIN_POINTS)
+                {
+                    return Err(Invalid("project gain lane limit reached"));
+                }
+                let proposed = owner.gain_lane.with_touch(expected_epoch, span)?;
+                self.track_mut(track)?.gain_lane = proposed;
+                Ok(Created::None)
+            }
+            Command::ReplaceTrackGainEnvelope { track, points } => {
+                self.replace_gain_envelope(track, points)
+            }
+            Command::UpsertTrackGainPoint { track, point } => self.upsert_gain_point(track, point),
+            Command::MoveTrackGainPoint { track, from, to } => {
+                self.move_gain_point(track, from, to)
+            }
+            Command::RemoveTrackGainPoint { track, beat } => self.remove_gain_point(track, beat),
+            Command::ClearTrackGainEnvelope { track } => {
+                let lane = &mut self.track_mut(track)?.gain_lane;
+                lane.base.clear();
+                lane.spans.clear();
+                Ok(Created::None)
+            }
+            Command::SetRouting(edges) => self.adopt_routing(edges),
+            Command::SetAudioFeed {
+                source,
+                destination,
+                gain,
+            } => self.set_audio_feed(source, destination, gain),
+            Command::SetMidiSource {
+                destination,
+                source,
+            } => self.set_midi_source(destination, source),
+            Command::SetReturnFeed {
+                source,
+                destination,
+                gain,
+            } => self.set_return_feed(source, destination, gain),
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
@@ -1543,6 +1696,11 @@ impl Project {
                     .position(|t| t.id == id)
                     .ok_or(Invalid("track no longer exists"))?;
                 self.tracks.remove(index);
+                self.audio_feeds.retain(|r| {
+                    r.source() != crate::RoutingOwner::Track(id) && r.destination() != id
+                });
+                self.midi_routes
+                    .retain(|r| r.source() != id && r.destination() != id);
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
             }
@@ -1554,6 +1712,21 @@ impl Project {
             Command::Gain { track, gain } => {
                 if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
                     return Err(Invalid("gain must be finite and within 0..2"));
+                }
+                if !self
+                    .track(track)
+                    .ok_or(Invalid("track no longer exists"))?
+                    .gain_lane()
+                    .base()
+                    .is_empty()
+                    || !self
+                        .track(track)
+                        .ok_or(Invalid("track no longer exists"))?
+                        .gain_lane
+                        .spans
+                        .is_empty()
+                {
+                    return Err(Invalid("track gain is owned by automation"));
                 }
                 self.track_mut(track)?.gain = gain;
                 Ok(Created::None)

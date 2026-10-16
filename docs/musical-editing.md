@@ -253,3 +253,29 @@ The optimized exact-source candidate should be checked with this finite list:
 
 Physical audio deadlines, listening quality, native interaction, Windows and
 reference compatibility are not established by these source tests.
+
+
+## routed integration
+
+Schema 25 preserves the complete routed envelope plus a required ID-keyed audio
+state table; historical routing readers remain strict. Transform preparation and
+routed graph/latency admission share one transaction before canonical commit.
+Routing, gain lanes/touch spans and host trims remain independent of clip gain,
+source envelopes and prepared warp PCM. All paths retain accepted waveform roots
+and control-side buffer retirement. See [routing](routing.md) and
+[storage](../crates/hex-storage/README.md) for the integrated migration contract.
+
+
+The 16 October integration checks retained at
+`artifacts/local-ci/20261016T071308Z-17368d85` passed storage (81), export (17),
+engine unit tests (325 passed, 6 existing ignored), project/Session (336), and
+feature UI (467 passed, 2 existing ignored). The new combined render oracle
+checks a pitched/warped source envelope and clip gain through track gain lanes,
+typed inputs, Return feeds and master gain, comparing native, linear and PCM16
+export output. A new pages/observer regression retains the monitoring click.
+That development run stopped on an unused binding in a new test fixture; after
+removal, strict affected-crate/feature Clippy and the full audio allocation-probe
+suite passed in `20261016T071608Z-c8c5da7e`. The derived-only ownership probe now
+also uses a routed gain-lane graph. Initial codec/version/fixture failures remain
+in development logs. These targeted checks do not replace the clean merge
+candidate's final full local CI, optimized comparison or optional native tests.

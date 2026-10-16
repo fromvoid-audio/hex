@@ -46,6 +46,8 @@ pub struct ViewState {
     pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
+    pub gain_preview: Result<Arc<hex_engine::GainAutomationPreview>, hex_engine::Invalid>,
     pub timeline_frames: u64,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -143,9 +145,56 @@ pub fn prepare_audio_preview(
     })
 }
 
+/// Only gain-envelope commands may cross this revision-stamped UI boundary.
+#[derive(Clone, Debug)]
+pub enum GainLaneEdit {
+    SpliceTake {
+        expected_epoch: u64,
+        spans: Vec<hex_project::GainTouchSpan>,
+    },
+    Replace(Vec<hex_project::GainPoint>),
+    Upsert(hex_project::GainPoint),
+    Move {
+        from: hex_project::BeatTime,
+        to: hex_project::BeatTime,
+    },
+    Remove(hex_project::BeatTime),
+    Clear,
+}
+impl GainLaneEdit {
+    fn command(self, track: hex_project::TrackId) -> Command {
+        match self {
+            Self::SpliceTake {
+                expected_epoch,
+                spans,
+            } => Command::SpliceGainTouchBatch {
+                track,
+                expected_epoch,
+                spans,
+            },
+            Self::Replace(points) => Command::ReplaceTrackGainEnvelope { track, points },
+            Self::Upsert(point) => Command::UpsertTrackGainPoint { track, point },
+            Self::Move { from, to } => Command::MoveTrackGainPoint { track, from, to },
+            Self::Remove(beat) => Command::RemoveTrackGainPoint { track, beat },
+            Self::Clear => Command::ClearTrackGainEnvelope { track },
+        }
+    }
+}
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    ArmGainRecording {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+    },
+    /// Check all stamps before preparation or history, including requests delayed in either queue.
+    GainLane {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        edit: GainLaneEdit,
+    },
     DeviceGesture(GestureRequest),
     /// One metadata-only browser/rail device drop, admitted only against the
     /// exact project generation and canonical revision captured at drag start.
@@ -527,6 +576,7 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
         audio_clip_waveforms: session.audio_clip_waveforms().unwrap_or_default(),
@@ -555,6 +605,7 @@ fn preview_view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
         audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),
@@ -1250,6 +1301,59 @@ fn run_worker(
                             }
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::ArmGainRecording {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    track,
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("gain recording arm refused · project changed".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some(
+                            "gain recording arm refused · device edit is still applying".into(),
+                        );
+                    } else {
+                        match session.prepare_gain_recording(
+                            track,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok(prepared) => {
+                                restore_prepared = Some(prepared);
+                                status = Some("gain recording target prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
+                    }
+                }
+                Request::GainLane {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    track,
+                    edit,
+                } => {
+                    if expected_generation != project_generation || expected_revision != revision {
+                        error = Some("gain draft refused · project changed".into());
+                    } else if session.project().track(track).is_none() {
+                        error = Some("gain draft refused · track no longer exists".into());
+                    } else if device_gesture.snapshot().is_some() {
+                        error = Some("gain draft refused · device edit is still applying".into());
+                    } else {
+                        let before = session.project().clone();
+                        match session.command_prepared_revision(
+                            edit.command(track),
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                        ) {
+                            Ok((result, prepared)) if session.project() != &before => {
+                                unsaved = true;
+                                replacement_revision = Some(prepared);
+                                created = Some(result);
+                                status = Some("gain edit committed".into());
+                            }
+                            Ok(_) => status = Some("no change".into()),
+                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        }
                     }
                 }
                 Request::Edit(command) => {

@@ -491,3 +491,422 @@ fn empty_return_projects_still_compile_and_unregistered_effects_refuse() {
         compile::project(unsupported.editor.project(), &media(&unsupported, &source)).unwrap_err();
     assert!(error.0.contains("unsupported or malformed"));
 }
+
+fn extra_return(fixture: &mut Fixture) -> hex_project::ReturnId {
+    let Created::ReturnTrack(id) = fixture
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "destination".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    id
+}
+fn feed(
+    fixture: &mut Fixture,
+    source: hex_project::ReturnId,
+    destination: hex_project::ReturnId,
+    gain: f32,
+) {
+    fixture
+        .editor
+        .execute(Command::SetReturnFeed {
+            source,
+            destination,
+            gain,
+        })
+        .unwrap();
+}
+fn session(fixture: &Fixture, samples: &[[f32; 2]]) -> SessionPlayback {
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            fixture.editor.project(),
+            &media(fixture, samples),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = SessionPlayback::new(prepared).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    playback
+}
+fn arrangement_pcm(fixture: &Fixture, samples: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let compiled = compile::project(fixture.editor.project(), &media(fixture, samples)).unwrap();
+    let mut renderer = Renderer::new(&compiled);
+    renderer.play();
+    let mut output = vec![[0.0; 2]; samples.len()];
+    renderer.render(&mut output).unwrap();
+    output
+}
+
+#[test]
+fn authored_backward_feed_is_post_chain_gain_mute_and_pre_destination_chain() {
+    let source = [[0.25, -0.5]; 8];
+    let mut f = fixture(&source, 0.5, 0.0, 2.0);
+    let destination = f.return_track; // Pinned before source, but must process after it.
+    let source_return = extra_return(&mut f);
+    let track = f.editor.project().tracks()[0].id();
+    f.editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: source_return,
+            gain: 0.5,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::ReturnGain {
+            return_track: source_return,
+            gain: 0.5,
+        })
+        .unwrap();
+    for (return_track, parameter) in [
+        (source_return, parameter::INVERT_RIGHT),
+        (destination, parameter::INVERT_LEFT),
+    ] {
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            })
+            .unwrap();
+    }
+    feed(&mut f, source_return, destination, 0.5);
+    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let expected = vec![[0.0625, -0.0625]; source.len()];
+    assert_eq!(arrangement_pcm(&f, &source), expected);
+    let mut playback = session(&f, &source);
+    let mut actual = vec![[0.0; 2]; source.len()];
+    playback.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    f.editor
+        .execute(Command::ReturnMute {
+            return_track: source_return,
+            muted: true,
+        })
+        .unwrap();
+    assert_eq!(
+        arrangement_pcm(&f, &source),
+        vec![[0.0625, -0.125]; source.len()]
+    );
+    let mut playback = session(&f, &source);
+    playback.render(&mut actual).unwrap();
+    assert_eq!(actual, vec![[0.0625, -0.125]; source.len()]);
+}
+
+#[test]
+fn diamond_and_route_record_permutation_keep_pinned_main_sum_and_deterministic_inputs() {
+    let source = [[0.125, -0.25]; 13];
+    let mut f = fixture(&source, 1.0, 1.0, 1.0);
+    let a = f.return_track;
+    let b = extra_return(&mut f);
+    let c = extra_return(&mut f);
+    let d = extra_return(&mut f);
+    for (s, t, g) in [(a, b, 0.5), (a, c, 0.25), (b, d, 0.5), (c, d, 0.5)] {
+        feed(&mut f, s, t, g);
+    }
+    let expected = vec![[0.390625, -0.78125]; source.len()];
+    assert_eq!(arrangement_pcm(&f, &source), expected);
+    let mut actual = vec![[0.0; 2]; source.len()];
+    session(&f, &source).render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    let mut snapshot = f.editor.project().snapshot();
+    snapshot.return_feeds.reverse();
+    f.editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
+    assert_eq!(arrangement_pcm(&f, &source), expected);
+    session(&f, &source).render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn feed_filter_history_is_block_partition_invariant_and_pause_seek_stop_are_truthful() {
+    let source = [[0.25, -0.5]; 803];
+    let mut f = fixture(&source, 1.0, 0.5, 1.0);
+    let a = f.return_track;
+    let b = extra_return(&mut f);
+    for return_track in [a, b] {
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track,
+                before: None,
+                state,
+            })
+            .unwrap();
+    }
+    feed(&mut f, a, b, 0.5);
+    let expected = arrangement_pcm(&f, &source);
+    let mut whole = session(&f, &source);
+    let mut partitioned = session(&f, &source);
+    let mut actual = vec![[0.0; 2]; source.len()];
+    whole.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    let mut pieces = actual.clone();
+    for chunk in pieces.chunks_mut(17) {
+        partitioned.render(chunk).unwrap();
+    }
+    assert_eq!(pieces, expected);
+    let mut paused = session(&f, &source);
+    let mut reference = session(&f, &source);
+    paused.render(&mut [[0.0; 2]; 7]).unwrap();
+    reference.render(&mut [[0.0; 2]; 7]).unwrap();
+    paused.apply(SessionPlaybackCommand::Pause).unwrap();
+    let mut silence = [[1.0; 2]; 23];
+    paused.render(&mut silence).unwrap();
+    assert_eq!(silence, [[0.0; 2]; 23]);
+    paused.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut resumed = [[0.0; 2]; 11];
+    let mut continued = resumed;
+    paused.render(&mut resumed).unwrap();
+    reference.render(&mut continued).unwrap();
+    assert_eq!(resumed, continued);
+    paused.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    paused.render(&mut resumed).unwrap();
+    assert_eq!(resumed.as_slice(), &expected[..11]);
+    paused.apply(SessionPlaybackCommand::Stop).unwrap();
+    paused.apply(SessionPlaybackCommand::Play).unwrap();
+    paused.render(&mut resumed).unwrap();
+    assert_eq!(resumed.as_slice(), &expected[..11]);
+}
+
+#[test]
+fn feed_gain_edit_retains_return_history_and_zero_removal_restores_legacy_pcm() {
+    let source = [[0.25, -0.5]; 64];
+    let mut f = fixture(&source, 1.0, 0.5, 1.0);
+    let a = f.return_track;
+    let b = extra_return(&mut f);
+    let state = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    add_return_device(&mut f, state);
+    feed(&mut f, a, b, 0.5);
+    let mut old = session(&f, &source);
+    old.render(&mut [[0.0; 2]; 7]).unwrap();
+    let identity = f.editor.project().authored_routing()[0].id();
+    feed(&mut f, a, b, 0.25);
+    assert_eq!(f.editor.project().authored_routing()[0].id(), identity);
+    let mut next = SessionPlayback::new(Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &media(&f, &source),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut oracle = session(&f, &source);
+    oracle.render(&mut [[0.0; 2]; 7]).unwrap();
+    let mut actual = [[0.0; 2]; 19];
+    let mut expected = actual;
+    next.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    feed(&mut f, a, b, 0.0);
+    let mut legacy = f.editor.project().snapshot();
+    legacy.return_feeds.clear();
+    let without = Fixture {
+        editor: Editor::new(Project::from_snapshot(legacy).unwrap(), 4).unwrap(),
+        asset: f.asset,
+        return_track: a,
+    };
+    assert_eq!(
+        arrangement_pcm(&f, &source),
+        arrangement_pcm(&without, &source)
+    );
+}
+
+#[test]
+fn removed_source_tail_is_main_only_and_never_replays_its_old_feed() {
+    let source = [[1.0, 0.5]; 32];
+    let mut f = fixture(&source, 1.0, 1.0, 1.0);
+    let a = f.return_track;
+    let b = extra_return(&mut f);
+    let filter = UTILITY_DEFINITION
+        .patch_parameter(
+            &UTILITY_DEFINITION.default_state().unwrap(),
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    add_return_device(&mut f, filter);
+    feed(&mut f, a, b, 1.0); // Destination is memoryless: any old replay is immediately audible.
+    let mut previous = session(&f, &source);
+    previous.render(&mut [[0.0; 2]; 4]).unwrap();
+    // Independent no-feed oracle primes only the source chain with the same input.
+    let mut no_feed = f.editor.project().snapshot();
+    no_feed.return_feeds.clear();
+    let oracle_fixture = Fixture {
+        editor: Editor::new(Project::from_snapshot(no_feed).unwrap(), 4).unwrap(),
+        asset: f.asset,
+        return_track: a,
+    };
+    let mut ended = source;
+    ended[4..].fill([0.0; 2]);
+    let mut oracle = session(&oracle_fixture, &ended);
+    oracle.render(&mut [[0.0; 2]; 4]).unwrap();
+    let mut expected = [[0.0; 2]; 12];
+    oracle.render(&mut expected).unwrap();
+    for frame in &mut expected {
+        frame[0] += 1.0;
+        frame[1] += 0.5;
+    }
+    f.editor.execute(Command::RemoveReturnTrack(a)).unwrap();
+    assert!(f.editor.project().authored_routing().is_empty());
+    let mut next = SessionPlayback::new(Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &media(&f, &source),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut previous).unwrap();
+    let mut actual = [[0.0; 2]; 12];
+    next.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().authored_routing().len(), 1);
+}
+
+#[test]
+fn return_feed_transport_wrap_keeps_history_and_linear_export_ignores_transport_loop() {
+    let source = [[0.25, -0.5]; 600];
+    let mut f = fixture(&source, 1.0, 0.5, 1.0);
+    let a = f.return_track;
+    let b = extra_return(&mut f);
+    add_return_device(
+        &mut f,
+        UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap(),
+    );
+    feed(&mut f, a, b, 0.5);
+    let expected = arrangement_pcm(&f, &source);
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 2,
+            enabled: true,
+        })
+        .unwrap();
+    let mut playback = session(&f, &source);
+    let mut actual = vec![[0.0; 2]; 600];
+    playback.render(&mut actual).unwrap();
+    // Constant input makes a fresh attack at wrap distinguishable from continuity.
+    assert_eq!(actual, expected);
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &media(&f, &source),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut linear = SessionPlayback::new_linear_arrangement_export(prepared).unwrap();
+    linear.apply(SessionPlaybackCommand::Play).unwrap();
+    linear.render(&mut actual).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn feed_removal_keeps_destination_history_and_changed_source_tail_cannot_feed_destination() {
+    for change_source in [false, true] {
+        let source = [[0.25, -0.5]; 64];
+        let mut f = fixture(&source, 1.0, 1.0, 1.0);
+        let a = f.return_track;
+        let b = extra_return(&mut f);
+        let filter_owner = if change_source { a } else { b };
+        let state = UTILITY_DEFINITION
+            .patch_parameter(
+                &UTILITY_DEFINITION.default_state().unwrap(),
+                parameter::DC_REMOVE,
+                ParameterValue::Bool(true),
+            )
+            .unwrap();
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: filter_owner,
+                before: None,
+                state,
+            })
+            .unwrap();
+        feed(&mut f, a, b, 1.0);
+        let mut previous = session(&f, &source);
+        previous.render(&mut [[0.0; 2]; 4]).unwrap();
+        let mut oracle_snapshot = f.editor.project().snapshot();
+        // For source replacement the oracle must never forward its residual.
+        if change_source {
+            oracle_snapshot.return_feeds.clear();
+        }
+        let oracle_f = Fixture {
+            editor: Editor::new(Project::from_snapshot(oracle_snapshot).unwrap(), 4).unwrap(),
+            asset: f.asset,
+            return_track: a,
+        };
+        let mut ended = source;
+        ended[4..].fill([0.0; 2]);
+        let mut oracle = session(&oracle_f, &ended);
+        oracle.render(&mut [[0.0; 2]; 4]).unwrap();
+        let mut expected = [[0.0; 2]; 12];
+        oracle.render(&mut expected).unwrap();
+        if change_source {
+            let device = f.editor.project().return_tracks()[0].devices()[0].id();
+            f.editor.execute(Command::RemoveDevice(device)).unwrap();
+            // Dry + current source + current destination; old source chain is Main-only.
+            for frame in &mut expected {
+                frame[0] += 3.0 * 0.25;
+                frame[1] += 3.0 * -0.5;
+            }
+        } else {
+            feed(&mut f, a, b, 0.0);
+            // Dry + unchanged memoryless source, plus destination's retained decay.
+            for frame in &mut expected {
+                frame[0] += 2.0 * 0.25;
+                frame[1] += 2.0 * -0.5;
+            }
+        }
+        let mut next = SessionPlayback::new(Arc::new(
+            PreparedRevision::prepare(
+                f.editor.project(),
+                &media(&f, &source),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+        next.try_inherit_state_from(&mut previous).unwrap();
+        let mut actual = [[0.0; 2]; 12];
+        next.render(&mut actual).unwrap();
+        assert_eq!(actual, expected, "changed source={change_source}");
+    }
+}

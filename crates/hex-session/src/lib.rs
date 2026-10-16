@@ -1,4 +1,6 @@
 //! Control-side owner of canonical editing state and its bounded decoded media.
+pub mod gain_recording;
+
 use hex_engine::{Audio, Project as PlaybackProject};
 use hex_media::{
     DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample,
@@ -1227,6 +1229,24 @@ impl Session {
             prepared.arrangement().as_ref().clone(),
             Arc::clone(prepared.midi_preview()),
         ))
+    }
+
+    /// Prepare transient recording capability without changing canonical state or history.
+    pub fn prepare_gain_recording(
+        &self,
+        track: hex_project::TrackId,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        hex_engine::PreparedRevision::prepare_for_gain_recording_with_audio_transforms(
+            self.project(),
+            &self.media_bank(),
+            self.sine_table(),
+            previous.map(|prepared| prepared.session().as_ref()),
+            track,
+            &self.audio_transforms,
+        )
+        .map(Arc::new)
+        .map_err(SessionError::from)
     }
 
     pub fn compile_prepared_revision(

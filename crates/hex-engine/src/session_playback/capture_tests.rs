@@ -942,3 +942,6 @@ fn reused_capture_buffers_only_clear_rendered_prefix_on_success() {
     assert_eq!(capture.valid_frames(), 0);
     assert!(track.iter().chain(&bus).all(|frame| *frame == [0.0; 2]));
 }
+
+#[path = "capture_routing_tests.rs"]
+mod routing;

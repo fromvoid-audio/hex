@@ -485,7 +485,8 @@ impl EditorView {
     }
 
     pub(super) fn edit_pending(&self) -> bool {
-        self.opening_project
+        self.gain_recorder.blocks_edits()
+            || self.opening_project
             || self.close_prompt_open
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()

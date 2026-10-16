@@ -230,3 +230,37 @@ fn prepared_toggle_cannot_survive_demotion_to_legacy_or_linear_export() {
         vec![[0.0; 2]; 400]
     );
 }
+
+#[test]
+fn page_and_observer_rendering_mix_the_same_monitor_click() {
+    struct NoPages;
+    impl crate::MediaPages for NoPages {
+        fn page(
+            &mut self,
+            _: crate::StreamSourceKey,
+            _: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            panic!("empty graph requested media")
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            panic!("empty graph requested media")
+        }
+    }
+    let source = revision(Some(LoopRegion::new(0, 4_050, true).unwrap()));
+    let expected = render_partitioned(&mut playing(Arc::clone(&source)), 12_200, 31);
+    for observed in [false, true] {
+        let mut playback = playing(Arc::clone(&source));
+        let mut output = vec![[0.; 2]; expected.len()];
+        for chunk in output.chunks_mut(47) {
+            let mut observer = |_: crate::PostNodeIdentity, _: usize, _: &[Frame]| {};
+            playback
+                .render_with_pages_and_post_node_observer(
+                    chunk,
+                    &mut NoPages,
+                    if observed { Some(&mut observer) } else { None },
+                )
+                .unwrap();
+        }
+        assert_eq!(output, expected);
+    }
+}

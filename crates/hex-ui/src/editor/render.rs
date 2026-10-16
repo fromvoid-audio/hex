@@ -336,6 +336,15 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.clip_view_open && self.gain_lane.track.is_some() {
+            self.cancel_gain_draft(cx);
+            self.gain_lane.track = None;
+        }
+        if let Some(state) = self.state.as_ref() {
+            if let Some(track) = self.selected_track {
+                self.gain_lane.change_owner(track, &state.project);
+            }
+        }
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
@@ -347,6 +356,7 @@ impl Render for EditorView {
                 .child(self.session_grid(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, true))
+                .child(self.routing_controls(cx))
         } else {
             div()
                 .flex_1()
@@ -356,6 +366,7 @@ impl Render for EditorView {
                 .child(self.arrangement(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, false))
+                .child(self.routing_controls(cx))
         };
         let workspace = div()
             .flex_1()
@@ -377,6 +388,8 @@ impl Render for EditorView {
                 "hex_theme_settings"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
+            } else if self.gain_numeric_editing(cx) {
+                "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
             })
@@ -493,6 +506,10 @@ impl Render for EditorView {
                     if view.theme_settings.open {
                         view.cancel_theme_settings(window, cx);
                         cx.stop_propagation();
+                    } else if view.cancel_gain_draft(cx) {
+                        view.focus.focus(window);
+                        cx.stop_propagation();
+                        cx.notify();
                     }
                 }),
             )
@@ -511,6 +528,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
                 view.cancel_scrub();
+                let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
@@ -526,7 +544,8 @@ impl Render for EditorView {
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
-                if !midi_canceled
+                if !gain_canceled
+                    && !midi_canceled
                     && !selection_cleared
                     && !time_selection_canceled
                     && !drag_stopped
@@ -589,7 +608,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }

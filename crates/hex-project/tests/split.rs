@@ -145,6 +145,10 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
     assert_eq!(looping.project().clip(right).unwrap().source_phase(), 4);
 
     let full_project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![AssetSnapshot {
@@ -156,6 +160,9 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "full".into(),
             gain: 1.0,
@@ -229,6 +236,10 @@ fn missing_clip_split_is_transactional() {
 #[test]
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: u64::MAX,
         assets: vec![AssetSnapshot {
@@ -240,6 +251,9 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "audio".into(),
             gain: 1.0,

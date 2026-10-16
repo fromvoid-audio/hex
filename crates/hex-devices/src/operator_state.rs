@@ -951,6 +951,10 @@ struct PreparedOperatorInstrument {
 }
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
         if let Some(factory) = self.lfo_runtime.as_ref() {
             factory

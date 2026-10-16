@@ -132,10 +132,12 @@ invalid edits preserve metadata and history. Trim, split, duplicate and audio
 copy operations retain gain, including Arrangement-to-Session copies. Undo/Redo
 and snapshots retain the exact integer value.
 
-Project schema 21 retains the schema-20 required `gain_millidb` fields for both audio clip
-kinds. Prior schemas migrate to unity when the field is absent; schemas 20 and 21
-refuse absent/null fields and every version refuses out-of-range or noninteger
-values. Existing recoverable save/journal/publication paths remain in use.
+Project schema 25 requires a complete ID-keyed `audio_clip_state` table containing
+validated integer gain and required-nullable transform state. Historical main
+schemas migrate audio gain to unity; strict, explicitly selected development
+20/21 readers preserve their authored gains. Missing/null/noninteger or
+out-of-range current gain refuses admission. Existing recoverable save/journal/
+publication paths remain in use; see the [storage contract](../crates/hex-storage/README.md).
 
 Preparation converts dB to one finite f32 coefficient on the control thread.
 The shared Arrangement resident/streamed kernel applies fades, then clip gain,

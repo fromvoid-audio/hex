@@ -201,6 +201,7 @@ mod ui {
                 waveforms: state.waveforms.clone(),
                 audio_clip_waveforms: state.audio_clip_waveforms.clone(),
                 midi_preview: Arc::clone(&state.midi_preview),
+                gain_preview: state.gain_preview.clone(),
                 timeline_frames: state.timeline_frames,
                 can_undo: state.can_undo,
                 can_redo: state.can_redo,

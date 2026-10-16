@@ -110,6 +110,7 @@ impl Project {
     /// Capture selected audible fragments on a control worker, not the UI/audio thread.
     pub fn capture_time_range(&self, range: &TimeRange) -> Result<RangeClipboard, Invalid> {
         let first = range.validate(self)?;
+        self.refuse_automation_transform(range.tracks())?;
         let mut result = RangeClipboard {
             sample_rate: self.sample_rate(),
             duration: range.duration(),
@@ -249,6 +250,7 @@ fn clear_rows(
     start: u64,
     end: u64,
 ) -> Result<(), Invalid> {
+    project.refuse_automation_transform(rows)?;
     for track in rows.iter().copied() {
         crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
         crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;

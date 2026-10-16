@@ -81,12 +81,12 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(value["version"], 21);
+    assert_eq!(value["version"], 25);
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
     // Canonical validation rejects inverted crop data rather than losing transform semantics.
-    let edit = &mut value["tracks"][0]["audio_clips"][0]["audio_edit"];
+    let edit = &mut value["audio_clip_state"][0]["audio_edit"];
     assert!(edit.is_object(), "canonical audio edit field is present");
     {
         edit["view_end"] = serde_json::json!(0);

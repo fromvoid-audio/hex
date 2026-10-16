@@ -96,8 +96,8 @@ impl EditorView {
         self.arrangement_pan.take().is_some()
     }
 
-    pub(super) fn arrangement(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state() else {
+    pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let Some(state) = self.state.as_ref().cloned() else {
             let viewport = Viewport {
                 start: 0,
                 length: 1,
@@ -128,7 +128,7 @@ impl EditorView {
                 ruler_width,
             );
             let overview = super::overview::widget(
-                super::overview::cached(&self.overview_cache, self.project_generation, state),
+                super::overview::cached(&self.overview_cache, self.project_generation, &state),
                 empty_viewport,
                 cx.entity(),
             );
@@ -139,10 +139,10 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .children([overview])
-                .child(self.ruler(state, ruler_width, cx))
+                .child(self.ruler(&state, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
-                    state,
+                    &state,
                     empty_viewport,
                     &grid,
                     cx,
@@ -178,7 +178,7 @@ impl EditorView {
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
         let bands = super::musical_time::adaptive_grid_bands(&state.project, viewport, ruler_width);
         let overview = super::overview::widget(
-            super::overview::cached(&self.overview_cache, self.project_generation, state),
+            super::overview::cached(&self.overview_cache, self.project_generation, &state),
             viewport,
             cx.entity(),
         );
@@ -253,9 +253,16 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .children([overview])
-            .child(self.ruler(state, ruler_width, cx))
-            .child(super::loop_rail::view(self, state, viewport, &grid, cx))
-            .children([self.arrangement_body(content, cx)]);
+            .child(self.ruler(&state, ruler_width, cx))
+            .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
+            .children([self.arrangement_body(content, cx)])
+            .children(super::gain_lane::view(
+                self,
+                &state,
+                viewport,
+                ruler_width,
+                cx,
+            ));
         let main = self.main_track_row(viewport, &bands, &grid, cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)

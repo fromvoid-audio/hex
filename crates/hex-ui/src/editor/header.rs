@@ -247,6 +247,7 @@ mod ui_tests {
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: current.timeline_frames,
                 can_undo: false,
                 can_redo: false,
