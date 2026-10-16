@@ -67,7 +67,7 @@ pub(super) fn render(
     });
     retire_removed_eq8_graphs(view, cx, &alive);
     if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.spectrum_target.desired()
+        && let Some(target) = audio.control.spectrum_desired()
         && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
@@ -75,11 +75,11 @@ pub(super) fn render(
                 && target.identity.device_type.as_str() == Ok("hex.eq8")
         })
     {
-        let _ = audio.control.spectrum_target.clear();
+        let _ = audio.control.spectrum_clear();
         view.device_panel.spectrum_result = None;
     }
     if let Some(audio) = view.audio.as_mut()
-        && let Some(target) = audio.control.processor_audition.desired()
+        && let Some(target) = audio.control.audition_desired()
         && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
@@ -87,7 +87,7 @@ pub(super) fn render(
                 && target.identity.device_type.as_str() == Ok("hex.eq8")
         })
     {
-        let _ = audio.control.processor_audition.cancel_immediately();
+        let _ = audio.control.audition_cancel();
     }
     view.device_panel
         .pending_values

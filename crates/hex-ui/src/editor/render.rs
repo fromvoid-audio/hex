@@ -1,8 +1,9 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
-    OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft, PanTimelineRight,
+    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight,
+    NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
+    OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
     PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
     RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
     SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
@@ -599,7 +600,20 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
-            .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
+            .on_action(cx.listener(|view, _: &NewProject, _, cx| {
+                view.new_project(hex_session::DocumentAudioMode::Resident);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &NewStreamingProject, _, cx| {
+                view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &OpenProject, _, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::Resident, cx)
+            }))
+            .on_action(cx.listener(|view, _: &OpenStreamingProject, _, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::VerifiedStreaming, cx)
+            }))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
             }))

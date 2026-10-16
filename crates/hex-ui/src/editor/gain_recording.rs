@@ -91,6 +91,10 @@ impl EditorView {
             self.error = Some("gain recording requires native audio".into());
             return;
         }
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error = Some("gain recording is unavailable for verified streaming audio".into());
+            return;
+        }
         if !self.enqueue(Request::ArmGainRecording {
             project_generation: self.project_generation,
             revision: state.revision,
@@ -138,10 +142,15 @@ impl EditorView {
         let Some(audio_revision) = self.gain_recorder.audio_revision else {
             return;
         };
-        if !audio.control.status.gain_recording_ready.load(Acquire) {
+        let Some(status) = audio.control.status() else {
+            self.error = Some("audio output is closed".into());
+            return;
+        };
+        if !status.gain_recording_ready.load(Acquire) {
             self.error = Some("gain recording waits for aligned playback".into());
             return;
         }
+        let transport_epoch = status.transport_epoch.load(Acquire);
         let Some(epoch) = track.gain_lane().recording_epoch().checked_add(1) else {
             self.error = Some("gain recording epoch exhausted".into());
             return;
@@ -167,11 +176,11 @@ impl EditorView {
             canonical_revision: state.revision,
             audio_revision,
             recording_epoch: epoch,
-            transport_epoch: audio.control.status.transport_epoch.load(Acquire),
+            transport_epoch,
             gesture_serial: serial,
             sample_rate: state.project.sample_rate(),
         };
-        match audio.control.gain_recording.begin(target, gain) {
+        match audio.control.gain_begin(target, gain) {
             Ok(()) => {
                 self.gain_recorder.serial = serial;
                 self.gain_recorder.target = Some(target);
@@ -193,7 +202,7 @@ impl EditorView {
             return;
         };
         if let Some(gain) = self.gain_recorder.pending_gain {
-            match audio.control.gain_recording.change(gain) {
+            match audio.control.gain_change(gain) {
                 Ok(()) => self.gain_recorder.pending_gain = None,
                 Err(reason) => {
                     self.error = Some(reason.into());
@@ -207,7 +216,7 @@ impl EditorView {
             }
         }
         if self.gain_recorder.mode == Mode::Finishing && !self.gain_recorder.cancelled {
-            if let Err(reason) = audio.control.gain_recording.release() {
+            if let Err(reason) = audio.control.gain_release() {
                 self.error = Some(reason.into());
             }
         }
@@ -224,7 +233,7 @@ impl EditorView {
         self.gain_recorder.cancelled = true;
         if self.gain_recorder.target.is_some() {
             if let Some(audio) = self.audio.as_mut() {
-                if let Err(reason) = audio.control.gain_recording.cancel() {
+                if let Err(reason) = audio.control.gain_cancel() {
                     self.error = Some(reason.into());
                 }
             }
@@ -255,25 +264,33 @@ impl EditorView {
         };
         let mut receipts = Vec::new();
         for _ in 0..66 {
-            let Some(receipt) = audio.control.gain_recording.try_receipt() else {
+            let Some(receipt) = audio.control.gain_receipt() else {
                 break;
             };
             receipts.push(receipt);
         }
         let mut changed = !receipts.is_empty();
+        let status_values = audio.control.status().map(|status| {
+            (
+                status.applied_revision.load(Acquire),
+                status.gain_recording_ready.load(Acquire),
+                status.device_fault.load(Acquire),
+                status.gain_recording_fault.load(Acquire),
+            )
+        });
         if self.gain_recorder.mode == Mode::Arming
-            && self.gain_recorder.audio_revision
-                == Some(audio.control.status.applied_revision.load(Acquire))
-            && audio.control.status.gain_recording_ready.load(Acquire)
+            && status_values.is_some_and(|(revision, ready, _, _)| {
+                self.gain_recorder.audio_revision == Some(revision) && ready
+            })
         {
             self.gain_recorder.mode = Mode::Ready;
             self.status = "gain recording ready · drag touch gain; release returns to read".into();
             changed = true;
         }
-        if audio.control.status.device_fault.load(Acquire)
-            || audio.control.status.gain_recording_fault.load(Acquire)
+        if status_values
+            .is_none_or(|(_, _, device_fault, recording_fault)| device_fault || recording_fault)
         {
-            let _ = audio.control.gain_recording.cancel();
+            let _ = audio.control.gain_cancel();
             audio.control.stop();
             // The sink may never call back after device loss. Discard the
             // uncommitted UI take without waiting for a receipt or pretending
@@ -284,7 +301,11 @@ impl EditorView {
             return true;
         }
         if self.gain_recorder.mode == Mode::Arming {
-            if let Some((revision, reason)) = audio.control.status.rejected_revision() {
+            if let Some((revision, reason)) = audio
+                .control
+                .status()
+                .and_then(|status| status.rejected_revision())
+            {
                 if self.gain_recorder.audio_revision == Some(revision) {
                     self.gain_recorder.mode = Mode::Idle;
                     self.gain_recorder.pending_gain = None;

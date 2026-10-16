@@ -390,8 +390,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         if let Some(audio) = view.audio.as_mut() {
-            let _ = audio.control.spectrum_target.clear();
-            let _ = audio.control.processor_audition.cancel_immediately();
+            let _ = audio.control.spectrum_clear();
+            let _ = audio.control.audition_cancel();
         }
         view.device_panel.owner = None;
         view.device_panel.selected_device = None;
@@ -451,8 +451,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         .or_else(|| view.selected_track.map(DevicePanelOwner::Track));
     if desired_owner != view.device_panel.owner {
         if let Some(audio) = view.audio.as_mut() {
-            let _ = audio.control.spectrum_target.clear();
-            let _ = audio.control.processor_audition.cancel_immediately();
+            let _ = audio.control.spectrum_clear();
+            let _ = audio.control.audition_cancel();
         }
         if let Some(previous) = view.device_panel.owner {
             if !owner_exists(&state, previous) {
@@ -578,7 +578,7 @@ fn clear_removed_spectrum_target(
     identities: &HashMap<DeviceId, DeviceControlIdentity>,
 ) {
     let stale = view.audio.as_ref().and_then(|audio| {
-        audio.control.spectrum_target.desired().map(|target| {
+        audio.control.spectrum_desired().map(|target| {
             target.identity.owner == owner
                 && !identities.iter().any(|(device, identity)| {
                     device.value() == target.identity.device_id
@@ -589,7 +589,7 @@ fn clear_removed_spectrum_target(
         })
     }) == Some(true);
     if stale && let Some(audio) = view.audio.as_mut() {
-        let _ = audio.control.spectrum_target.clear();
+        let _ = audio.control.spectrum_clear();
         view.device_panel.spectrum_result = None;
     }
 }
@@ -600,7 +600,7 @@ fn clear_removed_processor_audition_target(
     identities: &HashMap<DeviceId, DeviceControlIdentity>,
 ) {
     let stale = view.audio.as_ref().and_then(|audio| {
-        audio.control.processor_audition.desired().map(|target| {
+        audio.control.audition_desired().map(|target| {
             target.identity.owner == owner
                 && !identities.iter().any(|(device, identity)| {
                     device.value() == target.identity.device_id
@@ -611,7 +611,7 @@ fn clear_removed_processor_audition_target(
         })
     }) == Some(true);
     if stale && let Some(audio) = view.audio.as_mut() {
-        let _ = audio.control.processor_audition.cancel_immediately();
+        let _ = audio.control.audition_cancel();
     }
 }
 
