@@ -3107,6 +3107,13 @@ remain outstanding. Native interaction/listening and Windows evidence remain
 separate from automated source checks.
 # 16 October 2026 — lfo assignment #2383 / pr173
 
+The strengthened rendered regression reproduced the depth caption overlapping
+navigation in synced mode at 880 px. Shared destination-caption rows and tighter
+vertical spacing repair the layout without replacing controls or focus owners.
+Free/synced modes at 880/1440 px now check caption boundaries against the actual
+navigation rail. Final integrated exact-source CI supersedes earlier-head evidence;
+native pixel/input/listening and reference acceptance remain separate.
+
 Recovered the existing canonical PR and preserved its commit history while
 integrating current main. The resulting change is limited to discoverable
 oscillator pitch mapping, selected-destination/depth readback and focused

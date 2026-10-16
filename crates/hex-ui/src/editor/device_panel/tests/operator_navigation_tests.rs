@@ -128,10 +128,57 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
     let depth = visual
         .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
         .unwrap();
+    let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+    assert!(
+        depth.bottom() <= rail.top(),
+        "pitch-depth explanation overlaps navigation: {depth:?} rail={rail:?}"
+    );
     assert!(
         depth.bottom() <= detail.bottom() && depth.right() <= detail.right(),
         "pitch-depth explanation is clipped: {depth:?} detail={detail:?}"
     );
+    for width in [880.0, 1440.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        for sync in [true, false] {
+            editor.update(cx, |view, _| {
+                assert!(view.enqueue(Request::SetDeviceParameter {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(84),
+                    value: ParameterValue::Bool(sync),
+                }));
+            });
+            pump_until(&editor, cx, |view| {
+                view.worker_requests_pending == 0
+                    && view.state.as_ref().is_some_and(|state| {
+                        operator_parameter_value(state, track, device, 84)
+                            == ParameterValue::Bool(sync)
+                    })
+            });
+            visual.run_until_parked();
+            let depth = visual
+                .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
+                .unwrap();
+            let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+            assert!(
+                depth.bottom() <= rail.top(),
+                "depth overlaps navigation at width={width}, sync={sync}: {depth:?} rail={rail:?}"
+            );
+            let detail = visual
+                .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+                .unwrap();
+            for caption in [
+                format!("operator-lfo-depth-{}", device.value()),
+                format!("operator-lfo-destinations-{}", device.value()),
+                format!("operator-lfo-selected-{}-", device.value()),
+            ] {
+                let bounds = visual.debug_bounds(selector(caption)).unwrap();
+                assert!(
+                    bounds.right() <= detail.right() && bounds.bottom() <= rail.top(),
+                    "lfo caption is clipped or overlaps navigation at width={width}, sync={sync}: {bounds:?}"
+                );
+            }
+        }
+    }
     enter_typed_value(
         &mut visual,
         device,

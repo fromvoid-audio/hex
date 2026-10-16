@@ -35,8 +35,13 @@ from #2325 remains in #2384.
 ## verification and user checklist
 
 Focused coverage exercises actual destination clicks, selected readback after
-each click, undo/redo, amount editing and project save/reopen. An independent
-PCM oracle covers all four destinations, ratio/fixed tuning, zero/full amount,
+each click, undo/redo, amount editing and project save/reopen.
+A rendered regression reproduced the depth caption overlapping the navigation rail
+in synced mode at 880 px. Destination captions now share one row with tighter
+vertical spacing, retaining the existing widget entities and focus ownership.
+Both free/synced modes at 880/1440 px check all captions against the actual rail
+and detail boundaries. These are GPUI scene bounds, not native pixel acceptance.
+An independent PCM oracle covers all four destinations, ratio/fixed tuning, zero/full amount,
 unselected tuning, held/released history transfer and block partitioning.
 Existing domain, malformed-state and migration tests remain authoritative.
 Arrangement/Session, prepared export and callback allocation fixtures also
