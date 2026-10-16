@@ -47,6 +47,7 @@ impl EditorView {
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_computer_keyboard();
+        visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -77,6 +78,12 @@ impl EditorView {
                         replace_error(&mut self.error, "an export is already pending");
                 }
                 Err(SubmitError::Closed(request)) => {
+                    if matches!(&request, Request::ImportAudioBatch { .. }) {
+                        if let Some(control) = self.audio_batch.take() {
+                            control.request_cancel();
+                        }
+                        self.audio_batch_progress = None;
+                    }
                     if matches!(request, Request::Export(_)) {
                         self.export_pending = false;
                     }
@@ -696,6 +703,18 @@ impl EditorView {
         {
             self.gain_recorder.arm_failed();
         }
+        if event
+            .audio_batch_complete
+            .as_ref()
+            .is_some_and(|completed| {
+                self.audio_batch
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, completed))
+            })
+        {
+            self.audio_batch = None;
+            self.audio_batch_progress = None;
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -1268,6 +1287,27 @@ impl EditorView {
             });
         }
         #[cfg(test)]
+        if let Request::ImportAudioBatch {
+            paths, destination, ..
+        } = &request
+        {
+            if let [path] = paths.as_slice() {
+                match destination {
+                    hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
+                        self.last_enqueued_import_to_track =
+                            Some((path.clone(), *track, *start, true))
+                    }
+                    hex_session::import_batch::AudioBatchDestination::NewTracks {
+                        before_track,
+                        start,
+                    } => {
+                        self.last_enqueued_import_to_new_track =
+                            Some((path.clone(), *before_track, *start))
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
         match &request {
             Request::ImportToTrack { path, track, start } => {
                 self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));
@@ -1288,6 +1328,11 @@ impl EditorView {
         }
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
+        }
+        if request.is_project_open() {
+            if let Some(control) = &self.audio_batch {
+                control.request_cancel();
+            }
         }
         if !matches!(&request, Request::Open(_) | Request::OpenWith { .. })
             && !allows_non_open_request(
@@ -1316,6 +1361,7 @@ impl EditorView {
                 | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }

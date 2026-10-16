@@ -1297,6 +1297,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         error: Some("test rejection".to_owned()),
         request_complete: true,
         computer_keyboard_complete: None,
+        audio_batch_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,

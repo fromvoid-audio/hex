@@ -31,6 +31,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         error: None,
         request_complete: true,
         computer_keyboard_complete: None,
+        audio_batch_complete: None,
         save_complete: false,
         open_complete: replaced,
         project_replaced: replaced,

@@ -145,6 +145,20 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        if self.audio_batch.is_some() {
+            bar = bar.child(
+                div()
+                    .id("cancel-audio-import")
+                    .debug_selector(|| "cancel-audio-import".into())
+                    .px_1()
+                    .cursor_pointer()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text("cancel import"))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.cancel_audio_batch(cx);
+                    })),
+            );
+        }
         let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
         let revision_label = self.audio_admission.label();
         let pending_commands = self
@@ -540,6 +554,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_audio_batch(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
