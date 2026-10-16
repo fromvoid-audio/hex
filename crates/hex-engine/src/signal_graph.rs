@@ -289,10 +289,7 @@ impl SignalGraph {
             .collect();
         let plan =
             LatencyPlan::build(&nodes, &edges, CompensationLimits::default()).map_err(error)?;
-        if plan.max_latency_frames() == 0
-            && canonical.audio_feeds().is_empty()
-            && canonical.midi_routes().is_empty()
-        {
+        if plan.max_latency_frames() == 0 && canonical.audio_feeds().is_empty() {
             return Ok(None);
         }
         let node_index = |old: usize| {

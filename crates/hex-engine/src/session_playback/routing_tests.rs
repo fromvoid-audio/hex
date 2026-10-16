@@ -189,6 +189,10 @@ fn routed_midi_arrangement_session_fanout_stop_relaunch_match_local_pcm_across_p
     let routed = fixture(true);
     let local = fixture(false);
     let revision = prepare(&routed, None);
+    assert!(
+        revision.arrangement().signal_graph.is_none(),
+        "logical MIDI routing must retain the zero-latency block renderer"
+    );
     let reference = prepare(&local, None);
     for partition in [1, 63, 256, 513] {
         for session in [false, true] {
@@ -572,4 +576,107 @@ fn profile_real_midi_routed_graph() {
             frames * 1e9 / samples[50] as f64
         );
     }
+}
+
+#[path = "../../examples/support/latency_fixture.rs"]
+mod latency_fixture;
+
+fn prepare_with_delay(f: &Fixture) -> Arc<PreparedRevision> {
+    let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&latency_fixture::Definition];
+    let effects = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    Arc::new(
+        PreparedRevision::prepare_with_registries(
+            f.editor.project(),
+            &f.media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn positive_delay_midi_routes_align_pcm_capture_and_source_launch_lifecycle() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut delayed = fixture(true);
+    let zero = prepare(&delayed, None);
+    delayed
+        .editor
+        .execute(Command::InsertDevice {
+            track: delayed.tracks[1],
+            before: None,
+            state: latency_fixture::Definition.default_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare_with_delay(&delayed);
+    assert_eq!(revision.arrangement().main_latency_frames(), 7);
+    for partition in [1, 63, 256, 513] {
+        for session in [false, true] {
+            let clips = if session { &delayed.clips[..1] } else { &[] };
+            let mut actual = start(Arc::clone(&revision), clips);
+            let mut reference = start(Arc::clone(&zero), clips);
+            let mut expected = vec![[0.0; 2]; 7];
+            expected.extend(render(&mut reference, 320, 256));
+            assert_pcm(&render(&mut actual, 327, partition), &expected, 1e-7);
+        }
+        let mut actual = start(Arc::clone(&revision), &delayed.clips[..1]);
+        let mut reference = start(Arc::clone(&zero), &delayed.clips[..1]);
+        let mut pcm = render(&mut actual, 63, partition);
+        let mut expected = vec![[0.0; 2]; 7];
+        expected.extend(render(&mut reference, 63, 256));
+        for runtime in [&mut actual, &mut reference] {
+            runtime
+                .apply(SessionPlaybackCommand::StopTrack {
+                    track: delayed.tracks[0],
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        pcm.extend(render(&mut actual, 64, partition));
+        expected.extend(render(&mut reference, 64, 256));
+        for runtime in [&mut actual, &mut reference] {
+            runtime
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: delayed.clips[0],
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        pcm.extend(render(&mut actual, 327, partition));
+        expected.extend(render(&mut reference, 320, 256));
+        assert_pcm(&pcm, &expected, 1e-7);
+    }
+    let mut captured = start(Arc::clone(&revision), &[]);
+    let plan = captured
+        .output_capture_plan(
+            &[
+                OutputCaptureId::Track(delayed.tracks[1]),
+                OutputCaptureId::Track(delayed.tracks[2]),
+            ],
+            327,
+        )
+        .unwrap();
+    let mut main = vec![[0.0; 2]; 327];
+    let mut a = main.clone();
+    let mut b = main.clone();
+    let mut outputs = [&mut a[..], &mut b[..]];
+    captured
+        .render_with_capture(&mut main, &mut OutputCapture::new(&plan, &mut outputs))
+        .unwrap();
+    for i in 0..main.len() {
+        assert_eq!(
+            main[i],
+            [a[i][0] + b[i][0], a[i][1] + b[i][1]],
+            "capture at {i}"
+        );
+    }
+    assert!(main[..7].iter().all(|frame| *frame == [0.0; 2]));
+    let mut legacy = crate::Renderer::new(revision.arrangement());
+    legacy.play();
+    let mut output = main.clone();
+    legacy.render(&mut output).unwrap();
+    assert_pcm(&output, &main, 1e-7);
 }

@@ -458,7 +458,9 @@ impl SessionPlayback {
             let has_current_release = self.release_scratch[first_release..release_cursor]
                 .iter()
                 .any(|entry| entry.tail_group.is_none());
-            let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence);
+            let midi_route = effective_midi_route(&self.revision, &self.route_scratch, index)?;
+            let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
+                || !matches!(midi_route.owner, RouteOwner::Silence);
             let has_current_effect_tail = !has_current_route
                 && !has_current_release
                 && self
@@ -539,7 +541,7 @@ impl SessionPlayback {
                     render_route_source_chunk(
                         RouteSourceContext {
                             revision: &self.revision,
-                            route: self.route_scratch[index],
+                            route: midi_route,
                             historical_floor: self.historical_floor_for(index),
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,

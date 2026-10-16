@@ -879,6 +879,7 @@ impl Track {
         (self.instrument_id.is_some()
             && (self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0))
             || self.mutable_instrument
+            || self.midi_source_index.is_some()
             || self.has_device_chain()
             || (self.has_ordered_instrument()
                 && (self.ordered_prefix.is_some() || self.ordered_suffix.is_some()))
@@ -1007,6 +1008,11 @@ impl Track {
 
     pub(crate) fn with_midi_source_index(mut self, source: Option<usize>) -> Self {
         self.midi_source_index = source;
+        if source.is_some() {
+            // Audio keeps its local owner; the block renderer adds the selected
+            // MIDI bus at the destination instrument and applies its fader once.
+            self.source_mix = PreparedTrackMix::identity();
+        }
         self
     }
 
