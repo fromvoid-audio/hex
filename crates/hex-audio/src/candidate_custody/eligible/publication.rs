@@ -20,6 +20,7 @@ pub enum AudioCandidateCancellationResult {
 }
 mod active;
 mod resources;
+mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 mod disposal;
@@ -67,6 +68,7 @@ struct RuntimeSlot {
     anchors: Option<AudioCandidateAnchors>,
     domains: Vec<AudioCandidateDomainToken>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
+    streaming: Option<streaming::Workspace>,
     summary: Option<AudioCandidateConstructorSummary>,
     context_generation: u64,
     policy: Option<crate::prepared::PublicationPolicy>,
@@ -92,6 +94,7 @@ impl RuntimeSlot {
             anchors: None,
             domains: Vec::new(),
             domain_refs: [None; 2],
+            streaming: None,
             summary: None,
             context_generation: 0,
             policy: None,
@@ -108,6 +111,7 @@ pub(super) struct Bank {
     archives: Vec<bool>,
     reservation: Option<AudioCandidatePublicationReservation>,
     metadata_bytes: usize,
+    stream_extents: Option<usize>,
 }
 struct Execution {
     returned: Returned,
@@ -158,6 +162,8 @@ struct State {
     spare_successor: Option<Claims>,
     covering_successor: Option<Claims>,
     manifest: Option<AudioCandidateTransfer>,
+    domain_refs: [Option<AudioCandidateDomainToken>; 2],
+    streaming: Option<streaming::Workspace>,
 }
 pub(crate) struct Queued {
     state: Box<State>,
@@ -415,6 +421,19 @@ impl super::Custody {
                     return Err("constructor domain association is unavailable");
                 }
             }
+            if bank.publication.stream_extents.is_some()
+                && owner.streamed_sources().next().is_some()
+                && (owner
+                    .source_context()
+                    .is_none_or(|context| context.project_generation != context_generation)
+                    || domains
+                        .iter()
+                        .any(|token| !bank.domains[token.slot].loan_outstanding))
+            {
+                return Err(
+                    "streamed constructor requires captured context and reserved actual page loans",
+                );
+            }
             let mut used = [false; 2];
             for source in owner.streamed_sources() {
                 let Some(index) = domains.iter().position(|token| {
@@ -542,6 +561,8 @@ impl super::Custody {
             spare_successor: None,
             covering_successor: None,
             manifest: None,
+            domain_refs: std::array::from_fn(|index| domains.get(index).copied()),
+            streaming: None,
         });
         let (runtime, anchors) = match owner.split_constructor_on_control() {
             Ok(parts) => parts,
@@ -570,6 +591,7 @@ impl super::Custody {
         slot.archive = archive;
         slot.domain_refs = std::array::from_fn(|index| domains.get(index).copied());
         slot.domains = domains;
+        state.streaming = slot.streaming.take();
         slot.summary = Some(summary);
         slot.context_generation = context_generation;
         slot.policy = Some(policy);

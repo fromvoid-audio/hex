@@ -397,6 +397,9 @@ impl CandidateRoot {
             .eligible
             .configure_publications(self.root_id(), reservation, bytes)
     }
+    pub(crate) fn configure_streaming(&self, limit: usize) -> Result<(), &'static str> {
+        self.0.eligible.configure_streaming(limit)
+    }
     pub(crate) fn eligible_claims_open(&self) -> bool {
         self.0.eligible.claims_open()
     }

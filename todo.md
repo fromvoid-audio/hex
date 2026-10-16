@@ -3580,3 +3580,10 @@ Five focused real-pair/ring/terminal/fault controls and the complete affected
 allocation-feature audio suite pass, including zero total/net callback allocation
 and deallocation on the exercised loan boundaries. Streamed install remains
 refused pending actual demand/prefix/BUFFERING integration.
+
+PR237 workspace checkpoint: optional pre-first-accept configuration reserves actual
+per-runtime demand Vec capacities and temporary construction overlap against the
+existing caller DATA allowances. Real cancellation/return keeps the original
+backing pointers/capacities, with overflow refusing before allocation. Stream
+opt-in staging validates the actual captured owner context and retained loans;
+default resident and disposal-only streamed staging remain unchanged.

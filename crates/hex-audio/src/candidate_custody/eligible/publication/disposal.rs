@@ -88,6 +88,11 @@ impl Custody {
         };
         let valid = returned.state.as_ref().is_some_and(|state| {
             state.stamp == stamp
+                && state.domain_refs == slot.domain_refs
+                && state
+                    .streaming
+                    .as_ref()
+                    .is_none_or(streaming::Workspace::valid)
                 && state.context_generation == slot.context_generation
                 && Some(state.policy) == slot.policy
                 && state.runtime.as_ref().is_some_and(|runtime| {
@@ -219,6 +224,19 @@ impl Custody {
                         .record_anchor_cells_on_control(anchors)
                         .map_err(|_| ())?;
                     execution.proof_recorded = true;
+                    // Actual reserved backing returns to its original slot before
+                    // State metadata destruction, even while origins stay open.
+                    let mut bank = lock(&self.bank);
+                    let slot = bank.publication.slots.get_mut(stamp.slot).ok_or(())?;
+                    let state = execution.returned.state.as_mut().ok_or(())?;
+                    if slot.streaming.is_some() && state.streaming.is_some() {
+                        return Err(());
+                    }
+                    if let Some(mut workspace) = state.streaming.take() {
+                        workspace.clear();
+                        slot.streaming = Some(workspace);
+                    }
+                    drop(bank);
                     execution.pending = true;
                     drop(execution.returned.state.take());
                     drop(execution.proof.take());

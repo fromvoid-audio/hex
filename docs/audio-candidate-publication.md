@@ -256,3 +256,21 @@ destructors, so a later destructor panic pins the exact endpoints without a join
 or retry. Application callback nonrenderability still does not certify native OS
 Dispose success. This endpoint checkpoint does not enable streamed installation;
 engine demand, command-prefix and per-chunk BUFFERING wiring remain PR237 work.
+
+### reserved exact-demand workspace
+
+Before accepting any domain or graph, an opted-in channel can reserve a finite
+extent capacity per domain for every runtime cell. Requested backing and the
+control-side construction Vec overlap are checked before allocation, then actual
+capacities are checked against the same caller retained/peak allowances. The
+existing resident reservation API needs no new field or opt-in.
+
+The same two Vec backings move from their reserved Root cell into its actual
+runtime State. They return to that original cell before State metadata normally
+drops, including cancellation; report consumption cannot make a slot reusable
+with missing backing. Their original capacities stay charged during all moves,
+failed cleanup and unconsumed reports. Stream-enabled staging requires the actual
+prepared owner's captured document context and actual outstanding domain loans;
+caller context numbers cannot relabel it. Default non-stream-enabled candidate
+staging keeps its existing readiness refusal. Native readiness/render integration
+is still unfinished at this checkpoint.

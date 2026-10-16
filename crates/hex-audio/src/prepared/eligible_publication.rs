@@ -2,6 +2,22 @@
 //! seam does not itself grant native installation or page readiness.
 use super::*;
 impl Control {
+    /// Reserve exact-demand rows per retained runtime before accepting any
+    /// source domain or graph. Existing resident callers need not opt in.
+    pub fn configure_audio_candidate_streaming(
+        &mut self,
+        extents_per_domain: usize,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.revision != 0
+            || self.closing.load(Acquire)
+            || self.publication_pending.load(Acquire)
+        {
+            return Err("stream demand requires a vacant native channel");
+        }
+        self.candidate_root.configure_streaming(extents_per_domain)
+    }
+
     /// Move the one exact page endpoint into this native channel. Queue pressure
     /// refuses before pair construction; successful late closure stays accepted
     /// in Root cleanup custody and never publishes behind terminal extraction.
