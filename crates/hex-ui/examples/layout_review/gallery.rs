@@ -278,7 +278,13 @@ impl Gallery {
         match self.family {
             Family::Device | Family::CompactDevice => {
                 let current = state_at(0);
-                let frame_style = style(current, true);
+                let base = style(current, true);
+                let frame_style = base.with_device_selection(current == State::Selected);
+                let frame_style = if current == State::Selected {
+                    frame_style.with_header_colors(SELECTED, base.text)
+                } else {
+                    frame_style
+                };
                 let contents = div().h(px(92.0)).p(px(6.0)).child(
                     div()
                         .size_full()

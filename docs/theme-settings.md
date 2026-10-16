@@ -57,7 +57,9 @@ Pulse2474. All neutral shell/header, section, rail,
 display, readout, hover, disabled text, focus marker and dial rail colors follow
 the existing palette roles. Inline readout appearance depends on presentation,
 never a device type ID. The idle header/surround share the Layout surface;
-selection behavior is a separate follow-up (Pulse2472).
+Pulse2472 resolves selected-header paint separately through
+`theme::device_frame_style`, including its contrast-checked foreground. Outer
+border/surround and caller-owned body/control palettes remain neutral.
 
 The a/b/c/d oscillator colors remain stable musical identity cues, centralized
 by `oscillator_identity_color`: yellow, turquoise, blue and orange. Badges and

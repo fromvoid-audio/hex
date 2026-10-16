@@ -1,6 +1,6 @@
 //! Product-owned device roles. Widgets receive resolved colors, never identities.
 use super::{PaletteRole, color, readable_text};
-use hex_widgets::ControlStyle;
+use hex_widgets::{ControlStyle, DeviceFrameStyle};
 
 /// Visual purpose, independent of device type, layout and parameter identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +51,18 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         }
     }
     style
+}
+
+/// One selected-header policy for every instrument, effect and return shell.
+/// Header paint is isolated from the neutral body and uses a readable foreground.
+pub(crate) fn device_frame_style(selected: bool) -> DeviceFrameStyle {
+    let style = device_style(DeviceStyleRole::Layout);
+    let frame = style.with_device_selection(selected);
+    if selected {
+        frame.with_header_colors(style.accent, readable_text(style.accent, style.text))
+    } else {
+        frame
+    }
 }
 
 /// Stable musical identities a/b/c/d, shared by badges and routing diagrams.

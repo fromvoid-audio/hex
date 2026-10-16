@@ -1398,7 +1398,7 @@ fn render_effect(
                     NativeDeviceClass::Effect,
                     theme::text(device_view.name.clone()),
                 ),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 header_actions,
                 body,
             )
@@ -1426,7 +1426,7 @@ fn render_effect(
             );
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 header_actions,
                 body,
             )
@@ -1859,7 +1859,7 @@ fn render_instrument(
                         NativeDeviceClass::Instrument,
                         theme::text(device_view.name.clone()),
                     ),
-                    device_layout_style().with_device_selection(selected),
+                    theme::device_frame_style(selected),
                     header_actions,
                     body,
                 )
@@ -1900,7 +1900,7 @@ fn render_instrument(
                         NativeDeviceClass::Instrument,
                         theme::text(device_view.name.clone()),
                     ),
-                    device_layout_style().with_device_selection(selected),
+                    theme::device_frame_style(selected),
                     header_actions,
                     body,
                 )
@@ -1936,7 +1936,7 @@ fn render_instrument(
                             .unwrap_or("unknown instrument"),
                     ),
                 ),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 header_actions,
                 body,
             )

@@ -58,8 +58,12 @@ layout, control, recessed-display and inline-readout palettes from the active
 four-color theme. The layout role gives idle headers and surrounds the same
 surface; rail and display roles retain the accepted Vector hierarchy. Widgets
 receive colors through ControlStyle and have no device identities.
-Frame selection still transforms only its supplied palette; bodies/controls
-receive the unselected layout/control palettes independently.
+`DeviceFrameStyle` separates header paint from the neutral `ControlStyle`.
+`with_device_selection` returns that frame presentation instead of mutating the
+shell palette. The product's `theme::device_frame_style` supplies a readable
+selected-header foreground. Selection changes neither outer border/surround nor
+body geometry or control colors. Device selection, child focus, internal section
+selection, bypass and replacement-drop feedback retain their existing owners.
 
 Vector composes its accepted oscillator/preview rails, 40px grouped rows and dark
 rounded detail display from these primitives. Existing focus entities, tab slots,
