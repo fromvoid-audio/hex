@@ -1,3 +1,16 @@
+## device preset integration — PR187 / #2375, 16 october 2026
+
+Restored focused preset service/storage/native-dialog/header wiring against current
+main, preserving current DSP/capture/shared-widget behavior and the version-11
+Operator payload. Nonzero host input trim now survives preset load alongside output
+trim; the save/load/one-Undo/Redo fixture reproduced its previous reset. Deferred
+preset requests are discarded after failed device finalization; the actual worker
+compile-refusal fixture reproduced their old retention. Errors retain diagnostic
+sources with lowercase app messages and consistent early/late collision guidance.
+Focused rendered save/load/cancel/stale/Return/Operator tests pass. Final exact-source
+full checks are recorded with PR187; native interaction/listening remain open.
+Pulse requires reauthentication here; no ticket state update is claimed.
+
 ## export finalization refusal — follow-up to PR152, 16 october 2026
 
 The new range/stem request now follows the legacy export refusal contract when a

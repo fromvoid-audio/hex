@@ -282,6 +282,14 @@ pub(super) fn render_return_effect(
             cx.notify();
         })),
     );
+    if device_view.is_ok() {
+        actions = actions.child(super::super::device_preset::actions(
+            id,
+            NativeDeviceClass::Effect,
+            selected,
+            cx,
+        ));
+    }
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {

@@ -20,6 +20,7 @@ mod context_menu;
 mod controller;
 mod device_gesture;
 mod device_panel;
+mod device_preset;
 mod dialogs;
 mod drag;
 mod drag_autoscroll;
@@ -492,6 +493,7 @@ pub(super) struct EditorView {
     export_dialog_open: bool,
     saving_project: bool,
     save_dialog_open: bool,
+    preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<String>,
     focus: FocusHandle,
@@ -778,6 +780,7 @@ impl EditorView {
             export_dialog_open: false,
             saving_project: false,
             save_dialog_open: false,
+            preset_dialog_open: false,
             status,
             error: None,
             focus,

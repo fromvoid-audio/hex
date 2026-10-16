@@ -9,6 +9,7 @@ use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
+pub mod preset;
 mod recovery;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
@@ -206,6 +207,14 @@ impl GainLaneEdit {
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 pub enum Request {
+    SaveDevicePreset {
+        owner: preset::Owner,
+        path: PathBuf,
+    },
+    LoadDevicePreset {
+        owner: preset::Owner,
+        path: PathBuf,
+    },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
         project_generation: u64,
@@ -821,6 +830,8 @@ fn run_worker(
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
         );
@@ -1435,6 +1446,39 @@ fn run_worker(
                             Ok(_) => status = Some("no change".into()),
                             Err(reason) => error = Some(reason.to_string().to_lowercase()),
                         }
+                    }
+                }
+                Request::SaveDevicePreset { owner, path } => {
+                    match preset::save(&session, project_generation, revision, owner, &path) {
+                        Ok(()) => status = Some("device preset saved".into()),
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::LoadDevicePreset { owner, path } => {
+                    let candidate =
+                        preset::load_command(&session, project_generation, revision, owner, &path);
+                    match candidate {
+                        Ok(command) => {
+                            let before = session.project().clone();
+                            match session.command_prepared_revision(
+                                command,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok((_, prepared)) if session.project() != &before => {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                    status = Some(
+                                        "device preset loaded · undo restores previous state"
+                                            .into(),
+                                    );
+                                }
+                                Ok(_) => status = Some("device preset already matches".into()),
+                                Err(reason) => {
+                                    error = Some(format!("device preset refused · {reason}"))
+                                }
+                            }
+                        }
+                        Err(reason) => error = Some(reason),
                     }
                 }
                 Request::Edit(command) => {

@@ -1221,6 +1221,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
                 | Request::ImportToTrack { .. }
@@ -1248,6 +1249,8 @@ impl EditorView {
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
         ) && self.device_gesture.snapshot().is_some()
         {

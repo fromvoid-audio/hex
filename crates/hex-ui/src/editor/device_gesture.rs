@@ -50,7 +50,10 @@ fn retire_failed_finalize_barriers(deferred: &mut VecDeque<Request>) -> FailedBa
                 control.cancel();
                 effects.export_refused = true;
             }
-            Request::Undo | Request::Redo => {}
+            Request::Undo
+            | Request::Redo
+            | Request::SaveDevicePreset { .. }
+            | Request::LoadDevicePreset { .. } => {}
             Request::Open(_) | Request::OpenWith { .. } => kept.push_back(request),
             request => kept.push_back(request),
         }

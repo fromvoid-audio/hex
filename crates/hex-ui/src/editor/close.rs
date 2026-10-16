@@ -608,6 +608,21 @@ mod window_tests {
         let export_control = hex_session::service::ExportControl::default();
         editor.update(cx, |view, _| {
             assert!(view.enqueue_device_barrier(Request::SaveNew(save_path.clone())));
+            let owner = hex_session::service::preset::Owner {
+                project_generation: view.project_generation,
+                revision: view.state.as_ref().unwrap().revision,
+                device,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id,
+            };
+            assert!(view.enqueue_device_barrier(Request::SaveDevicePreset {
+                owner,
+                path: save_path.with_extension("hex-device-preset.json"),
+            }));
+            assert!(view.enqueue_device_barrier(Request::LoadDevicePreset {
+                owner,
+                path: save_path.with_extension("hex-device-preset.json"),
+            }));
             assert!(view.enqueue_device_barrier(Request::ExportRange {
                 path: export_path.clone(),
                 start: 0,
