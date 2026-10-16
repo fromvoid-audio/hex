@@ -17,7 +17,7 @@ use hex_widgets::{
     ResponseGraphNode, Toggle, ToggleChanged, ToggleConfig,
 };
 
-pub(super) const FRAME_WIDTH: f32 = 600.0;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::EQ8_FRAME_WIDTH;
 const BODY_HEIGHT: f32 = super::DEVICE_FRAME_BODY_HEIGHT;
 const BAND_COUNT: usize = 8;
 const RESPONSE_POINTS: usize = 96;

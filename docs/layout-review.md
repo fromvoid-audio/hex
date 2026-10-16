@@ -1,4 +1,96 @@
-# Native layout review catalog
+# Current production-backed fixture catalog — pulse2474 / PR209
+
+The native `layout_review` example is a disposable **fixture-only** window.
+Its controls work locally; it does not open audio devices, execute DSP, edit or
+load projects, use transport/workers, read/write settings, or attest DAW behavior.
+The static normalized response curves are original fixture drawings. Numeric
+ranges and option labels are representative fixture data, not parameter laws or
+reference measurements. Production bindings and musical behavior remain outside
+this catalog.
+
+The root example includes the owning `src/device_composition.rs` and `theme.rs`
+with `#[path]`. Device hosts use `device_frame` and product
+`device_frame_style`: one 14px header, the shared 168px body, neutral surround and
+header-only selection paint. Frame widths are defined once in the production
+composition module and consumed by both panels and catalog. Selection uses the
+production any-card left-click capture contract; it never stops child input.
+Focus, page/section selection, disabled controls and the view-local bypass flag
+remain distinct state. Vector section focus uses the production deferred GPUI
+focus-notification pattern and does not silently select the device header.
+
+The eleven entries cover Vector/Operator, Utility, Saturator, EQ8, Compressor,
+Gate, Auto Pan, generic instrument/effect, unsupported state and shared parts.
+They call the actual production utility, stacked/split plot, three-pane/tabbed
+inspector, paired/centered rails, wrapped fallback and error-body functions.
+Rounded surfaces, captions, tabs, badges, actions and controls come from
+`hex-widgets`; theme preferences resolve all colors. The old independent palette,
+second header family and fabricated composite header/tab outlines are removed.
+Shared parts retain the useful display/rail/row/section/tab review purposes of
+those earlier prototypes without presenting them as shipped geometry.
+
+Every effect entry has a Track/Return **fixture ownership label** toggle around
+its same composition and retained controls. Tests verify this for every effect,
+not just a generic Return example. This is not production Return dispatch or
+binding coverage: the repository device-layout source guard and existing
+`device_panel` Track/Return tests own those claims.
+
+One live card keeps its actual production width. A bounded horizontal viewport
+at narrow window sizes scrolls wide Vector/EQ8 content instead of squeezing it
+into a 248px preview. State controls select, disable, bypass and switch between
+validated default/alternate four-color themes. Entities/configurations are
+created once per visited entry, retained in a bounded eleven-entry map and
+styled in place. Numeric drafts and selector popups retain their entities,
+values and focus through theme/selection changes. Leaving a fixture or using Tab
+finalizes valid numeric drafts and refuses invalid ones. Arrow keys remain with
+the actual controls; focused page tabs use arrows for focus and Enter/Space to
+activate one page. Bypass is only a local header-state demonstration and does
+not disable parameter editing or imply an audio bypass implementation.
+
+```sh
+cargo test -p hex-ui --example layout_review --features ui-test-support --locked
+cargo run --release -p hex-ui --example layout_review --locked
+```
+
+The first command is the focused rendered test harness and is included in local
+CI. Run the optimized example manually only when the user is ready for native
+interaction. Font loading/verifying and lowercase text use the production
+loader/rules. Existing Hex/Live/review windows and user data remain untouched.
+
+Current tests cover shared header/body/width geometry; actual viewport paint
+clipping at 760×660 and 1320×660; default/alternate palettes; every effect's
+Track/Return fixture reuse; header/body paint invariance; independent section
+focus; stable graph/tab slots and mixed mouse/keyboard activation; invalid/long
+numeric draft retention and clipping; disabled refusal; real selector popup
+foreground, choice changes, theme refresh and focus. These replace the old
+prototype-specific header intrusion/inverse-tab corner assertions. Prior test
+counts and accepted images below apply only to their recorded sources and do
+not establish current production appearance.
+
+Optional native checklist for the exact optimized source/build:
+
+1. Inspect Vector, Utility, Saturator and EQ8, then the remaining entries. Resize
+   narrow/wide; scroll wide cards and confirm controls retain useful sizes.
+2. Select the card and move between sections/tabs. Check only header selection
+   recolors the header; section focus remains independent and graphs stay fixed.
+3. Type a long/invalid value, use Tab/Escape, and change themes. Check the draft,
+   focus, value-cell bounds and selector popup remain coherent.
+4. Change a selector choice and toggle controls; disable/enable and view-local
+   bypass should preserve geometry and behave as their labels describe.
+5. For every effect, switch Track/Return labels. Check the same composition and
+   local controls remain; this demonstrates fixture reuse, not live routing.
+
+Source/scene tests do not prove GPU raster pixels, physical input, other display
+scales, listening acceptance or Live parity. No automated desktop interaction
+has been performed. Exact-candidate full local CI, merge and optimized delivery
+are recorded by the coordinator; native acceptance is optional and separate.
+
+---
+
+## Historical catalog evidence — pulse2355
+
+The following record preserves prior accepted prototypes, source/build IDs and
+known gaps. Current behavior and verification are described above.
+
 
 Pulse #2355 / PR #163 owns the disposable Rust/GPUI `layout_review` example.
 It opens a separate window, loads/verifies embedded Ioskeley Mono through the

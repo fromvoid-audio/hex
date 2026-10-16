@@ -8,7 +8,7 @@ use hex_engine::{NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::ParameterId;
 use hex_project::DeviceId;
 
-pub(super) const FRAME_WIDTH: f32 = 142.0;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::GATE_FRAME_WIDTH;
 
 const PARAMETERS: [ParameterId; 6] = [
     ParameterId::from_static(1),

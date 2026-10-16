@@ -1,3 +1,29 @@
+## production-backed device catalog and guard — #2474 / PR209, 16 october 2026
+
+The native layout_review catalog now includes the actual production composition
+and semantic theme modules. Eleven view-local fixtures retain real numeric,
+toggle, selector and response-graph controls, with actual useful widths from one
+product constant set. They cover the four priority devices and existing other
+panels/fallbacks without DSP, parameter, schema or feature expansion. Header,
+section focus, page, disabled and bypass demonstration states remain distinct.
+Track/Return toggles are fixture ownership labels; production bindings/routing
+are covered separately by the source guard and existing device-panel tests.
+
+All eleven targeted gallery tests pass: compact header/body/width geometry,
+narrow/wide viewport clipping, retained drafts and popup focus through themes,
+independent section state, stable tabs and disabled/input behavior. Four guard
+regressions pass, including mutations of actual production source for local
+chrome/style-helper/field overrides, missing owner/fallback calls and gallery
+copies. Thirty runner tests pass. The structured device boundary scan and an
+explicit rendered gallery harness are included in quick/full and full local CI
+respectively; the final full run has eighteen steps. Source/scene checks do not
+establish native GPU pixels, physical interaction, listening or Live parity.
+
+Historical gallery images, source/build IDs and earlier acceptance remain in
+docs/layout-review.md as history. Exact-final-source full local CI, merge and
+repository-owned optimized stable delivery are recorded with this PR; optional
+native checks use the supplied finite checklist. No native input was automated.
+
 ## production device compositions — pulse2473 / PR208, 16 october 2026
 
 The pure `hex-ui/src/device_composition.rs` slot seam supplies production
