@@ -678,6 +678,7 @@ impl std::fmt::Debug for PublishError {
 }
 
 pub struct Control {
+    pub sample_preview: crate::sample_preview::Control,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -699,6 +700,7 @@ pub struct Control {
 }
 
 pub struct Callback {
+    sample_preview: crate::sample_preview::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -753,6 +755,7 @@ pub fn channel_with_spectrum(
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
+    let (sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
@@ -767,6 +770,7 @@ pub fn channel_with_spectrum(
     let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
     Ok((
         Control {
+            sample_preview,
             candidate_root: candidate_root.clone(),
             native_custody: false,
             held_control_return: None,
@@ -787,6 +791,7 @@ pub fn channel_with_spectrum(
             latest_fresh_runtime_cancellation: None,
         },
         Callback {
+            sample_preview: callback_preview,
             candidate_root,
             publications: incoming,
             retired: returning,
@@ -1098,6 +1103,7 @@ impl Control {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        self.sample_preview.reclaim();
         let mut count = 0;
         for _ in 0..RETIRED {
             let publication = self
@@ -1174,6 +1180,7 @@ impl Control {
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
         self.closing.store(true, Release);
+        self.sample_preview.shutdown();
         self.stop();
     }
 }
@@ -1301,6 +1308,7 @@ impl Callback {
     }
     /// At most one replacement and 32 commands; no graph disposal or allocation.
     pub fn begin_block(&mut self) {
+        self.sample_preview.begin_block(self.closing.load(Acquire));
         if self.closing.load(Acquire) {
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::Cancelled);
         }
@@ -1389,6 +1397,7 @@ impl Callback {
                 && self.deferred.is_none()
                 && self.publications.is_empty()
                 && self.held_retirement.is_none()
+                && self.sample_preview.is_empty()
             {
                 self.status.shutdown_complete.store(true, Release);
             }
@@ -1824,6 +1833,14 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.render_project(output)?;
+        if !self.closing.load(Acquire) {
+            self.sample_preview.mix(output);
+        }
+        Ok(())
+    }
+
+    fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.closing.load(Acquire) {
                 output.fill([0.0; 2]);
@@ -1841,6 +1858,7 @@ impl Callback {
                 return Err(Invalid("candidate admission is unavailable"));
             }
         }
+
         if !output.is_empty() {
             self.prepare_gain_recording_quantum();
         }

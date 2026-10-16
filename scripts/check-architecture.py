@@ -40,6 +40,8 @@ BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
               # Raw source-page fingerprints belong to control-side media, never DSP.
               'sha2': {'hex-media'},
+              # Safe exclusive/exchange publication belongs to offline export.
+              'rustix': {'hex-export'},
               # Advisory journal locks stay on the storage/control boundary.
               'fs2': {'hex-storage'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does

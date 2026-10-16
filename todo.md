@@ -1,3 +1,18 @@
+## browser sample playback — #2637 / PR254, 16 october 2026
+
+Click and result-focused Right restart one-shot WAV audition on the existing
+output. Search arrows, result selection, folder navigation and Enter import
+retain their own behavior. Background decode is bounded and latest request wins;
+output recovery and accepted close invalidate old work. Audition mixes after the
+project master, independent of project/history and transport Stop. PCM returns
+through fixed queues for control-side reclamation, including completion/shutdown.
+See [runtime](docs/runtime.md#browser-sample-playback--pulse2637--pr254) for bounds,
+queue ownership and test coverage. Exact-candidate local CI/optimized delivery
+are recorded with PR254. Native acceptance remains: click/reclick a WAV, select
+another and press Right, rapidly change samples including an invalid file, verify
+search caret/folders/Enter, and listen with project stopped and playing. No native
+listening or physical deadline claim is made by source tests.
+
 ## combined mutable loop acceptance — #2165 / PR251, 16 october 2026
 
 Source-loop PR98/#2214 and transport-loop PR100/#2215 remain the original
@@ -2615,6 +2630,22 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Required full exact clean local CI is a merge gate. Native macOS/audio,
   listening and physical throughput remain manual gaps; no export UI/preroll or
   publication is included. Active Pulse30 prerequisite linking remains blocked.
+
+### export — pulse30 / pr152
+
+- Controlled Main, selected-track mix, shared Returns and stable-ID stems consume
+  the canonical capture prerequisite, with sample ranges and cancellable preroll.
+- Concrete overwrite consent uses a narrow pinned safe filesystem boundary;
+  old files survive cancellation, confirmed replacements remove routine backups,
+  new batches publish exclusively, and unexpected races return
+  truthful recovery errors. The finite behavior is documented in docs/export.md.
+- Final exact-source local checks and PR review remain gates. Native macOS,
+  listening and sustained throughput acceptance remain unverified.
+- User feedback11October: picker should start in home, read-only destinations
+  need a clear error, native overwrite confirmation is sufficient, no normal
+  export backup. Revised source needs fresh checks/build/user confirmation.
+  Finder drops2385, persistent selection2386 and multi-track selection2387 are
+  separate tickets; Return listening2388 and realistic long export2389 deferred.
 
 ### operator enable controls — pulse2335 / pr164
 

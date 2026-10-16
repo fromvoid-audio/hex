@@ -846,6 +846,15 @@ impl EditorView {
         let track_name = track.name().to_owned();
         let track_name_view = div()
             .id(("track-name", track_id.value()))
+            .relative()
+            .children(self.track_selection.contains(track_id).then(|| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .debug_selector(move || format!("selected-track-{}", track_id.value()))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .opacity(0.2)
+            }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
             .w(px(TRACK_HEADER_WIDTH - 10.0))
             .flex_shrink_0()
@@ -862,10 +871,12 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.select_track(track_id, window);
-                cx.notify();
-            }));
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    view.select_track_with_modifiers(track_id, event.modifiers(), window);
+                    cx.notify();
+                }),
+            );
         let track_controls = div()
             .flex()
             .items_center()

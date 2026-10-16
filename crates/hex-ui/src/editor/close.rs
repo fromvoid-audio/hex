@@ -42,6 +42,7 @@ impl EditorView {
             self.show_close_prompt(window, cx, false);
             false
         } else {
+            self.cancel_browser_sample_playback();
             self.stop();
             true
         }
@@ -64,6 +65,7 @@ impl EditorView {
         if self.requires_close_confirmation(cx) {
             self.show_close_prompt(window, cx, true);
         } else {
+            self.cancel_browser_sample_playback();
             self.stop();
             cx.quit();
         }
@@ -119,6 +121,10 @@ impl EditorView {
                 editor.update(cx, |view, cx| {
                     view.close_prompt_open = false;
                     if discard {
+                        view.cancel_browser_sample_playback();
+                        if let Some(control) = &view.export_control {
+                            control.cancel();
+                        }
                         view.stop();
                     } else {
                         cx.notify();

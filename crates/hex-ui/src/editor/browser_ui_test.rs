@@ -1984,3 +1984,111 @@ fn browser_sample_drop_above_first_track_shows_line_and_inserts_before_it(cx: &m
         assert!(view.last_enqueued_import_to_track.is_none());
     });
 }
+
+#[gpui::test]
+fn browser_click_and_right_request_preview_without_import_search_arrows_keep_caret(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let row = visual.debug_bounds("browser-entry-0").expect("sample row");
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 1);
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("sample preview"))
+        );
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+    let contexts = visual
+        .update_window(handle, |_, window, cx| {
+            let view = editor.read(cx);
+            (
+                window.context_stack(),
+                view.browser_key_context(window, cx),
+                view.browser.results_focused,
+            )
+        })
+        .unwrap();
+    assert_eq!(contexts.1, "hex_browser", "{contexts:?}");
+    assert!(contexts.2, "{contexts:?}");
+    visual.simulate_keystrokes("right");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 2, "{contexts:?}");
+        assert!(view.pending_requests.is_empty());
+    });
+    // Clicking search restores text focus. Left/right then insert at the
+    // restored caret; neither key may send an audition request.
+    let search = visual.debug_bounds("browser-search").expect("search field");
+    visual.simulate_mouse_down(search.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(search.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("right l o left right o");
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "loo");
+        assert_eq!(view.browser.playback_generation, 2);
+    });
+    editor.update(visual, |view, cx| {
+        view.browser.search.update(cx, |input, cx| input.clear(cx));
+        view.browser
+            .listing
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(LibraryEntry {
+                name: "second.wav".into(),
+                path: "/second.wav".into(),
+                kind: EntryKind::WaveAudio,
+            });
+        cx.notify();
+    });
+    visual.simulate_keystrokes("down right up right");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 0);
+        assert_eq!(view.browser.playback_generation, 4);
+        assert!(view.pending_requests.is_empty());
+    });
+    // Enter keeps the existing explicit import path.
+    editor.update(visual, |view, _| view.selected_track = Some(track));
+    visual.simulate_keystrokes("enter");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 4);
+        let (imported_path, imported_track, _, _) = view
+            .last_enqueued_import_to_track
+            .as_ref()
+            .expect("enter enqueues import to selected track");
+        assert_eq!(imported_path, &path);
+        assert_eq!(*imported_track, track);
+    });
+}
+
+#[gpui::test]
+fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let folder = directory.0.join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    editor.update(visual, |view, cx| {
+        view.browser.listing.as_mut().unwrap().entries = vec![LibraryEntry {
+            name: "folder".into(),
+            path: folder.clone(),
+            kind: EntryKind::Directory,
+        }];
+        cx.notify();
+    });
+    let row = visual.debug_bounds("browser-entry-0").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("right");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.directory, folder);
+        assert_eq!(view.browser.playback_generation, 0);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+}
