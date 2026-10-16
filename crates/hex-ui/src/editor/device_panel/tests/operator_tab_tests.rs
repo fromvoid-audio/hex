@@ -34,10 +34,16 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     });
     visual.update(|window, _| lfo.focus(window));
     visual.run_until_parked();
-    assert_eq!(visual.rendered_background(row("lfo")), background(0x474747));
+    assert_eq!(
+        visual.rendered_background(row("lfo")),
+        background(device_layout_style().surface)
+    );
     for _ in 0..3 {
         visual.simulate_keystrokes("tab");
-        assert_eq!(visual.rendered_background(row("lfo")), background(0x474747));
+        assert_eq!(
+            visual.rendered_background(row("lfo")),
+            background(device_layout_style().surface)
+        );
     }
     // Amount -> filter toggle, then its selector and two dials -> pitch toggle,
     // then three pitch dials -> global routing icon. No pointer event or forced draw.
@@ -47,10 +53,13 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
         }
         assert_eq!(
             visual.rendered_background(row(title)),
-            background(0x474747),
+            background(device_layout_style().surface),
             "{title} paints immediately"
         );
-        assert_eq!(visual.rendered_background(row("lfo")), background(0x363636));
+        assert_eq!(
+            visual.rendered_background(row("lfo")),
+            background(device_layout_style().rail)
+        );
     }
     visual.simulate_keystrokes("enter");
     let algorithm = editor.read_with(cx, |view, app| {
@@ -66,7 +75,7 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background(detail),
-        background(0x191919),
+        background(device_layout_style().background),
         "focused detail stays dark"
     );
     let bounds = visual
@@ -77,7 +86,7 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     visual.simulate_click(bounds.center(), Modifiers::default());
     assert_eq!(
         visual.rendered_background(detail),
-        background(0x191919),
+        background(device_layout_style().background),
         "pointer-focused detail stays dark"
     );
     editor.read_with(cx, |view, _| {
@@ -467,9 +476,9 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
             let row =
                 Box::leak(format!("operator-row-{}-{operator}", device.value()).into_boxed_str());
             let color = if operator == 3 - index / 5 {
-                0x474747
+                device_layout_style().surface
             } else {
-                0x363636
+                device_layout_style().rail
             };
             assert_eq!(
                 visual.rendered_background(row),

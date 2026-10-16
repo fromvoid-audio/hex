@@ -49,6 +49,38 @@ audio/project workers have no theme dependency. Existing device widget entities
 receive changed styles without replacing active numeric drafts or gestures.
 `hex-widgets` receives caller-owned colors and has no application theme dependency.
 
+## Shared device semantic styles — pulse2471
+
+`theme::device_style` resolves Control, Layout, Display and Readout roles used by
+production panels and available to native galleries. Gallery migration remains
+Pulse2474. All neutral shell/header, section, rail,
+display, readout, hover, disabled text, focus marker and dial rail colors follow
+the existing palette roles. Inline readout appearance depends on presentation,
+never a device type ID. The idle header/surround share the Layout surface;
+selection behavior is a separate follow-up (Pulse2472).
+
+The a/b/c/d oscillator colors remain stable musical identity cues, centralized
+by `oscillator_identity_color`: yellow, turquoise, blue and orange. Badges and
+routing diagrams use the same mapping (the routing stack reverses its order).
+They are intentional identity accents, not device-owned neutral skins. Badge
+foregrounds choose a readable color against each identity color; disabled badges
+use the active display/muted roles. No extra preference or saved device state is
+introduced.
+
+Retained numeric, toggle and selector entities receive style changes in place;
+Operator view-only preview fields/toggles, EQ audition and return-send controls
+now refresh too. Response graphs already include style in retained model updates;
+selector popups paint from their current entity style. Refresh does not recreate
+entities, finish drafts, cancel gestures or alter canonical parameter values,
+project history, focus ownership or tab order.
+
+Focused source/scene tests contrast dark and light palettes, retain active
+canonical and preview numeric drafts and focus, and keep an open selector popup
+and its navigation state while refreshing its palette. Automated verification
+results are recorded in `todo.md`; optional native visual/input acceptance still
+requires the user's optimized build. No automated native computer interaction is
+claimed.
+
 ## Evidence and remaining acceptance
 
 Focused verification passed: 317 UI tests, 19 widget tests, 16 preference tests,

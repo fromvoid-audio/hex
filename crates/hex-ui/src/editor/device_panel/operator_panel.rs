@@ -408,11 +408,20 @@ fn operator_label(
             theme::PaletteRole::Border
         })))
         .bg(rgb(if enabled {
-            [0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]
+            theme::oscillator_identity_color(operator)
+                .unwrap_or_else(|| super::control_style().accent)
         } else {
-            0x191919
+            super::device_layout_style().background
         }))
-        .text_color(rgb(if enabled { 0x15171b } else { 0xb8b8b8 }))
+        .text_color(rgb(if enabled {
+            theme::readable_text(
+                theme::oscillator_identity_color(operator)
+                    .unwrap_or_else(|| super::control_style().accent),
+                theme::color(theme::PaletteRole::Text),
+            )
+        } else {
+            super::control_style().muted
+        }))
         .cursor(gpui::CursorStyle::PointingHand)
         .child(theme::text(["a", "b", "c", "d"][operator]))
         .on_click(cx.listener(move |view, _, window, cx| {
@@ -1049,10 +1058,7 @@ fn value(
 }
 
 pub(super) fn display_style() -> hex_widgets::ControlStyle {
-    let mut style = super::control_style();
-    style.background = super::device_layout_style().background;
-    style.rail = 0x242424;
-    style
+    theme::device_style(theme::DeviceStyleRole::Display)
 }
 
 fn section_title(label: &'static str) -> Div {
