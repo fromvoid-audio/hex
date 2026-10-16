@@ -35,7 +35,7 @@ fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
         let project = decode(original).unwrap();
         let encoded = encode(&project).unwrap();
         let doc = value(&encoded);
-        assert_eq!(doc["version"], 23);
+        assert_eq!(doc["version"], 25);
         assert_eq!(decode(&encoded).unwrap(), project);
         assert_eq!(
             doc["tracks"][0]["devices"][0]["payload"],
@@ -118,8 +118,26 @@ fn main17_to19_defaults_are_preserved_and_hybrid_shapes_refuse() {
     assert_eq!(devices(&decode(&bytes(&old)).unwrap())[0], (0, -9500));
 }
 #[test]
-fn union23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields() {
-    let base = value(&encode(&decode(MAIN19).unwrap()).unwrap());
+fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields() {
+    // Exact branch23 shape: frozen22 gained an explicit input-gain integer,
+    // before main introduced touch-lane fields. The original strict writer is
+    // exercised separately by the host_gain unit regression.
+    let mut base = value(FOUNDATION[3]);
+    base["version"] = 23.into();
+    for track in base["tracks"].as_array_mut().unwrap() {
+        for device in track["devices"].as_array_mut().unwrap() {
+            device["input_gain_millidb"] = 0.into();
+        }
+        if !track["instrument"].is_null() {
+            track["instrument"]["input_gain_millidb"] = 0.into();
+        }
+    }
+    for bus in base["return_tracks"].as_array_mut().unwrap() {
+        for device in bus["devices"].as_array_mut().unwrap() {
+            device["input_gain_millidb"] = 0.into();
+        }
+    }
+    assert!(decode(&bytes(&base)).is_ok());
     for field in ["input_gain_millidb", "output_gain_millidb"] {
         for bad in [
             json!(-60001),
@@ -159,7 +177,7 @@ fn union23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields()
     doc["tracks"][0]["devices"][0]["unknown"] = true.into();
     assert!(decode(&bytes(&doc)).is_err());
     let mut doc = base;
-    doc["version"] = 24.into();
+    doc["version"] = 26.into();
     assert!(decode(&bytes(&doc)).is_err());
     // Output-only22 must never silently accept input gains by widening its DTO.
     let mut doc = value(FOUNDATION[3]);
@@ -167,7 +185,7 @@ fn union23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields()
     assert!(decode(&bytes(&doc)).is_err());
 }
 #[test]
-fn input_only_gain_and_legacy_encoder_refusals_preserve_project_and_destination() {
+fn input_only_gain_legacy_encoder_roundtrip_preserves_project_and_destination() {
     let mut snapshot = decode(FOUNDATION[0]).unwrap().snapshot();
     snapshot.tracks[0].devices[0].state = snapshot.tracks[0].devices[0]
         .state
@@ -176,7 +194,10 @@ fn input_only_gain_and_legacy_encoder_refusals_preserve_project_and_destination(
         .unwrap();
     let project = Project::from_snapshot(snapshot).unwrap();
     assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
-    assert!(encode_schema20(&project).is_err());
+    assert_eq!(
+        decode(&encode_schema20(&project).unwrap()).unwrap(),
+        project
+    );
     let dir = std::env::temp_dir().join(format!(
         "hex-schema-lineage-{}-{}",
         std::process::id(),

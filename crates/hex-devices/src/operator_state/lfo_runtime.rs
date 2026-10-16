@@ -208,6 +208,10 @@ impl PreparedInstrumentHistoryRetarget for Retarget {
 }
 
 impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn can_import_analytic_context(
         &self,
         source: &dyn hex_lattice::PreparedSharedAnalyticContext,

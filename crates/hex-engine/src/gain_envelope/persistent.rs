@@ -23,6 +23,7 @@ pub(crate) struct GainCopyCustody {
     authored: usize,
     maximum: usize,
     mix: Option<PreparedTrackMix>,
+    fallback: f32,
     pub(crate) growth: usize,
     #[cfg(test)]
     pub(crate) fail_after: Option<usize>,
@@ -41,10 +42,15 @@ impl GainCopyCustody {
         points: &[GainPoint],
         tempo: &TempoMap,
         mix: PreparedTrackMix,
+        fallback: f32,
     ) -> Result<(), GainCopyError> {
         if self.phase != Phase::Vacant || !self.knots.is_empty() {
             return Err(GainCopyError::Capacity);
         }
+        if !fallback.is_finite() || !(0.0..=2.0).contains(&fallback) {
+            return Err(GainCopyError::Invalid);
+        }
+        self.fallback = fallback;
         let count = knot_count(points, tempo).map_err(|_| GainCopyError::Invalid)?;
         if count > MAX_PREPARED_GAIN_KNOTS {
             return Err(GainCopyError::Invalid);
@@ -110,6 +116,9 @@ impl GainCopyCustody {
                     knots: std::mem::take(&mut self.knots),
                     mix,
                     authored_points: self.authored,
+                    authored_units: self.authored,
+                    touch: PreparedTouch::default(),
+                    fallback: self.fallback,
                 });
             }
         }
@@ -121,13 +130,22 @@ impl GainCopyCustody {
         source: &mut Option<PreparedGainEnvelope>,
     ) -> Result<(), GainCopyError> {
         if source.is_some() {
-            if self.phase != Phase::Transferred || self.knots.capacity() != 0 {
+            if self.phase != Phase::Transferred
+                || self.knots.capacity() != 0
+                || source.as_ref().is_some_and(|envelope| {
+                    envelope.touch.allocated_bytes() != 0
+                        || envelope.authored_units != envelope.authored_points
+                })
+            {
                 return Err(GainCopyError::Capacity);
             }
             if let Some(PreparedGainEnvelope {
                 knots,
                 mix: _,
                 authored_points: _,
+                authored_units: _,
+                touch: _,
+                fallback: _,
             }) = source.take()
             {
                 self.knots = knots;
@@ -143,6 +161,7 @@ impl GainCopyCustody {
             authored,
             maximum,
             mix,
+            fallback: _,
             growth: _,
             #[cfg(test)]
                 fail_after: _,

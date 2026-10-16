@@ -426,7 +426,7 @@ fn equal_pcm_values_in_distinct_actual_allocations_are_not_content_deduplicated(
         let a = clips.next().unwrap().audio.as_ref().unwrap();
         let b = clips.next().unwrap().audio.as_ref().unwrap();
         assert!(!a.shares_pcm_with(b));
-        assert_eq!(a.frames.as_ref(), b.frames.as_ref());
+        assert_eq!(a.frames(), b.frames());
     }
     let sum = c
         .bank

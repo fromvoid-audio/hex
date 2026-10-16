@@ -29,6 +29,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         next_id += 1;
         tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track,
             name: format!("instrument {index:03}"),
             gain: 0.1,
@@ -89,6 +91,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
     }
     Ok(Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id,

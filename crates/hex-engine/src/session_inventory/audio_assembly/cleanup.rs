@@ -16,6 +16,7 @@ impl SessionAssembly {
             || self.ranges.capacity() != 0
             || self.audio.capacity() != 0
             || self.timing.is_some()
+            || self.meter.is_some()
             || self.sine.is_some()
             || self.contexts.is_some()
             || self.unused_midi.capacity() != 0
@@ -23,7 +24,16 @@ impl SessionAssembly {
         {
             return Err(AudioStorageError::Capacity);
         }
+        if self.inventory.as_ref().is_some_and(|inventory| {
+            inventory.routed_midi_clips.capacity() != 0
+                || inventory.midi_source_roots.capacity() != 0
+        }) {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if let Some(PreparedSessionInventory {
+            meter_map,
+            routed_midi_clips: _,
+            midi_source_roots: _,
             timing,
             periodic_tempo: _,
             periodic_tempo_error: _,
@@ -50,6 +60,7 @@ impl SessionAssembly {
             self.unused_midi = midi_clips;
             self.unused_mutable = mutable_instruments;
             self.timing = Some(timing);
+            self.meter = Some(meter_map);
             self.sine = Some(sine_table);
             self.contexts = Some(shared_contexts);
             self.scenes = scenes;
@@ -139,6 +150,7 @@ impl SessionAssembly {
                 asset: _,
                 source_start: _,
                 source_end: _,
+                gain: _,
                 source,
             }) = clip
             {
@@ -165,6 +177,13 @@ impl SessionAssembly {
             drop(self.contexts.take());
             self.context_disposal = Step::Complete;
             return Ok(());
+        }
+        if self.meter.is_some() {
+            self.meter_copy
+                .clean_transferred_on_control(&mut self.meter)
+                .map_err(meter_error)?;
+        } else {
+            self.meter_copy.clean_on_control().map_err(meter_error)?;
         }
         self.phase = AssemblyPhase::Complete;
         Ok(())

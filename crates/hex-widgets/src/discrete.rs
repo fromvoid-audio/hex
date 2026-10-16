@@ -277,6 +277,7 @@ impl gpui::Render for Toggle {
                 .bg(gpui::rgba(0))
                 .child(
                     div()
+                        .debug_selector(|| format!("{}-indicator", self.id))
                         .size(px(marker_size))
                         .border_1()
                         .border_color(rgb(if self.focus.is_focused(window) {

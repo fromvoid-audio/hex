@@ -64,6 +64,28 @@ impl<T> OwnedShared<T> {
         }
     }
 }
+// Closed canonical operation for the ordinary gain-recording path. No generic
+// mutable borrow or Arc escapes, and private prepared roots expose no caller.
+impl OwnedShared<crate::Project> {
+    pub(crate) fn arm_gain_recording(
+        &mut self,
+        track: hex_project::TrackId,
+        gain: f32,
+        balance: f32,
+    ) -> Result<(), crate::Invalid> {
+        let project = Arc::get_mut(&mut self.arc).ok_or(crate::Invalid(
+            "gain recording preparation is already shared",
+        ))?;
+        let selected = project
+            .tracks
+            .iter_mut()
+            .find(|candidate| candidate.canonical_track_id() == Some(track))
+            .ok_or(crate::Invalid(
+                "gain recording compiled track is unavailable",
+            ))?;
+        selected.arm_gain_recording(gain, balance)
+    }
+}
 impl<T> OwnedShared<[T]> {
     /// DISTINCT explicit allocation origin. Sized zero-array Arc::new allocates
     /// its checked header with T alignment; unsizing moves the same allocation.

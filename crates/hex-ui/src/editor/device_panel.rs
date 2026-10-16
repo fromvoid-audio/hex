@@ -213,36 +213,19 @@ impl DevicePanelState {
 }
 
 pub(super) fn control_style() -> ControlStyle {
-    ControlStyle {
-        background: theme::color(theme::PaletteRole::Background),
-        surface: theme::color(theme::PaletteRole::Surface),
-        raised: theme::color(theme::PaletteRole::Raised),
-        rail: theme::color(theme::PaletteRole::Border),
-        border: theme::color(theme::PaletteRole::Border),
-        text: theme::readable_text(
-            theme::color(theme::PaletteRole::Surface),
-            theme::color(theme::PaletteRole::Text),
-        ),
-        muted: theme::color(theme::PaletteRole::Muted),
-        accent: theme::color(theme::PaletteRole::Secondary),
-        focus_marker: 0xaaaaaa,
-        dial_rail: 0x000000,
-        hover: theme::color(theme::PaletteRole::Hover),
-        font_size: 9.0,
-    }
+    theme::device_style(theme::DeviceStyleRole::Control)
 }
 
-/// Product-owned neutral layout colors, shared by every native device shell.
-/// Widgets select semantic surfaces; device identity never selects appearance.
 pub(super) fn device_layout_style() -> ControlStyle {
-    ControlStyle {
-        background: 0x191919,
-        surface: 0x474747,
-        raised: 0x474747,
-        rail: 0x363636,
-        border: 0x474747,
-        ..control_style()
-    }
+    theme::device_style(theme::DeviceStyleRole::Layout)
+}
+
+fn parameter_style(presentation: ControlPresentation) -> ControlStyle {
+    theme::device_style(if presentation == ControlPresentation::InlineValue {
+        theme::DeviceStyleRole::Readout
+    } else {
+        theme::DeviceStyleRole::Control
+    })
 }
 
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
@@ -1415,7 +1398,7 @@ fn render_effect(
                     NativeDeviceClass::Effect,
                     theme::text(device_view.name.clone()),
                 ),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 header_actions,
                 body,
             )
@@ -1443,7 +1426,7 @@ fn render_effect(
             );
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 header_actions,
                 body,
             )
@@ -1876,7 +1859,7 @@ fn render_instrument(
                         NativeDeviceClass::Instrument,
                         theme::text(device_view.name.clone()),
                     ),
-                    device_layout_style().with_device_selection(selected),
+                    theme::device_frame_style(selected),
                     header_actions,
                     body,
                 )
@@ -1917,7 +1900,7 @@ fn render_instrument(
                         NativeDeviceClass::Instrument,
                         theme::text(device_view.name.clone()),
                     ),
-                    device_layout_style().with_device_selection(selected),
+                    theme::device_frame_style(selected),
                     header_actions,
                     body,
                 )
@@ -1953,7 +1936,7 @@ fn render_instrument(
                             .unwrap_or("unknown instrument"),
                     ),
                 ),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 header_actions,
                 body,
             )
@@ -2365,15 +2348,7 @@ fn parameter_control_with_presentation(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> Div {
-    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
-        && presentation == ControlPresentation::InlineValue
-    {
-        let mut style = operator_panel::display_style();
-        style.text = style.accent;
-        style
-    } else {
-        control_style()
-    };
+    let style = parameter_style(presentation);
     let display_label = display.label;
     let key = ParameterKey {
         device,
@@ -2566,15 +2541,7 @@ fn create_parameter_control(
     let descriptor = parameter.descriptor;
     let value = parameter.value;
     let operator_context_owner = operator_panel::context::Owner::capture(view, key.device);
-    let style = if identity.type_id.as_str() == Ok("hex.instrument.operator")
-        && presentation == ControlPresentation::InlineValue
-    {
-        let mut style = operator_panel::display_style();
-        style.text = style.accent;
-        style
-    } else {
-        control_style()
-    };
+    let style = parameter_style(presentation);
     let ControlText {
         label: display_label,
         codec: display_codec,

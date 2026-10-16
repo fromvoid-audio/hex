@@ -5,6 +5,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy)]
 struct AllocationRow {
     original: usize,
+    location: usize,
     payload: usize,
     overhead: usize,
 }
@@ -41,14 +42,34 @@ pub struct AudioInputStorageRefusal {
     pub reservation: AudioStorageReservation,
     pub partial_metadata_bytes: usize,
 }
-pub(crate) fn parts(source: &OwnedAudioSource) -> Result<(usize, usize), AudioStorageError> {
+fn allocation_parts(source: &OwnedAudioSource) -> Result<[(usize, usize); 2], AudioStorageError> {
     match &source.kind {
         SourceKind::Resident(audio) => audio
             .pcm_arc_receipt
-            .and_then(|r| r.checked_parts(audio.frames.len()))
+            .and_then(|receipt| receipt.checked_allocations(audio))
             .ok_or(AudioStorageError::UnknownStorage),
-        SourceKind::Streamed(source) => source.parts().ok_or(AudioStorageError::UnknownStorage),
+        SourceKind::Streamed(source) => Ok([
+            source.parts().ok_or(AudioStorageError::UnknownStorage)?,
+            (0, 0),
+        ]),
     }
+}
+fn allocation_count(source: &OwnedAudioSource) -> usize {
+    match &source.kind {
+        SourceKind::Resident(_) => 2,
+        SourceKind::Streamed(_) => 1,
+    }
+}
+pub(crate) fn parts(source: &OwnedAudioSource) -> Result<(usize, usize), AudioStorageError> {
+    allocation_parts(source)?.into_iter().try_fold(
+        (0_usize, 0_usize),
+        |(payload, overhead), (p, o)| {
+            Ok((
+                payload.checked_add(p).ok_or(AudioStorageError::Overflow)?,
+                overhead.checked_add(o).ok_or(AudioStorageError::Overflow)?,
+            ))
+        },
+    )
 }
 pub(crate) fn same(a: &OwnedAudioSource, b: &OwnedAudioSource) -> bool {
     match (&a.kind, &b.kind) {
@@ -92,27 +113,38 @@ impl OwnedAudioInputs {
                 .and_then(|n| n.checked_add(std::mem::size_of::<AudioInputStorageAndObligations>()))
                 .ok_or(AudioStorageError::Overflow)?;
             for (index, (_, source)) in self.sources.iter().enumerate() {
-                let (payload, overhead) = parts(source)?;
-                let allocation = if let Some((slot, row)) = allocations
-                    .iter()
+                let declared = allocation_parts(source)?;
+                let mut owner_allocation = None;
+                for (location, (payload, overhead)) in declared
+                    .into_iter()
+                    .take(allocation_count(source))
                     .enumerate()
-                    .find(|(_, row)| same(&self.sources[row.original].1, source))
                 {
-                    if row.payload != payload || row.overhead != overhead {
-                        return Err(AudioStorageError::UnknownStorage);
+                    let allocation = if let Some((slot, row)) =
+                        allocations.iter().enumerate().find(|(_, row)| {
+                            row.location == location && same(&self.sources[row.original].1, source)
+                        }) {
+                        if row.payload != payload || row.overhead != overhead {
+                            return Err(AudioStorageError::UnknownStorage);
+                        }
+                        slot
+                    } else {
+                        if allocations.len() == reservation.allocation_items {
+                            return Err(AudioStorageError::Capacity);
+                        }
+                        allocations.push(AllocationRow {
+                            original: index,
+                            location,
+                            payload,
+                            overhead,
+                        });
+                        allocations.len() - 1
+                    };
+                    if location == 0 {
+                        owner_allocation = Some(allocation);
                     }
-                    slot
-                } else {
-                    if allocations.len() == reservation.allocation_items {
-                        return Err(AudioStorageError::Capacity);
-                    }
-                    allocations.push(AllocationRow {
-                        original: index,
-                        payload,
-                        overhead,
-                    });
-                    allocations.len() - 1
-                };
+                }
+                let allocation = owner_allocation.ok_or(AudioStorageError::UnknownStorage)?;
                 if obligations.len() == reservation.handle_obligations {
                     return Err(AudioStorageError::Capacity);
                 }
@@ -132,7 +164,9 @@ impl OwnedAudioInputs {
                 }
                 let allocation = allocations
                     .iter()
-                    .position(|row| same(&self.sources[row.original].1, source))
+                    .position(|row| {
+                        row.location == 0 && same(&self.sources[row.original].1, source)
+                    })
                     .ok_or(AudioStorageError::UnknownStorage)?;
                 if obligations.len() == reservation.handle_obligations {
                     return Err(AudioStorageError::Capacity);
@@ -211,6 +245,19 @@ impl AudioInputStorageAndObligations {
     /// Verify actual anchored owners/handle locations, never Arc counts or IDs
     /// alone. There is no lifetime-closed/admission authority in this operation.
     pub fn validate_unresolved_on_control(&self) -> Result<(), AudioStorageError> {
+        for row in &self.allocations {
+            let source = &self
+                .inputs
+                .sources
+                .get(row.original)
+                .ok_or(AudioStorageError::SourceMismatch)?
+                .1;
+            if row.location >= allocation_count(source)
+                || allocation_parts(source)?[row.location] != (row.payload, row.overhead)
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+        }
         for obligation in &self.obligations {
             let source = match obligation.location {
                 HandleLocation::Original(index) => {
@@ -240,7 +287,8 @@ impl AudioInputStorageAndObligations {
                 .1;
             if source.handle != obligation.handle
                 || !same(source, anchor)
-                || parts(source)? != (row.payload, row.overhead)
+                || row.location != 0
+                || allocation_parts(source)?[0] != (row.payload, row.overhead)
             {
                 return Err(AudioStorageError::UnknownStorage);
             }

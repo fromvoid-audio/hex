@@ -63,7 +63,7 @@ fn bounded_bytes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::E
 impl DocumentV18 {
     #[cfg(test)]
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
-        if project.has_gain_automation() {
+        if project.has_gain_automation() || project.has_gain_touch_metadata() {
             return Err(StorageError::Invalid(
                 "older schema cannot save gain automation",
             ));
@@ -76,7 +76,7 @@ impl DocumentV18 {
     // Schema20 reuses these fields, but owns serialization of every feed.
     // All older envelope entry points retain their refusal above.
     pub(super) fn legacy_fields(project: &Project) -> Result<Self, StorageError> {
-        let base = DocumentV17::from_project(project)?;
+        let base = DocumentV19::from_project(project)?;
         Ok(Self {
             format: base.format,
             sample_rate: base.sample_rate,
@@ -116,7 +116,7 @@ impl DocumentV18 {
                     .map_err(|e| StorageError::Invalid(e.0))
             })
             .transpose()?;
-        let base = DocumentV17 {
+        let base = DocumentV19 {
             format: doc.format,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
@@ -128,9 +128,9 @@ impl DocumentV18 {
             tempo_points: doc.tempo_points,
             meter_points: doc.meter_points,
             session: doc.session,
-            version: 17,
+            version: 19,
         };
-        let mut snapshot = DocumentV17::decode(&serde_json::to_vec(&base)?)?.snapshot();
+        let mut snapshot = DocumentV19::decode(&serde_json::to_vec(&base)?)?.snapshot();
         snapshot.import_provenance = provenance;
         Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
     }

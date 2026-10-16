@@ -14,6 +14,7 @@ paste compiles before history commit. Successful project opening clears it.
 
 ## Dependencies
 
+
 `hex-project` owns canonical project state and history. `hex-media` decodes WAV
 files into validated audio, converts source rates and supplies cached peak summaries. `hex-engine`
 compiles the canonical snapshot into offline playback. The crate uses the
@@ -71,6 +72,8 @@ position or publication readiness; the caller still validates current
 project/route/Stop identity. Normally the lane owns one candidate runtime; its
 two fixed retirement slots bound defensive stale-state retirement to at most
 two preroll runtime budgets, with no new preparation until both drain.
+
+Tests use `serde_json` to check saved document version/provenance structurally.
 
 ## Does not own
 
@@ -194,3 +197,14 @@ Recovery opens dirty without an overwrite association; ordinary relinked Open
 retains its original exact-byte document token. Untitled recovery retains only
 the latest project, with no history. Contracts, source tests and native gaps:
 [project recovery](../../docs/project-recovery.md).
+
+
+## Gain take coordination
+
+Arming prepares a transient raw-fader revision without changing canonical history
+or its cached compiled project. Delivered audio receipts normalize into bounded
+half-open spans using exact content/performance positions and loop passes. A
+revision-stamped splice batch rechecks generation, revision and lane epoch, then
+commits the complete take as one Undo/Redo edit. Failed/stale/cancelled takes leave
+the original lane intact. Audio owns application and receipt delivery; the UI
+owns only drafts and gestures. See [gain recording](../../docs/gain-touch-spans.md).

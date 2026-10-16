@@ -155,6 +155,7 @@ impl RevisionAssembly {
             session,
             midi_preview,
             mutable_track_revisions,
+            gain_recording_track,
         }) = revision
         {
             if self.arrangement.is_some()
@@ -163,6 +164,7 @@ impl RevisionAssembly {
                 || self.arrangement_value.is_some()
                 || self.session_value.is_some()
                 || self.preview_value.is_some()
+                || gain_recording_track.is_some()
                 || mutable_track_revisions.capacity() != 0
                 || self.mutable_descriptors.capacity() != 0
             {
@@ -308,6 +310,7 @@ impl RevisionAssembly {
                     session,
                     midi_preview,
                     mutable_track_revisions: Vec::new(),
+                    gain_recording_track: None,
                 });
             }
             (arrangement, session, preview) => {
@@ -362,6 +365,7 @@ impl RevisionAssembly {
             session,
             midi_preview,
             mutable_track_revisions,
+            gain_recording_track: _,
         }) = self.revision_value.take()
         {
             self.arrangement = Some(arrangement);

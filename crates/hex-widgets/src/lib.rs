@@ -38,7 +38,7 @@ pub use numeric_control::{
 pub use response_graph::{
     ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
 };
-pub use style::{CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS};
+pub use style::{CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle};
 
 #[cfg(test)]
 mod frame_tests;

@@ -152,7 +152,11 @@ impl ArrangementRootAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(project) = self.project.as_ref().or(external) {
-            if self.tracks.capacity() != 0
+            if project.audio_clip_views.capacity() != 0
+                || project.signal_graph.is_some()
+                || project.tempo_map.is_some()
+                || project.midi_routing.capacity() != 0
+                || self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
                 || self.contexts.is_some()
                 || !self.feed.has_no_owned_storage()
@@ -260,6 +264,10 @@ impl ArrangementRootAssembly {
                 .flat_map(|t| &t.clips)
                 .any(Clip::is_streamed);
             self.project = Some(Project {
+                audio_clip_views: Vec::new(),
+                signal_graph: None,
+                tempo_map: None,
+                midi_routing: Vec::new(),
                 sample_rate: scalars.sample_rate,
                 tracks: mem::take(&mut self.tracks),
                 return_buses: mem::take(&mut self.returns),
@@ -289,6 +297,10 @@ impl ArrangementRootAssembly {
         }
         // Validate the whole restoration batch before unpacking any final owner.
         if let Some(Project {
+            audio_clip_views: _,
+            signal_graph: _,
+            tempo_map: _,
+            midi_routing: _,
             sample_rate: _,
             tracks,
             return_buses,

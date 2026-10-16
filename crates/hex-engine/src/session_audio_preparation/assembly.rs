@@ -13,6 +13,7 @@ impl SessionSourceConstruction {
             asset: row.asset,
             start: row.start,
             end: row.end,
+            gain: row.gain,
         })
     }
     pub(crate) fn validate_assembly_row(
@@ -45,6 +46,7 @@ impl SessionSourceConstruction {
             || row.asset != plan.asset
             || row.start != plan.start
             || row.end != plan.end
+            || row.gain != plan.gain
             || *asset != plan.asset
             || cache.source != plan.bank_source
             || !crate::audio_input_storage::same(owner, original)

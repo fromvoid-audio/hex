@@ -236,13 +236,15 @@ impl ArrangementClips {
             let index = self.rows.len() - 1;
             let target = &mut self.rows[index];
             let fade = (s.fade.fade_in() != 0 || s.fade.fade_out() != 0).then_some(s.fade);
-            if fade.is_some()
+            if s.gain != 1.0
+                || fade.is_some()
                 || s.phase != 0
                 || matches!(&inputs.sources[s.source].1.kind, SourceKind::Streamed(_))
             {
                 // Box allocation is process-fatal-OOM excluded, like existing
                 // constructors. Install directly, with no later owning local.
                 target.metadata = Some(Box::new(ClipMetadata {
+                    gain: s.gain,
                     source_phase: s.phase,
                     fade,
                     streamed: None,

@@ -16,6 +16,8 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip,
                 asset: 4,
                 start: 3,
@@ -485,6 +487,8 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         midi_clips,
         audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: 81,
             asset: 80,
             start: 3,
@@ -939,69 +943,5 @@ fn reused_capture_buffers_only_clear_rendered_prefix_on_success() {
     assert!(track.iter().chain(&bus).all(|frame| *frame == [0.0; 2]));
 }
 
-#[test]
-fn metered_analytic_automation_capture_applies_time_varying_gain_once() {
-    use hex_project::{BeatTime, GainInterpolation, GainPoint};
-    let mut snapshot = audio_fixture_project(false, false, false).snapshot();
-    snapshot.tracks.truncate(1);
-    snapshot.tracks[0].instrument = Some(DeviceSnapshot {
-        id: 30,
-        bypassed: false,
-        state: crate::default_native_device_state_for_class(
-            crate::NativeDeviceClass::Instrument,
-            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
-        )
-        .unwrap(),
-    });
-    snapshot.tracks[0].instrument_position = Some(0);
-    snapshot.next_id = 31;
-    snapshot.tracks[0].gain_envelope = vec![
-        GainPoint {
-            beat: BeatTime::ZERO,
-            gain: 0.25,
-            outgoing: GainInterpolation::Linear,
-        },
-        GainPoint {
-            beat: BeatTime::ONE,
-            gain: 1.25,
-            outgoing: GainInterpolation::Step,
-        },
-    ];
-    let project = Project::from_snapshot(snapshot).unwrap();
-    let revision = prepare_audio(&project);
-    let mut baseline = None;
-    for metered in [false, true] {
-        let mut runtime = linear(Arc::clone(&revision));
-        runtime.set_device_metering(metered);
-        let plan = runtime
-            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
-            .unwrap();
-        let mut main = [[0.0; 2]; 512];
-        let mut selected = main;
-        let mut buffers: [&mut [Frame]; 1] = [&mut selected];
-        let mut capture = OutputCapture::new(&plan, &mut buffers);
-        runtime
-            .render_with_capture(&mut main, &mut capture)
-            .unwrap();
-        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
-            let gain = 0.25 + index as f32 / 24000.0;
-            let raw = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
-            let expected = [raw[0] * gain * 0.5, raw[1] * gain];
-            for channel in 0..2 {
-                assert!(
-                    (frame[channel] - expected[channel]).abs() < 1e-7,
-                    "captured gain at {index}"
-                );
-                assert!(
-                    (main[index][channel] - expected[channel] * 0.5).abs() < 1e-7,
-                    "main gain at {index}"
-                );
-            }
-        }
-        if let Some(previous) = baseline {
-            assert_eq!(main, previous);
-        } else {
-            baseline = Some(main);
-        }
-    }
-}
+#[path = "capture_routing_tests.rs"]
+mod routing;

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 fn valid_snapshot() -> Snapshot {
     Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 100,
@@ -30,6 +32,8 @@ fn valid_snapshot() -> Snapshot {
         )],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 20,
             name: "Track Case".into(),
             gain: 0.75,
@@ -42,6 +46,8 @@ fn valid_snapshot() -> Snapshot {
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: 40,
                         asset: 10,
                         start: 128,
@@ -53,6 +59,8 @@ fn valid_snapshot() -> Snapshot {
                         fade: hex_project::ClipFade::neutral(80).unwrap(),
                     },
                     ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: 30,
                         asset: 10,
                         start: 0,
@@ -167,6 +175,8 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1_000 + index as u64,
             name: format!("track {index}"),
             gain: 1.0,
@@ -202,6 +212,8 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let track = &mut clips.tracks[0];
     *track.audio_clips_mut().unwrap() = (0..=MAX_CLIPS)
         .map(|index| ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: 1_000 + index as u64,
             asset: 10,
             start: index as u64,

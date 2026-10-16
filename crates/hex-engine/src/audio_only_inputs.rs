@@ -63,7 +63,7 @@ pub(crate) enum SourceKind {
     Streamed(OwnedShared<StreamedSourceMetadata>),
 }
 impl OwnedAudioSource {
-    /// All reported refusals precede Vec→Arc; original pointer/capacity survive.
+    /// All reported refusals precede the Arc wrapper allocation; original pointer/capacity survive.
     /// Process-fatal allocator OOM/abort is outside API-reported recovery.
     pub fn try_resident(rate: u32, frames: Vec<Frame>) -> Result<Self, ResidentSourceRefusal> {
         Self::resident_with_gate(rate, frames, crate::pcm_arc::native_layout_known())
@@ -83,7 +83,7 @@ impl OwnedAudioSource {
             if !gate {
                 return Err(AudioStorageError::UnsupportedConstructor);
             }
-            let receipt = crate::pcm_arc::PcmArcReceipt::current(frames.len())
+            let receipt = crate::pcm_arc::PcmArcReceipt::current(frames.len(), frames.capacity())
                 .ok_or(AudioStorageError::UnsupportedConstructor)?;
             let handle = handle()?;
             Ok((receipt, handle))
@@ -93,7 +93,10 @@ impl OwnedAudioSource {
             Ok((receipt, handle)) => Ok(Self {
                 kind: SourceKind::Resident(Audio {
                     sample_rate: rate,
-                    frames: frames.into(),
+                    frames: std::sync::Arc::new(crate::AudioData {
+                        values: frames,
+                        _derived: None,
+                    }),
                     pcm_arc_receipt: Some(receipt),
                 }),
                 handle,
@@ -164,7 +167,7 @@ impl OwnedAudioSourceView<'_> {
     }
     pub fn resident_frames(&self) -> Option<&[Frame]> {
         match self.kind {
-            SourceKind::Resident(a) => Some(a.frames.as_ref()),
+            SourceKind::Resident(a) => Some(a.frames()),
             _ => None,
         }
     }
@@ -233,8 +236,22 @@ impl OwnedAudioInputs {
             {
                 return Err(AudioStorageError::ReservationExceeded);
             }
+            let mut allocation_count = 0_usize;
+            for (index, (_, source)) in sources.iter().enumerate() {
+                if !sources[..index]
+                    .iter()
+                    .any(|(_, old)| crate::audio_input_storage::same(old, source))
+                {
+                    allocation_count = allocation_count
+                        .checked_add(match &source.kind {
+                            SourceKind::Resident(_) => 2,
+                            SourceKind::Streamed(_) => 1,
+                        })
+                        .ok_or(AudioStorageError::Overflow)?;
+                }
+            }
             if sources.len() > reservation.handle_obligations
-                || sources.len() > reservation.allocation_items
+                || allocation_count > reservation.allocation_items
             {
                 return Err(AudioStorageError::Capacity);
             }
@@ -446,6 +463,55 @@ mod tests {
         false
     }
     #[test]
+    fn retained_vec_capacity_and_wrapper_are_independent_charges_without_pcm_copy() {
+        if !constructor_supported("retained_vec_pair") {
+            return;
+        }
+        let mut frames = Vec::with_capacity(73);
+        frames.resize(8, [0.5; 2]);
+        let pointer = frames.as_ptr();
+        let capacity = frames.capacity();
+        let source = OwnedAudioSource::try_resident(48_000, frames).ok().unwrap();
+        let SourceKind::Resident(audio) = &source.kind else {
+            panic!("resident");
+        };
+        assert_eq!(audio.frames.values.as_ptr(), pointer);
+        let charges = audio
+            .pcm_arc_receipt
+            .unwrap()
+            .checked_allocations(audio)
+            .unwrap();
+        assert_eq!(charges[0].0, std::mem::size_of::<crate::AudioData>());
+        assert_eq!(charges[1], (capacity * std::mem::size_of::<Frame>(), 0));
+        assert!(charges[1].0 > audio.frames.len() * std::mem::size_of::<Frame>());
+        let ids = ids();
+        let mut bank = OwnedAudioInputs::try_new(vec![(ids[0], source)], reservation())
+            .ok()
+            .unwrap();
+        let token = bank.source_token(ids[0]).unwrap();
+        let _first = bank.alias_on_control(&token).unwrap();
+        let _second = bank.alias_on_control(&token).unwrap();
+        let output = bank.prepare_input_storage_on_control().ok().unwrap();
+        assert_eq!(output.summary().unique_allocations, 2);
+        assert_eq!(output.summary().unresolved_handles, 3);
+        assert_eq!(
+            output.summary().declared_source_data_bytes,
+            charges.iter().map(|(p, o)| p + o).sum()
+        );
+        output.validate_unresolved_on_control().unwrap();
+    }
+    #[test]
+    fn raw_constructor_never_inherits_sealed_resident_provenance() {
+        let raw = OwnedAudioSource {
+            kind: SourceKind::Resident(Audio::new(48_000, vec![[0.0; 2]; 8]).unwrap()),
+            handle: handle().unwrap(),
+        };
+        assert_eq!(
+            crate::audio_input_storage::parts(&raw),
+            Err(AudioStorageError::UnknownStorage)
+        );
+    }
+    #[test]
     fn original_frame_owners_survive_numerical_and_unsupported_origin_refusal() {
         for (rate, sample, gate, expected) in [
             (0, 0.0, true, AudioStorageError::InvalidRate),
@@ -571,7 +637,7 @@ mod tests {
         let _two = bank.alias_on_control(&token).unwrap();
         assert_eq!(bank.owning_handle_count(), 4);
         let output = bank.prepare_input_storage_on_control().ok().unwrap();
-        assert_eq!(output.summary().unique_allocations, 2); // identical PCM ≠ identity
+        assert_eq!(output.summary().unique_allocations, 4); // two allocations per distinct PCM owner
         assert_eq!(output.summary().unresolved_handles, 4);
         assert!(output.validate_unresolved_on_control().is_ok());
         assert!(output.source_view(&token).is_err());

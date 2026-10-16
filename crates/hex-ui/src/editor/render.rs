@@ -21,6 +21,77 @@ impl EditorView {
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
     }
 
+    pub(super) fn nudge_grid_context(
+        &self,
+        platform: bool,
+    ) -> Option<(
+        super::musical_time::SnapGrid,
+        super::viewport::Viewport,
+        f32,
+    )> {
+        let grid = self.snap_grid.with_platform_modifier(platform);
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        if grid == super::musical_time::SnapGrid::Off {
+            return Some((grid, viewport, 1.0));
+        }
+        let bounds = self
+            .arrangement_bounds
+            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let width = bounds.width - super::tracks::TRACK_HEADER_WIDTH;
+        (width.is_finite() && width > 0.0).then_some((grid, viewport, width))
+    }
+
+    pub(super) fn nudge_audio_clip(
+        &mut self,
+        clip: hex_project::ClipId,
+        right: bool,
+        platform: bool,
+    ) {
+        if self.edit_pending() {
+            return;
+        }
+        let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
+            return;
+        };
+        if grid == super::musical_time::SnapGrid::Off {
+            let step = self.step_frames() as i64;
+            self.enqueue(SessionRequest::Edit(Command::NudgeClip {
+                clip,
+                frames: if right { step } else { -step },
+            }));
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(item) = state.project.clip(clip) else {
+            return;
+        };
+        let Some(start) = grid.adjacent_frame(&state.project, item.start(), viewport, width, right)
+        else {
+            return;
+        };
+        if start.checked_add(item.duration()).is_none() {
+            self.error = Some("clip nudge exceeds the timeline range".into());
+            return;
+        }
+        let Some(track) = state
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.clips().iter().any(|item| item.id() == clip))
+            .map(|track| track.id())
+        else {
+            return;
+        };
+        self.enqueue(SessionRequest::Edit(Command::MoveClip {
+            clip,
+            track,
+            start,
+        }));
+    }
+
     fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let mut bar = div()
             .h(px(22.0))
@@ -265,6 +336,15 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.clip_view_open && self.gain_lane.track.is_some() {
+            self.cancel_gain_draft(cx);
+            self.gain_lane.track = None;
+        }
+        if let Some(state) = self.state.as_ref() {
+            if let Some(track) = self.selected_track {
+                self.gain_lane.change_owner(track, &state.project);
+            }
+        }
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
@@ -276,6 +356,7 @@ impl Render for EditorView {
                 .child(self.session_grid(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, true))
+                .child(self.routing_controls(cx))
         } else {
             div()
                 .flex_1()
@@ -285,6 +366,7 @@ impl Render for EditorView {
                 .child(self.arrangement(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, false))
+                .child(self.routing_controls(cx))
         };
         let workspace = div()
             .flex_1()
@@ -306,6 +388,8 @@ impl Render for EditorView {
                 "hex_theme_settings"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
+            } else if self.gain_numeric_editing(cx) {
+                "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
             })
@@ -422,6 +506,10 @@ impl Render for EditorView {
                     if view.theme_settings.open {
                         view.cancel_theme_settings(window, cx);
                         cx.stop_propagation();
+                    } else if view.cancel_gain_draft(cx) {
+                        view.focus.focus(window);
+                        cx.stop_propagation();
+                        cx.notify();
                     }
                 }),
             )
@@ -439,6 +527,8 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                view.cancel_scrub();
+                let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
@@ -454,7 +544,8 @@ impl Render for EditorView {
                 if drag_stopped {
                     view.active_clip_drag = None;
                 }
-                if !midi_canceled
+                if !gain_canceled
+                    && !midi_canceled
                     && !selection_cleared
                     && !time_selection_canceled
                     && !drag_stopped
@@ -517,7 +608,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
@@ -548,12 +639,9 @@ impl Render for EditorView {
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                            view.nudge_midi_clip(clip, false);
+                            view.nudge_midi_clip(clip, false, window.modifiers().platform);
                         } else if let Some((_, clip, ..)) = view.selected_clip_data() {
-                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
-                                clip,
-                                frames: -(view.step_frames() as i64),
-                            }));
+                            view.nudge_audio_clip(clip, false, window.modifiers().platform);
                         }
                     }
                 }
@@ -577,12 +665,9 @@ impl Render for EditorView {
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                            view.nudge_midi_clip(clip, true);
+                            view.nudge_midi_clip(clip, true, window.modifiers().platform);
                         } else if let Some((_, clip, ..)) = view.selected_clip_data() {
-                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
-                                clip,
-                                frames: view.step_frames() as i64,
-                            }));
+                            view.nudge_audio_clip(clip, true, window.modifiers().platform);
                         }
                     }
                 }

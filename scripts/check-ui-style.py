@@ -36,11 +36,14 @@ widgets = (
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
-    'source_adjust_button(',
+    'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    'super::waveform::prepared_waveform_view_cached(',
+    'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
+    'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
@@ -70,6 +73,9 @@ widgets = (
     'super::device_panel::bottom_bar(', 'overview)',
     # Shared host meter strip supplies lowercase tooltip text through theme::text.
     'gain_meters::render(', 'super::gain_meters::render(',
+    # Typed routing/recording components normalize their labels at the boundary.
+    'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    'binding.entity.clone())', 'super::super::gain_recording::controls(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

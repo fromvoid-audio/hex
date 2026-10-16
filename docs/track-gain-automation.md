@@ -1,15 +1,13 @@
 # prepared track-gain automation
 
-Normal saves now use the strict schema23 union. The schema19–21 formats below
-remain frozen migration contracts; explicit schema20 encoding still refuses
-unrepresentable gains or gain envelopes. See [backend integration](streaming-prerequisite-integration.md).
-
 Pulse28 / PR184 adds a bounded canonical editing and prepared-playback stage.
-The original ticket's broader graphs, automation recording, latency and native
-acceptance remain incomplete. There is no native lane UI, device-parameter
-capability expansion or recording implementation in this stage.
+A compact Arrangement gain-lane editor exposes these commands. Native touch
+recording and runtime compensation extend the same lane; see [gain touch
+recording](gain-touch-spans.md) and [latency compensation](latency-compensation.md).
+There is no general device-parameter automation capability expansion. Native
+interaction and listening are recorded separately from source checks.
 
-Each canonical Track owns one `gain_envelope`, carried by its ordinary
+Each canonical Track owns one `GainLane`; its base `gain_envelope` is carried by its ordinary
 TrackSnapshot and history. Existing TrackId owns the lane; existing Q32.32
 BeatTime keys its points. Replace, upsert, move, remove and clear are atomic
 control commands. Upsert replaces an equal beat; moving onto another point
@@ -82,9 +80,77 @@ otherwise. Older envelope entry points refuse automation loss; the document
 ceiling and recoverable/create-new file behavior remain. Operator statev9/v10
 and preset envelope1 are unrelated formats.
 
-Recording still needs callback-confirmed applied values, revision/TrackId/parameter
-identity, sample rate, exact application frames and loop/transport context,
-bounded event delivery/overflow handling, touch ownership, release-to-read and
-atomic gesture history. Wall-clock UI events do not establish recording.
-Native lane discovery/editing, listening, Live reference behavior, optimized
-macOS packaging and CoreAudio/hardware deadlines require separate evidence.
+Native recording uses callback-confirmed applied values and exact content frames,
+then one atomic revision-stamped splice. Its bounded queues, cancellation, loop
+normalization and delivery semantics are specified in [gain touch recording](gain-touch-spans.md).
+
+## selected-track gain pane
+
+The Arrangement header's `a` control opens a 96 px pane below its virtualized
+track list. Track rows remain 44 px and the curve uses the same time viewport,
+right-hand mixer-header width and selected snap grid. The view includes the lane’s
+last authored point while open; this display horizon does not change canonical
+content duration or the default export extent. Opening it validates device
+controls and closes the open detail body so real track rows remain operable at
+880 × 540. Explicitly reopening the detail body closes the gain pane and cancels
+its local draft; the last selected workspace keeps enough room for track rows.
+The `auto` badge identifies an active lane; manual gain buttons visibly
+refuse automation ownership and offer this editor. The retained static gain is
+labeled as fallback, never described as the sounding value of an active lane.
+
+Click the plot to add/upsert a point; drag a point's beat/gain as one local draft
+and commit once on release. Previous/next selects every authored point, including
+beats that coincide at one playback frame. The shared numeric field edits
+percent gain; time dragging edits the exact beat; step/linear changes its outgoing mode; remove and clear use the
+same canonical commands. An unchanged click retains the exact Q32.32 beat key.
+Numeric gain editing never rewrites that key. Exact raw beat, prepared frame and
+meter position are available in the readout tooltip. Command-modified placement
+uses the existing free-placement grid behavior. A move onto an occupied beat
+refuses the complete candidate and keeps the draft visibly unapplied.
+
+Numeric gain uses a round-trip display codec without changing the shared finite
+range validation. Its focused text context prevents letters such as `l` from
+becoming transport/loop shortcuts. Numeric text validation stays in the shared
+widget. Invalid drafts remain
+visible and block point actions. Escape cancels; the first Undo cancels a local
+pointer/text draft before a later Undo reaches canonical history. Changing the
+selected track or replacing/revising the project invalidates local drafts and
+numeric bindings. A typed `GainLane` actor request carries TrackId, generation
+and revision; the worker checks all three before existing preparation/history.
+A request delayed behind another committed edit refuses rather than overwriting
+its lane. Device gestures must finish before this independent edit is admitted.
+
+The worker caches a fallible, read-only `GainAutomationPreview` prepared through
+the playback envelope law. An unavailable preview is explicit and cannot become
+an apparently valid static value for active automation. Painting uses its tempo
+cuts and collapsed prepared knots; authored points remain separately selectable.
+Public prepared Track knot/value getters are immutable metadata accessors. They
+perform no source-owner mutation and are not applied-gain acknowledgments.
+`draft · not applied`, queued canonical edit, pending audio application and an
+exact applied revision are separate presentations. The cursor's displayed gain
+is expressly a prepared value; it is not an audio callback measurement.
+
+## pending optimized native checks
+
+On the approved native machine, use the existing release/optimized packaging
+workflow against the exact candidate and its retained clean full local-CI report.
+No unoptimized normal test artifact, Linux result, or revision label substitutes
+for native acceptance. Preserve exact source and full local-CI evidence; native interaction is separate
+from the required automated merge checks.
+
+- At minimum and normal window sizes, inspect `a`, `auto`, fallback/refusal text,
+  curve/header alignment, 44 px rows, font, focus and lowercase text.
+- Exercise add/upsert, time/gain drag release, numeric gain, outgoing
+  modes, remove/clear and all coincident-frame points. Check invalid text,
+  occupied beats, Escape and Undo/Redo, Save/Reopen and owner/revision changes.
+- Check grid/free-placement modifiers, zoom/pan, transport cursor readouts and
+  pending/applied revision presentation during Arrangement and Session playback.
+- Listen to source ownership changes, sends/ReturnFeeds, tails and linear export
+  on actual native audio. Record exact source, hardware and observed outcomes.
+
+Recorded spans are read-only in the base point editor; clear provides explicit
+recovery without discarding data through an unrelated transform. Current schema24
+preserves complete routing, device trims, base points, touch spans and epochs.
+Historical schemas retain strict migration and unsupported-backport refusal.
+See [gain touch recording](gain-touch-spans.md) for actual native delivery receipts
+and [routing](routing.md) for typed graph contracts.

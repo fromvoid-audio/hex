@@ -53,7 +53,10 @@ refuse that identifier in device-owned descriptors. Registry migration and
 ordinary parameter edits preserve trim. DSP configuration identities explicitly
 exclude it so changing host gain does not replace instruments or filter history.
 
-Project schema23 writes required `input_gain_millidb` and `output_gain_millidb` alongside each device envelope, together with routing, gain envelopes and provenance.
+Project schema25 records `input_gain_millidb` and `output_gain_millidb` alongside
+each device envelope, routing, gain lanes and authored audio metadata. Current
+main readers preserve their existing legacy defaults; the frozen branch23 reader
+requires both gain integers.
 The published main17–19 gain envelopes remain readable through their frozen
 strict lineage; see [backend integration](streaming-prerequisite-integration.md).
 Older schemas default the field to zero; invalid gains refuse loading. Native,

@@ -192,6 +192,7 @@ struct SourceSlot {
     source_offset: usize,
     source_length: usize,
     phase: u64,
+    gain: f32,
     looping: bool,
     fade: hex_project::ClipFade,
     owner: Option<OwnedAudioSource>,
@@ -385,6 +386,7 @@ impl AudioPreparationCustody {
                     .reserve(handles, inputs.reservation.handle_obligations)?;
                 if assemble_session {
                     self.assembly.reserve(
+                        project,
                         &self.structure,
                         &self.session,
                         self.shared.inventory_handles(),
@@ -660,6 +662,15 @@ impl AudioPreparationCustody {
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
+        if !project.audio_feeds().is_empty()
+            || !project.midi_routes().is_empty()
+            || project.tracks().iter().any(|track| {
+                !track.gain_lane().spans().is_empty()
+                    || track.clips().iter().any(|clip| clip.audio_edit().is_some())
+            })
+        {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         crate::gain_envelope::validate_project(project)
             .map_err(|_| AudioStorageError::UnsupportedGraph)?;
         let count = project
@@ -814,6 +825,7 @@ impl AudioPreparationCustody {
                     source_length: usize::try_from(clip.source_length())
                         .map_err(|_| AudioStorageError::Overflow)?,
                     phase: clip.source_phase(),
+                    gain: clip.gain().linear(),
                     looping: clip.looping(),
                     fade: clip.fade(),
                     owner: None,

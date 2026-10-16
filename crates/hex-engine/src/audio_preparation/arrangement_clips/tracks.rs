@@ -359,7 +359,7 @@ impl TrackAssembly {
                 PreparedTrackMix::new(1.0, t.balance(), t.muted() || (solo && !t.soloed()))
                     .map_err(invalid)?;
             r.gain
-                .reserve(t.gain_envelope(), project.tempo_map(), neutral)
+                .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())
                 .map_err(gain_error)?;
             self.growth = self
                 .growth
@@ -535,6 +535,9 @@ impl TrackAssembly {
                     instrument_bypassed: false,
                     instrument_input_gain: 1.0,
                     instrument_output_gain: 1.0,
+                    instrument_latency: None,
+                    instrument_runtime_latency: None,
+                    midi_source_index: None,
                     instrument_meter: meter,
                     mutable_instrument: false,
                     mutable_looping_source: false,
@@ -629,6 +632,9 @@ impl TrackAssembly {
                 instrument_bypassed: _,
                 instrument_input_gain: _,
                 instrument_output_gain: _,
+                instrument_latency: _,
+                instrument_runtime_latency: _,
+                midi_source_index: _,
                 instrument_meter,
                 mutable_instrument: _,
                 mutable_looping_source: _,

@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
 mod device_reorder_tests;
+mod device_theme_tests;
 mod gate_ui_tests;
 mod navigation_ui_tests;
 mod operator_enable_ui_tests;
@@ -225,6 +226,20 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let bodies: Vec<_> = [instrument, effect]
+        .into_iter()
+        .map(|device| {
+            let selector: &'static str =
+                Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+            (
+                selector,
+                visual.debug_bounds(selector).expect("device body"),
+                visual
+                    .rendered_background(selector)
+                    .expect("device body paint"),
+            )
+        })
+        .collect();
     for (prefix, device) in [("instrument-device", instrument), ("effect-device", effect)] {
         let bounds = visual
             .debug_bounds(Box::leak(
@@ -239,6 +254,10 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
             assert_eq!(view.state.as_ref().expect("state").revision, revision);
             assert_eq!(view.worker_requests_pending, 0);
         });
+        for (selector, bounds, paint) in &bodies {
+            assert_eq!(visual.debug_bounds(selector), Some(*bounds));
+            assert_eq!(visual.rendered_background(selector), Some(*paint));
+        }
     }
     // Right-clicking a different card must not change the left-click selection.
     let bounds = visual
@@ -287,6 +306,11 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let body: &'static str = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let body_bounds = visual.debug_bounds(body).expect("return device body");
+    let body_paint = visual
+        .rendered_background(body)
+        .expect("return device body paint");
     let knob = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
@@ -301,6 +325,14 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(body), Some(body_bounds));
+    assert_eq!(visual.rendered_background(body), Some(body_paint));
+    assert_eq!(
+        visual.rendered_background("device-frame-header"),
+        Some(gpui::Background::from(gpui::rgb(
+            device_layout_style().accent
+        )))
+    );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device))
     });
@@ -3469,7 +3501,9 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
         view.state = Some(Arc::new(ViewState {
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -3780,7 +3814,9 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
         view.state = Some(Arc::new(ViewState {
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -3937,7 +3973,9 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -4075,7 +4113,9 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -4966,7 +5006,9 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
     let changed_state = Arc::new(ViewState {
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
+        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
         timeline_frames: state.timeline_frames,
         can_undo: project_editor.can_undo(),
         can_redo: project_editor.can_redo(),

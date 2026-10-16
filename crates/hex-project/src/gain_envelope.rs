@@ -35,12 +35,17 @@ impl Project {
     pub fn has_gain_automation(&self) -> bool {
         self.tracks()
             .iter()
-            .any(|track| !track.gain_envelope().is_empty())
+            .any(|track| !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty())
+    }
+    pub fn has_gain_touch_metadata(&self) -> bool {
+        self.tracks()
+            .iter()
+            .any(|track| track.gain_lane.recording_epoch != 0 || !track.gain_lane.spans.is_empty())
     }
     pub(crate) fn refuse_automation_transform(&self, tracks: &[TrackId]) -> Result<(), Invalid> {
         for &id in tracks {
             let track = self.track(id).ok_or(Invalid("track no longer exists"))?;
-            if !track.gain_envelope().is_empty() {
+            if !track.gain_envelope().is_empty() || !track.gain_lane.spans.is_empty() {
                 return Err(Invalid(AUTOMATION_EDIT_UNSUPPORTED));
             }
         }
@@ -51,7 +56,10 @@ impl Project {
         track: TrackId,
         points: Vec<GainPoint>,
     ) -> Result<Created, Invalid> {
-        self.track(track).ok_or(Invalid("track no longer exists"))?;
+        let owner = self.track(track).ok_or(Invalid("track no longer exists"))?;
+        if !owner.gain_lane.spans.is_empty() {
+            return Err(Invalid(crate::GAIN_TOUCH_UNSUPPORTED));
+        }
         validate_gain_envelope(&points)?;
         let other = self
             .tracks()
@@ -59,7 +67,7 @@ impl Project {
             .filter(|owner| owner.id() != track)
             .try_fold(0_usize, |count, owner| {
                 count
-                    .checked_add(owner.gain_envelope().len())
+                    .checked_add(owner.gain_lane.units()?)
                     .ok_or(Invalid("gain point count overflow"))
             })?;
         if other
@@ -68,7 +76,7 @@ impl Project {
         {
             return Err(Invalid("project gain envelope point limit reached"));
         }
-        self.track_mut(track)?.gain_envelope = points;
+        self.track_mut(track)?.gain_lane.base = points;
         Ok(Created::None)
     }
     pub(crate) fn upsert_gain_point(
@@ -79,7 +87,8 @@ impl Project {
         let mut points = self
             .track(track)
             .ok_or(Invalid("track no longer exists"))?
-            .gain_envelope
+            .gain_lane
+            .base
             .clone();
         match points.binary_search_by_key(&point.beat, |point| point.beat) {
             Ok(index) => points[index] = point,
@@ -101,7 +110,8 @@ impl Project {
         let mut points = self
             .track(track)
             .ok_or(Invalid("track no longer exists"))?
-            .gain_envelope
+            .gain_lane
+            .base
             .clone();
         let index = points
             .binary_search_by_key(&from, |point| point.beat)
@@ -125,7 +135,8 @@ impl Project {
         let mut points = self
             .track(track)
             .ok_or(Invalid("track no longer exists"))?
-            .gain_envelope
+            .gain_lane
+            .base
             .clone();
         let index = points
             .binary_search_by_key(&beat, |point| point.beat)

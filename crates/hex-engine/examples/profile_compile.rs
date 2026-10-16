@@ -46,6 +46,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         }
                     };
                     Ok(ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: clip_id,
                         asset: 1,
                         start,
@@ -60,6 +62,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id,
                 name: format!("track {track_index:03}"),
                 gain: 0.5 + (track_index % 5) as f32 * 0.1,
@@ -76,6 +80,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         .collect::<Result<Vec<_>, hex_project::Invalid>>()?;
     let snapshot = Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id: 102 + clips_total,

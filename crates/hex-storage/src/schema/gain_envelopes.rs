@@ -50,13 +50,13 @@ struct TrackV21 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GainPointDto {
-    beat_raw: u64,
-    gain: f32,
-    outgoing: InterpolationDto,
+    pub(super) beat_raw: u64,
+    pub(super) gain: f32,
+    pub(super) outgoing: InterpolationDto,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum InterpolationDto {
+pub(super) enum InterpolationDto {
     Step,
     Linear,
 }
@@ -114,7 +114,13 @@ pub(super) fn bounded_gain_points<'de, D: serde::Deserializer<'de>>(
     d.deserialize_seq(Points)
 }
 impl DocumentV21 {
+    #[cfg(test)]
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
+        if project.has_gain_touch_metadata() {
+            return Err(StorageError::Invalid(
+                "older schema cannot save gain touch metadata",
+            ));
+        }
         let base = DocumentV20::fields_for_new_envelope(project)?;
         let tracks = base
             .tracks

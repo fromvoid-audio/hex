@@ -350,7 +350,7 @@ pub(super) fn render_return_effect(
                     NativeDeviceClass::Effect,
                     theme::text(device_view.name.clone()),
                 ),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 actions,
                 body,
             )
@@ -371,7 +371,7 @@ pub(super) fn render_return_effect(
                 .child(theme::text(format!("unsupported device state · {error}")));
             device_frame(
                 device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
-                device_layout_style().with_device_selection(selected),
+                theme::device_frame_style(selected),
                 actions,
                 body,
             )

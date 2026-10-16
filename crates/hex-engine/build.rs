@@ -121,8 +121,9 @@ fn main() {
     .chain(std::iter::once(target_flags.as_str()))
     .any(nonempty);
     let compiler = env::var_os("RUSTC").map(PathBuf::from);
-    let mut evidence =
-        format!("contract: pinned-std-requested-layout-v1\nhost: {host}\ntarget: {target}\n");
+    let mut evidence = format!(
+        "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
+    );
     let decision = compiler
         .as_deref()
         .ok_or("missing_cargo_selected_compiler")
@@ -152,6 +153,7 @@ fn main() {
         if known { "1" } else { "0" }
     );
     println!("cargo:rustc-env=HEX_PCM_ARC_LAYOUT_TARGET={target}");
+    println!("cargo:rustc-env=HEX_PCM_ARC_CONSTRUCTOR_FAMILY=arc-audiodata-retained-vec-v1");
     if !known {
         println!(
             "cargo:warning=PCM declared Arc layout Unknown: {}",

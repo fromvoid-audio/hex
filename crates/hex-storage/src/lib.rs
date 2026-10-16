@@ -2,6 +2,7 @@
 mod files;
 mod journal;
 pub use journal::{Journal, journal_path, load_journal};
+mod audio_edit;
 mod replacement;
 mod schema;
 pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};
@@ -127,15 +128,33 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the strict schema23 union of both host gains and backend metadata.
-/// Compact bounded output preserves exact saved-byte publication tokens.
+/// Encode the complete schema25 envelope, preserving device host gains, import
+/// provenance, typed routing and complete gain-lane metadata together.
+/// Historical readers remain explicit.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    schema::host_gain::encode23(project)
+    encode_document(&schema::musical_audio::DocumentV25::from_project(project)?)
+}
+
+/// Explicit schema22 encoding; newer playable routing is refused.
+pub fn encode_schema22(project: &Project) -> Result<Vec<u8>, StorageError> {
+    refuse_legacy_routes(project)?;
+    encode_document(&schema::gain_touch::DocumentV22::from_project(project)?)
 }
 
 /// Explicit schema20 encoding, including empty-feed projects.
 pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
+    refuse_legacy_routes(project)?;
     encode_document(&schema::return_feeds::DocumentV20::from_project(project)?)
+}
+
+fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::musical_audio::refuse_legacy_audio(project)?;
+    if !project.audio_feeds().is_empty() || !project.midi_routes().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save playable routing",
+        ));
+    }
+    Ok(())
 }
 
 fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {

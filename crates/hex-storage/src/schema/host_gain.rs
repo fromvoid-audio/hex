@@ -301,7 +301,8 @@ pub(super) fn decode23(bytes: &[u8]) -> Result<Project, StorageError> {
         gains,
     )
 }
-pub(crate) fn encode23(project: &Project) -> Result<Vec<u8>, StorageError> {
+#[cfg(test)]
+fn encode23(project: &Project) -> Result<Vec<u8>, StorageError> {
     let mut snapshot = project.snapshot();
     let mut gains = BTreeMap::new();
     for device in snapshot
@@ -414,4 +415,121 @@ fn bounded_tracks23<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<GainTr
         }
     }
     d.deserialize_seq(Tracks)
+}
+
+// Shape inspection selects one complete frozen DTO before decoding original
+// bytes. Missing/duplicate/unknown fields are never stripped or retried.
+#[derive(Deserialize)]
+struct Shape {
+    tracks: Vec<TrackShape>,
+    return_tracks: Vec<ReturnShape>,
+}
+#[derive(Deserialize)]
+struct TrackShape {
+    #[serde(default, deserialize_with = "present_field")]
+    gain_touch_epoch: Option<serde::de::IgnoredAny>,
+    #[serde(default, deserialize_with = "present_field")]
+    gain_touch_spans: Option<serde::de::IgnoredAny>,
+}
+#[derive(Deserialize)]
+struct ReturnShape {
+    devices: Vec<DeviceShape>,
+}
+#[derive(Deserialize)]
+struct DeviceShape {
+    #[serde(default, deserialize_with = "present_field")]
+    input_gain_millidb: Option<serde::de::IgnoredAny>,
+}
+pub(super) fn decode_historical(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    let shape: Shape = serde_json::from_slice(bytes)?;
+    let mut touch = None;
+    for track in shape.tracks {
+        let has_touch = match (
+            track.gain_touch_epoch.is_some(),
+            track.gain_touch_spans.is_some(),
+        ) {
+            (true, true) => true,
+            (false, false) => false,
+            _ => return Err(StorageError::Invalid("incomplete gain touch lineage")),
+        };
+        if touch.is_some_and(|previous| previous != has_touch) {
+            return Err(StorageError::Invalid("mixed gain touch lineages"));
+        }
+        touch = Some(has_touch);
+    }
+    // With no tracks there is no gain-lane history to distinguish. For22 the
+    // Return device's input-gain field identifies main's complete gain DTO.
+    let main = touch.unwrap_or_else(|| {
+        version == 23
+            || shape
+                .return_tracks
+                .iter()
+                .flat_map(|bus| &bus.devices)
+                .any(|device| device.input_gain_millidb.is_some())
+    });
+    match (version, main) {
+        (22, true) => gain_touch::DocumentV22::decode(bytes),
+        (23, true) => combined::decode(bytes),
+        (22, false) => decode22(bytes),
+        (23, false) => decode23(bytes),
+        _ => Err(StorageError::Invalid("unsupported host-gain lineage")),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn main_touch_shapes_and_partial_mixed_duplicate_hybrids_are_distinct() {
+        let original = crate::decode(include_bytes!(
+            "../../tests/fixtures/lineages/foundation22.json"
+        ))
+        .unwrap();
+        let main = crate::encode_schema22(&original).unwrap();
+        assert_eq!(crate::decode(&main).unwrap(), original);
+        let base: serde_json::Value = serde_json::from_slice(&main).unwrap();
+        for key in ["gain_touch_epoch", "gain_touch_spans"] {
+            let mut missing = base.clone();
+            missing["tracks"][0].as_object_mut().unwrap().remove(key);
+            assert!(crate::decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+        }
+        let mut mixed = base.clone();
+        let mut track = mixed["tracks"][0].clone();
+        track["id"] = 9999.into();
+        track["devices"] = serde_json::json!([]);
+        track["instrument"] = serde_json::Value::Null;
+        track.as_object_mut().unwrap().remove("gain_touch_epoch");
+        track.as_object_mut().unwrap().remove("gain_touch_spans");
+        mixed["tracks"].as_array_mut().unwrap().push(track);
+        mixed["next_id"] = 10000.into();
+        assert!(crate::decode(&serde_json::to_vec(&mixed).unwrap()).is_err());
+        let text = String::from_utf8(main).unwrap();
+        let needle = format!(
+            "\"gain_touch_epoch\":{}",
+            base["tracks"][0]["gain_touch_epoch"]
+        );
+        let duplicate = text.replace(&needle, &format!("{needle},{needle}"));
+        assert_ne!(text, duplicate);
+        assert!(crate::decode(duplicate.as_bytes()).is_err());
+        let mut future = base;
+        future["unrecognized"] = true.into();
+        assert!(crate::decode(&serde_json::to_vec(&future).unwrap()).is_err());
+    }
+    #[test]
+    fn published_branch23_encoder_remains_readable_without_replacing_current_writer() {
+        let original = crate::decode(include_bytes!(
+            "../../tests/fixtures/lineages/foundation22.json"
+        ))
+        .unwrap();
+        let bytes = encode23(&original).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["version"], 23);
+        assert!(value["tracks"][0].get("gain_touch_epoch").is_none());
+        assert_eq!(crate::decode(&bytes).unwrap(), original);
+        let current = crate::encode(&original).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
+            25
+        );
+        assert_eq!(crate::decode(&current).unwrap(), original);
+    }
 }

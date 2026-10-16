@@ -1,6 +1,6 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
-use crate::{Audio, Clip, Invalid, Project, StreamedSourceMetadata, Track};
+use crate::{Audio, Invalid, Project, StreamedSourceMetadata, Track};
 use hex_project::{Asset, AssetId};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -42,6 +42,7 @@ pub fn project_with_registry(
         registry,
         &instruments,
         None,
+        None,
     )
     .map(|(project, _)| project)
 }
@@ -62,6 +63,7 @@ pub fn project_with_instrument_registry(
         None,
         &effects,
         instruments,
+        None,
         None,
     )
     .map(|(project, _)| project)
@@ -92,6 +94,7 @@ pub fn project_with_prepared_audio_sources(
         &registry,
         &instruments,
         None,
+        None,
     )
     .map(|(project, _)| project)
 }
@@ -105,7 +108,7 @@ pub fn project_with_prepared_audio_sources_and_midi_preview_and_table(
     sine_table: Option<Arc<hex_devices::SineTable>>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     project_with_prepared_audio_sources_and_midi_preview_and_contexts(
-        snapshot, sources, generation, sine_table, None,
+        snapshot, sources, generation, sine_table, None, None,
     )
 }
 
@@ -115,6 +118,7 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     generation: u64,
     sine_table: Option<Arc<hex_devices::SineTable>>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
         return Err(Invalid("stream source generation must be positive"));
@@ -130,6 +134,7 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
         &registry,
         &instruments,
         shared_contexts,
+        transforms,
     )
 }
 
@@ -178,6 +183,7 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_registry(
         registry,
         instruments,
         None,
+        None,
     )
 }
 
@@ -188,6 +194,7 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview(
         snapshot,
@@ -196,9 +203,11 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
         registry,
         instruments,
         shared_contexts,
+        transforms,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_with_midi_preview<'a>(
     snapshot: &'a hex_project::Project,
     resolver: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
@@ -206,6 +215,7 @@ fn compile_with_midi_preview<'a>(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
     let clip_count = snapshot
@@ -228,6 +238,7 @@ fn compile_with_midi_preview<'a>(
         registry,
         instrument_registry,
         shared_contexts,
+        transforms,
     )?;
     compiled_previews.sort_unstable_by_key(|clip| clip.clip_id);
     Ok((
@@ -236,7 +247,35 @@ fn compile_with_midi_preview<'a>(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_project<'a>(
+    snapshot: &'a hex_project::Project,
+    resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
+    previews: Option<&mut Vec<crate::MidiClipPreview>>,
+    _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
+    registry: &hex_lattice::NativeDeviceRegistry<'_>,
+    instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
+) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    let fallback = crate::audio_transform::AudioTransformPreparation::default();
+    let transforms = transforms.unwrap_or(&fallback);
+    transforms.compile_transaction(|| {
+        compile_project_inner(
+            snapshot,
+            resolve_source,
+            previews,
+            _prepared_sine_table,
+            registry,
+            instrument_registry,
+            shared_contexts,
+            transforms,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_project_inner<'a>(
     snapshot: &'a hex_project::Project,
     mut resolve_source: impl FnMut(&'a Asset, u32) -> Result<PreparedAudioSourceRef<'a>, Invalid>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
@@ -244,10 +283,36 @@ fn compile_project<'a>(
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    transforms: &crate::audio_transform::AudioTransformPreparation,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
+    // Fanout is real work: bound expanded destination occurrences before note-bank allocation.
+    let mut routed_occurrences = 0usize;
+    for track in snapshot.tracks() {
+        let root = snapshot.midi_source_track(track.id());
+        let source = snapshot
+            .track(root)
+            .ok_or(Invalid("midi source root is missing"))?;
+        for clip in source.midi_clips() {
+            for note in clip.notes() {
+                let n = clip
+                    .source_playback()
+                    .map_err(|error| Invalid(error.0))?
+                    .note_occurrences(note.start(), note.duration())
+                    .map_err(|error| Invalid(error.0))?
+                    .count();
+                routed_occurrences = routed_occurrences
+                    .checked_add(
+                        usize::try_from(n)
+                            .map_err(|_| Invalid("routed midi occurrence overflow"))?,
+                    )
+                    .filter(|n| *n <= crate::midi_compile::MAX_COMPILED_MIDI_OCCURRENCES)
+                    .ok_or(Invalid("routed midi occurrence limit reached"))?;
+            }
+        }
+    }
     let shared_contexts = match shared_contexts {
         Some(contexts) => contexts,
         None => crate::shared_analytic::SharedAnalyticContextTable::prepare(
@@ -256,6 +321,7 @@ fn compile_project<'a>(
             None,
         )?,
     };
+    let mut audio_clip_views = Vec::new();
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
     let mut tracks = Vec::new();
     tracks
@@ -265,7 +331,14 @@ fn compile_project<'a>(
     let mut stateful_bytes = 0_usize;
     let mut midi_bank_bytes = 0_usize;
     let mut midi_bank_references = 0_usize;
-    for track in snapshot.tracks() {
+    for (track_index, track) in snapshot.tracks().iter().enumerate() {
+        let source_id = snapshot.midi_source_track(track.id());
+        let source_index = snapshot
+            .tracks()
+            .iter()
+            .position(|track| track.id() == source_id)
+            .ok_or(Invalid("midi source root is missing"))?;
+        let midi_source = &snapshot.tracks()[source_index];
         // Validate a present slot even when it is bypassed or has no current
         // MIDI clips; unknown/future definitions must refuse graph publication.
         let instrument_config = track
@@ -276,6 +349,14 @@ fn compile_project<'a>(
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
+        let instrument_latency = track
+            .instrument()
+            .filter(|device| !device.bypassed())
+            .and(instrument_config.as_deref())
+            .map_or(Some(0), |instrument| {
+                instrument.algorithmic_latency_frames()
+            });
+        let mut instrument_runtime_latency = instrument_latency;
         let mutable_limits = if let Some(instrument) = track
             .instrument()
             .filter(|device| !device.bypassed())
@@ -285,6 +366,7 @@ fn compile_project<'a>(
                 .prepare_mutable_runtime()
                 .map_err(|_| Invalid("mutable instrument runtime is unsupported"))?
                 .map(|factory| {
+                    instrument_runtime_latency = factory.algorithmic_latency_frames();
                     crate::midi_compile::MutableInstrumentLimits::from_factory(factory.as_ref())
                 })
                 .transpose()?
@@ -294,7 +376,7 @@ fn compile_project<'a>(
         if mutable_limits.is_some()
             && let Some(instrument) = instrument_config.as_deref()
         {
-            for clip in track.midi_clips() {
+            for clip in midi_source.midi_clips() {
                 for note in clip.source().notes() {
                     instrument
                         .validate_event_note(note.pitch(), note.velocity())
@@ -302,7 +384,7 @@ fn compile_project<'a>(
                 }
             }
         }
-        let mutable_looping_source = track
+        let mutable_looping_source = midi_source
             .midi_clips()
             .iter()
             .any(|clip| clip.source().looping());
@@ -315,32 +397,42 @@ fn compile_project<'a>(
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
                 let source = resolve_source(asset, snapshot.sample_rate())?;
-                match source {
-                    PreparedAudioSourceRef::Resident(audio) => Clip::region_with_fade(
-                        audio.clone(),
-                        clip.start(),
-                        clip.duration(),
-                        clip.source_offset(),
-                        clip.source_length(),
-                        clip.looping(),
-                        clip.fade(),
-                    )?
-                    .with_source_phase(clip.source_phase()),
-                    PreparedAudioSourceRef::Streamed(source) => Clip::streamed_region_with_fade(
-                        Arc::clone(source),
-                        clip.start(),
-                        clip.duration(),
-                        clip.source_offset(),
-                        clip.source_length(),
-                        clip.looping(),
-                        clip.fade(),
-                    )?
-                    .with_source_phase(clip.source_phase()),
+                let compiled = transforms.compile_clip(snapshot, clip, asset, source)?;
+                if let Some(compiled) = &compiled
+                    && let Some(audio) = &compiled.audio
+                    && audio.frames._derived.is_some()
+                {
+                    audio_clip_views
+                        .try_reserve(1)
+                        .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
+                    audio_clip_views.push(crate::PreparedAudioClipView {
+                        clip: clip.id(),
+                        audio: audio.clone(),
+                        offset: compiled.source_offset as u64,
+                        length: compiled.end - compiled.start,
+                    });
                 }
+                Ok::<_, Invalid>(compiled)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         let muted = track.muted() || (any_soloed && !track.soloed());
-        let instrument = if track.midi_clips().is_empty() {
+        if source_index != track_index && previews.is_some() && !track.midi_clips().is_empty() {
+            // Authored preview remains on its canonical owner even when that owner's
+            // instrument listens to a different root.
+            crate::midi_compile::compile_instrument_track(
+                snapshot,
+                track,
+                None,
+                None,
+                None,
+                Arc::clone(&shared_contexts),
+                previews.as_deref_mut(),
+            )?;
+        }
+        let instrument = if midi_source.midi_clips().is_empty() {
             None
         } else {
             let prepared_instrument = track
@@ -350,7 +442,7 @@ fn compile_project<'a>(
             Some(
                 crate::midi_compile::compile_instrument_track(
                     snapshot,
-                    track,
+                    midi_source,
                     prepared_instrument,
                     mutable_limits,
                     track
@@ -358,7 +450,11 @@ fn compile_project<'a>(
                         .and_then(|device| shared_contexts.index_for_device(device.id()))
                         .and_then(|index| shared_contexts.owner(index).map(|owner| (index, owner))),
                     Arc::clone(&shared_contexts),
-                    previews.as_deref_mut(),
+                    if source_index == track_index {
+                        previews.as_deref_mut()
+                    } else {
+                        None
+                    },
                 )?
                 .ok_or(Invalid("instrument content missing after compile"))?,
             )
@@ -426,13 +522,16 @@ fn compile_project<'a>(
                 device_chain,
             )?
             .with_track_id(track.id())
+            .with_midi_source_index((source_index != track_index).then_some(source_index))
             .with_instrument_config(track.instrument())
+            .with_instrument_latency(instrument_latency, instrument_runtime_latency)
             .with_mutable_instrument(mutable_instrument, mutable_looping_source)
             .with_sends(sends)
             .with_gain_envelope(
-                track.gain_envelope(),
+                track.gain_lane(),
                 snapshot.tempo_map(),
                 track.balance(),
+                track.gain(),
             )?,
         );
     }
@@ -447,7 +546,6 @@ fn compile_project<'a>(
             0,
             snapshot.sample_rate(),
             registry,
-            true,
         )?;
         for device in &effect_plan.device_chain {
             if let Some(definition) = &device.definition {
@@ -484,7 +582,38 @@ fn compile_project<'a>(
         snapshot.master_gain(),
         shared_contexts,
     )?;
+    project.audio_clip_views = audio_clip_views;
     project.return_feed_plan = return_feed_plan;
+    let feeds = snapshot
+        .authored_routing()
+        .iter()
+        .map(|feed| {
+            let source = snapshot
+                .return_tracks()
+                .iter()
+                .position(|bus| bus.id() == feed.source())
+                .ok_or(Invalid("compensation feed source is missing"))?;
+            let target = snapshot
+                .return_tracks()
+                .iter()
+                .position(|bus| bus.id() == feed.destination())
+                .ok_or(Invalid("compensation feed target is missing"))?;
+            Ok((source, target, feed.gain()))
+        })
+        .collect::<Result<Vec<_>, Invalid>>()?;
+    project.tempo_map = Some(snapshot.tempo_map().clone());
+    project.midi_routing = snapshot
+        .midi_routes()
+        .iter()
+        .map(|route| (route.source(), route.destination()))
+        .collect();
+    project.midi_routing.sort_unstable();
+    project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
+    if project.signal_graph.is_some() {
+        for track in &mut project.tracks {
+            track.source_mix = crate::PreparedTrackMix::identity();
+        }
+    }
     Ok((project, previews.map(std::mem::take).unwrap_or_default()))
 }
 
@@ -506,7 +635,6 @@ fn compile_device_effects(
         track.instrument_position().unwrap_or(0),
         sample_rate,
         registry,
-        false,
     )
 }
 
@@ -516,7 +644,6 @@ fn compile_effect_devices(
     _split: usize,
     sample_rate: u32,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
-    require_zero_latency: bool,
 ) -> Result<CompiledEffectPlan, Invalid> {
     let mut devices = Vec::new();
     devices
@@ -531,16 +658,6 @@ fn compile_effect_devices(
         let prepared_device = registry
             .prepare_device(&migrated, sample_rate)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
-        if require_zero_latency
-            && prepared_device
-                .processor
-                .as_ref()
-                .is_some_and(|processor| processor.algorithmic_latency_frames() != Some(0))
-        {
-            return Err(Invalid(
-                "return effect has unknown or nonzero algorithmic latency",
-            ));
-        }
         let processor = prepared_device.processor.map(std::sync::Arc::from);
 
         let prepared = if device.bypassed() {

@@ -31,17 +31,21 @@ foundation used19 for provenance/routing and22 for output-only host gain. These
 wire formats cannot share a widened device DTO without accepting hybrids or
 losing input gain.
 
-Normal saves always write schema23. Both gain integers and all union fields are
-required. Main17–19 retains its original gain defaults and validation; provenance18
+The initial staged checkpoint wrote schema23. After integration with main, normal
+saves write main schema25, including both host gains, touch metadata, routing and
+authored audio-edit metadata. Main retains its own field/default contracts; the
+branch23 DTO still requires both gain integers. Main17–19 retains its original gain defaults and validation; provenance18
 and routing19 are separate strict complete shapes. The gain18 lineage is already
-covered by the compatible main gain reader. Foundation20/21/22 remain frozen,
-and22 defaults input to unity by construction. Unknown, duplicate, malformed,
+covered by the compatible main gain reader. Foundation20/21 and output-only22 remain frozen; foundation22 defaults input to
+unity by construction. Branch host-gain22/23 and main touch22/combined23 select
+separate complete DTOs by explicit touch-field/device-gain shape; mixed or partial
+shapes refuse. No failed parse is retried as another lineage. Unknown, duplicate, malformed,
 missing required and future fields refuse loading. Only successfully typed DTOs
 are normalized through the existing canonical validators. Foreign JSON is never
 stripped to make a failed decode succeed.
 
-The explicit old schema20 writer refuses nondefault input or output gains and
-gain envelopes. Document size, structural bounds, opaque device payloads, IDs,
+The main schema20 writer preserves host gains and refuses unsupported newer
+lanes/routes/audio edits through its existing explicit guards. Document size, structural bounds, opaque device payloads, IDs,
 bypass flags, provenance bytes and recoverable file publication remain enforced.
 
 `crates/hex-storage/tests/fixtures/lineages/README.md` records five byte fixtures
@@ -121,3 +125,34 @@ flags keep declarations Unknown and refuse the opt-in constructor. This pin make
 normal local CI and optimized builds exercise the real supported branch; explicit
 Rust1.98.1 tests remain unsupported-origin negative controls. This is a requested
 allocation layout declaration, never allocator/RSS or complete lifetime admission.
+
+## integration with current main — 16 October 2026
+
+Main's full routing, gain recording, touch lanes, audio transforms and schema25
+writer remain authoritative. The old staged backend is not substituted for them.
+The private source class keeps one canonical Audio representation. Its sealed
+resident constructor wraps the caller's original Vec in Arc<AudioData> without
+copying PCM; reports charge the sized Arc payload/header and separate Vec buffer
+using actual capacity. Aliases deduplicate both charge locations while conserving
+every independent Arc handle. Raw Audio, transformed/derived Audio and providers
+cannot acquire that declaration by type, content, reference count or a caller pin.
+The pinned constructor gate now explicitly names this retained-Vec family; it no
+longer asserts a Vec-to-Arc-slice conversion. Unsupported builds remain Unknown.
+
+The required Session MeterMap is copied into persistent scalar-only destinations
+before input-bank movement. Both Vec backings, retained spares and old-growth
+copy overlap are reported at actual copy/staging/final Session locations. Normal
+cleanup returns that exact meter to the same persistent copy custodian. Failure
+or panic retains partial custody. Non-common-time metadata and both Arrangement
+and Session clip gains survive private revision assembly and its PCM oracle.
+
+The opt-in private class refuses touch spans, authored audio-edit/transform state
+and playable input routes before source movement. Their ordinary main compiler
+and native APIs remain available. Added empty/None root fields are explicitly
+constructed and validated; no signal graph, derived reservation, routing owner or
+mutable gain-recording state is silently adopted. Accounting/admission, callback
+publication, physical deadlines and broad PR177/native acceptance remain open.
+
+The integrated engine/storage all-target check and69 supported-constructor
+preparation regressions pass. Final exact-source full CI is recorded with PR232;
+these intermediate checks alone do not establish merge readiness.

@@ -17,6 +17,7 @@ fn supported(name: &str) -> bool {
 fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs) {
     let (project, bank) = super::tests::fixture(streamed);
     let track = project.tracks()[0].id();
+    let arrangement_clip = project.tracks()[0].clips()[0].id();
     let asset = project.assets().next().unwrap().id();
     let mut editor = Editor::new(project, 8).unwrap();
     let Created::Scene(scene) = editor
@@ -35,6 +36,35 @@ fn fixture(streamed: bool) -> (hex_project::Project, OwnedAudioInputs) {
             asset,
             source_start: 1,
             source_end: 7,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMeterPoint {
+            beat: hex_project::BeatTime::from_quarters(3).unwrap(),
+            meter: hex_project::Meter::new(7, 8).unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: arrangement_clip,
+            millidb: -6000,
+        })
+        .unwrap();
+    let session_clip = match editor
+        .project()
+        .session_cells()
+        .iter()
+        .next()
+        .unwrap()
+        .content()
+    {
+        hex_project::SessionCellContent::Audio(clip) => clip.id(),
+        _ => panic!("audio"),
+    };
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: session_clip,
+            millidb: -3000,
         })
         .unwrap();
     let Created::Scene(stop) = editor
@@ -121,6 +151,16 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
             session.shared_contexts()
         ));
         assert_eq!(Arc::strong_count(root.shared_contexts.arc()), 2);
+        assert_eq!(session.meter_map(), project.meter_map());
+        assert_eq!(
+            session.audio_clips()[0].gain,
+            expected.session().audio_clips()[0].gain
+        );
+        assert_eq!(
+            custody.capacity_report().assembly.meter_owned_allocations,
+            2
+        );
+        assert!(custody.capacity_report().assembly.meter_bytes > 0);
         assert_eq!(session.audio_clips().len(), 1);
         assert_eq!(session.cells().len(), 2);
         assert_eq!(session.cells(), expected.session().cells());
@@ -533,5 +573,62 @@ fn four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumptio
             c.revision.capacity().unwrap(),
             crate::AudioRevisionRootCapacity::default()
         );
+    }
+}
+
+#[test]
+fn new_touch_and_transformed_graphs_refuse_before_source_moves() {
+    if !supported("unsupported_main_graphs") {
+        return;
+    }
+    for transformed in [false, true] {
+        let (project, bank) = fixture(false);
+        let track = project.tracks()[0].id();
+        let clip = project.tracks()[0].clips()[0].id();
+        let mut editor = Editor::new(project, 8).unwrap();
+        if transformed {
+            editor
+                .execute(Command::SetAudioClipPitch { clip, cents: 100 })
+                .unwrap();
+        } else {
+            let epoch = editor.project().tracks()[0].gain_lane().recording_epoch();
+            editor
+                .execute(Command::SpliceGainTouch {
+                    track,
+                    expected_epoch: epoch,
+                    span: hex_project::GainTouchSpan {
+                        start: hex_project::BeatTime::ZERO,
+                        end: hex_project::BeatTime::from_quarters(1).unwrap(),
+                        context: hex_project::GainTouchContext {
+                            recording_epoch: epoch + 1,
+                            project_generation: 1,
+                            canonical_revision: 1,
+                            audio_revision: 1,
+                            transport_epoch: 1,
+                            gesture_epoch: 1,
+                            gesture_serial: 1,
+                            sample_rate: editor.project().sample_rate(),
+                            loop_pass: 0,
+                        },
+                        steps: vec![hex_project::GainTouchStep {
+                            beat: hex_project::BeatTime::ZERO,
+                            gain: 0.25,
+                            origin_beat: hex_project::BeatTime::ZERO,
+                            source_sequence: 1,
+                        }],
+                    },
+                })
+                .unwrap();
+        }
+        let pointer = bank.sources.as_ptr();
+        let count = bank.owning_handle_count();
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        crate::owned_shared::reset_clone_count();
+        let refused = begin(&mut custody, editor.project(), bank).err().unwrap();
+        assert_eq!(refused.reason, AudioStorageError::UnsupportedGraph);
+        assert_eq!(refused.inputs.sources.as_ptr(), pointer);
+        assert_eq!(refused.inputs.owning_handle_count(), count);
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
     }
 }

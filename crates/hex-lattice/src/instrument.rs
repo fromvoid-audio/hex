@@ -146,6 +146,13 @@ pub enum PreparedStorageDeclaration {
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
+    /// Fixed algorithmic buffering latency at this prepared sample rate.
+    /// Unknown is explicit; envelope attack, filter phase and musical release
+    /// are not buffering latency. A mutable factory must agree with its source.
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        None
+    }
+
     /// Prepare the immutable sampler for one authored pitch/velocity pair.
     /// Implementations must be deterministic for a fixed prepared instrument
     /// configuration, sample rate, pitch and velocity. The engine may intern

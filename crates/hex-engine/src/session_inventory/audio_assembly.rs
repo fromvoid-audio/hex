@@ -23,6 +23,9 @@ pub struct SessionAssemblyCapacity {
     pub audio_bytes: usize,
     pub pair_bytes: usize,
     pub previous_growth_backing_bytes: usize,
+    pub meter_copy_bytes: usize,
+    pub meter_bytes: usize,
+    pub meter_owned_allocations: usize,
 }
 impl SessionAssemblyCapacity {
     pub(crate) fn bytes(self) -> Result<usize, AudioStorageError> {
@@ -34,6 +37,8 @@ impl SessionAssemblyCapacity {
             self.range_bytes,
             self.audio_bytes,
             self.pair_bytes,
+            self.meter_copy_bytes,
+            self.meter_bytes,
         ]
         .into_iter()
         .try_fold(0_usize, |n, b| {
@@ -52,6 +57,7 @@ pub(crate) struct ClipPlan {
     pub(crate) asset: AssetId,
     pub(crate) start: u64,
     pub(crate) end: u64,
+    pub(crate) gain: hex_project::ClipGain,
 }
 pub(crate) struct SceneRangePlan {
     pub(crate) id: SceneId,
@@ -98,6 +104,7 @@ impl AudioTarget {
             asset: self.plan.asset,
             source_start: self.plan.start,
             source_end: self.plan.end,
+            gain: self.plan.gain.linear(),
             source,
         });
         self.actual_handle = Some(handle);
@@ -119,6 +126,7 @@ impl AudioTarget {
             || clip.asset != self.plan.asset
             || clip.source_start != self.plan.start
             || clip.source_end != self.plan.end
+            || clip.gain != self.plan.gain.linear()
         {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -160,6 +168,8 @@ pub(crate) struct SessionAssembly {
     pairs: Vec<AudioTarget>,
     inventory: Option<PreparedSessionInventory>,
     timing: Option<PreparedTempoMap>,
+    meter_copy: hex_project::MeterMapCopyCustody,
+    meter: Option<hex_project::MeterMap>,
     sine: Option<Arc<SineTable>>,
     sine_declaration: Option<SharedDeclaration>,
     contexts: Option<OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>>,
@@ -294,6 +304,9 @@ impl SessionAssembly {
                 || self.pending_name.is_some()
                 || self.pending_pair.is_some()
                 || self.name_pending
+                || self.meter.is_some()
+                || i.routed_midi_clips.capacity() != 0
+                || i.midi_source_roots.capacity() != 0
                 || !i.midi_clips.is_empty()
                 || i.midi_clips.capacity() != 0
                 || !i.mutable_instruments.is_empty()
@@ -309,6 +322,28 @@ impl SessionAssembly {
         if self.unused_midi.capacity() != 0 || self.unused_mutable.capacity() != 0 {
             return Err(AudioStorageError::UnknownStorage);
         }
+        let copy_meter = self.meter_copy.capacity();
+        let meter_copy_bytes = copy_meter
+            .layout
+            .checked_backing_bytes()
+            .ok_or(AudioStorageError::Overflow)?;
+        let actual_meter = self
+            .inventory
+            .as_ref()
+            .or(external)
+            .map(|i| &i.meter_map)
+            .or(self.meter.as_ref());
+        let meter_bytes = actual_meter
+            .map(|meter| meter.owned_allocation_layout().checked_backing_bytes())
+            .unwrap_or(Some(0))
+            .ok_or(AudioStorageError::Overflow)?;
+        let meter_owned_allocations = usize::from(copy_meter.layout.point_capacity() != 0)
+            + usize::from(copy_meter.layout.prefix_capacity() != 0)
+            + actual_meter.map_or(0, |meter| {
+                let layout = meter.owned_allocation_layout();
+                usize::from(layout.point_capacity() != 0)
+                    + usize::from(layout.prefix_capacity() != 0)
+            });
         // Installed vectors have moved to inventory; count actual backings there.
         let (scenes, tracks, cells, indices, ranges, audio) =
             if let Some(i) = self.inventory.as_ref().or(external) {
@@ -331,6 +366,9 @@ impl SessionAssembly {
                 )
             };
         let report = SessionAssemblyCapacity {
+            meter_copy_bytes,
+            meter_bytes,
+            meter_owned_allocations,
             scene_bytes: bytes(scenes)?,
             track_bytes: bytes(tracks)?,
             cell_bytes: bytes(cells)?,
@@ -338,13 +376,20 @@ impl SessionAssembly {
             range_bytes: bytes(ranges)?,
             audio_bytes: bytes(audio)?,
             pair_bytes: bytes(&self.pairs)?,
-            previous_growth_backing_bytes: if include_growth { self.growth } else { 0 },
+            previous_growth_backing_bytes: if include_growth {
+                self.growth
+                    .checked_add(copy_meter.previous_growth_backing_bytes)
+                    .ok_or(AudioStorageError::Overflow)?
+            } else {
+                0
+            },
         };
         report.bytes()?;
         Ok(report)
     }
     pub(crate) fn reserve(
         &mut self,
+        project: &hex_project::Project,
         structure: &SessionStructureConstruction,
         sources: &SessionSourceConstruction,
         handles: [u64; 3],
@@ -374,6 +419,9 @@ impl SessionAssembly {
             return Err(AudioStorageError::Capacity);
         }
         self.phase = AssemblyPhase::Reserved;
+        self.meter_copy
+            .prepare_from(project.meter_map())
+            .map_err(meter_error)?;
         self.growth = 0;
         let (scenes, tracks, cells) = structure.counts();
         let audio = sources.assembly_plans().count();
@@ -464,6 +512,14 @@ impl SessionAssembly {
         }
         shared.preflight_inventory_transfer(self.metadata_handles)?;
         tempo.preflight_inventory_transfer()?;
+        if self.meter.is_some()
+            || self.meter_copy.phase() != hex_project::MeterMapCopyPhase::Validated
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        self.meter_copy
+            .transfer_into(&mut self.meter)
+            .map_err(meter_error)?;
         self.phase = AssemblyPhase::Partial;
         #[cfg(test)]
         let mut moved = 0;
@@ -529,14 +585,24 @@ impl SessionAssembly {
             .audio
             .iter()
             .any(|c| matches!(c.source, PreparedAudioSource::Streamed(_)));
-        if self.timing.is_none() || self.sine.is_none() || self.contexts.is_none() {
+        if self.timing.is_none()
+            || self.sine.is_none()
+            || self.contexts.is_none()
+            || self.meter.is_none()
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
         // No allocation/fallible helper after taking the first final owner.
-        if let (Some(timing), Some(sine_table), Some(shared_contexts)) =
-            (self.timing.take(), self.sine.take(), self.contexts.take())
-        {
+        if let (Some(timing), Some(sine_table), Some(shared_contexts), Some(meter_map)) = (
+            self.timing.take(),
+            self.sine.take(),
+            self.contexts.take(),
+            self.meter.take(),
+        ) {
             self.inventory = Some(PreparedSessionInventory {
+                meter_map,
+                routed_midi_clips: Vec::new(),
+                midi_source_roots: Vec::new(),
                 timing,
                 periodic_tempo: tempo.periodic,
                 periodic_tempo_error: tempo.periodic_error,
@@ -736,5 +802,14 @@ impl<'a> SessionInventoryMetadata<'a> {
             PreparedAudioSource::Streamed(meta) => Some(meta.as_ref()),
             _ => None,
         }
+    }
+}
+
+fn meter_error(error: hex_project::MeterMapCopyError) -> AudioStorageError {
+    match error {
+        hex_project::MeterMapCopyError::Occupied => AudioStorageError::Capacity,
+        hex_project::MeterMapCopyError::Allocation => AudioStorageError::Allocation,
+        hex_project::MeterMapCopyError::Overflow => AudioStorageError::Overflow,
+        hex_project::MeterMapCopyError::Incomplete => AudioStorageError::UnknownStorage,
     }
 }
