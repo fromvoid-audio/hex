@@ -196,3 +196,11 @@ implementation. See [the EQ8 host contract](eq-eight-audition.md#transient-host-
 for the bounded audio lease, publication fences, pointer lifecycle and remaining
 native acceptance gates. Adding another capable device does not require a storage
 special case or a mutable type-erased escape hatch.
+
+## host gain staging
+
+[Native device gain staging](device-gain-staging.md) adds shared input/output
+sample-peak strips and manual host input/output trim. Memoryless effects retain separate
+runtime entries to expose each boundary. Host trim is neutral envelope metadata,
+independent of opaque device DSP payloads and synthesis/history identity; project
+schema 19 defaults prior documents to unity. Automatic matching is deferred.

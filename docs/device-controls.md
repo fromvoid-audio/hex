@@ -41,6 +41,41 @@ paint. Optional device-owned display names are presentation metadata; stable
 type IDs and opaque persisted state are unchanged. Unknown or unsupported
 states report errors instead of displaying defaults.
 
+## extensible shared layout — pulse2470
+
+`hex-widgets` owns the shared frame/header, surround body, rounded sections,
+rail/grouped rows and recessed display compositions. `DeviceLayout` supplies
+Row, Column, Wrapped and Grid arrangements; `device_split` supplies equal flexible
+panes, while Row composition retains unequal/fixed device widths. See the
+[widget API and extension rule](../crates/hex-widgets/README.md#shared-device-composition).
+
+All instrument, effect and Return frames use one 14px header, 3px horizontal
+header inset, 2px header gap, 4px outer radius and 1px border. Idle header/surround
+share the injected surface without a dark separating rule. Production dispatch
+selects musical panel content and useful widths, never header density or style.
+One product-owned neutral layout palette preserves the accepted Vector hierarchy;
+widgets receive colors through ControlStyle and have no device identities.
+Frame selection still transforms only its supplied palette; bodies/controls
+receive the unselected layout/control palettes independently.
+
+Vector composes its accepted oscillator/preview rails, 40px grouped rows and dark
+rounded detail display from these primitives. Existing focus entities, tab slots,
+parameter controls and gesture bindings remain panel-owned. Sine and effects use
+the same frame/body metrics, retaining their distinct parameter arrangements.
+Semantic section surfaces support short/tall content, graphs and tabbed inspectors
+without requiring one universal device template. Any new visual capability must
+first be a generic library extension with meaningful rendered tests, then be
+consumed by panels; no device-named appearance variants or type-ID style selection.
+
+Rounded sections use same-color structural side borders as their content inset.
+GPUI's rectangular overflow masks then exclude those borders, keeping oversized
+paint/hit regions out of corner cutouts while preserving full row height. Padding
+alone is insufficient. Rendered widget tests inspect actual filled scene quads,
+rounded radii, clipped descendant masks/hits at normal and constrained sizes, and
+layout reflow. Production UI tests retain Vector focus/tab/gesture/row-containment
+coverage and check Sine/effect header/body alignment. This is source/scene evidence;
+physical macOS visual and input acceptance remains optional native testing.
+
 ## Interaction contract
 
 - Validate finite ranges/defaults and typed input. Linear, positive logarithmic
@@ -62,6 +97,21 @@ Shift fine adjustment is an initial original interaction policy. Exact Live
 transfer laws, modifier behavior and numerical increments are unverified until
 reference experiments establish them. The visual target is the user-supplied
 Live device screenshot; rendering and assets are independent implementations.
+
+### numeric text shortcut ownership
+
+An active numeric text draft advertises `hex_text_editing` alongside its numeric
+control context. Editor printable shortcuts (space, `s`, Shift-`s`, and `l`) are
+excluded while that context is focused, so unit strings retain their characters
+without changing transport, Solo or loop state. Direct Solo actions also refuse
+that text-edit context. Numeric clipboard, selection, Enter/Escape and existing
+modified-command finalization paths remain unchanged. Focus on a numeric control
+outside text editing still permits the normal Solo shortcuts.
+
+Rendered editor-to-worker regressions cover lost characters, canonical Solo and
+history isolation, uppercase/space, clipboard/cancel, owner finalization, Enter
+and single Undo. Linux headless tests do not establish physical macOS keyboard,
+IME, bundled-font rendering or native visual acceptance.
 
 ### linear-amplitude gain presentation
 
@@ -209,7 +259,7 @@ starts metadata-only drags; it does not construct DSP. Dropping an effect on a
 card's left or right half inserts before that stable device ID, while the empty
 chain tail appends. A browser instrument drop always targets the front position
 and is refused when the focused track already has an instrument; replacement
-remains an explicit menu action. Dragging an existing card by its header grip
+remains an explicit menu action. Dragging an existing card by its title
 moves that stable device identity to the indicated position, including across
 tracks. The rail renders the project's canonical ordered chain, and drop hit
 regions do not add spacing or resize the fixed-height panel.
@@ -222,6 +272,36 @@ the preview without publishing history. The Session actor repeats the generation
 revision, active-gesture, target and anchor checks before applying the typed add
 or move command. These contracts are source-tested; native pointer feel and
 cross-track behavior remain on the user review checklist.
+
+### title dragging and return-chain insertion — 13 october 2026
+
+The title area of every device frame is a drag source, including instruments,
+effects and return effects. The shared frame accepts caller-owned title content;
+device input and canonical commands stay in the editor/session. Header actions
+and parameter controls keep their own input. An open-hand cursor identifies the
+grab area; while dragging, the closed-hand cursor and insertion markers show the
+move without a floating preview.
+
+The left/right halves of each card choose a stable before-device anchor. The
+3 px gap after each card also accepts insertion drops without changing visual
+spacing, and the empty tail appends. Return chains now have the same insertion
+markers and title sources, dispatching one `MoveReturnDevice` within the current
+return owner. Browser effects can also insert at these anchors; return chains
+continue to refuse instruments and transfers from another owner.
+
+Hover leaves the canonical order untouched. Valid release creates one undoable
+move; dropping before itself or at its current position creates no request.
+Escape, outside release, stale source/project and active parameter edits retain
+the existing cancellation/refusal rules. Reordering does not clone device state
+or construct DSP on the UI thread. Horizontal drag autoscroll is still deferred.
+
+Rendered GPUI tests cover regular/return title drags left, right and into the
+inter-card gap, instrument placement among effects, unchanged order while hovering,
+one revision per move, Undo, self-drop and return Escape/outside cancellation.
+Native macOS interaction and listening remain open. User checklist: drag a device
+title left/right/between cards on a regular track and return; move the instrument
+among effects; check insertion markers with no floating preview, Undo/Redo, Escape and outside
+release; confirm knobs, bypass/remove buttons and horizontal scrolling still work.
 
 Starting a native-device drag from the browser reveals the device pane and
 selects device details so the drop receiver is visible, even when the pane was
@@ -452,3 +532,20 @@ remain unchanged. New native appearance acceptance remains required.
 The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
+
+## device card selection — 13 october 2026
+
+Left mouse-down anywhere in an instrument, track effect or Return effect card
+selects that device. The shared frame uses the accent border/title bar with dark
+title text; parameter controls keep their existing colors. Selecting another
+card replaces the selection, which persists after release and redraw. Capture
+routing allows knobs, toggles and drag grips to retain their own input handling.
+Selection is transient editor state keyed by DeviceId; it sends no project edit
+and clears when the panel owner changes, the selected device disappears or the
+project generation changes. Right-click leaves the selection unchanged.
+
+Focused rendered GPUI regressions cover card clicks, selection persistence,
+removal, Return control gesture admission and owner/project retirement. Native
+macOS visual acceptance remains pending: click an instrument then an effect,
+click/adjust a Return effect knob, and verify only the clicked card is highlighted
+while its controls still work.

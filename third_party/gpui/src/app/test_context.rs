@@ -687,6 +687,45 @@ impl VisualTestContext {
         self.update(|window, _| window.rendered_frame.cursor_style(window))
     }
 
+    /// Background of the last filled quad exactly matching a debug element's bounds.
+    /// Border-only quads have transparent fills and do not replace the surface.
+    /// Reads the completed scene without drawing or injecting pointer events.
+    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
+        self.update(|window, _| {
+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let scaled = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .rev()
+                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
+                .map(|quad| quad.background)
+        })
+    }
+
+    /// Rounded geometry and ancestor mask of the last filled scene quad matching
+    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
+    /// GPU framebuffer or native display readback.
+    pub fn rendered_surface_geometry(
+        &mut self,
+        selector: &'static str,
+    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let scaled = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .rev()
+                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
+                .map(|quad| (quad.corner_radii, quad.content_mask.bounds))
+        })
+    }
+
     /// Provides a `Window` and `App` for the duration of the closure.
     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
         self.cx

@@ -129,3 +129,15 @@ diff/hashes preserve the verified upstream baseline and license. Rendered cursor
 and lifecycle tests pass. On 11 October 2026 the user reported native cursor
 appearance/restoration, typing and Undo passed and requested merging PR155.
 See device-controls.md for the supplied native checklist.
+
+## rounded device layout scene evidence — 16 october 2026
+
+The existing GPUI test-support patch now skips transparent border-only fills in
+`rendered_background` and exposes `rendered_surface_geometry` (filled quad corner
+radii and ancestor mask, in scaled pixels). This corrects background inspection
+when `Style::paint` appends an outline quad after content. Only
+`src/app/test_context.rs` changes; published archive/license/original hashes stay
+pinned, and patched hash/cumulative diff are refreshed. Rendered widget tests
+exercise filled surfaces with structural borders and oversized content. Scene
+geometry and hit masks are evidence of GPUI containment; GPU antialiasing,
+physical display pixels and native visual acceptance remain separate.

@@ -5,6 +5,13 @@ Each desktop launch creates a new `session-{unix_nanos}-{pid}.log` in
 files, including the current session; unrelated files and symlinks are preserved.
 There is no upload or network logger. Other platforms use `~/.local/state/hex/logs`.
 
+The compact debug button at the far right, beside the version, opens the current
+session log in the system text editor (`open -t` on macOS; the default file
+application on Linux). It appears in the editor, startup and demo headers.
+The log path comes from the injected session handle; opening does not scan or
+read the log on the UI thread. Launching runs on a background executor, repeated
+clicks are ignored while it is pending, and logging/launch errors show a dialog.
+
 `hex-diagnostics` owns file creation, pruning, writes and per-line flush on a
 worker. Desktop starts the service before GPUI, injects its producer handle,
 and joins it after the application lifecycle exits. A 64-entry queue accepts

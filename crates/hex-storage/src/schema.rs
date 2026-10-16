@@ -188,7 +188,7 @@ pub(crate) struct DocumentV16 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DocumentV17 {
+pub(crate) struct DocumentV19 {
     format: String,
     version: u32,
     sample_rate: u32,
@@ -282,6 +282,10 @@ struct DeviceDtoV14 {
     type_id: String,
     state_version: u32,
     payload: Vec<u8>,
+    #[serde(default)]
+    input_gain_millidb: i32,
+    #[serde(default)]
+    output_gain_millidb: i32,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -674,6 +678,8 @@ impl DocumentV14 {
                                 .to_owned(),
                             state_version: state.state_version(),
                             payload: state.payload().to_vec(),
+                            input_gain_millidb: state.input_gain_millidb(),
+                            output_gain_millidb: state.output_gain_millidb(),
                         })
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
@@ -966,7 +972,7 @@ impl DocumentV16 {
     }
 }
 
-impl DocumentV17 {
+impl DocumentV19 {
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
         let base = DocumentV16::from_project(project)?;
         let DocumentV16 {
@@ -1028,7 +1034,7 @@ impl DocumentV17 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         Ok(Self {
             format,
-            version: 17,
+            version: 19,
             sample_rate,
             next_id,
             assets,
@@ -1044,7 +1050,7 @@ impl DocumentV17 {
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         let doc: Self = serde_json::from_slice(bytes)?;
-        if doc.format != "hex-project" || doc.version != 17 {
+        if doc.format != "hex-project" || !matches!(doc.version, 17..=19) {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
@@ -1141,6 +1147,8 @@ fn device_to_dto(
             .to_owned(),
         state_version: state.state_version(),
         payload: state.payload().to_vec(),
+        input_gain_millidb: state.input_gain_millidb(),
+        output_gain_millidb: state.output_gain_millidb(),
     })
 }
 
@@ -1150,6 +1158,11 @@ fn device_dto_into_snapshot(device: DeviceDtoV14) -> Result<DeviceSnapshot, Stor
     let state =
         hex_lattice_contract::NativeDeviceState::new(type_id, device.state_version, device.payload)
             .map_err(|_| StorageError::Invalid("invalid native device state envelope"))?;
+    let state = state
+        .with_input_gain_millidb(device.input_gain_millidb)
+        .map_err(|_| StorageError::Invalid("invalid device input gain"))?
+        .with_output_gain_millidb(device.output_gain_millidb)
+        .map_err(|_| StorageError::Invalid("invalid device output gain"))?;
     Ok(DeviceSnapshot {
         id: device.id,
         bypassed: device.bypassed,
@@ -1948,8 +1961,8 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
-        if header.version == 17 {
-            return DocumentV17::decode(bytes);
+        if matches!(header.version, 17..=19) {
+            return DocumentV19::decode(bytes);
         }
         if header.version == 16 {
             return DocumentV16::decode(bytes);

@@ -42,6 +42,30 @@ impl NativeInstrumentEvent {
     }
 }
 
+/// A sounding shared analytic occurrence whose payload was prepared on control.
+/// The host proves source/context/owner continuity; imports never synthesize
+/// pitch or replay old audio on the callback. Gate age is note-relative.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeInstrumentAnalyticSeed {
+    pub occurrence_id: u64,
+    pub note: super::PreparedSharedAnalyticNote,
+    pub age_frames: u64,
+    pub gate_frame: Option<u64>,
+}
+impl Default for NativeInstrumentAnalyticSeed {
+    fn default() -> Self {
+        Self {
+            occurrence_id: 0,
+            note: super::PreparedSharedAnalyticNote::new(
+                [0; super::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
+                0,
+            ),
+            age_frames: 0,
+            gate_frame: None,
+        }
+    }
+}
+
 /// Finite ceilings supplied by the caller before either runtime twin is
 /// constructed. The lattice contract deliberately does not copy engine voice,
 /// onset or block-event limits into generic policy.
@@ -69,6 +93,14 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Opt-in, allocation-free exact source-law authorization. Other providers
+    /// retain the no-chase policy. The host also proves source/route identity.
+    fn can_import_analytic_context(
+        &self,
+        _source: &dyn super::PreparedSharedAnalyticContext,
+    ) -> bool {
+        false
+    }
     fn runtime_version(&self) -> u32;
     fn declared_twin_bytes(&self) -> usize;
     fn max_events_per_block(&self) -> usize;
@@ -109,6 +141,11 @@ pub enum InstrumentHistoryRetargetPreparation {
 /// it alive until that graph is retired on control. The declared payload size
 /// excludes allocator bookkeeping.
 pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
+    /// An explicit provider proof may bridge two formats after validating every
+    /// source field. Default implementations retain exact-version matching.
+    fn allows_runtime_versions(&self, source: u32, target: u32) -> bool {
+        source == target
+    }
     fn declared_fixed_storage_bytes(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
 }
@@ -124,6 +161,11 @@ pub trait PreparedInstrumentHistoryRetarget: Any + Send + Sync {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    fn can_import_analytic(&self, _notes: &[NativeInstrumentAnalyticSeed]) -> bool {
+        false
+    }
+    /// Apply only after both twins pass preflight; no allocation or final drop.
+    fn import_analytic(&mut self, _notes: &[NativeInstrumentAnalyticSeed]) {}
     fn preflight_events(
         &self,
         events: &[NativeInstrumentEvent],
@@ -425,6 +467,26 @@ impl NativeInstrumentRuntimePair {
         Ok(())
     }
 
+    pub fn can_import_analytic(&self, notes: &[NativeInstrumentAnalyticSeed]) -> bool {
+        !self.block_started
+            && notes.len() <= self.max_active_occurrences
+            && self.primary.is_quiescent()
+            && self.scratch.is_quiescent()
+            && self.primary.can_import_analytic(notes)
+            && self.scratch.can_import_analytic(notes)
+    }
+    pub fn import_analytic(
+        &mut self,
+        notes: &[NativeInstrumentAnalyticSeed],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.can_import_analytic(notes) {
+            return Err(NativeInstrumentRuntimeError::IncompatibleHistory);
+        }
+        self.primary.import_analytic(notes);
+        self.scratch.import_analytic(notes);
+        Ok(())
+    }
+
     /// Preflight an explicit prepared retarget of both runtime twins. Exact
     /// `can_inherit_from` semantics remain unchanged; candidate topology and
     /// source identity are checked by the owning engine graph.
@@ -435,7 +497,7 @@ impl NativeInstrumentRuntimePair {
     ) -> bool {
         !self.block_started
             && !previous.block_started
-            && self.runtime_version == previous.runtime_version
+            && proof.allows_runtime_versions(previous.runtime_version, self.runtime_version)
             && self
                 .primary
                 .can_retarget_history_from(previous.primary.as_ref(), proof)
@@ -1281,6 +1343,20 @@ mod tests {
         let mut reference = new_pair(1, 2);
         render(&mut reference, &[event_on(0, 7, 65, 112)], 3);
         assert_eq!(retry, render(&mut reference, &[], 4));
+    }
+
+    #[test]
+    fn analytic_import_requires_provider_opt_in_and_leaves_default_runtime_unchanged() {
+        let mut target = new_pair(1, 2);
+        assert!(!target.can_import_analytic(&[]));
+        assert_eq!(
+            target.import_analytic(&[]),
+            Err(NativeInstrumentRuntimeError::IncompatibleHistory)
+        );
+        assert_eq!(render(&mut target, &[event_on(0, 9, 67, 120)], 4), {
+            let mut fresh = new_pair(1, 2);
+            render(&mut fresh, &[event_on(0, 9, 67, 120)], 4)
+        });
     }
 
     #[test]

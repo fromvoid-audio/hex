@@ -65,6 +65,7 @@ pub struct Toggle {
     enabled: bool,
     style: ControlStyle,
     appearance: DiscreteControlAppearance,
+    tab_navigation: bool,
     focus: FocusHandle,
 }
 
@@ -90,6 +91,7 @@ impl Toggle {
             enabled: true,
             style: config.style,
             appearance: config.appearance,
+            tab_navigation: false,
             focus: cx.focus_handle(),
         }
     }
@@ -119,9 +121,24 @@ impl Toggle {
         }
     }
 
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.tab_navigation = enabled;
+        let tab_stop = self.tab_navigation && self.enabled;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            cx.notify();
+        }
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
             self.enabled = enabled;
+            let tab_stop = self.tab_navigation && self.enabled;
+            if self.focus.tab_stop != tab_stop {
+                self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            }
             cx.notify();
         }
     }
@@ -418,6 +435,7 @@ pub struct Selector {
     enabled: bool,
     style: ControlStyle,
     appearance: DiscreteControlAppearance,
+    tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     measured_size: std::rc::Rc<std::cell::Cell<gpui::Size<gpui::Pixels>>>,
@@ -446,6 +464,7 @@ impl Selector {
             enabled: true,
             style: config.style,
             appearance: config.appearance,
+            tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             measured_size: std::rc::Rc::new(std::cell::Cell::new(gpui::size(px(0.0), px(0.0)))),
@@ -489,10 +508,25 @@ impl Selector {
         Ok(())
     }
 
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
+    pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.tab_navigation = enabled;
+        let tab_stop = self.tab_navigation && self.enabled;
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            cx.notify();
+        }
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
             self.enabled = enabled;
             self.open = false;
+            let tab_stop = self.tab_navigation && self.enabled;
+            if self.focus.tab_stop != tab_stop {
+                self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+            }
             cx.notify();
         }
     }

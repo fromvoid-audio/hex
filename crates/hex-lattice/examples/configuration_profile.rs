@@ -307,6 +307,7 @@ fn instance(
     configuration: Arc<NativeDeviceState>,
 ) -> PreparedProcessorInstance {
     PreparedProcessorInstance {
+        meter: Default::default(),
         owner,
         device_id,
         device_type,
