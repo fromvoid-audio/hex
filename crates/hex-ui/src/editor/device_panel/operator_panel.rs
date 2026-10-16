@@ -1012,7 +1012,7 @@ fn lfo_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(1.0));
     let sync = matches!(
         value(view, device, parameters, id(84)),
         Some(ParameterValue::Bool(true))
@@ -1034,19 +1034,25 @@ fn lfo_detail(
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            content =
-                content.child(section_title("pitch destinations").debug_selector(move || {
-                    format!("operator-lfo-destinations-{}", device.value())
-                }));
             content = content.child(
-                section_title(if selected.is_empty() {
-                    "selected: none".to_owned()
-                } else {
-                    format!("selected: {selected}")
-                })
-                .debug_selector(move || {
-                    format!("operator-lfo-selected-{}-{selected}", device.value())
-                }),
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(section_title("pitch destinations").debug_selector(move || {
+                        format!("operator-lfo-destinations-{}", device.value())
+                    }))
+                    .child(
+                        section_title(if selected.is_empty() {
+                            "selected: none".to_owned()
+                        } else {
+                            format!("selected: {selected}")
+                        })
+                        .debug_selector(move || {
+                            format!("operator-lfo-selected-{}-{selected}", device.value())
+                        }),
+                    ),
             );
         }
         let mut row = div().w_full().flex().items_center().gap(px(3.0));
