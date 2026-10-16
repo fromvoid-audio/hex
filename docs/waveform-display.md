@@ -48,6 +48,24 @@ the target (100-track selection first paint 18.5–29.2 ms); corrected epoch tim
 and the final unchanged 360-sample native benchmark remain pending. A passing
 source regression does not establish the 16.67 ms native p95 target.
 
+The optimized headless fixed-fixture run at `cfc07ca` measured zero clip rebuilds
+but explicit draw median 18.353 ms/p95 19.123 ms; cached clip paint median
+12.813 ms/p95 13.422 ms dominated it. This is the limited test-framework profile
+described below, not native input latency. The next candidate replaces repeated
+per-primitive bounds-tree insertions with one validated ordered interval for a
+cached scene range. Internal order differences/ties, layer operations, typed
+payloads and fresh path IDs are preserved; the unchanged old loop handles
+refused contexts. No whole-row paint-layer shortcut is used.
+
+The private deterministic oracle compares actual old/new batch painter sequences
+in every overlap cell, including translucent mixed kinds, nested layers, fresh
+overlays, multiple cached ranges and eight repeated generations with stable
+order spans. Refused invalid geometry/layer/range/overflow cases leave state
+unchanged. All 510 enabled UI tests pass with the cache and replay path active.
+Native image-buffer Surface rendering has no new fixture; its shared append
+branch is unchanged. Optimized replay speedup and final native timing remain
+pending. See [the scene replay boundary](native-input.md).
+
 The ignored `headless_time_selection_framework_profile` test opens the existing
 100-track fixture through the normal Session worker with isolated settings and
 no audio. It drives 5 warm-up and 40 measured steady selection updates in a

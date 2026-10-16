@@ -6,8 +6,12 @@ fix alone missed the timing target, phase probes identified substantial lazy-row
 prepaint and scene-paint work. The bounded child cache retains original visuals
 with live selection/geometry. An explicit GPUI epoch repairs same-draw stale
 replay while preserving input identity across state/key/transient changes.
-Read-only snapshot capture has a red/green regression; cache lifecycle, native
-input-path UI fixtures and strict checks are recorded with the final candidate.
+Read-only snapshot capture has a red/green regression; cache lifecycle and
+input-path GPUI fixtures pass. The optimized headless profile still spent most
+time in cached paint, so a narrow ordered scene replay interval now avoids
+per-primitive bounds-tree insertion. Its retained legacy painter oracle passes
+mixed/layered/alpha/future-overlay/repeated-generation and refusal checks;
+all 510 enabled UI tests pass. Strict checks are recorded with the candidate.
 The ignored headless framework diagnostic uses the same loaded fixture and
 explicit draw timing, with test text/renderer limitations disclosed. Corrected
 optimized native timing and the unchanged 360-sample benchmark remain open.

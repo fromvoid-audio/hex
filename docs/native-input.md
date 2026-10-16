@@ -197,3 +197,35 @@ current-frame selected color/viewport geometry, next-frame reuse and preserved
 mouse-down/drag capture across a same-revision snapshot refresh. Original archive
 hashes remain pinned; only the documented `src/view.rs` addition extends the
 provenance guard's approved file scope.
+
+## ordered cached-scene replay — 16 october 2026
+
+Primary approved the private GPUI scene/bounds-tree optimization for #2648 only
+after the optimized headless fixed-fixture run measured zero clip rebuilds yet
+spent most of its frame replaying cached clip paint. A validated cached range can
+reserve one conservative union bound/order interval, then retain its internal
+order differences, mixed-kind ties and original operation stream. It does not
+place an entire track into a shared paint layer or change live clip geometry.
+The original replay loop is the fallback for old/current external layer contexts,
+unbalanced contained layers, invalid geometry, empty visible content or checked
+order reservation refusal. Refusal makes no scene/tree mutation. Reservation
+leaves room for one following live order; it does not claim arbitrary future
+order-exhaustion protection for the legacy renderer.
+
+`scene.rs` and `bounds_tree.rs` are the only added production patch files.
+The already patched `TestAppContext` gains one test-support-only verification
+entry point returning `Result<(), String>`; deterministic std-only fixtures
+exercise private GPUI code through Hex's root lockfile, without adding GPUI dev
+dependencies or testing another dependency graph. The retained original replay
+is the oracle for payload/layer streams, PathIds and actual batch painter order
+over every elementary overlap cell, including alpha/ties, 1×/2× bounds, multiple
+cached ranges, fresh live overlays and eight cached generations with stable
+order spans. Invalid layer/range/geometry and overflow cases verify no mutation.
+No unsafe/native/API-to-renderer data change is introduced. The macOS Surface
+branch keeps the original shared append logic; native image-buffer rendering
+has no dedicated fixture here. Pinned archive/original hashes are preserved and
+the cumulative diff/hash guard includes the explicitly approved files.
+
+Source verification does not establish a speedup or native frame budget. The
+next optimized headless replay comparison and canonical native 360-sample run
+remain required; their distinct measurement limits remain unchanged.

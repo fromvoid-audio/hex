@@ -1,6 +1,12 @@
 use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
 
+#[gpui::test]
+fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut TestAppContext) {
+    cx.verify_cached_scene_replay()
+        .expect("private GPUI replay oracle");
+}
+
 fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, revision: u64) {
     let old = view.state.as_ref().expect("current state");
     view.state = Some(Arc::new(ViewState {

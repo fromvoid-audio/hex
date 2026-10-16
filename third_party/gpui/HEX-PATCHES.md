@@ -3,7 +3,7 @@
 Published gpui 0.2.2, Apache-2.0; upstream files and LICENSE-APACHE retained.
 See `hex-provenance.json` for verified crates.io archive checksum and original
 file hashes; `hex-patches.diff` records the documented input, cursor, and
-titlebar-control, view-cache epoch and explicit grid-literal deltas. Upstream's
+titlebar-control, view-cache epoch, scene replay and explicit grid-literal deltas. Upstream's
 published VCS metadata includes dirty=true, so the archive checksum, not a
 claim of a clean git commit, identifies this baseline.
 
@@ -16,7 +16,7 @@ AppKit access stays inside GPUI's existing native boundary.
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-view-cache epoch and explicit grid-literal decisions.
+view-cache epoch, scene replay and explicit grid-literal decisions.
 See docs/native-input.md and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -64,6 +64,30 @@ downcasts retain the supplied epoch. The change is confined to `src/view.rs`,
 with no native, unsafe, scheduling, event-delivery or scene-replay implementation
 change. Hex tests cover same-draw rebuilding, subsequent reuse, and preserved
 mouse-down capture through a same-project immutable snapshot refresh.
+
+16 October ordered scene replay: `Scene::replay` may reserve one conservative
+bounds-tree interval for an already ordered cached subtree. Eligibility requires
+no current external layer, no old external layer at range entry, a balanced
+contained layer stream, finite nonnegative geometry and a finite union of clipped
+primitive/layer bounds. Checked global order arithmetic, including one following
+live order of headroom, precedes any mutation. Source order differences and ties
+are translated without collapsing them; typed buffers and paint operations share
+the original append logic and paths receive fresh IDs. Contained Start/End
+operations remain in the stream. Refusal uses the unchanged per-operation replay.
+No whole-row layer shortcut, native calls, unsafe code or new dependency is added.
+
+The implementation is confined to `src/scene.rs` and `src/bounds_tree.rs`;
+one test-support-only `TestAppContext` verifier in the already patched
+`src/app/test_context.rs` reaches deterministic private fixtures using Hex's
+existing locked graph. It avoids GPUI's separate, unresolved development-only
+test dependencies. The oracle compares actual legacy/fast batch painter
+sequences in every elementary overlap region for six allocatable primitive
+kinds, translucent payloads, mixed-kind ties, 1×/2× geometry, nested layers,
+multiple ranges, future overlays, eight repeated cached generations and legacy
+fallback. It checks stable spans, fresh PathIds and mutation-free refusal for
+invalid layer contexts/ranges/geometry and near-order-overflow reservations.
+macOS native image-buffer Surface allocation is outside this fixture; its
+unchanged shared append branch remains compiled, without a fake native handle.
 
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`

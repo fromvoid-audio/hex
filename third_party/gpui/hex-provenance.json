@@ -195,7 +195,8 @@
     "tests/action_macros.rs": "47b69024f403feb6cb63c9990a6993b8582856146f5a6ae16984714321956a84"
   },
   "patched_files": {
-    "src/app/test_context.rs": "a16a13e9347c6776fd0dda17a15dfb9e3c3007816dab552c4ebc8a31bb9eaaaa",
+    "src/app/test_context.rs": "fd2ab8de3ccc6520c21255d7e7ccf888011e2baecda67d42340e5a1645dd80c1",
+    "src/bounds_tree.rs": "084f0084e9cee9eb75d0b3f8592cd8e8477adb8d969f1426e99367a4b79cf226",
     "src/interactive.rs": "b6a5bd6781253d81ea82699e8604a8d9556d239d58f3e1c3e0c15ec6ef5b9b1f",
     "src/platform.rs": "79706c2d99b144323e1c01d99bcb30c6b5813720a0c207a984c8ccd67895e6a4",
     "src/platform/linux/platform.rs": "7a12e238b597bd9df4581a7764c0265aa43d2c8d9116bff263fcac3a398e39ba",
@@ -208,6 +209,7 @@
     "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f",
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
+    "src/scene.rs": "7b613087da31c10785f3fcd16b147a6251e76a3418801e86377e03f5ba757632",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "118d6ec582c7c4c7cb3594a843d1fbe2b70da4916963c77f4fce3e71d27c4c23",
     "src/window.rs": "347ea096cf989c7a4a299a0f664e5dc0dd8a133932fe88aa971120e9b782730c"
