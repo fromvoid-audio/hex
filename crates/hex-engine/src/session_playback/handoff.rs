@@ -193,7 +193,15 @@ impl SessionPlayback {
     pub(super) fn inherit_state_with_groups(
         &mut self,
         previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned(previous, groups, None)
+    }
+    pub(super) fn inherit_state_planned(
+        &mut self,
+        previous: &mut Self,
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -2572,6 +2580,27 @@ impl SessionPlayback {
                     groups.plan(L::TrackChain(index), L::TailChain(slot), chain)?;
                 }
             }
+        }
+        if let Some(demand) = demand {
+            let generation = if visible_state_changed {
+                previous.route_state_generation.wrapping_add(1)
+            } else {
+                previous.route_state_generation
+            };
+            demand.window = Some(
+                self.visit_stream_chunk_at(
+                    &self.route_scratch,
+                    previous.performance_frame,
+                    previous.arrangement_frame,
+                    generation,
+                    previous.arrangement_loop_pass,
+                    demand.playing.unwrap_or(previous.playing),
+                    demand.maximum_frames,
+                    &mut demand.visit,
+                )
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
+            );
+            return Ok(report);
         }
         // All capacity/timing planning is complete. Runtime inheritance below
         // may partially mutate candidate state before returning an error, so it

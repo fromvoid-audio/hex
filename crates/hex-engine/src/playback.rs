@@ -1119,6 +1119,30 @@ impl Playback {
         Ok(())
     }
 
+    pub(crate) fn visit_next_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, Invalid> {
+        self.session_runtime
+            .as_ref()
+            .ok_or(Invalid("candidate session runtime unavailable"))?
+            .visit_next_stream_chunk(maximum_frames, playing, visit)
+    }
+    pub(crate) fn preview_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+    ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
+        let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.session_runtime.as_mut().ok_or_else(invalid)?;
+        next.preview_stream_handoff(old, maximum_frames, playing, visit)
+            .map_err(PlaybackHandoffError::Session)
+    }
     /// Render through the same Arrangement loop segmentation or mixed Session
     /// route kernel while borrowing streamed pages from the caller.
     pub fn render_with_pages<P: MediaPages>(

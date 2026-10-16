@@ -1153,3 +1153,132 @@ fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
         }
     }
 }
+
+#[test]
+fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff_retry() {
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamPageExtent};
+    let project = project(4094, 4105);
+    let source = metadata(&project, 51, [0x71; 32]);
+    let key = source.key();
+    let revision = prepared(&project, 51, [0x71; 32]);
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    old.apply(SessionPlaybackCommand::LaunchClip {
+        clip: revision.session().audio_clips()[0].id,
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    })
+    .unwrap();
+    let before = (
+        old.performance_frame(),
+        old.arrangement_frame(),
+        old.route_state_generation(),
+    );
+    let route = old.route_status(0);
+    let mut extents = Vec::new();
+    assert_eq!(
+        old.visit_next_stream_chunk(8, None, &mut |e| {
+            extents.push(e);
+            Ok(())
+        })
+        .unwrap()
+        .frames,
+        0
+    );
+    let proposed = old
+        .visit_next_stream_chunk(8, Some(true), &mut |e| {
+            extents.push(e);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(proposed.frames, 8);
+    assert_eq!(
+        extents,
+        vec![
+            StreamPageExtent {
+                source: key,
+                page_index: 0,
+                start: 4094,
+                end: 4096
+            },
+            StreamPageExtent {
+                source: key,
+                page_index: 1,
+                start: 0,
+                end: 6
+            },
+        ]
+    );
+    assert_eq!(
+        (
+            old.performance_frame(),
+            old.arrangement_frame(),
+            old.route_state_generation()
+        ),
+        before
+    );
+    assert_eq!(old.route_status(0), route);
+    assert!(
+        old.visit_next_stream_chunk(8, Some(true), &mut |_| Err(hex_engine::Invalid(
+            "reserved extent capacity"
+        )))
+        .is_err()
+    );
+    assert_eq!(
+        (
+            old.performance_frame(),
+            old.arrangement_frame(),
+            old.route_state_generation()
+        ),
+        before
+    );
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render_with_pages(&mut [[0.0; 2]; 4], &mut MemoryPages::with_source(key))
+        .unwrap();
+    let mut next = SessionPlayback::new(revision).unwrap();
+    let old_before = (
+        old.performance_frame(),
+        old.arrangement_frame(),
+        old.route_status(0),
+    );
+    assert!(
+        next.preview_stream_handoff(&mut old, 4, None, &mut |_| Err(hex_engine::Invalid(
+            "reserved extent capacity"
+        )))
+        .is_err()
+    );
+    assert_eq!(
+        (
+            old.performance_frame(),
+            old.arrangement_frame(),
+            old.route_status(0)
+        ),
+        old_before
+    );
+    let mut planned = Vec::new();
+    let planned_window = next
+        .preview_stream_handoff(&mut old, 4, None, &mut |e| {
+            planned.push(e);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(next.performance_frame(), 0); // preview did not consume candidate admission
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = Vec::new();
+    assert_eq!(
+        next.visit_next_stream_chunk(4, None, &mut |e| {
+            actual.push(e);
+            Ok(())
+        })
+        .unwrap(),
+        planned_window
+    );
+    assert_eq!(actual, planned);
+    assert_eq!(
+        actual,
+        vec![StreamPageExtent {
+            source: key,
+            page_index: 1,
+            start: 2,
+            end: 6
+        }]
+    );
+}

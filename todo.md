@@ -3551,3 +3551,12 @@ main245f8b2b timing evidence, preserving both todo histories. Both prerequisite
 and feature exact candidates require fresh full local CI before merge. Native
 acceptance and dense high-rate/FM deadline validation remain separate open
 test results; no numerical Live parity or deadline safety is inferred.
+
+## 16 october 2026 — exact streaming demand checkpoint (pulse2542 / pr237)
+
+The pure next-chunk and current-predecessor handoff visitor is adapted from
+published177 source8d444c06, sharing Arrangement clip traversal with rendering.
+The focused page-edge/Play preview/capacity-refusal/repeated-handoff control keeps
+committed transport and routes unchanged. This first layer does not release
+streamed native installation or readiness; final integrated evidence and remaining
+endpoint/transaction controls belong to PR237.

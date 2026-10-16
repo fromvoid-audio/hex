@@ -205,3 +205,20 @@ wrong-context refusal and reuse of the same actual domain cell are exercised.
 Streamed installation still returns `StreamedPagesNotReady` until PR237. No page
 endpoint moves to this callback and no readiness release is inferred. Native UI,
 listening and physical-deadline acceptance remain separate.
+
+## exact streaming demand checkpoint (pr237)
+
+The first PR237 layer adapts the pure source/chunk traversal from published177
+`8d444c06`. Arrangement rendering and demand share the same clip span traversal,
+including source phase, page/clip edges, fades and clip gain. Session demand
+resolves the actual next route/loop boundary without applying it. A proposed
+Play/Pause flag describes a speculative window; it does not mutate transport or
+certify pages. Handoff preview runs the real current-predecessor planning up to
+its existing mutation frontier, leaving committed clocks/routes/owners unchanged.
+The later actual handoff must repeat its own preflight.
+
+These borrowed extents and scalar windows are observations, never installation
+or native-readiness authority. The opaque claimed runtime exposes no Playback,
+Arc or owning provider through this seam. Current streamed installation remains
+refused until the exact endpoint/protection transaction is connected. Legacy
+borrowed-page miss behavior is preserved.
