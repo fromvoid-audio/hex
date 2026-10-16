@@ -50,6 +50,10 @@ plan, every slice must fit the requested block and the fixed 16,384-frame bound,
 plan capacity. Empty selections are allowed. The normal Main-only and device
 `PostNodeObserver` APIs remain available.
 
+On an admitted render, only the requested frame prefix is cleared and written;
+unrendered buffer capacity is preserved, including on empty blocks. Successful
+clearing therefore scales with block length rather than slice capacity.
+
 Capture is speculative until the complete render returns `Ok`. Only then does
 `valid_frames()` expose the committed prefix through `output(index)`. Every
 refusal invalidates the entire view, sets validity to zero and clears supplied
@@ -68,6 +72,11 @@ included. Shared Returns consume all normal sends once; Return capture includes
 actual processing, output matrix, gain/mute and residual tails before Main/master.
 Main master processing is excluded from every capture. Nonlinear Main processing
 means summing captures is not a Main reconstruction contract.
+
+Device metering preserves the same capture point. The analytic metering path
+already applies track gain/pan while summing voices; capture must not apply the
+fader again. A non-unity gain/pan PCM regression checks captured output before
+Main gain and exact Main equality against the ordinary unmetered renderer.
 
 Retired effect/instrument suffix groups explicitly retain their original TrackId.
 Current and retained generations with the same ID accumulate in that ID's slice.

@@ -195,13 +195,14 @@
     "tests/action_macros.rs": "47b69024f403feb6cb63c9990a6993b8582856146f5a6ae16984714321956a84"
   },
   "patched_files": {
-    "src/app/test_context.rs": "7184ffa989b1837739dc05bf204c1d90e08ed42deed2883c8ec379bea1f0bd6f",
+    "src/app/test_context.rs": "a16a13e9347c6776fd0dda17a15dfb9e3c3007816dab552c4ebc8a31bb9eaaaa",
     "src/elements/div.rs": "d9d7cebcc439e61eefc47869ea16c7f0d3794b6359959414f85e5f712fd9a1f9",
     "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",
     "src/interactive.rs": "b6a5bd6781253d81ea82699e8604a8d9556d239d58f3e1c3e0c15ec6ef5b9b1f",
+    "src/platform.rs": "8eea0ae17f4a94de370109000b3cf46d1b32aab73b221b9564d5d742746d5970",
     "src/platform/linux/platform.rs": "7a12e238b597bd9df4581a7764c0265aa43d2c8d9116bff263fcac3a398e39ba",
-    "src/platform/linux/wayland/client.rs": "68e8c74cb35231f09206463a44a3a0795e90265315bc91c9f64c2f3b34e7f140",
     "src/platform/linux/wayland.rs": "0af6da105a6fdda79c3d9cc133ae822ad4f25f306744607f44b5fd8d1b9dd99e",
+    "src/platform/linux/wayland/client.rs": "68e8c74cb35231f09206463a44a3a0795e90265315bc91c9f64c2f3b34e7f140",
     "src/platform/linux/x11/client.rs": "2ac7094d4b403d0b1928027481c82e456bdbed1c8aab9cdd97c72acd2fb64fd2",
     "src/platform/mac/events.rs": "6fdef5679c740bdbfe31ae3eedae0011263b66631c059947deddfa938373b158",
     "src/platform/mac/platform.rs": "4c978369276c3f29fd98af67f438338858ff27ad797a17a288f50548ec28fe76",
@@ -209,10 +210,9 @@
     "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f",
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
-    "src/platform.rs": "8eea0ae17f4a94de370109000b3cf46d1b32aab73b221b9564d5d742746d5970",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "18ff90982d1647a8016f1f50db872f17656145a1ae8dc4e9f93fa571846d70bd",
-    "src/window.rs": "8bb8a2e8a60d3fa1946c9c079ca2d9fb32c4f1dda2001b996be21884dc354573"
+    "src/window.rs": "6a7e0ce1e86883c35db23f7e3c5f8d948e5d211538714f03f115f417c697cdaf"
   },
   "added_files": {
     "src/accessibility.rs": "0cbcafade9e5a729ef9511b5d852c4d3c057eb25704186ca569900c9b32d954a",

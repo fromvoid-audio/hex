@@ -5,7 +5,7 @@ use std::{cell::Cell, rc::Rc};
 
 const CELL_WIDTH: f32 = 136.0;
 const GAP: f32 = 2.0;
-const PAD: f32 = 3.0;
+const PAD: f32 = hex_widgets::DEVICE_BODY_INSET;
 
 #[derive(Clone, Debug, PartialEq)]
 struct Row {
@@ -134,22 +134,22 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             })
         })
         .collect();
-    // Host gain is not a device-owned row descriptor. Preserve its cached entity
-    // even for unavailable DSP metadata, until the actual owner/type retires.
+    // Host input/output gain are not device-owned row descriptors. Preserve
+    // both cached entities even for unavailable DSP metadata, until the actual
+    // owner/type retires.
     for (device, (class, state, _)) in &view.device_panel.views {
-        descriptors.insert(
-            ParameterKey {
-                device: *device,
-                parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
-            },
-            (
-                *class,
-                state.type_id(),
-                &hex_engine::DEVICE_OUTPUT_GAIN,
-                true,
-                true,
-            ),
-        );
+        for descriptor in [
+            &hex_engine::DEVICE_INPUT_GAIN,
+            &hex_engine::DEVICE_OUTPUT_GAIN,
+        ] {
+            descriptors.insert(
+                ParameterKey {
+                    device: *device,
+                    parameter: descriptor.id,
+                },
+                (*class, state.type_id(), descriptor, true, true),
+            );
+        }
     }
     let stale: Vec<_> =
         view.device_panel
@@ -231,6 +231,7 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                     first,
                     second,
                 } => device == key.device && (first == key.parameter || second == key.parameter),
+                GestureTarget::DeviceParameterSnapshot { device } => device == key.device,
                 GestureTarget::ReturnSend { .. } => false,
             })
         || view
@@ -260,6 +261,18 @@ pub(super) fn body(
     identity: DeviceControlIdentity,
     metadata: &NativeDeviceView,
 ) -> Stateful<Div> {
+    if window.is_none() {
+        let controls = metadata
+            .parameters
+            .iter()
+            .map(|parameter| parameter_control(view, cx, device, identity, parameter));
+        return crate::device_composition::wrapped_body(controls)
+            .id(ElementId::Name(
+                format!("device-body-{}", device.value()).into(),
+            ))
+            .debug_selector(move || format!("device-body-{}", device.value()))
+            .overflow_y_scroll();
+    }
     let state = view.device_panel.parameter_rows.entry(device).or_default();
     state.identity = Some((identity.class, identity.type_id));
     state.prepare(&metadata.parameters);
@@ -270,7 +283,7 @@ pub(super) fn body(
         .iter()
         .map(|row| window.is_none() || state.visible(row))
         .collect();
-    let mut content = div().flex().flex_col().w_full().p(px(PAD));
+    let mut content = div().flex().flex_col().w_full();
     if metadata.parameters.is_empty() {
         content = content.child(menu_message("no parameters"));
     }
@@ -318,7 +331,7 @@ pub(super) fn body(
     let entity = cx.entity();
     let expected_offset = scroll.offset();
     let observed_scroll = scroll.clone();
-    div()
+    crate::device_composition::windowed_body(content)
         .on_children_prepainted(move |_, _, cx| {
             let size = observed_scroll.bounds().size;
             let measured = (f32::from(size.width), f32::from(size.height));
@@ -342,7 +355,6 @@ pub(super) fn body(
         .overflow_y_scroll()
         .track_scroll(&scroll)
         .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
-        .child(content)
 }
 
 #[cfg(test)]

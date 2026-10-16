@@ -113,15 +113,6 @@ pub fn channel() -> (
         },
     )
 }
-pub(crate) fn channel_heap_storage_bytes() -> Option<usize> {
-    let arc_words = 2 * std::mem::size_of::<usize>();
-    let ring_arc_header =
-        arc_words.next_multiple_of(std::mem::align_of::<RingBuffer<TargetCommand>>());
-    std::mem::size_of::<RingBuffer<TargetCommand>>()
-        .checked_add(ring_arc_header)?
-        .checked_add(TARGET_COMMAND_CAPACITY.checked_mul(std::mem::size_of::<TargetCommand>())?)?
-        .checked_add(3 * (arc_words + std::mem::size_of::<AtomicU64>()))
-}
 
 impl ProcessorAuditionTargetControl {
     pub fn desired(&self) -> Option<ProcessorAuditionTarget> {

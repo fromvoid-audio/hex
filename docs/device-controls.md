@@ -9,6 +9,32 @@ with unchanged source digest and `stale=false`
 ([PR #24](https://github.com/PORTALSURFER/hex/pull/24)). Native acceptance
 remains open.
 
+## unified native device GUI — #2469
+
+The shared system covers five separate obligations:
+
+| Obligation | Owning source and evidence | Canonical PR |
+| --- | --- | --- |
+| Extensible frame, body, sections and layouts | `hex-widgets`; rendered geometry and containment tests | [#205](https://github.com/PORTALSURFER/hex/pull/205) |
+| Product semantic palette and retained-control refresh | `theme/device.rs`; contrasting-theme draft/focus regressions | [#206](https://github.com/PORTALSURFER/hex/pull/206) |
+| Selected header with neutral body and border | `DeviceFrameStyle`; scene-paint and child-gesture regressions | [#207](https://github.com/PORTALSURFER/hex/pull/207) |
+| Every existing specialized/generic/unsupported owner path | `device_composition.rs` and device panels; preserved width, edit and owner tests | [#208](https://github.com/PORTALSURFER/hex/pull/208) |
+| Production-backed native catalog and enforcement | `layout_review` plus `check-device-layout.py`; rendered fixtures and negative controls | [#209](https://github.com/PORTALSURFER/hex/pull/209) |
+
+Vector/Operator, Utility, Saturator and EQ8 are the 0.1 priorities. The other
+existing panels remain shared-library consumers. Composition varies with useful
+functionality and width; style and header metrics do not vary with device type.
+This integration changes no DSP, parameter laws/IDs, persistence or device
+inventory. Existing replacement-drop feedback and canonical edit ownership remain
+separate from device selection paint.
+
+Full local CI includes the source boundary guard and rendered catalog harness.
+The optimized macOS build, exact candidate/merged PR mapping and finite optional
+native checklist are supplied with delivery. Scene/source checks establish their
+bounded contracts; they do not establish physical input, listening, other display
+scales/platforms, rich accessibility or reference parity. Native testing remains
+separate from repository-owned verification, merge and installation.
+
 ## Boundary
 
 `hex-widgets` owns knobs, horizontal/vertical sliders, editable numeric values,
@@ -40,6 +66,97 @@ the UI caches this snapshot by device state rather than resolving it on each
 paint. Optional device-owned display names are presentation metadata; stable
 type IDs and opaque persisted state are unchanged. Unknown or unsupported
 states report errors instead of displaying defaults.
+
+## extensible shared layout — pulse2470
+
+`hex-widgets` owns the shared frame/header, surround body, rounded sections,
+rail/grouped rows and recessed display compositions. `DeviceLayout` supplies
+Row, Column, Wrapped and Grid arrangements; `device_split` supplies equal flexible
+panes, while Row composition retains unequal/fixed device widths. See the
+[widget API and extension rule](../crates/hex-widgets/README.md#shared-device-composition).
+
+All instrument, effect and Return frames use one 14px header, 3px horizontal
+header inset, 2px header gap, 4px outer radius and 1px border. Idle header/surround
+share the injected surface without a dark separating rule. Production dispatch
+selects musical panel content and useful widths, never header density or style.
+One product-owned semantic resolver in `hex-ui/src/theme/device.rs` derives the
+layout, control, recessed-display and inline-readout palettes from the active
+four-color theme. The layout role gives idle headers and surrounds the same
+surface; rail and display roles retain the accepted Vector hierarchy. Widgets
+receive colors through ControlStyle and have no device identities.
+`DeviceFrameStyle` separates header paint from the neutral `ControlStyle`.
+`with_device_selection` returns that frame presentation instead of mutating the
+shell palette. The product's `theme::device_frame_style` supplies a readable
+selected-header foreground. Selection changes neither outer border/surround nor
+body geometry or control colors. Device selection, child focus, internal section
+selection, bypass and replacement-drop feedback retain their existing owners.
+
+Vector composes its accepted oscillator/preview rails, 40px grouped rows and dark
+rounded detail display from these primitives. Existing focus entities, tab slots,
+parameter controls and gesture bindings remain panel-owned. Sine and effects use
+the same frame/body metrics, retaining their distinct parameter arrangements.
+Semantic section surfaces support short/tall content, graphs and tabbed inspectors
+without requiring one universal device template. Any new visual capability must
+first be a generic library extension with meaningful rendered tests, then be
+consumed by panels; no device-named appearance variants or type-ID style selection.
+
+Rounded sections use same-color structural side borders as their content inset.
+GPUI's rectangular overflow masks then exclude those borders, keeping oversized
+paint/hit regions out of corner cutouts while preserving full row height. Padding
+alone is insufficient. Rendered widget tests inspect actual filled scene quads,
+rounded radii, clipped descendant masks/hits at normal and constrained sizes, and
+layout reflow. Production UI tests retain Vector focus/tab/gesture/row-containment
+coverage and check Sine/effect header/body alignment. This is source/scene evidence;
+physical macOS visual and input acceptance remains optional native testing.
+
+## Production compositions — pulse2473
+
+`hex-ui/src/device_composition.rs` is the pure production geometry seam used by
+Vector/Operator, Utility, Saturator, EQ8, Compressor, Gate, Auto Pan and registered
+generic/fallback panels. It accepts already-bound child elements, supplies the
+same 168px body and useful per-layout slots, and has no EditorView, project,
+engine, entity, gesture or audio dependency. Native review examples can include
+that same source module with `#[path]`, alongside the product theme module;
+Pulse2474 owns replacing historical gallery approximations with these calls.
+It is product composition, not another device widget or editing model.
+`wrapped_body` applies shared dense rounded sections to each bound fallback
+control slot without changing its width or control footprint; the section adds
+one pixel above/below the slot within the existing scrolling layout.
+`unsupported_body` supplies the same rounded, padded, scrollable ErrorDisplay
+for unsupported instrument, Track effect and Return effect states. The product
+owns the semantic error foreground and each caller retains its outer device ID.
+
+All body/section paint, rounded geometry, identity badges, focus artwork,
+section captions/dividers, selectable segments/rows and compact actions come
+from `hex-widgets`. The theme resolver supplies semantic neutral, selected,
+identity and hover colors, including contrast-checked text for both idle and
+hover action surfaces. Track, Return and instrument header actions now share
+one 12px footprint; device IDs do not choose header density or styling. Real
+callbacks, tooltips, bypass state and parameter/preview ownership are retained.
+
+Utility retains its 144px frame, 140px body and two 64px control columns. Shared
+rounded sections use vertical structural insets around these narrow columns,
+so full-width controls remain intact. Dense three-dial columns use the shared
+one-pixel radius/inset option: three 52px controls plus two 2px gaps still fit
+160px of content inside a 162px section. Short band rows use the same dense
+geometry. Standard larger sections retain 3px radii and 4px structural insets.
+Each content region has one section boundary; nested insets must not squeeze
+existing controls. Graph wrappers use rounded displays while preserving graph
+width, and widgets retain graph data/interaction ownership in their entities.
+
+Vector retains its fixed shell/detail/preview widths, 40px rows, 86px graph and
+stable page/tab slots. Inline captions keep intrinsic width, so readouts remain
+inside their detail rows; section captions may fill a column. The shared
+caption APIs distinguish these purposes without device-named variants. All
+parameter IDs, display codecs, laws, DSP, schema, focus/tab navigation, typed
+drafts, gestures and Track/Return semantics remain unchanged.
+
+Source/scene regressions cover rounded narrow/dense sections, full control
+sizes, clipping masks, short rows, header-action hover and contrast, plus actual
+Utility, Saturator and EQ8 composition bounds. Existing Vector navigation,
+invalid-draft, gesture and containment tests remain authoritative. This is not
+native GPU-pixel, physical-input or listening acceptance; optional native checks
+use the optimized delivered build.
 
 ## Interaction contract
 
@@ -547,12 +664,17 @@ Track and return panel titles derive a readable foreground with
 `theme::readable_text` on their actual surface, including warning titles. The
 saved background/text/accent roles and title strings remain unchanged; a valid
 non-text accent color is not assumed to satisfy the stricter text contrast policy.
+The dated gray68/connected001 color observations above remain historical native
+evidence. Current neutral and identity colors follow the shared theme policy in
+Pulse2471–2473; their layout, spacing and navigation evidence is preserved.
+
 ## device card selection — 13 october 2026
 
 Left mouse-down anywhere in an instrument, track effect or Return effect card
-selects that device. The shared frame uses the accent border/title bar with dark
-title text; parameter controls keep their existing colors. Selecting another
-card replaces the selection, which persists after release and redraw. Capture
+selects that device. The shared frame highlights only the selected title bar
+with a contrast-checked foreground; the outer border, surround, body and
+parameter controls keep their neutral colors. Selecting another card replaces
+the selection, which persists after release and redraw. Capture
 routing allows knobs, toggles and drag grips to retain their own input handling.
 Selection is transient editor state keyed by DeviceId; it sends no project edit
 and clears when the panel owner changes, the selected device disappears or the
@@ -577,3 +699,26 @@ The bottom navigator and 248px output meter retain their fixed controls. Existin
 truncated status fields can shrink to bounded minima with their full tooltip
 text retained, so both controls fit the small supported viewport. Actual native
 glyph readability/truncation and physical panning remain pending.
+## knob history shortcut regression — 16 october 2026
+
+The rendered shared Operator frequency-control fixture exercises real keyboard
+Undo/Redo after a drag and after typed commit, with immediate Undo, Tab focus
+movement, complete pre-edit state restoration and save/reopen after Redo. It
+passes on current source; the older unspecified native report is not reproduced
+and no speculative runtime fix is applied. Native confirmation remains separate:
+drag or type a value, use one Undo and Redo, and verify the saved/reopened value.
+
+## current-main windowing integration — 16 october 2026
+
+Whole-device parameter-snapshot gestures pin the owning device's generic rows,
+in addition to individual/paired edits, pending values, focus and capture.
+Both host input- and output-gain controls retain their cached identity when
+scrolling; those host-owned descriptors do not depend on DSP metadata rows.
+The shared widget's windowed body owns the normal surface/corners and one
+content inset; row offsets and scroll extent include that inset exactly once.
+When window geometry is unavailable, generic controls keep the complete shared
+wrapped composition. The layout guard verifies both the windowed dispatch and
+its shared body, including a negative control against an unstyled substitute.
+Current model/source snapshot ownership remains unchanged; synthetic metadata
+fixtures do not fabricate or clone the worker-captured canonical-audio source.
+Native dense-control/focus/accessibility acceptance remains separate.

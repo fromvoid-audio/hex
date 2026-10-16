@@ -86,3 +86,17 @@ not establish OS exposure. All baseline identity/hashes and prior patches remain
 Objective-C runtime before reclaiming their owning Box. The private helper and
 real-ivar reentrant-drop/uncleared-pointer negative control stay inside the existing
 Mac accessibility patch. Native execution remains a separate required Mac check.
+16 October rounded-layout test support: `rendered_background` skips transparent
+border-only quad fills, which `Style::paint` emits after the filled surface.
+`rendered_surface_geometry` exposes the last filled matching quad's corner radii
+and ancestor mask in scaled pixels. Both read only the completed test scene;
+no production paint, native API, cursor or input behavior changes. Hex widget
+regressions cover opaque fills followed by same-bounds border-only quads, rounded
+surface geometry, oversized content masks and hit exclusion at constrained sizes.
+
+
+16 October disposable profiler input: safe public `Window::dispatch_input`
+forwards to the existing `dispatch_event` and discards its private metadata.
+The result type stays private. No native handler, FFI, scheduling, OS-event
+injection or default behavior changes. This primary-approved adapter lets the
+explicit native timing window exercise the regular mouse dispatch path.

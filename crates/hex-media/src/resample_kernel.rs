@@ -92,13 +92,6 @@ impl ResampleKernel {
     pub fn table_payload_bytes(&self) -> usize {
         self.inner.weights.capacity() * std::mem::size_of::<f64>()
     }
-
-    /// Data size of the one shared kernel object, excluding its separately
-    /// reported weight allocation and opaque standard-library Arc header.
-    /// Count once across handles; this borrowed query creates no new owner.
-    pub const fn shared_object_bytes(&self) -> usize {
-        std::mem::size_of::<KernelData>()
-    }
 }
 
 pub(crate) fn validate_rates(source_rate: u32, target_rate: u32) -> Result<(), ImportError> {
@@ -172,5 +165,34 @@ fn sinc(value: f64) -> f64 {
     } else {
         let angle = std::f64::consts::PI * value;
         angle.sin() / angle
+    }
+}
+
+/// Real sized owner payload and actual Vec backing, not allocator/Arc overhead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResampleKernelDataLayout {
+    pub owner_payload_bytes: usize,
+    pub owner_payload_alignment: usize,
+    pub weight_capacity: usize,
+    pub weight_element_bytes: usize,
+}
+impl ResampleKernel {
+    pub fn control_data_layout(&self) -> ResampleKernelDataLayout {
+        let KernelData {
+            source_rate: _,
+            target_rate: _,
+            radius: _,
+            taps: _,
+            weights,
+        } = self.inner.as_ref();
+        ResampleKernelDataLayout {
+            owner_payload_bytes: std::mem::size_of::<KernelData>(),
+            owner_payload_alignment: std::mem::align_of::<KernelData>(),
+            weight_capacity: weights.capacity(),
+            weight_element_bytes: std::mem::size_of::<f64>(),
+        }
+    }
+    pub fn shares_allocation_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }

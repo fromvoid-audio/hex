@@ -1812,6 +1812,79 @@ fn pan_marker_resets_to_neutral_without_starting_drag(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut TestAppContext) {
+    for index in 0..2 {
+        let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
+        let (handle, control) = open_numeric_control_appearance(
+            cx,
+            NumericControlKind::VerticalSlider,
+            spec,
+            -12.0,
+            NumericControlAppearance::DeviceMeters,
+        );
+        control.update(cx, |control, cx| {
+            control.set_meter_readout(
+                crate::DeviceMeterReadout {
+                    index,
+                    height: 184.0,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let selector = if index == 0 {
+            "test-control-input-meter"
+        } else {
+            "test-control-output-meter"
+        };
+        let bounds = visual.debug_bounds(selector).unwrap();
+        let position = point(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        );
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        control.update(cx, |control, cx| {
+            assert!(control.is_interacting());
+            control.set_meter_readout(
+                crate::DeviceMeterReadout {
+                    index,
+                    height: 184.0,
+                    levels: [0.5, 0.25],
+                    ..Default::default()
+                },
+                cx,
+            );
+            assert!(control.is_interacting());
+        });
+        visual.run_until_parked();
+        let fill = visual
+            .debug_bounds(if index == 0 {
+                "test-control-input-meter-fill"
+            } else {
+                "test-control-output-meter-fill"
+            })
+            .unwrap();
+        assert!(fill.size.height > px(100.0));
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        control.read_with(cx, |control, _| assert_eq!(control.value(), 0.0));
+    }
+}
+
+#[gpui::test]
 fn accessibility_numeric_uses_real_domain_and_one_event_transaction(cx: &mut TestAppContext) {
     let (handle, control) = open_numeric_control(cx, NumericControlKind::HorizontalSlider);
     let phases = Rc::new(RefCell::new(Vec::new()));

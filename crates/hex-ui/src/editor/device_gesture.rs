@@ -46,7 +46,14 @@ fn retire_failed_finalize_barriers(deferred: &mut VecDeque<Request>) -> FailedBa
         match request {
             Request::SaveNew(_) | Request::SaveCurrent => effects.save_refused = true,
             Request::Export(_) => effects.export_refused = true,
-            Request::Undo | Request::Redo => {}
+            Request::ExportRange { control, .. } => {
+                control.cancel();
+                effects.export_refused = true;
+            }
+            Request::Undo
+            | Request::Redo
+            | Request::SaveDevicePreset { .. }
+            | Request::LoadDevicePreset { .. } => {}
             Request::Open(_) | Request::OpenWith { .. } => kept.push_back(request),
             request => kept.push_back(request),
         }
@@ -171,6 +178,10 @@ impl EditorView {
                     // Deferred exports have not been submitted to Service, so
                     // there is no worker reservation to release here.
                     self.export_pending = false;
+                    if let Some(control) = self.export_control.take() {
+                        control.cancel();
+                    }
+                    self.export_window = None;
                 }
                 self.error = Some(
                     ack.reason
@@ -209,20 +220,9 @@ impl EditorView {
             return false;
         }
         if !self.device_gesture.has_pending_terminal() {
-            let snapshot = self.device_gesture.snapshot();
-            if let Some(snapshot) = snapshot {
-                let result = if let Some(second) = snapshot.secondary_value {
-                    self.device_gesture.finish_pair(ParameterPairValue {
-                        first: snapshot.value,
-                        second,
-                    })
-                } else {
-                    self.device_gesture.finish(snapshot.value)
-                };
-                if let Err(error) = result {
-                    self.error = Some(error.into());
-                    return false;
-                }
+            if let Err(error) = self.device_gesture.finish_current() {
+                self.error = Some(error.into());
+                return false;
             }
         }
         if defer_request(
@@ -349,12 +349,21 @@ mod tests {
 
     #[test]
     fn failed_terminal_retires_finalize_barriers_and_keeps_open_and_edits_ordered() {
+        let control = hex_session::service::ExportControl::default();
         let mut deferred = VecDeque::from([
             Request::SaveCurrent,
             Request::Edit(hex_project::Command::AddTrack {
                 name: "later edit".into(),
             }),
             Request::Export("deferred.wav".into()),
+            Request::ExportRange {
+                path: "deferred-range.wav".into(),
+                start: 128,
+                frames: Some(256),
+                signal: hex_session::service::ExportSignal::Main,
+                control: control.clone(),
+                overwrite: false,
+            },
             Request::Undo,
             Request::Open("confirmed.hex".into()),
         ]);
@@ -366,6 +375,7 @@ mod tests {
                 export_refused: true,
             }
         );
+        assert!(control.is_cancelled());
         assert_eq!(deferred.len(), 2);
         assert!(matches!(deferred.pop_front(), Some(Request::Edit(_))));
         assert!(matches!(

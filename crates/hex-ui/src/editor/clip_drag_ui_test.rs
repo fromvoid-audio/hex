@@ -107,8 +107,10 @@ pub(super) fn editor_window(
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview,
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: TIMELINE_FRAMES,
@@ -634,8 +636,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             ),
         );
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&old.project),
             waveforms,
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: old.timeline_frames,
@@ -1486,8 +1490,10 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
     editor.update(cx, |view, cx| {
         let previous = view.state.as_ref().expect("project state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::new(moved_project.project().clone()),
             waveforms: Default::default(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(moved_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: TIMELINE_FRAMES,
@@ -1599,4 +1605,297 @@ fn arrangement_scroll_rebuilds_drag_lane_eligibility_from_painted_rows(cx: &mut 
             "stale offscreen lane geometry cannot win over the currently painted row"
         );
     });
+}
+
+#[gpui::test]
+fn held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project(
+    cx: &mut TestAppContext,
+) {
+    use super::{musical_time::SnapGrid, viewport::Viewport};
+    use std::time::{Duration, Instant};
+    let (project, source, _, clip) = audio_project();
+    let original = project.clip(clip).unwrap().clone();
+    let (window, editor) = editor_window(cx, project, Arc::new(Default::default()));
+    editor.update(cx, |view, cx| {
+        view.viewport = Some(Viewport {
+            start: 0,
+            length: TIMELINE_FRAMES / 2,
+        });
+        view.snap_grid = SnapGrid::Off;
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let down = point(
+        surface.origin.x + surface.size.width / 2.0,
+        surface.origin.y + surface.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let edge = editor.read_with(cx, |view, _| {
+        let lane = view.drag_lanes[&source];
+        point(
+            px(lane.left + lane.width - 4.0),
+            px(lane.top + lane.height / 2.0),
+        )
+    });
+    visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        let now = Instant::now();
+        let before = view
+            .active_clip_drag
+            .as_ref()
+            .unwrap()
+            .preview
+            .get()
+            .unwrap();
+        view.tick_clip_gesture_autoscroll(now, cx);
+        assert!(view.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
+        let drag = view.active_clip_drag.as_ref().unwrap();
+        let after = drag.preview.get().unwrap();
+        assert!(after.start_frame > before.start_frame);
+        assert_eq!(
+            view.state.as_ref().unwrap().project.clip(clip),
+            Some(&original)
+        );
+        assert!(view.drag_start_is_current(drag));
+        let viewport = view.viewport;
+        let previous = view.state.as_ref().unwrap();
+        view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
+            project: previous.project.clone(),
+            waveforms: previous.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            midi_preview: previous.midi_preview.clone(),
+            gain_preview: previous.gain_preview.clone(),
+            timeline_frames: previous.timeline_frames,
+            can_undo: previous.can_undo,
+            can_redo: previous.can_redo,
+            revision: previous.revision + 1,
+            unsaved: previous.unsaved,
+            document_path: previous.document_path.clone(),
+        }));
+        assert!(!view.tick_clip_gesture_autoscroll(now + Duration::from_millis(100), cx));
+        assert_eq!(view.viewport, viewport);
+        view.active_clip_drag = None;
+        assert!(!view.tick_clip_gesture_autoscroll(now + Duration::from_millis(150), cx));
+    });
+}
+
+#[gpui::test]
+fn vertical_drag_scroll_invalidates_old_rows_before_fast_release(cx: &mut TestAppContext) {
+    use super::viewport::Viewport;
+    use std::time::{Duration, Instant};
+
+    let (project, source, _, clip) = audio_project();
+    let mut project_editor = Editor::new(project, 8).expect("project editor");
+    for index in 0..24 {
+        let result = project_editor
+            .execute(Command::AddTrack {
+                name: format!("track {index}"),
+            })
+            .expect("add track");
+        assert!(matches!(result, Created::Track(_)));
+    }
+    let project = project_editor.project().clone();
+    let (window, editor) = editor_window(cx, project, Arc::new(Default::default()));
+    editor.update(cx, |view, cx| {
+        view.viewport = Some(Viewport {
+            start: 0,
+            length: TIMELINE_FRAMES / 2,
+        });
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("source clip surface");
+    let down = point(
+        surface.origin.x + surface.size.width / 2.0,
+        surface.origin.y + surface.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = editor.read_with(cx, |view, _| {
+        let body = view.arrangement_bounds.expect("painted Arrangement body");
+        point(
+            px(body.left + body.width * 0.6),
+            px(body.top + body.height - 5.0),
+        )
+    });
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    let initial_revision = editor.read_with(cx, |view, _| {
+        view.state.as_ref().expect("project state").revision
+    });
+    editor.update(cx, |view, cx| {
+        let before_offset = view.track_scroll.0.borrow().base_handle.offset().y;
+        let generation = view.drag_layout_generation;
+        let now = Instant::now();
+        let _ = view.tick_clip_gesture_autoscroll(now, cx);
+        if view.track_scroll.0.borrow().base_handle.offset().y == before_offset {
+            assert!(view.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
+        }
+        assert!(
+            view.track_scroll.0.borrow().base_handle.offset().y < before_offset,
+            "bottom edge scrolls the actual UniformList"
+        );
+        assert!(view.drag_layout_generation > generation);
+        assert_ne!(view.arrangement_bounds_epoch, view.drag_layout_generation);
+        let drag = view.active_clip_drag.as_ref().expect("active clip drag");
+        assert!(drag.preview.get().is_none());
+        assert!(drag.destination.get().is_none());
+        assert_eq!(
+            view.state.as_ref().expect("project state").project.tracks()[0].id(),
+            source
+        );
+    });
+
+    // Release before the invalidated list has painted. The old row still
+    // occupies the pointer's screen position, but its epoch cannot authorize an edit.
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.last_enqueued_edit.is_none());
+        assert_eq!(
+            view.state.as_ref().expect("project state").revision,
+            initial_revision
+        );
+    });
+}
+
+#[gpui::test]
+fn vertical_drag_scroll_retargets_stationary_clip_before_release(cx: &mut TestAppContext) {
+    use super::viewport::Viewport;
+    use std::time::{Duration, Instant};
+
+    let (project, _source, _, clip) = audio_project();
+    let mut project_editor = Editor::new(project, 8).expect("project editor");
+    for index in 0..24 {
+        let result = project_editor
+            .execute(Command::AddTrack {
+                name: format!("track {index}"),
+            })
+            .expect("add track");
+        assert!(matches!(result, Created::Track(_)));
+    }
+    let project = project_editor.project().clone();
+    let original = project.clone();
+    let (window, editor) = editor_window(cx, project, Arc::new(Default::default()));
+    editor.update(cx, |view, cx| {
+        view.viewport = Some(Viewport {
+            start: 0,
+            length: TIMELINE_FRAMES / 2,
+        });
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let surface = visual
+        .debug_bounds(Box::leak(
+            format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("source clip surface");
+    let down = point(
+        surface.origin.x + surface.size.width / 2.0,
+        surface.origin.y + surface.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = editor.read_with(cx, |view, _| {
+        let body = view.arrangement_bounds.expect("painted Arrangement body");
+        point(
+            px(body.left + body.width * 0.6),
+            px(body.top + body.height - 5.0),
+        )
+    });
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    let (old_track, scroll_tick) = editor.read_with(cx, |view, _| {
+        let drag = view.active_clip_drag.as_ref().expect("active clip drag");
+        let (x, y) = drag.last_pointer.get().expect("held pointer");
+        let old_track = view
+            .hovered_drag_target(x, y)
+            .expect("pointer begins over a painted track")
+            .0;
+        (old_track, Instant::now())
+    });
+    editor.update(cx, |view, cx| {
+        let offset = view.track_scroll.0.borrow().base_handle.offset().y;
+        let mut moved = false;
+        for tick in 0..4 {
+            let now = scroll_tick + Duration::from_millis(tick * 50);
+            let _ = view.tick_clip_gesture_autoscroll(now, cx);
+            if view.track_scroll.0.borrow().base_handle.offset().y != offset {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "held pointer scrolls the UniformList by a row");
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let new_track = editor.read_with(cx, |view, _| {
+        let drag = view.active_clip_drag.as_ref().expect("active clip drag");
+        let (x, y) = drag.last_pointer.get().expect("stationary pointer");
+        view.hovered_drag_target(x, y)
+            .expect("repaint exposes a new track under the stationary pointer")
+            .0
+    });
+    assert_ne!(
+        new_track, old_track,
+        "the painted destination follows scrolling"
+    );
+    editor.update(cx, |view, cx| {
+        let _ = view.tick_clip_gesture_autoscroll(scroll_tick + Duration::from_millis(1), cx);
+    });
+    editor.read_with(cx, |view, _| {
+        let drag = view.active_clip_drag.as_ref().expect("active clip drag");
+        assert!(matches!(
+            drag.destination.get(),
+            Some(super::drag::ClipDropDestination::ExistingTrack(track)) if track == new_track
+        ));
+        assert!(drag.preview.get().is_some());
+    });
+
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let command = editor.read_with(cx, |view, _| {
+        let command = view.last_enqueued_edit.clone().expect("one release edit");
+        assert!(matches!(
+            &command,
+            Command::MoveClipWithOverwrite { clip: moved, track, .. }
+                if *moved == clip && *track == new_track
+        ));
+        command
+    });
+    let mut history = Editor::new(original.clone(), 8).expect("undo fixture");
+    history.execute(command).expect("apply released edit");
+    assert!(history.undo(), "one undo reverses the single released edit");
+    assert_eq!(history.project(), &original);
 }

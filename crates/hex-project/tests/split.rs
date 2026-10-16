@@ -146,6 +146,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
 
     let full_project = Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
@@ -159,6 +161,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
         }],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "full".into(),
             gain: 1.0,
@@ -171,6 +175,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
             content: TrackContentSnapshot::Audio(
                 (0..MAX_CLIPS)
                     .map(|index| ClipSnapshot {
+                        edit: None,
+                        gain: hex_project::ClipGain::UNITY,
                         id: 3 + index as u64,
                         asset: 1,
                         start: 0,
@@ -231,6 +237,8 @@ fn missing_clip_split_is_transactional() {
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: u64::MAX,
@@ -244,6 +252,8 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
         }],
         tracks: vec![TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 2,
             name: "audio".into(),
             gain: 1.0,
@@ -254,6 +264,8 @@ fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: 3,
                 asset: 1,
                 start: 0,

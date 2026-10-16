@@ -541,6 +541,7 @@ impl EditorView {
 
 impl Drop for EditorView {
     fn drop(&mut self) {
+        self.cancel_browser_sample_playback();
         if let Some(control) = &self.audio_batch {
             control.request_cancel();
         }

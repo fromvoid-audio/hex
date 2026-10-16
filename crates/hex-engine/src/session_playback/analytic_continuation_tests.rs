@@ -102,6 +102,10 @@ fn signal(age: u64, gate: u64, gain: f64) -> [f32; 2] {
 }
 
 impl PreparedNativeInstrument for Context {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -304,14 +308,18 @@ fn compatible_held_and_released_notes_use_actual_boundary_and_partition_independ
             }
             // Undo-equivalent reversal occurs halfway through the applied ramp.
             let mut enabled = handoff(&mut disabled, &on);
-            let actual = render_checkpoint_partitioned(&mut enabled, &[31, 1, 64], 241);
+            let actual = render_checkpoint_partitioned(&mut enabled, &[31, 1, 64], 240);
             for (offset, frame) in actual.iter().enumerate() {
-                let gain = if offset >= 240 {
-                    1.0
-                } else {
-                    0.5 + 0.5 * offset as f64 / 240.0
-                };
+                let gain = 0.5 + 0.5 * offset as f64 / 240.0;
                 assert_eq!(*frame, signal(216 + offset as u64, gate, gain));
+            }
+            assert!(
+                enabled.analytic_continuations.iter().all(Option::is_none),
+                "completed ramps must retire at their committed endpoint",
+            );
+            let endpoint = render_checkpoint_partitioned(&mut enabled, &[1, 17], 127);
+            for (offset, frame) in endpoint.iter().enumerate() {
+                assert_eq!(*frame, signal(456 + offset as u64, gate, 1.0));
             }
         }
     }
@@ -390,14 +398,14 @@ fn provider_render_refusal_rolls_back_absolute_clock_and_seek_resets_transition(
         let mut disabled = handoff(&mut old, &off);
         let routes = disabled.routes.clone();
         let before = disabled.analytic_continuations.clone();
-        let mut output = [[9.0; 2]; 64];
+        let mut output = [[9.0; 2]; 512];
         if session {
             assert!(disabled.render(&mut output).is_err());
         } else {
             let plan = disabled
-                .output_capture_plan(&[OutputCaptureId::Track(disabled.routes[0].id)], 64)
+                .output_capture_plan(&[OutputCaptureId::Track(disabled.routes[0].id)], 512)
                 .unwrap();
-            let mut captured = [[9.0; 2]; 64];
+            let mut captured = [[9.0; 2]; 512];
             let mut buffers: [&mut [Frame]; 1] = [&mut captured];
             let mut capture = OutputCapture::new(&plan, &mut buffers);
             assert!(
@@ -406,22 +414,22 @@ fn provider_render_refusal_rolls_back_absolute_clock_and_seek_resets_transition(
                     .is_err()
             );
             assert_eq!(capture.valid_frames(), 0);
-            assert_eq!(captured, [[0.0; 2]; 64]);
+            assert_eq!(captured, [[0.0; 2]; 512]);
         }
-        assert_eq!(output, [[0.0; 2]; 64]);
+        assert_eq!(output, [[0.0; 2]; 512]);
         assert_eq!(disabled.performance_frame(), 96);
         assert_eq!(disabled.routes, routes);
         assert_eq!(disabled.analytic_continuations, before);
         disabled.apply(SessionPlaybackCommand::Seek(0)).unwrap();
         assert!(disabled.analytic_continuations.iter().all(Option::is_none));
         disabled.render(&mut output).unwrap();
-        assert_eq!(output, [[0.0; 2]; 64]);
+        assert_eq!(output, [[0.0; 2]; 512]);
     }
 }
 
 #[test]
 fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
-    let runtime = playing(&fixture(1, 0, 0, 8 << 32), false);
+    let mut runtime = playing(&fixture(1, 0, 0, 8 << 32), false);
     assert_eq!(
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
         344
@@ -431,6 +439,17 @@ fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
     assert_eq!(runtime.analytic_continuation_scratch.len(), MAX_TRACKS);
     assert_eq!(runtime.analytic_continuation_scratch.capacity(), MAX_TRACKS);
     let actual = runtime.accounted_runtime_storage_bytes().unwrap();
+    let seeds = std::mem::take(&mut runtime.analytic_import.seeds);
+    let proofs = std::mem::take(&mut runtime.analytic_import.proofs);
+    let without_import = runtime.accounted_runtime_storage_bytes().unwrap();
+    assert_eq!(
+        actual - without_import,
+        seeds.capacity() * std::mem::size_of::<hex_lattice::NativeInstrumentAnalyticSeed>()
+            + proofs.capacity()
+                * std::mem::size_of::<Option<crate::mutable_instrument::MutableOccurrence>>()
+    );
+    runtime.analytic_import.seeds = seeds;
+    runtime.analytic_import.proofs = proofs;
     let admitted =
         super::super::preroll::arrangement_runtime_storage_preflight_bytes(&runtime.revision)
             .unwrap();
@@ -647,5 +666,43 @@ fn reconstructed_matching_session_sources_keep_current_ownership_through_histori
             boundary + (1.0 - boundary) * offset as f64 / 240.0
         };
         assert_eq!(*frame, signal(176 + offset as u64, 192_000, gain));
+    }
+}
+
+#[test]
+fn stopped_enable_edits_start_at_target_but_paused_notes_keep_continuity() {
+    for session in [false, true] {
+        for paused in [false, true] {
+            let on = fixture(1, 0, 0, 8 << 32);
+            let off = edited(&on, 0, 0, 0);
+            let mut old = playing(&on, session);
+            render_checkpoint_prefix(&mut old, 96);
+            old.apply(if paused {
+                SessionPlaybackCommand::Pause
+            } else {
+                SessionPlaybackCommand::Stop
+            })
+            .unwrap();
+            let mut disabled = handoff(&mut old, &off);
+            // Rendering while stopped/paused must not advance the ramp clock.
+            assert_eq!(render_checkpoint_prefix(&mut disabled, 16), [[0.0; 2]; 16]);
+            disabled.apply(SessionPlaybackCommand::Play).unwrap();
+            let actual = render_checkpoint_prefix(&mut disabled, 241);
+            for (offset, frame) in actual.iter().enumerate() {
+                let expected = if paused {
+                    signal(
+                        96 + offset as u64,
+                        192_000,
+                        (1.0 - offset as f64 / 240.0).max(0.0),
+                    )
+                } else {
+                    [0.0; 2]
+                };
+                assert_eq!(
+                    *frame, expected,
+                    "session={session}, paused={paused}, offset={offset}"
+                );
+            }
+        }
     }
 }

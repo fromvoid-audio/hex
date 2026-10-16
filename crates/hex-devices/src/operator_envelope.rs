@@ -115,6 +115,20 @@ pub struct PreparedOperatorEnvelope {
 }
 
 impl PreparedOperatorEnvelope {
+    /// Restart a prepared attack from an already bounded envelope level.
+    pub(crate) fn with_initial(mut self, level: f64) -> Self {
+        self.initial = level;
+        self
+    }
+
+    /// Release a separately latched, bounded level using the prepared curve rate.
+    pub(crate) fn released_level(&self, initial: f64, elapsed: u64) -> f64 {
+        if elapsed >= self.release {
+            0.0
+        } else {
+            initial * (-(elapsed as f64) * self.release_rate).exp()
+        }
+    }
     pub const fn attack_frames(&self) -> u64 {
         self.attack
     }
@@ -131,7 +145,7 @@ impl PreparedOperatorEnvelope {
             return self.initial + (self.peak - self.initial) * age as f64 * self.attack_inverse;
         }
         let decay_age = age - self.attack;
-        if decay_age < self.decay {
+        if decay_age < self.decay && self.peak != self.sustain {
             return self.sustain
                 + (self.peak - self.sustain) * (-(decay_age as f64) * self.decay_rate).exp();
         }
@@ -180,9 +194,6 @@ impl PreparedOperatorEnvelopes {
     #[inline]
     pub fn levels(&self, age_frames: u64, gate_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
         std::array::from_fn(|index| self.envelopes[index].level(age_frames, gate_frames))
-    }
-    pub fn held_levels(&self, age_frames: u64) -> [f64; OPERATOR_ENVELOPES] {
-        std::array::from_fn(|index| self.envelopes[index].held_level(age_frames))
     }
 
     /// Maximum envelope release duration, not complete instrument quiescence.
@@ -238,7 +249,12 @@ mod tests {
 
     #[test]
     fn full_envelope_matches_independent_oracle_for_noteoff_in_every_stage() {
-        for levels in [[0.25, 1.0, 0.4], [0.9, 0.3, 0.8], [0.0, 0.0, 0.0]] {
+        for levels in [
+            [0.25, 1.0, 0.4],
+            [0.9, 0.3, 0.8],
+            [0.0, 0.0, 0.0],
+            [0.2, 0.7, 0.7],
+        ] {
             let times = [8, 13, 17];
             let envelope = prepared(levels, times);
             for gate in [0, 1, 7, 8, 9, 20, 21, 40] {

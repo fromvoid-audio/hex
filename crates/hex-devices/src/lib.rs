@@ -11,6 +11,13 @@ pub mod saturator;
 pub mod utility;
 pub mod utility_filters;
 
+// Private mathematical precursor; no native registration or production API.
+#[cfg(test)]
+mod signed_envelope;
+#[cfg(test)]
+#[path = "signed_envelope/tests.rs"]
+mod signed_envelope_tests;
+
 use hex_lattice::{
     NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument, StereoFrame,
 };
@@ -127,15 +134,10 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
 }
 
 impl PreparedNativeInstrument for PreparedSineInstrument {
-    fn prepare_live_note(
-        &self,
-        pitch: u8,
-        velocity: u8,
-    ) -> Result<hex_lattice::PreparedLiveAnalyticNote, DeviceContractError> {
-        Ok(self
-            .prepare_note(pitch, velocity)?
-            .into_live_sampler(sample_sine_live))
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
     }
+
     fn prepare_note(
         &self,
         pitch: u8,
@@ -153,29 +155,6 @@ impl PreparedNativeInstrument for PreparedSineInstrument {
             voice.release_frames,
             sample_sine_note,
         ))
-    }
-}
-
-fn sample_sine_live(
-    payload: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
-    age: u64,
-    gate: hex_lattice::NoteGate,
-    release: u64,
-) -> StereoFrame {
-    match gate {
-        hex_lattice::NoteGate::Released { at_age_frames } => {
-            sample_sine_note(payload, age, at_age_frames, release)
-        }
-        hex_lattice::NoteGate::Held => {
-            let Some(table) = shared_sine_table_if_prepared() else {
-                return [0.0; 2];
-            };
-            let amplitude = (age as f32 / payload[2] as f32).min(1.0);
-            let sample = table.sample_phase(payload[0].wrapping_mul(age))
-                * amplitude
-                * f32::from_bits(payload[1] as u32);
-            [sample, sample]
-        }
     }
 }
 
@@ -238,6 +217,16 @@ impl SineTable {
         }
         samples[TABLE_SIZE] = samples[0];
         Self { samples }
+    }
+
+    /// Control-only exclusive leaf declaration; shared wrapper/handles are
+    /// separate. New owning fields require this module's explicit audit.
+    pub fn control_storage_declaration(&self) -> hex_lattice::PreparedStorageDeclaration {
+        let Self { samples } = self;
+        let _: &[f32; TABLE_SIZE + 1] = samples;
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<Self>(),
+        }
     }
 
     pub fn prepare_voice(
@@ -386,3 +375,8 @@ mod tests {
         }
     }
 }
+
+// Isolated harmonic-kernel proof pending canonical/host dependency integration.
+mod operator_filter;
+#[cfg(test)]
+mod operator_harmonics;

@@ -346,6 +346,8 @@ fn project_fixture(
         }
         tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("stack probe {track_index:03}"),
             gain: 1.0,

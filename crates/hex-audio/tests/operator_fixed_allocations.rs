@@ -131,7 +131,7 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
 fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     for sync in [false, true] {
-        operator_modulation_allocations(Some(sync), true)?;
+        operator_modulation_allocations(Some(sync), false, false, true, false, None)?;
     }
     Ok(())
 }
@@ -139,18 +139,45 @@ fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 #[test]
 fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, true)
+    operator_modulation_allocations(None, false, false, true, false, None)
+}
+
+#[test]
+fn registered_operator_filter_render_retarget_and_shutdown_allocate_nothing_on_callback()
+-> Result<(), Box<dyn Error>> {
+    for sync in [None, Some(false), Some(true)] {
+        operator_modulation_allocations(sync, true, false, true, false, None)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn operator_filter_first_activation_import_allocates_and_deallocates_nothing()
+-> Result<(), Box<dyn Error>> {
+    for (sync, feedback) in [
+        (None, false),
+        (None, true),
+        (Some(false), true),
+        (Some(true), true),
+    ] {
+        operator_modulation_allocations(sync, true, true, feedback, false, None)?;
+    }
+    Ok(())
 }
 
 #[test]
 fn registered_operator_analytic_enable_reversals_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, false)
+    operator_modulation_allocations(None, false, false, false, false, None)
 }
 
 fn operator_modulation_allocations(
     lfo_sync: Option<bool>,
-    feedback_active: bool,
+    filter: bool,
+    activate_later: bool,
+    feedback: bool,
+    harmonics: bool,
+    companion: Option<u32>,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
@@ -178,10 +205,7 @@ fn operator_modulation_allocations(
         (36, ParameterValue::Float(0.0)),
         (37, ParameterValue::Float(0.001)),
         (38, ParameterValue::Float(0.005)),
-        (
-            78,
-            ParameterValue::Float(if feedback_active { 0.4 } else { 0.0 }),
-        ),
+        (78, ParameterValue::Float(if feedback { 0.4 } else { 0.0 })),
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,
@@ -189,6 +213,41 @@ fn operator_modulation_allocations(
             ParameterId::from_static(id),
             value,
         )?;
+    }
+    if let Some(mode) = companion {
+        for (id, value) in [
+            (357, ParameterValue::Bool(false)),
+            (358, ParameterValue::Float(0.125)),
+            (359, ParameterValue::Bool(true)),
+            (360, ParameterValue::Float(0.5)),
+            (361, ParameterValue::Float(0.25)),
+            (362, ParameterValue::Choice(mode)),
+            (363, ParameterValue::Float(0.001)),
+            (364, ParameterValue::Choice(0)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )?;
+        }
+    }
+    if filter && !activate_later {
+        for (id, value) in [
+            (20_001, ParameterValue::Bool(true)),
+            (20_002, ParameterValue::Choice(4)),
+            (20_005, ParameterValue::Float(800.0)),
+            (20_006, ParameterValue::Float(75.0)),
+            (20_007, ParameterValue::Float(35.0)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )?;
+        }
     }
     if let Some(sync) = lfo_sync {
         for (id, value) in [
@@ -214,14 +273,17 @@ fn operator_modulation_allocations(
     else {
         return Err("clip missing".into());
     };
-    editor.execute(Command::AddMidiNote {
-        clip,
-        start: BeatTime::ZERO,
-        duration: BeatTime::from_ratio(1, 4)?,
-        pitch: 60,
-        channel: 0,
-        velocity: 100,
-    })?;
+    let notes = if companion.is_some() { 64 } else { 1 };
+    for index in 0..notes {
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 4)?,
+            pitch: if companion.is_some() { 40 + index } else { 60 },
+            channel: 0,
+            velocity: 100,
+        })?;
+    }
 
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
@@ -246,11 +308,24 @@ fn operator_modulation_allocations(
         let mut accepted = None;
         // Reversal occurs before the 240-frame coefficient transition finishes.
         // The second pair straddles note-off at frame 6000, covering release too.
+        // Keep harmonic range reversals and LFO destination reversals distinct
+        // when this fixture enables both; both release edits follow note-off.
+        let lfo_release_edit = if harmonics { 50 } else { 48 };
         let edit = match block {
             5 | 46 => Some((513, ParameterValue::Bool(false))),
             6 | 47 => Some((513, ParameterValue::Bool(true))),
-            10 | 48 if lfo_sync.is_some() => Some((89, ParameterValue::Bool(false))),
-            11 | 49 if lfo_sync.is_some() => Some((89, ParameterValue::Bool(true))),
+            2 | 45 if harmonics => Some((156, ParameterValue::Float(0.75))),
+            3 | 48 if harmonics => Some((349, ParameterValue::Choice(0))),
+            4 | 49 if harmonics => Some((349, ParameterValue::Choice(2))),
+            7 if harmonics => Some((57, ParameterValue::Choice(0))),
+            8 if harmonics => Some((57, ParameterValue::Choice(4))),
+            at if lfo_sync.is_some() && (at == 10 || at == lfo_release_edit) => {
+                Some((89, ParameterValue::Bool(false)))
+            }
+            at if lfo_sync.is_some() && (at == 11 || at == lfo_release_edit + 1) => {
+                Some((89, ParameterValue::Bool(true)))
+            }
+            2..=4 if filter => Some((20005, ParameterValue::Float(200.0 * block as f32))),
             2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
             _ => None,
         };
@@ -267,6 +342,16 @@ fn operator_modulation_allocations(
                 ParameterId::from_static(parameter),
                 value,
             )?;
+            let state = if filter && activate_later && block == 2 {
+                hex_engine::patch_native_device_parameter_for_class(
+                    class,
+                    &state,
+                    ParameterId::from_static(20_001),
+                    ParameterValue::Bool(true),
+                )?
+            } else {
+                state
+            };
             editor.execute(Command::ReplaceDeviceState { device, state })?;
             let next = Arc::new(PreparedRevision::prepare(
                 editor.project(),
@@ -587,5 +672,27 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
     reaper
         .shutdown_and_join()
         .map_err(|_| "spectrum worker did not join")?;
+    Ok(())
+}
+
+#[test]
+fn harmonic_first_paint_range_cache_builtin_reversal_and_release_allocate_nothing()
+-> Result<(), Box<dyn Error>> {
+    for filter in [false, true] {
+        operator_modulation_allocations(None, filter, false, false, true, None)?;
+        operator_modulation_allocations(None, filter, false, true, true, None)?;
+        operator_modulation_allocations(Some(false), filter, false, true, true, None)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn advanced_operator_companions_keep_sixty_four_voice_callbacks_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    // Covers held loop/sync, early Trigger completion followed by physical NoteOff,
+    // free-running phase, all note modifiers, live spectrum reversals and release.
+    for mode in [1, 3, 4] {
+        operator_modulation_allocations(None, false, false, false, true, Some(mode))?;
+    }
     Ok(())
 }

@@ -44,6 +44,28 @@ impl PreparedOperatorConfiguration {
 }
 
 impl PreparedOperatorFeedbackVoice {
+    pub(crate) fn harmonic_snapshot(&self) -> (PreparedOperatorNote, u64, Option<u64>, [f64; 4]) {
+        (
+            self.note,
+            self.age_frames,
+            self.gate_frame,
+            self.previous_outputs,
+        )
+    }
+
+    /// Current note-relative frame; advances once after each successful sample.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn filter_seed(
+        &self,
+    ) -> Option<(PreparedOperatorNote, u64, Option<u64>, [f64; 4], [f64; 4])> {
+        Some((
+            self.note,
+            self.age_frames,
+            self.gate_frame,
+            self.previous_outputs,
+            self.feedback_turns,
+        ))
+    }
     /// Current note-relative frame; advances once after each successful sample.
     pub const fn age_frames(&self) -> u64 {
         self.age_frames
@@ -95,13 +117,11 @@ impl PreparedOperatorFeedbackVoice {
                 "operator feedback voice does not match its prepared configuration",
             ));
         }
+        let gate_frame = self.gate_frame.unwrap_or(u64::MAX);
         let (sample, outputs) = if self.feedback_turns == [0.0; OPERATORS] {
             // Preserve the existing analytic sampling route bit-for-bit.
             (
-                match self.gate_frame {
-                    Some(frame) => configuration.sample(table, &self.note, self.age_frames, frame),
-                    None => configuration.sample_held(table, &self.note, self.age_frames),
-                },
+                configuration.sample(table, &self.note, self.age_frames, gate_frame),
                 [0.0; OPERATORS],
             )
         } else {
@@ -109,7 +129,7 @@ impl PreparedOperatorFeedbackVoice {
                 table,
                 &self.note,
                 self.age_frames,
-                self.gate_frame,
+                gate_frame,
                 self.feedback_turns,
                 self.previous_outputs,
             )
@@ -296,7 +316,13 @@ mod tests {
                     );
                 let oscillator = match waveforms[operator] {
                     OperatorWaveform::Sine => sine.sample_phase(phase),
-                    waveform => bank.sample_phase(waveform, caps[operator], phase),
+                    waveform => bank.sample_frame(
+                        waveform,
+                        caps[operator],
+                        phase,
+                        age,
+                        crate::operator_waveform::noise_stream(phase_step, operator),
+                    ),
                 };
                 let velocity_scale = 1.0 - VELOCITY_AMOUNTS[operator]
                     + VELOCITY_AMOUNTS[operator] * (f32::from(VELOCITY) / 127.0);
@@ -354,7 +380,7 @@ mod tests {
     fn sine_feedback_matches_independent_full_output_oracle_across_noteoff_and_partitions() {
         let config = fixture([OperatorWaveform::Sine; OPERATORS]);
         assert!(std::mem::size_of::<PreparedOperatorFeedbackVoice>() <= 192);
-        assert_eq!(std::mem::size_of::<PreparedOperatorConfiguration>(), 744);
+        assert_eq!(std::mem::size_of::<PreparedOperatorConfiguration>(), 784);
         println!(
             "feedback voice={}B, compact note={}B, configuration={}B",
             std::mem::size_of::<PreparedOperatorFeedbackVoice>(),

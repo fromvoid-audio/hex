@@ -297,8 +297,8 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.state_version(), 8);
-    assert_eq!(selected.payload().len(), 380);
+    assert_eq!(selected.state_version(), 14);
+    assert_eq!(selected.payload().len(), 1616);
     for (id, enabled) in [(513, false), (514, true), (515, true), (516, true)] {
         assert_eq!(
             hex_engine::native_device_parameter_for_class(

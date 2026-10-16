@@ -91,7 +91,7 @@ pub(super) fn must_mount(
         || panel.controls.keys().any(|key| key.device == device && super::parameter_rows::pinned(view, *key, window, cx))
         || panel.pending_values.keys().any(|key| key.device == device)
         || view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target,
-            GestureTarget::DeviceParameter { device: target, .. } | GestureTarget::DeviceParameterPair { device: target, .. } if target == device))
+            GestureTarget::DeviceParameter { device: target, .. } | GestureTarget::DeviceParameterPair { device: target, .. } | GestureTarget::DeviceParameterSnapshot { device: target } if target == device))
         || view.active_native_device_drag.as_ref().is_some_and(|drag| {
             matches!(drag.source, drag::NativeDeviceDragSource::Existing { device: source, .. } if source == device)
                 || drag.destination.get().is_some_and(|target| target.before == Some(device) || target.replace == Some(device))

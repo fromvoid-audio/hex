@@ -46,6 +46,16 @@ pub(super) struct ReturnEffectTailBank {
 }
 
 impl ReturnEffectTailBank {
+    pub(super) fn visit_empty_candidate_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self { slots, scratch: _ } = self;
+        if slots.iter().any(Option::is_some) {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        ledger.vec(slots)
+    }
     pub(super) fn new() -> Result<Self, SessionPlaybackError> {
         let mut slots = Vec::new();
         slots
@@ -293,6 +303,9 @@ impl ReturnEffectTailPlan {
         Ok(plan)
     }
 
+    pub(super) fn captures_bus(&self) -> bool {
+        self.capture.iter().any(Option::is_some)
+    }
     pub(super) fn inherit_bus(&self, index: usize) -> bool {
         self.inherit_bus.get(index).copied().unwrap_or(false)
     }
@@ -400,7 +413,7 @@ fn reserve_chain(
     entry_count: &mut usize,
 ) -> Result<(), SessionPlaybackError> {
     match chain
-        .output_tail_for_range(0..chain.len())
+        .zero_input_drain_for_range(0..chain.len())
         // The full range is validated by this caller; `None` therefore means
         // its serial finite declarations overflowed their aggregate bound.
         .ok_or(SessionPlaybackError::ReleaseBankFull)?

@@ -126,6 +126,14 @@ impl<'a, 'samples> OutputCapture<'a, 'samples> {
             output[..end].fill([0.0; 2]);
         }
     }
+    /// Called only after validation; successful work scales with the block,
+    /// while refusal retains the bounded full-slice cleanup above.
+    pub(super) fn begin(&mut self, frames: usize) {
+        self.valid_frames = 0;
+        for output in self.outputs.iter_mut() {
+            output[..frames].fill([0.0; 2]);
+        }
+    }
     pub(super) fn commit(&mut self, frames: usize) {
         self.valid_frames = frames;
     }
@@ -236,10 +244,9 @@ impl SessionPlayback {
         match id {
             OutputCaptureId::Track(id) => {
                 self.routes.iter().any(|route| route.id == id)
-                    || self
-                        .releases
-                        .iter()
-                        .any(|release| release.tail_group.is_none() && release.track_id == id)
+                    || self.releases.iter().any(|release| {
+                        release.location.tail_group().is_none() && release.track_id == id
+                    })
                     || self
                         .tail_groups
                         .iter()

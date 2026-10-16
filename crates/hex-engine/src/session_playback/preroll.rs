@@ -241,9 +241,13 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
-        if let Some(typing) = &self.typing {
-            checked_add(&mut total, typing.declared_storage_bytes()?)?;
+        if let Some(keyboard) = &self.computer_keyboard {
+            checked_add(&mut total, keyboard.storage_bytes()?)?;
         }
+        if let Some(compensation) = &self.compensation {
+            checked_add(&mut total, compensation.storage_bytes()?)?;
+        }
+        checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
@@ -284,9 +288,6 @@ impl SessionPlayback {
         for tail in self.tail_mutable_instruments.iter().flatten() {
             checked_add(&mut total, tail.runtime.accounted_storage_bytes()?)?;
         }
-        for typing in self.tail_typing.iter().flatten() {
-            checked_add(&mut total, typing.declared_storage_bytes()?)?;
-        }
         add_capacity::<crate::PreparedTrackMix>(&mut total, self.tail_mixes.capacity())?;
         add_capacity::<usize>(&mut total, self.tail_suffix_starts.capacity())?;
         add_capacity::<Option<hex_lattice::StereoMatrix>>(
@@ -324,6 +325,10 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
     let mut total = std::mem::size_of::<SessionPlayback>();
+    if let Some(graph) = &arrangement.signal_graph {
+        checked_add(&mut total, graph.runtime_preflight_bytes()?)?;
+    }
+    checked_add(&mut total, analytic_import::ImportPlan::preflight_bytes()?)?;
     checked_add(&mut total, PREROLL_SCRATCH_BYTES)?;
     let add_vec = |total: &mut usize, count: usize, item_size: usize| -> Option<()> {
         checked_add(total, count.checked_mul(item_size)?)

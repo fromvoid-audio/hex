@@ -40,6 +40,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         let arrangement_notes = notes(&mut next, index, 0);
         tracks.push(TrackSnapshot {
             gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track,
             name: format!("track {index:03}"),
             gain: 0.3 + (index % 7) as f32 * 0.05,
@@ -89,6 +91,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
     }
     let project = Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id: next,

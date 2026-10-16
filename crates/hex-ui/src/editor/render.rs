@@ -1,12 +1,12 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, ImportLiveSet, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
-    MoveRight, NextTrack, OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft,
-    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
-    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
-    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
+    OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft, PanTimelineRight,
+    PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
+    RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
+    SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
+    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme;
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -19,6 +19,77 @@ impl EditorView {
         self.state
             .as_ref()
             .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
+    }
+
+    pub(super) fn nudge_grid_context(
+        &self,
+        platform: bool,
+    ) -> Option<(
+        super::musical_time::SnapGrid,
+        super::viewport::Viewport,
+        f32,
+    )> {
+        let grid = self.snap_grid.with_platform_modifier(platform);
+        let state = self.state.as_ref()?;
+        let viewport = self.visible_viewport(state.timeline_frames);
+        if grid == super::musical_time::SnapGrid::Off {
+            return Some((grid, viewport, 1.0));
+        }
+        let bounds = self
+            .arrangement_bounds
+            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let width = bounds.width - super::tracks::TRACK_HEADER_WIDTH;
+        (width.is_finite() && width > 0.0).then_some((grid, viewport, width))
+    }
+
+    pub(super) fn nudge_audio_clip(
+        &mut self,
+        clip: hex_project::ClipId,
+        right: bool,
+        platform: bool,
+    ) {
+        if self.edit_pending() {
+            return;
+        }
+        let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
+            return;
+        };
+        if grid == super::musical_time::SnapGrid::Off {
+            let step = self.step_frames() as i64;
+            self.enqueue(SessionRequest::Edit(Command::NudgeClip {
+                clip,
+                frames: if right { step } else { -step },
+            }));
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(item) = state.project.clip(clip) else {
+            return;
+        };
+        let Some(start) = grid.adjacent_frame(&state.project, item.start(), viewport, width, right)
+        else {
+            return;
+        };
+        if start.checked_add(item.duration()).is_none() {
+            self.error = Some("clip nudge exceeds the timeline range".into());
+            return;
+        }
+        let Some(track) = state
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.clips().iter().any(|item| item.id() == clip))
+            .map(|track| track.id())
+        else {
+            return;
+        };
+        self.enqueue(SessionRequest::Edit(Command::MoveClip {
+            clip,
+            track,
+            start,
+        }));
     }
 
     fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
@@ -281,6 +352,7 @@ impl Render for EditorView {
                 .child(self.session_grid(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, true))
+                .child(self.routing_controls(cx))
         } else {
             div()
                 .flex_1()
@@ -290,6 +362,7 @@ impl Render for EditorView {
                 .child(self.arrangement(window, cx))
                 .child(clip_view)
                 .child(self.mixer_strip(cx, false))
+                .child(self.routing_controls(cx))
         };
         let workspace = div()
             .flex_1()
@@ -386,15 +459,11 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if view.musical_key_down(event, window) {
-                    cx.stop_propagation();
-                    cx.notify();
-                }
+                view.computer_keyboard_down(event, window, cx);
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
-                if view.musical_key_up(&event.keystroke.key) {
+                if view.computer_keyboard_up(&event.keystroke.key) {
                     cx.stop_propagation();
-                    cx.notify();
                 }
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
@@ -417,6 +486,11 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::BrowserNext, window, cx| {
                 view.browser_next(window, cx);
             }))
+            .on_action(
+                cx.listener(|view, _: &super::BrowserPreviewSelected, window, cx| {
+                    view.browser_preview_selected(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::BrowserActivate, window, cx| {
                 view.browser_activate(window, cx);
             }))
@@ -466,6 +540,7 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     return;
                 }
+                view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture();
@@ -506,9 +581,6 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
-            .on_action(
-                cx.listener(|view, _: &ImportLiveSet, window, cx| view.live_set_dialog(window, cx)),
-            )
             .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
@@ -580,12 +652,9 @@ impl Render for EditorView {
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                            view.nudge_midi_clip(clip, false);
+                            view.nudge_midi_clip(clip, false, window.modifiers().platform);
                         } else if let Some((_, clip, ..)) = view.selected_clip_data() {
-                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
-                                clip,
-                                frames: -(view.step_frames() as i64),
-                            }));
+                            view.nudge_audio_clip(clip, false, window.modifiers().platform);
                         }
                     }
                 }
@@ -609,12 +678,9 @@ impl Render for EditorView {
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
                         if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                            view.nudge_midi_clip(clip, true);
+                            view.nudge_midi_clip(clip, true, window.modifiers().platform);
                         } else if let Some((_, clip, ..)) = view.selected_clip_data() {
-                            view.enqueue(SessionRequest::Edit(Command::NudgeClip {
-                                clip,
-                                frames: view.step_frames() as i64,
-                            }));
+                            view.nudge_audio_clip(clip, true, window.modifiers().platform);
                         }
                     }
                 }
@@ -797,8 +863,8 @@ impl Render for EditorView {
                 view.split_at_edit_cursor();
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &ExportProject, _, cx| {
-                view.export_dialog(cx);
+            .on_action(cx.listener(|view, _: &ExportProject, window, cx| {
+                view.export_dialog(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {

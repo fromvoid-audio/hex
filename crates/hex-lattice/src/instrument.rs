@@ -57,18 +57,9 @@ impl PreparedSharedAnalyticNote {
 /// `prepare_note`; `sample` borrows compact note data and must be deterministic,
 /// allocation-free, and free of interior mutation.
 pub trait PreparedSharedAnalyticContext: Send + Sync {
-    /// Explicit control-side capability; unsupported contexts must never be
-    /// armed by substituting a finite duration for a held gate.
-    fn supports_live_gate(&self) -> bool {
-        false
-    }
-    fn sample_live(
-        &self,
-        _note: &PreparedSharedAnalyticNote,
-        _age_frames: u64,
-        _gate: crate::NoteGate,
-    ) -> Result<StereoFrame, DeviceContractError> {
-        Err(DeviceContractError::UnsupportedProcessingClass)
+    /// Optional provider identity for an explicitly authorized analytic-to-mutable import.
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        None
     }
     /// Optional provider-defined coefficient continuation. Default providers
     /// retain their immutable sampler law across publication. Opted-in methods
@@ -116,19 +107,6 @@ impl fmt::Debug for PreparedAnalyticNote {
 }
 
 impl PreparedAnalyticNote {
-    /// Provider opt-in using the same prepared payload. The authored sampler
-    /// remains unchanged and the live function must implement Held explicitly.
-    pub fn into_live_sampler(
-        self,
-        sample_fn: fn(
-            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
-            u64,
-            crate::NoteGate,
-            u64,
-        ) -> StereoFrame,
-    ) -> crate::PreparedLiveAnalyticNote {
-        crate::PreparedLiveAnalyticNote::new(self.payload, self.release_frames, sample_fn)
-    }
     /// Prepare a bounded analytic note sampler. Zero release is valid for
     /// instruments with an instantaneous note-off.
     pub const fn new(
@@ -154,17 +132,27 @@ impl PreparedAnalyticNote {
     }
 }
 
+/// Control-side declaration of the entire exclusively owned provider pointee
+/// and nested heap payload. This is not allocator/RSS measurement or a DSP
+/// runtime declaration. Shared, Weak, or opaque children require Unknown.
+/// Static program storage is outside graph ownership and must be documented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedStorageDeclaration {
+    Unknown,
+    ExclusiveOnly { bytes: usize },
+}
+
 /// Immutable sample-rate-specific instrument configuration prepared on the
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
-    fn prepare_live_note(
-        &self,
-        _pitch: u8,
-        _velocity: u8,
-    ) -> Result<crate::PreparedLiveAnalyticNote, DeviceContractError> {
-        Err(DeviceContractError::UnsupportedProcessingClass)
+    /// Fixed algorithmic buffering latency at this prepared sample rate.
+    /// Unknown is explicit; envelope attack, filter phase and musical release
+    /// are not buffering latency. A mutable factory must agree with its source.
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        None
     }
+
     /// Prepare the immutable sampler for one authored pitch/velocity pair.
     /// Implementations must be deterministic for a fixed prepared instrument
     /// configuration, sample rate, pitch and velocity. The engine may intern
@@ -205,6 +193,26 @@ pub trait PreparedNativeInstrument: Send + Sync {
     fn prepare_mutable_runtime(
         &self,
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
+        Ok(None)
+    }
+    /// Once opted in, the control compiler keeps this device's continuation
+    /// runtime across subsequent revisions, including Undo to an analytic state.
+    /// New opens and never-authored devices retain ordinary capability selection.
+    fn prefers_mutable_continuation(&self) -> bool {
+        false
+    }
+    fn prepare_mutable_continuation_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
+        Ok(None)
+    }
+    /// Alternative single-owner law plus both mutable histories. Default absent
+    /// preserves all existing instrument factories. Host selection MUST reject
+    /// simultaneous independent and owned-pair mutable capabilities; neither
+    /// may silently substitute for a failed/unsupported capability.
+    fn prepare_owned_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn crate::PreparedOwnedInstrumentRuntime>>, DeviceContractError> {
         Ok(None)
     }
 }
@@ -259,7 +267,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             }
             for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
                 descriptor.validate_descriptor()?;
-                if descriptor.id.value() == u32::MAX {
+                if descriptor.id.value() >= u32::MAX - 1 {
                     return Err(DeviceContractError::InvalidDescriptor);
                 }
                 if definition.descriptors()[..parameter_index]
@@ -303,6 +311,26 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
         self.validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
+    }
+
+    pub fn patch_parameters(
+        &self,
+        state: &NativeDeviceState,
+        snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
+        snapshot.validate(definition.descriptors())?;
+        let patched = definition.patch_parameters(&current, snapshot)?;
+        self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
 
@@ -317,6 +345,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         let descriptor = definition
             .descriptors()
@@ -326,6 +355,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
         descriptor.validate(value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
 
@@ -339,6 +369,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_instrument(&current, sample_rate)
     }
@@ -362,7 +393,138 @@ impl<'a> NativeInstrumentRegistry<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
+    use hex_lattice_contract::{
+        DeviceParameterSnapshot, ParameterDescriptor, ParameterId, ParameterKind, ParameterValue,
+    };
+
+    const PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);
+    const PATCH_DESCRIPTORS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        id: PATCH_PARAMETER,
+        label: "level",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.25),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    }];
+    const PATCH_INPUT_GAIN: i32 = -12_345;
+    const PATCH_OUTPUT_GAIN: i32 = 6_789;
+
+    struct SnapshotPatchDefinition;
+
+    impl NativeDeviceMetadata for SnapshotPatchDefinition {
+        fn type_id(&self) -> DeviceTypeId {
+            DeviceTypeId::from_static("test.instrument-snapshot-patch")
+        }
+
+        fn state_version(&self) -> u32 {
+            1
+        }
+
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            PATCH_DESCRIPTORS
+        }
+
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(self.type_id(), 1, vec![64])
+        }
+
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.type_id() != self.type_id() || state.state_version() != 1 {
+                return Err(DeviceContractError::MalformedState);
+            }
+            NativeDeviceState::new(self.type_id(), 1, state.payload().to_vec())
+        }
+
+        fn read_parameter(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            if parameter != PATCH_PARAMETER {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let value = *state
+                .payload()
+                .first()
+                .ok_or(DeviceContractError::MalformedState)?;
+            Ok(ParameterValue::Float(f32::from(value) / 255.0))
+        }
+
+        fn patch_parameter(
+            &self,
+            _state: &NativeDeviceState,
+            parameter: ParameterId,
+            value: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if parameter != PATCH_PARAMETER {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let ParameterValue::Float(value) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            NativeDeviceState::new(self.type_id(), 1, vec![(value * 255.0).round() as u8])
+        }
+
+        fn patch_parameters(
+            &self,
+            state: &NativeDeviceState,
+            snapshot: &DeviceParameterSnapshot,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.input_gain_millidb() != PATCH_INPUT_GAIN
+                || state.output_gain_millidb() != PATCH_OUTPUT_GAIN
+            {
+                return Err(DeviceContractError::MalformedState);
+            }
+            let mut patched = self.migrate_state(state)?;
+            for &(parameter, value) in snapshot.entries() {
+                patched = self.patch_parameter(&patched, parameter, value)?;
+            }
+            Ok(patched)
+        }
+    }
+
+    impl NativeInstrumentDefinition for SnapshotPatchDefinition {
+        fn prepare_instrument(
+            &self,
+            _state: &NativeDeviceState,
+            _sample_rate: u32,
+        ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+            Err(DeviceContractError::MalformedState)
+        }
+    }
+
+    #[test]
+    fn snapshot_patch_preserves_host_gains_across_migrations() {
+        let definition = SnapshotPatchDefinition;
+        let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+        let registry = NativeInstrumentRegistry::new(&definitions).unwrap();
+        let state = registry
+            .default_state(definition.type_id())
+            .unwrap()
+            .with_input_gain_millidb(PATCH_INPUT_GAIN)
+            .unwrap()
+            .with_output_gain_millidb(PATCH_OUTPUT_GAIN)
+            .unwrap();
+        let snapshot =
+            DeviceParameterSnapshot::new(&[(PATCH_PARAMETER, ParameterValue::Float(1.0))]).unwrap();
+
+        let patched = registry.patch_parameters(&state, &snapshot).unwrap();
+
+        assert_eq!(patched.input_gain_millidb(), PATCH_INPUT_GAIN);
+        assert_eq!(patched.output_gain_millidb(), PATCH_OUTPUT_GAIN);
+        assert_eq!(
+            definition
+                .read_parameter(&patched, PATCH_PARAMETER)
+                .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+    }
 
     struct TestToneDefinition {
         id: &'static str,

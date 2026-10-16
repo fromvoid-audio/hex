@@ -45,20 +45,23 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
 }
 
 mod instrument;
+mod instrument_pair;
 mod instrument_runtime;
-mod live_note;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
     NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
-    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, PreparedStorageDeclaration,
+    SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+};
+pub use instrument_pair::{
+    NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
 };
 pub use instrument_runtime::{
-    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentClock,
-    NativeInstrumentEvent, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
-    PreparedMutableInstrumentRuntime,
+    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
+    NativeInstrumentAnalyticSeed, NativeInstrumentClock, NativeInstrumentEvent,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
-pub use live_note::{NoteGate, PreparedLiveAnalyticNote};
 
 /// Immutable, control-prepared configuration for one stateful native effect.
 /// Runtime construction happens before publication and is covered by the
@@ -79,12 +82,14 @@ pub trait PreparedNativeProcessor: Send + Sync {
         None
     }
 
-    /// Describe the processor's residual-output contract after its final
-    /// nonzero input frame. Finite values are sample frames at this prepared
+    /// Describe residual output duration, excluding fixed algorithmic latency.
+    /// Finite values are sample frames at this prepared
     /// processor's sample rate. A host must validate the value against its own
     /// finite work budget before admission, using checked frame arithmetic;
     /// in particular, `u64::MAX` is not an automatic acceptance. Unknown
     /// implementations conservatively make no finite reclamation-time promise.
+    /// Reclamation must include both this residual and known fixed latency;
+    /// use `NativeRuntimeChain::zero_input_drain_for_range` for that bound.
     fn output_tail(&self) -> OutputTail {
         OutputTail::Unbounded
     }
@@ -98,17 +103,15 @@ pub trait PreparedNativeProcessor: Send + Sync {
 }
 
 /// Prepared bound on residual output after the last nonzero input sample.
-/// A `Finite` declaration promises that, after at most the declared number of
-/// subsequent zero-input frames, `NativeProcessorRuntime::is_quiescent` is
-/// true. The promise covers all supported finite input histories and every
-/// stored state that can affect future output. It does not include fixed
-/// algorithmic latency, host/device buffering, or external signal tails.
+/// A `Finite` declaration promises quiescence after at most fixed algorithmic
+/// latency plus the declared residual zero-input frames. The promise covers all
+/// supported finite histories and stored states that can affect future output.
+/// Host/device buffering and external signal tails are outside this contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputTail {
-    /// After at most this many subsequent zero-input frames, the runtime must
-    /// report quiescent. This bound includes every internal state capable of
-    /// producing later output; zero means quiescent immediately after the last
-    /// nonzero input frame.
+    /// After fixed algorithmic latency plus this many subsequent zero-input
+    /// frames, the runtime must report quiescent. Zero residual duration can
+    /// still leave samples pending inside fixed buffering.
     Finite { max_tail_frames: u64 },
     /// No finite tail bound is guaranteed. A runtime may still become
     /// quiescent, but callers must not infer a deadline from observed samples.
@@ -119,6 +122,16 @@ pub enum OutputTail {
 /// history operations once the prepared configurations have been admitted.
 pub trait NativeProcessorRuntime: StdAny + Send {
     fn process_block(&mut self, frames: &mut [StereoFrame]);
+    /// Process with the content-origin clock at this node's input. The host
+    /// aligns this borrowed clock with compensated audio; processors must not
+    /// retain it. Time-independent implementations preserve the existing path.
+    fn process_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) {
+        self.process_block(frames);
+    }
     /// Advance private state while preserving a bypassed signal.
     fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
         for frame in frames {
@@ -126,6 +139,16 @@ pub trait NativeProcessorRuntime: StdAny + Send {
             self.process_block(std::slice::from_mut(frame));
             *frame = input;
         }
+    }
+    /// Clock-aware counterpart preserving the existing specialized bypass
+    /// operation by default. Time-aware processors should override this too
+    /// when private bypass history depends on the content-origin clock.
+    fn process_bypassed_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+    ) {
+        self.process_bypassed_block(frames);
     }
     fn reset(&mut self);
     /// True only when this runtime cannot produce any future output under
@@ -190,7 +213,8 @@ pub trait NativeProcessorAudition: Send {
 
 /// Maximum admitted stateful instances in one runtime bank.
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
-/// Maximum control-declared storage for one runtime twin.
+/// Maximum control-declared storage for one effect runtime twin. Mutable
+/// instrument limits are supplied separately by the engine's aggregate policy.
 pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 4_096;
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
@@ -229,6 +253,21 @@ pub struct PreparedProcessorInstance {
     pub definition: Option<std::sync::Arc<dyn PreparedNativeProcessor>>,
 }
 
+impl PreparedProcessorInstance {
+    /// Effective audible algorithmic latency from the actual prepared processor.
+    /// Bypass and a memoryless matrix are zero; unknown active latency remains
+    /// explicit so graph admission cannot invent an alignment value.
+    pub fn algorithmic_latency_frames(&self) -> Option<u32> {
+        if self.bypassed {
+            Some(0)
+        } else {
+            self.definition.as_ref().map_or(Some(0), |definition| {
+                definition.algorithmic_latency_frames()
+            })
+        }
+    }
+}
+
 pub struct PreparedNativeDevice {
     pub matrix: StereoMatrix,
     pub processor: Option<Box<dyn PreparedNativeProcessor>>,
@@ -252,6 +291,7 @@ impl fmt::Debug for PreparedProcessorInstance {
 struct RuntimeEntry {
     meter: std::sync::Arc<DeviceMeter>,
     metering: bool,
+    input_gain: f32,
     output_gain: f32,
     owner: ProcessorChainOwner,
     device_id: u64,
@@ -262,8 +302,38 @@ struct RuntimeEntry {
     sample_rate: u32,
     configuration: Option<std::sync::Arc<NativeDeviceState>>,
     output_tail: OutputTail,
+    algorithmic_latency_frames: Option<u32>,
     primary: Option<Box<dyn NativeProcessorRuntime>>,
     scratch: Option<Box<dyn NativeProcessorRuntime>>,
+}
+
+struct OffsetClock<'a> {
+    clock: &'a dyn NativeInstrumentClock,
+    offset: usize,
+}
+
+impl NativeInstrumentClock for OffsetClock<'_> {
+    fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock.beat_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .arrangement_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn loop_pass_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .loop_pass_at_offset(self.offset.checked_add(offset)?)
+    }
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .performance_frame_at_offset(self.offset.checked_add(offset)?)
+    }
+
+    fn transport_is_running(&self) -> Option<bool> {
+        self.clock.transport_is_running()
+    }
 }
 
 /// Paired audio-owned runtime state. `primary` is committed state; processing
@@ -276,7 +346,108 @@ pub struct NativeRuntimeChain {
     declared_runtime_bytes: usize,
 }
 
+/// Borrowed physical storage observations, never a provider declaration or
+/// ownership/retirement capability. Private chain fields remain inaccessible.
+pub struct NativeRuntimeStorage<'a> {
+    chain: &'a NativeRuntimeChain,
+}
+pub struct NativeRuntimeEntryStorage<'a> {
+    entry: &'a RuntimeEntry,
+}
+impl NativeRuntimeStorage<'_> {
+    pub fn entry_capacity_bytes(&self) -> Option<usize> {
+        self.chain
+            .entries
+            .capacity()
+            .checked_mul(std::mem::size_of::<RuntimeEntry>())
+    }
+    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'_>> {
+        self.chain
+            .entries
+            .iter()
+            .map(NativeRuntimeEntryStorage::new)
+    }
+}
+impl NativeRuntimeEntryStorage<'_> {
+    fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
+        let RuntimeEntry {
+            meter: _,
+            metering: _,
+            input_gain: _,
+            output_gain: _,
+            owner: _,
+            device_id: _,
+            device_type: _,
+            matrix: _,
+            bypassed: _,
+            runtime_version: _,
+            sample_rate: _,
+            configuration: _,
+            output_tail: _,
+            algorithmic_latency_frames: _,
+            primary: _,
+            scratch: _,
+        } = entry;
+        NativeRuntimeEntryStorage { entry }
+    }
+    /// Only scalar addresses leave this view. They are observations, not origin
+    /// receipts; equal bytes or addresses alone never establish provenance.
+    pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
+        (
+            self.entry
+                .primary
+                .as_deref()
+                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
+            self.entry
+                .scratch
+                .as_deref()
+                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
+        )
+    }
+    pub fn primary_payload_bytes(&self) -> Option<usize> {
+        self.entry.primary.as_deref().map(std::mem::size_of_val)
+    }
+    pub fn scratch_payload_bytes(&self) -> Option<usize> {
+        self.entry.scratch.as_deref().map(std::mem::size_of_val)
+    }
+    pub fn runtime_types_are<T: NativeProcessorRuntime>(&self) -> bool {
+        self.entry
+            .primary
+            .as_ref()
+            .is_some_and(|v| v.as_any().is::<T>())
+            && self
+                .entry
+                .scratch
+                .as_ref()
+                .is_some_and(|v| v.as_any().is::<T>())
+    }
+    /// Compare against an already borrowed prepared owner. The view never
+    /// returns or clones either shared owning field.
+    pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
+        self.entry.owner == prepared.owner
+            && self.entry.device_id == prepared.device_id
+            && self.entry.device_type == prepared.device_type
+            && self.entry.sample_rate == prepared.sample_rate
+            && std::sync::Arc::ptr_eq(&self.entry.meter, &prepared.meter)
+            && match (&self.entry.configuration, &prepared.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
 impl NativeRuntimeChain {
+    /// Control-side inventory or bounded scalar test observation only. This
+    /// does not authorize concurrent access to an active runtime.
+    pub fn storage_view(&self) -> NativeRuntimeStorage<'_> {
+        let Self {
+            entries: _,
+            stateful_count: _,
+            declared_runtime_bytes: _,
+        } = self;
+        NativeRuntimeStorage { chain: self }
+    }
     pub fn empty() -> Self {
         Self {
             entries: Vec::new(),
@@ -297,6 +468,10 @@ impl NativeRuntimeChain {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
             instance.device_type.validate()?;
+            let algorithmic_latency_frames =
+                instance.definition.as_ref().map_or(Some(0), |definition| {
+                    definition.algorithmic_latency_frames()
+                });
             let (runtime_version, output_tail, primary, scratch) =
                 if let Some(definition) = &instance.definition {
                     let bytes = definition.declared_runtime_bytes();
@@ -326,6 +501,10 @@ impl NativeRuntimeChain {
             entries.push(RuntimeEntry {
                 meter: instance.meter,
                 metering: false,
+                input_gain: instance
+                    .configuration
+                    .as_ref()
+                    .map_or(1.0, |state| state.input_gain_linear()),
                 output_gain: instance
                     .configuration
                     .as_ref()
@@ -339,6 +518,7 @@ impl NativeRuntimeChain {
                 sample_rate: instance.sample_rate,
                 configuration: instance.configuration,
                 output_tail,
+                algorithmic_latency_frames,
                 primary,
                 scratch,
             });
@@ -358,6 +538,22 @@ impl NativeRuntimeChain {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Effective latency for a prepared entry, including its current bypass.
+    pub fn algorithmic_latency_frames_for_entry(
+        &self,
+        index: usize,
+    ) -> Result<Option<u32>, DeviceContractError> {
+        let entry = self
+            .entries
+            .get(index)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        Ok(if entry.bypassed {
+            Some(0)
+        } else {
+            entry.algorithmic_latency_frames
+        })
     }
 
     /// Account the chain's owned control/audio runtime storage, excluding
@@ -667,7 +863,9 @@ impl NativeRuntimeChain {
             })
     }
 
-    /// Combine prepared output-tail declarations for a serial range. A range
+    /// Combine residual output-tail declarations for a serial range, excluding
+    /// fixed algorithmic latency. Reclamation uses `zero_input_drain_for_range`.
+    /// A range
     /// with any unbounded processor is unbounded; finite declarations add with
     /// checked arithmetic. Invalid ranges return `None`.
     pub fn output_tail_for_range(&self, range: std::ops::Range<usize>) -> Option<OutputTail> {
@@ -689,6 +887,31 @@ impl NativeRuntimeChain {
         })?;
         Some(OutputTail::Finite {
             max_tail_frames: finite_frames,
+        })
+    }
+
+    /// Total zero-input drain bound for a serial range: fixed intrinsic latency
+    /// plus residual output duration for every entry. Bypassed processors still
+    /// advance private state, so this uses intrinsic rather than audible latency.
+    /// Unknown latency or residual duration is unbounded; invalid ranges and
+    /// checked sum overflow return `None`. Reclamation must also test quiescence.
+    pub fn zero_input_drain_for_range(&self, range: std::ops::Range<usize>) -> Option<OutputTail> {
+        let entries = self.entries.get(range)?;
+        if entries.iter().any(|entry| {
+            entry.algorithmic_latency_frames.is_none() || entry.output_tail == OutputTail::Unbounded
+        }) {
+            return Some(OutputTail::Unbounded);
+        }
+        let frames = entries.iter().try_fold(0_u64, |total, entry| {
+            let OutputTail::Finite { max_tail_frames } = entry.output_tail else {
+                return None;
+            };
+            total
+                .checked_add(u64::from(entry.algorithmic_latency_frames?))?
+                .checked_add(max_tail_frames)
+        })?;
+        Some(OutputTail::Finite {
+            max_tail_frames: frames,
         })
     }
 
@@ -834,7 +1057,7 @@ impl NativeRuntimeChain {
 
     /// Process the summed track signal through all registered stateful entries.
     pub fn process_block(&mut self, frames: &mut [StereoFrame]) {
-        Self::process_entries(&mut self.entries, frames);
+        Self::process_entries(&mut self.entries, frames, None);
     }
 
     /// Process the full chain while observing each entry's output in order.
@@ -847,7 +1070,7 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) {
-        Self::process_entries_observed(&mut self.entries, frames, frame_offset, observer);
+        Self::process_entries_observed(&mut self.entries, frames, frame_offset, None, observer);
     }
 
     /// Process a control-prevalidated effect segment without ending the
@@ -858,11 +1081,23 @@ impl NativeRuntimeChain {
         range: std::ops::Range<usize>,
         frames: &mut [StereoFrame],
     ) -> Result<(), DeviceContractError> {
+        self.process_range_with_clock(range, frames, None)
+    }
+
+    /// Process a segment with the compensated content-origin clock. A host
+    /// processing entries with different arrivals must call one entry at a time
+    /// and supply each input's origin clock; this method does not shift clocks.
+    pub fn process_range_with_clock(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         let entries = self
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries(entries, frames);
+        Self::process_entries(entries, frames, clock);
         Ok(())
     }
 
@@ -877,17 +1112,33 @@ impl NativeRuntimeChain {
         frame_offset: usize,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) -> Result<(), DeviceContractError> {
+        self.process_range_observed_with_clock(range, frames, frame_offset, None, observer)
+    }
+
+    /// Clock-aware segment processing with the same borrowed post-node tap.
+    pub fn process_range_observed_with_clock(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
+    ) -> Result<(), DeviceContractError> {
         let entries = self
             .entries
             .get_mut(range)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
-        Self::process_entries_observed(entries, frames, frame_offset, observer);
+        Self::process_entries_observed(entries, frames, frame_offset, clock, observer);
         Ok(())
     }
 
-    fn process_entries(entries: &mut [RuntimeEntry], frames: &mut [StereoFrame]) {
+    fn process_entries(
+        entries: &mut [RuntimeEntry],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) {
         for entry in entries {
-            Self::process_entry(entry, frames);
+            Self::process_entry(entry, frames, clock);
         }
     }
 
@@ -895,10 +1146,11 @@ impl NativeRuntimeChain {
         entries: &mut [RuntimeEntry],
         frames: &mut [StereoFrame],
         frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
         observer: &mut impl FnMut(ProcessorChainOwner, u64, DeviceTypeId, usize, &[StereoFrame]),
     ) {
         for entry in entries {
-            Self::process_entry(entry, frames);
+            Self::process_entry(entry, frames, clock);
             observer(
                 entry.owner,
                 entry.device_id,
@@ -909,19 +1161,40 @@ impl NativeRuntimeChain {
         }
     }
 
-    fn process_entry(entry: &mut RuntimeEntry, frames: &mut [StereoFrame]) {
+    fn process_entry(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) {
+        if !entry.bypassed && entry.input_gain != 1.0 {
+            for frame in frames.iter_mut() {
+                frame[0] *= entry.input_gain;
+                frame[1] *= entry.input_gain;
+            }
+        }
         if entry.metering {
             entry.meter.observe_input(frames);
         }
         if entry.bypassed {
             if let Some(runtime) = entry.scratch.as_mut() {
                 if entry.matrix.is_identity() {
-                    runtime.process_bypassed_block(frames);
+                    runtime.process_bypassed_block_with_clock(frames, clock);
                 } else {
-                    for frame in frames.iter_mut() {
+                    for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
                         let mut internal = entry.matrix.apply(audible);
-                        runtime.process_bypassed_block(std::slice::from_mut(&mut internal));
+                        // Preserve the existing per-frame matrix/bypass path.
+                        // A shifted view keeps clock offset zero meaningful.
+                        let shifted = clock.map(|clock| OffsetClock {
+                            clock,
+                            offset: frame_index,
+                        });
+                        runtime.process_bypassed_block_with_clock(
+                            std::slice::from_mut(&mut internal),
+                            shifted
+                                .as_ref()
+                                .map(|clock| clock as &dyn NativeInstrumentClock),
+                        );
                         *frame = audible;
                     }
                 }
@@ -929,7 +1202,7 @@ impl NativeRuntimeChain {
         } else {
             entry.matrix.apply_block(frames);
             if let Some(runtime) = entry.scratch.as_mut() {
-                runtime.process_block(frames);
+                runtime.process_block_with_clock(frames, clock);
             }
         }
         if !entry.bypassed && entry.output_gain != 1.0 {
@@ -1000,7 +1273,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             }
             for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
                 descriptor.validate_descriptor()?;
-                if descriptor.id.value() == u32::MAX {
+                if descriptor.id.value() >= u32::MAX - 1 {
                     return Err(DeviceContractError::InvalidDescriptor);
                 }
                 if definition.descriptors()[..parameter_index]
@@ -1040,8 +1313,28 @@ impl<'a> NativeDeviceRegistry<'a> {
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
         self.validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
+    pub fn patch_parameters(
+        &self,
+        state: &NativeDeviceState,
+        snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        let current = self
+            .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())?;
+        snapshot.validate(definition.descriptors())?;
+        let patched = definition.patch_parameters(&current, snapshot)?;
+        self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
+            .with_output_gain_millidb(state.output_gain_millidb())
+    }
+
     pub fn patch_parameter(
         &self,
         state: &NativeDeviceState,
@@ -1053,6 +1346,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         let descriptor = definition
             .descriptors()
@@ -1062,6 +1356,7 @@ impl<'a> NativeDeviceRegistry<'a> {
         descriptor.validate(value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())
     }
     pub fn prepare_matrix(
@@ -1073,6 +1368,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_matrix(&current)
     }
@@ -1086,6 +1382,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         definition.prepare_processor(&current, sample_rate)
     }
@@ -1099,6 +1396,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let current = self
             .validate_current(definition, definition.migrate_state(state)?)?
+            .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
@@ -1228,9 +1526,152 @@ impl StereoMatrix {
 }
 
 #[cfg(test)]
+mod compensation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
+
+    const SNAPSHOT_PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);
+    const SNAPSHOT_PATCH_DESCRIPTORS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        id: SNAPSHOT_PATCH_PARAMETER,
+        label: "level",
+        kind: hex_lattice_contract::ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.25),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    }];
+    const SNAPSHOT_PATCH_INPUT_GAIN: i32 = -12_345;
+    const SNAPSHOT_PATCH_OUTPUT_GAIN: i32 = 6_789;
+
+    struct SnapshotPatchEffectDefinition;
+
+    impl NativeDeviceMetadata for SnapshotPatchEffectDefinition {
+        fn type_id(&self) -> DeviceTypeId {
+            DeviceTypeId::from_static("test.effect-snapshot-patch")
+        }
+
+        fn state_version(&self) -> u32 {
+            1
+        }
+
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            SNAPSHOT_PATCH_DESCRIPTORS
+        }
+
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(NativeDeviceMetadata::type_id(self), 1, vec![64])
+        }
+
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.type_id() != NativeDeviceMetadata::type_id(self) || state.state_version() != 1
+            {
+                return Err(DeviceContractError::MalformedState);
+            }
+            NativeDeviceState::new(
+                NativeDeviceMetadata::type_id(self),
+                1,
+                state.payload().to_vec(),
+            )
+        }
+
+        fn read_parameter(
+            &self,
+            state: &NativeDeviceState,
+            parameter: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            if parameter != SNAPSHOT_PATCH_PARAMETER {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let value = *state
+                .payload()
+                .first()
+                .ok_or(DeviceContractError::MalformedState)?;
+            Ok(ParameterValue::Float(f32::from(value) / 255.0))
+        }
+
+        fn patch_parameter(
+            &self,
+            _state: &NativeDeviceState,
+            parameter: ParameterId,
+            value: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if parameter != SNAPSHOT_PATCH_PARAMETER {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+            let ParameterValue::Float(value) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            NativeDeviceState::new(
+                NativeDeviceMetadata::type_id(self),
+                1,
+                vec![(value * 255.0).round() as u8],
+            )
+        }
+
+        fn patch_parameters(
+            &self,
+            state: &NativeDeviceState,
+            snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.input_gain_millidb() != SNAPSHOT_PATCH_INPUT_GAIN
+                || state.output_gain_millidb() != SNAPSHOT_PATCH_OUTPUT_GAIN
+            {
+                return Err(DeviceContractError::MalformedState);
+            }
+            let mut patched = self.migrate_state(state)?;
+            for &(parameter, value) in snapshot.entries() {
+                patched = self.patch_parameter(&patched, parameter, value)?;
+            }
+            Ok(patched)
+        }
+    }
+
+    impl NativeDeviceDefinition for SnapshotPatchEffectDefinition {
+        fn prepare_matrix(
+            &self,
+            _state: &NativeDeviceState,
+        ) -> Result<StereoMatrix, DeviceContractError> {
+            Ok(StereoMatrix::identity())
+        }
+    }
+
+    #[test]
+    fn effect_snapshot_patch_preserves_host_gains_across_migrations() {
+        let definition = SnapshotPatchEffectDefinition;
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let state = registry
+            .default_state(NativeDeviceMetadata::type_id(&definition))
+            .unwrap()
+            .with_input_gain_millidb(SNAPSHOT_PATCH_INPUT_GAIN)
+            .unwrap()
+            .with_output_gain_millidb(SNAPSHOT_PATCH_OUTPUT_GAIN)
+            .unwrap();
+        let snapshot = hex_lattice_contract::DeviceParameterSnapshot::new(&[(
+            SNAPSHOT_PATCH_PARAMETER,
+            ParameterValue::Float(1.0),
+        )])
+        .unwrap();
+
+        let patched = registry.patch_parameters(&state, &snapshot).unwrap();
+
+        assert_eq!(patched.input_gain_millidb(), SNAPSHOT_PATCH_INPUT_GAIN);
+        assert_eq!(patched.output_gain_millidb(), SNAPSHOT_PATCH_OUTPUT_GAIN);
+        assert_eq!(
+            definition
+                .read_parameter(&patched, SNAPSHOT_PATCH_PARAMETER)
+                .unwrap(),
+            ParameterValue::Float(1.0)
+        );
+    }
 
     struct SplitAuditionPrepared(std::sync::atomic::AtomicUsize);
 

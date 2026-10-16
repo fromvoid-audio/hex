@@ -23,6 +23,8 @@ const BED_ASSET: u64 = 7;
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
         return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
         import_provenance: None,
         sample_rate: RATE,
         next_id: 10,
@@ -55,6 +57,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
         tracks: vec![
             TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: SESSION_TRACK,
                 name: "session audio".into(),
                 gain: 1.0,
@@ -69,6 +73,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
             },
             TrackSnapshot {
                 gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: BED_TRACK,
                 name: "resident bed".into(),
                 gain: 1.0,
@@ -79,6 +85,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    edit: None,
+                    gain: hex_project::ClipGain::UNITY,
                     id: 8,
                     asset: BED_ASSET,
                     start: 0,
@@ -101,6 +109,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 track: SESSION_TRACK,
                 scene: SCENE,
                 content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: SESSION_CLIP,
                     name: "one shot".into(),
                     asset: STREAM_ASSET,
@@ -885,6 +894,8 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         panic!("audio track expected")
     };
     clips.push(ClipSnapshot {
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
         id: 10,
         asset: STREAM_ASSET,
         start: 0,
@@ -990,6 +1001,8 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = 0.5;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
         id: 10,
         asset: STREAM_ASSET,
         start: 3,
@@ -1072,4 +1085,200 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
             ]
         );
     }
+}
+
+#[test]
+fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
+    for streamed in [false, true] {
+        let project = project(4_094, 4_102);
+        let clip = project.session_cells()[0].content();
+        let hex_project::SessionCellContent::Audio(clip) = clip else {
+            panic!("audio")
+        };
+        let clip = clip.id();
+        let media: BTreeMap<_, _> = project
+            .assets()
+            .map(|asset| {
+                let frames = if asset.id().value() == STREAM_ASSET {
+                    (0..8_192).map(sample).collect()
+                } else {
+                    (0..32).map(|index| sample(index + 2)).collect()
+                };
+                (asset.id(), Audio::new(RATE, frames).unwrap())
+            })
+            .collect();
+        let prepare = |project: &Project| {
+            if streamed {
+                prepared(project, 71, [3; 32])
+            } else {
+                Arc::new(
+                    PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
+                        .unwrap(),
+                )
+            }
+        };
+        let mut before = Playback::try_from_prepared_with_session(prepare(&project)).unwrap();
+        launch_and_play(&mut before);
+        let key = StreamSourceKey::new(71, project.assets().next().unwrap().id());
+        let mut prefix = [[0.0; 2]; 3];
+        before
+            .render_with_pages(&mut prefix, &mut MemoryPages::with_source(key))
+            .unwrap();
+        let mut editor = Editor::new(project, 8).unwrap();
+        editor
+            .execute(Command::SetAudioClipGain {
+                clip,
+                millidb: -6_000,
+            })
+            .unwrap();
+        let gain = hex_project::ClipGain::new(-6_000).unwrap().linear();
+        let mut next = Playback::try_from_prepared_with_session(prepare(editor.project())).unwrap();
+        next.try_inherit_runtime_from(&mut before).unwrap();
+        assert_eq!(next.performance_frame(), 3);
+        let mut actual = [[0.0; 2]; 9];
+        let mut pages = MemoryPages::with_source(key);
+        for chunk in actual.chunks_mut(2) {
+            next.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        for (index, actual) in actual.iter().enumerate() {
+            let age = index as u64 + 3;
+            let bed = sample(age + 2);
+            let expected = if age < 8 {
+                let source = sample(4_094 + age);
+                [source[0] * gain + bed[0], source[1] * gain + bed[1]]
+            } else {
+                bed
+            };
+            assert_eq!(*actual, expected);
+        }
+    }
+}
+
+#[test]
+fn exact_engine_stream_demand_is_pure_across_pending_play_page_edges_and_handoff_retry() {
+    use hex_engine::{SessionPlayback, SessionPlaybackCommand, StreamPageExtent};
+    let project = project(4094, 4105);
+    let source = metadata(&project, 51, [0x71; 32]);
+    let key = source.key();
+    let revision = prepared(&project, 51, [0x71; 32]);
+    let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    old.apply(SessionPlaybackCommand::LaunchClip {
+        clip: revision.session().audio_clips()[0].id,
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    })
+    .unwrap();
+    let before = (
+        old.performance_frame(),
+        old.arrangement_frame(),
+        old.route_state_generation(),
+    );
+    let route = old.route_status(0);
+    let mut extents = Vec::new();
+    assert_eq!(
+        old.visit_next_stream_chunk(8, None, &mut |e| {
+            extents.push(e);
+            Ok(())
+        })
+        .unwrap()
+        .frames,
+        0
+    );
+    let proposed = old
+        .visit_next_stream_chunk(8, Some(true), &mut |e| {
+            extents.push(e);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(proposed.frames, 8);
+    assert_eq!(
+        extents,
+        vec![
+            StreamPageExtent {
+                source: key,
+                page_index: 0,
+                start: 4094,
+                end: 4096
+            },
+            StreamPageExtent {
+                source: key,
+                page_index: 1,
+                start: 0,
+                end: 6
+            },
+        ]
+    );
+    assert_eq!(
+        (
+            old.performance_frame(),
+            old.arrangement_frame(),
+            old.route_state_generation()
+        ),
+        before
+    );
+    assert_eq!(old.route_status(0), route);
+    assert!(
+        old.visit_next_stream_chunk(8, Some(true), &mut |_| Err(hex_engine::Invalid(
+            "reserved extent capacity"
+        )))
+        .is_err()
+    );
+    assert_eq!(
+        (
+            old.performance_frame(),
+            old.arrangement_frame(),
+            old.route_state_generation()
+        ),
+        before
+    );
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render_with_pages(&mut [[0.0; 2]; 4], &mut MemoryPages::with_source(key))
+        .unwrap();
+    let mut next = SessionPlayback::new(revision).unwrap();
+    let old_before = (
+        old.performance_frame(),
+        old.arrangement_frame(),
+        old.route_status(0),
+    );
+    assert!(
+        next.preview_stream_handoff(&mut old, 4, None, &mut |_| Err(hex_engine::Invalid(
+            "reserved extent capacity"
+        )))
+        .is_err()
+    );
+    assert_eq!(
+        (
+            old.performance_frame(),
+            old.arrangement_frame(),
+            old.route_status(0)
+        ),
+        old_before
+    );
+    let mut planned = Vec::new();
+    let planned_window = next
+        .preview_stream_handoff(&mut old, 4, None, &mut |e| {
+            planned.push(e);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(next.performance_frame(), 0); // preview did not consume candidate admission
+    next.try_inherit_state_from(&mut old).unwrap();
+    let mut actual = Vec::new();
+    assert_eq!(
+        next.visit_next_stream_chunk(4, None, &mut |e| {
+            actual.push(e);
+            Ok(())
+        })
+        .unwrap(),
+        planned_window
+    );
+    assert_eq!(actual, planned);
+    assert_eq!(
+        actual,
+        vec![StreamPageExtent {
+            source: key,
+            page_index: 1,
+            start: 2,
+            end: 6
+        }]
+    );
 }

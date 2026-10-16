@@ -34,16 +34,6 @@ compares the complete metadata value, and `same_catalog` distinguishes catalogs
 even when their generation and keys match. Keep one lease with each prepared graph
 that refers to the catalog.
 
-`VerifiedStreamRevision` consumes an `Arc<PreparedRevision>` and a real ready
-`CatalogLease`, checking every Arrangement and Session stream binding against
-complete verified metadata membership. Validation borrows without allocation or
-owner cloning. Failure returns both inputs in `StreamRevisionMismatch`; successful
-bindings expose borrowed graph/catalog access and actual catalog identity.
-The wrapper has no Clone implementation. Construction, transfer and final
-reclamation belong on control; final lease release may stop/wake/join the worker.
-This first Pulse24 stage adds no callback endpoint or page-readiness proof and
-does not enable native streamed publication or lift resident import limits.
-
 Matching shutdown counts the actual owner references held by the control and page
 endpoint. If graph leases remain, it returns recoverable `ShutdownError::Busy`
 without changing the pair; `into_parts()` restores both halves for a retry after
@@ -60,6 +50,14 @@ measures the split render-facing operations with the pinned dev-only allocation
 counter. Worker setup, page preparation, assertions, and shutdown stay outside the
 measured closure. This is a headless endpoint probe, not native device acceptance.
 
+The owning runtime unit fixture verifies shutdown with an undrained one-page
+ready queue and a second page actually held by the worker. Test-only channel
+barriers delay the real worker after catalog preparation; publication events,
+not a fixed sleep, establish the required queue state before shutdown. A delayed
+worker negative control reproduces the old 30 ms assumption yielding zero queued
+pages while still joining and reclaiming the complete pool. The hooks are absent
+from production builds; shutdown, queue bounds and callback behavior are unchanged.
+
 `cargo run --release -p hex-stream --example profile_100_long_sources` creates
 100 distinct sparse WAV files of 17,000,000 stereo frames each, catalogs their
 full logical contents, warms one far-offset page per asset, and renders 100
@@ -75,12 +73,77 @@ It does not replace the resident media bank or make streamed playback available
 to the native application until the `hex-audio` and project/session publication
 paths explicitly own and retain its endpoint/catalog.
 
-`VerifiedPageEndpoint` is a control-constructed, non-cloneable catalog/page
-pairing. It checks actual owner and pair identity, exposes borrowed existing
-pages, and returns owners through `into_parts` for the existing transactional
-shutdown path. It does not establish installed-page readiness or native admission.
-Its StreamAllocationFootprint reports actual endpoint-exclusive and shared
-transport/catalog reserved capacities with checked retained/construction totals.
-The legacy CatalogFootprint remains a payload/subcomponent view, not an additive
-heap total. Capacity reporting excludes opaque allocator/Arc/OS/thread machinery
-and caller graph storage; it does not establish aggregate admission policy.
+## Borrowed DATA inventory
+
+The control-only `AudioStreamStorageLedger` composes the engine's sealed borrowed
+root ledger with actual control/pages pairs and explicitly borrowed caller leases.
+It captures actual constructor capacities, counts an entire actual domain once,
+and preserves separate owning-handle, source-binding and retirement obligations.
+Only the named listed DATA contract can be complete; excluded opaque costs remain
+explicit obligations and `require_complete` refuses. No generic page provider can
+mint this report, and no publication/lifecycle capability follows. Queries use the
+existing control mutexes; never call them from a callback.
+
+Queue slot DATA declarations cover only the fixed repository Cargo invocation
+with pinned compiler/Cargo.lock, observed source-file checks and exact required
+CI/allocation probes. Build-only sha2 checks those observed files; build.rs cannot
+attest resolved sources for arbitrary custom Cargo `--config`/source replacement.
+Unsupported observations stay Unknown. Ordinary runtime behavior and all
+component limits remain unchanged. See the exhaustive
+[DATA/obligation manifest](../../docs/audio-only-storage-accounting.md).
+
+## borrowed persistent pair disposal
+
+`PreparedStreamDisposal` is the control-side alternative used by native candidate
+custody. Preparation reserves collection storage before the exact original pair
+moves. Busy external leases leave the pair untouched; join occurs outside the
+worker mutex, retaining the first worker panic payload and endpoints on failure.
+Normal completion requires conservation of every fixed pool page before
+destruction. Failed disposal stays incomplete and is never retried. This does
+not change the legacy consuming shutdown API or certify native quiescence,
+complete cost or admission. See [never-installed disposal](../../docs/never-installed-audio-disposal.md).
+
+
+## closed constructor domain custody
+
+`ConstructorStreamDomain` consumes the real control/pages pair only after
+constructor DATA and excess caller-handle checks. It retains its actual source
+lease and disposal capsule without exposing a lease or render endpoint. Listed
+DATA and constructor-bounded opaque resource lifetimes are separate: this never
+assigns zero bytes to std/channel/thread/OS internals or upgrades the public
+borrowed ledger's completeness. Normal worker join, pool conservation and final
+endpoint/channel/metadata destruction precede its report. The native host keeps
+charges until report consumption and must enforce its global two-domain limit.
+Native readiness is connected only through the opted-in audio constructor path. See
+[constructor publication](../../docs/audio-candidate-publication.md).
+
+## sealed readiness and endpoint loan (PR237 checkpoint)
+
+A constructor domain may additionally reserve a finite extent capacity for each
+of Active, Candidate and Transition. A checked requested-layout lower bound refuses insufficient caller DATA
+allowances before allocating disposal/readiness backing. Six actual Vec capacities
+and the internal readiness catalog lease's three handles are then charged before
+consuming the original pair. Its move-only `ConstructorPageLoan` carries the one actual request producer
+and callback endpoint; it cannot clone another producer or export raw endpoint
+ownership. The original control/catalog/disposal owner remains on control, and
+normal disposal cannot stop or join until the exact loan returns. Returning a
+wrong pair preserves both owners. Inline capsule storage belongs to its host;
+its backing reservation remains charged through the report barrier.
+
+Decoded buffers are not readiness. Bounded service installs complete requested
+extents, validates actual valid-frame lengths, atomically replaces only its own
+protection role, and publishes one reserved unread receipt per role. A receipt
+must be acknowledged against its exact stamp/extents before borrowing protected
+samples or replacing it. The borrowed view exposes only listed protected page
+keys and cannot schedule missing pages; it is still not an engine-demand
+certificate. Other roles survive overlapping replacement/cancellation;
+a protected PCM page cannot be replaced by a duplicate shorter decode. The union
+of protected/outstanding pages must fit the actual existing cache, with no pool
+cap increase. Stamps are correlation data, not proof of engine demand or native
+publication. Audio must bind these operations to its real constructor and engine
+window before enabling streamed installation; PR237 connects that opted-in path.
+An exclusive borrowed promotion token validates all involved roles before commit,
+then moves the actual protected Vec backing to Active without allocation or a
+fallible second-domain commit. Bounded single failure consumption releases the
+actual failed pending key for retry; the native owner retains its diagnostic.
+Legacy borrowed pages retain their established miss behavior.

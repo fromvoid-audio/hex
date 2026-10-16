@@ -1,3 +1,6 @@
+> State v12 appends harmonic authoring after the v11 filter and unchanged enable prefix.
+> The completed harmonic runtime is described in [operator harmonics](operator-harmonics.md).
+
 # Operator oscillator enable controls — Pulse2335
 
 Status: integrated source; final automated and native acceptance pending.
@@ -77,3 +80,8 @@ No native input or compilation begins while another chat owns its lease.
   checklist remains separate evidence. No Live numerical or CPU parity claim.
 
 Reference scope and unknowns: [bounded enable evidence](../research/observations/operator-enable-2335.md).
+
+The outstanding held-note listening follow-up is Pulse2372 / PR247; use the
+[Arrangement fixture and finite retest checklist](operator-enable-retest.md).
+Authored gates may supply this check without completing broad live MIDI input.
+No native result follows from the fixture or its source tests.

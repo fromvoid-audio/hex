@@ -16,6 +16,8 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: clip,
                 asset: 4,
                 start: 3,
@@ -82,6 +84,34 @@ fn linear(revision: Arc<PreparedRevision>) -> SessionPlayback {
     let mut runtime = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
     runtime.apply(SessionPlaybackCommand::Play).unwrap();
     runtime
+}
+
+#[test]
+fn metered_analytic_capture_applies_track_gain_once_and_preserves_main_pcm() {
+    let mut snapshot = project(0.375, 0, 1 << 26).snapshot();
+    snapshot.tracks[0].balance = 0.4;
+    snapshot.master_gain = 0.5;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let prepared = revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let mut reference = linear(Arc::clone(&prepared));
+    let mut metered = linear(prepared);
+    metered.set_device_metering(true);
+    let id = OutputCaptureId::Track(project.tracks()[0].id());
+    let plan = metered.output_capture_plan(&[id], 512).unwrap();
+    let mut main = [[0.0; 2]; 512];
+    let mut expected = main;
+    let mut captured = main;
+    let mut buffers: [&mut [Frame]; 1] = [&mut captured];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    metered
+        .render_with_capture(&mut main, &mut capture)
+        .unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(main, expected, "metering and capture preserve main PCM");
+    assert!(main[..375].iter().flatten().any(|sample| *sample != 0.0));
+    for (frame, output) in capture.output(0).unwrap().iter().zip(main) {
+        assert_eq!(frame.map(|sample| sample * 0.5), output);
+    }
 }
 
 #[test]
@@ -485,6 +515,8 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         midi_clips,
         audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: 81,
             asset: 80,
             start: 3,
@@ -883,207 +915,61 @@ fn capture_bounds_and_handoff_generation_exhaustion_refuse_before_runtime_mutati
         );
     }
 }
+
 #[test]
-fn metered_analytic_automation_capture_applies_time_varying_gain_once() {
-    use hex_project::{BeatTime, GainInterpolation, GainPoint};
-    let mut snapshot = audio_fixture_project(false, false, false).snapshot();
-    snapshot.tracks.truncate(1);
-    snapshot.tracks[0].instrument = Some(DeviceSnapshot {
-        id: 30,
-        bypassed: false,
-        state: crate::default_native_device_state_for_class(
-            crate::NativeDeviceClass::Instrument,
-            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
-        )
-        .unwrap(),
-    });
-    snapshot.tracks[0].instrument_position = Some(0);
-    snapshot.next_id = 31;
-    snapshot.tracks[0].gain_envelope = vec![
-        GainPoint {
-            beat: BeatTime::ZERO,
-            gain: 0.25,
-            outgoing: GainInterpolation::Linear,
-        },
-        GainPoint {
-            beat: BeatTime::ONE,
-            gain: 1.25,
-            outgoing: GainInterpolation::Step,
-        },
+fn reused_capture_buffers_only_clear_rendered_prefix_on_success() {
+    let mut runtime = linear(audio_fixture(true, false, false));
+    let ids = [
+        OutputCaptureId::Track(runtime.routes[0].id),
+        OutputCaptureId::Return(runtime.revision.arrangement().return_buses()[0].id),
     ];
-    let project = Project::from_snapshot(snapshot).unwrap();
-    let revision = prepare_audio(&project);
-    let mut baseline = None;
-    for metered in [false, true] {
-        let mut runtime = linear(Arc::clone(&revision));
-        runtime.set_device_metering(metered);
-        let plan = runtime
-            .output_capture_plan(&[OutputCaptureId::Track(project.tracks()[0].id())], 512)
-            .unwrap();
-        let mut main = [[0.0; 2]; 512];
-        let mut selected = main;
-        let mut buffers: [&mut [Frame]; 1] = [&mut selected];
+    let plan = runtime
+        .output_capture_plan(&ids, MAX_OUTPUT_CAPTURE_FRAMES)
+        .unwrap();
+    let sentinel = [9.0, -9.0];
+    let mut track = vec![sentinel; MAX_OUTPUT_CAPTURE_FRAMES];
+    let mut bus = track.clone();
+    for frames in [256, 0, 17] {
+        let previous_track = track.clone();
+        let previous_bus = bus.clone();
+        let mut main = vec![[0.0; 2]; frames];
+        let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut bus];
         let mut capture = OutputCapture::new(&plan, &mut buffers);
         runtime
             .render_with_capture(&mut main, &mut capture)
             .unwrap();
-        for (index, frame) in capture.output(0).unwrap().iter().enumerate() {
-            let gain = 0.25 + index as f32 / 24000.0;
-            let raw = if index < 3 { [0.0; 2] } else { [0.4, -0.2] };
-            let expected = [raw[0] * gain * 0.5, raw[1] * gain];
-            for channel in 0..2 {
-                assert!(
-                    (frame[channel] - expected[channel]).abs() < 1e-7,
-                    "captured gain at {index}"
-                );
-                assert!(
-                    (main[index][channel] - expected[channel] * 0.5).abs() < 1e-7,
-                    "main gain at {index}"
-                );
-            }
-        }
-        if let Some(previous) = baseline {
-            assert_eq!(main, previous);
-        } else {
-            baseline = Some(main);
-        }
-    }
-}
-#[test]
-fn typing_host_trim_and_automation_preserve_meter_and_capture_pcm() {
-    use crate::live_input::{PreparedTypingArm, TypingTarget};
-    use crate::typing_protocol::{Action, Token};
-    use hex_project::{BeatTime, Command, Created, Editor, GainInterpolation, GainPoint};
-    let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
-    let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
-            name: "typing".into(),
-        })
-        .unwrap()
-    else {
-        panic!("track")
-    };
-    let device = editor
-        .project()
-        .track(track)
-        .unwrap()
-        .instrument()
-        .unwrap()
-        .id();
-    let state = crate::default_native_device_state_for_class(
-        crate::NativeDeviceClass::Instrument,
-        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
-    )
-    .unwrap();
-    let state = crate::patch_native_device_parameter_for_class(
-        crate::NativeDeviceClass::Instrument,
-        &state,
-        hex_lattice_contract::ParameterId::from_static(82),
-        ParameterValue::Bool(true),
-    )
-    .unwrap();
-    editor
-        .execute(Command::ReplaceDeviceState {
-            device,
-            state: state.clone(),
-        })
-        .unwrap();
-    editor
-        .execute(Command::ReplaceTrackGainEnvelope {
-            track,
-            points: vec![
-                GainPoint {
-                    beat: BeatTime::ZERO,
-                    gain: 0.25,
-                    outgoing: GainInterpolation::Linear,
-                },
-                GainPoint {
-                    beat: BeatTime::ONE,
-                    gain: 0.75,
-                    outgoing: GainInterpolation::Step,
-                },
-            ],
-        })
-        .unwrap();
-    let target = TypingTarget {
-        project_generation: 0,
-        project_revision: 1,
-        track,
-        device,
-    };
-    let mut unity = None;
-    for gain_db in [0.0, -6.0] {
-        let mut model = Editor::new(editor.project().clone(), 8).unwrap();
-        model
-            .execute(Command::ReplaceDeviceState {
-                device,
-                state: state.clone().with_output_gain_db(gain_db).unwrap(),
-            })
-            .unwrap();
-        let revision = Arc::new(
-            PreparedRevision::prepare(
-                model.project(),
-                &BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
-                None,
-            )
-            .unwrap(),
+        assert_eq!(capture.valid_frames(), frames);
+        assert!(
+            capture
+                .output(0)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() < 1.0)
         );
-        let mut unmetered = None;
-        for metered in [false, true] {
-            let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-            let input = runtime
-                .prepare_typing_input(
-                    PreparedTypingArm::prepare(model.project(), target).unwrap(),
-                    1,
-                )
-                .unwrap();
-            assert!(runtime.install_typing_input(input).is_ok());
-            runtime.set_device_metering(metered);
-            runtime.apply(SessionPlaybackCommand::Play).unwrap();
-            runtime
-                .queue_typing_input(
-                    1,
-                    Action::On {
-                        owner: target.owner().unwrap(),
-                        token: Token {
-                            epoch: 1,
-                            serial: 1,
-                        },
-                        key: 9,
-                        pitch: 69,
-                        velocity: 100,
-                    },
-                )
-                .unwrap();
-            let plan = runtime
-                .output_capture_plan(&[OutputCaptureId::Track(track)], 64)
-                .unwrap();
-            let mut main = [[0.0; 2]; 64];
-            let mut selected = main;
-            let mut buffers: [&mut [Frame]; 1] = [&mut selected];
-            let mut capture = OutputCapture::new(&plan, &mut buffers);
-            runtime
-                .render_with_capture(&mut main, &mut capture)
-                .unwrap();
-            assert!(main.iter().flatten().any(|x| x.abs() > 1e-6));
-            assert_eq!(capture.output(0).unwrap(), &main);
-            if let Some(previous) = unmetered {
-                assert_eq!(main, previous);
-            } else {
-                unmetered = Some(main);
-            }
-            if gain_db == 0.0 {
-                unity = Some(main);
-            } else {
-                for (actual, expected) in main
-                    .iter()
-                    .flatten()
-                    .zip(unity.as_ref().unwrap().iter().flatten())
-                {
-                    assert!((*actual - *expected * 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
-                }
-            }
-        }
+        assert!(
+            capture
+                .output(1)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|sample| sample.abs() < 1.0)
+        );
+        assert_eq!(track[frames..], previous_track[frames..]);
+        assert_eq!(bus[frames..], previous_bus[frames..]);
     }
+    // Refusal still performs the documented bounded full-slice cleanup.
+    let mut buffers: [&mut [Frame]; 2] = [&mut track, &mut bus];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    let mut oversized = vec![[9.0; 2]; MAX_OUTPUT_CAPTURE_FRAMES + 1];
+    assert!(
+        runtime
+            .render_with_capture(&mut oversized, &mut capture)
+            .is_err()
+    );
+    assert_eq!(capture.valid_frames(), 0);
+    assert!(track.iter().chain(&bus).all(|frame| *frame == [0.0; 2]));
 }
+
+#[path = "capture_routing_tests.rs"]
+mod routing;

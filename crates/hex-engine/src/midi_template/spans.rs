@@ -123,12 +123,19 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+    pub(crate) voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+}
+
+impl MidiRenderSpan {
+    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::PreparedMidiNote> {
+        self.voice
+    }
 }
 
 /// Identity of a carried occurrence that must not be emitted again by the
 /// newly prepared source while its copied voice is still sounding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub(crate) struct MidiOccurrenceSuppression {
     pub(crate) track: hex_project::TrackId,
     pub(crate) clip: hex_project::ClipId,
@@ -136,10 +143,85 @@ pub(crate) struct MidiOccurrenceSuppression {
     pub(crate) iteration: u64,
     pub(crate) loop_pass: u64,
     pub(crate) until_frame: u64,
-    /// Present only for mutable event dispatch. The stable IDs alone are not
-    /// enough to suppress a source note that has changed since the old event.
-    pub(crate) mutable_signature: Option<crate::mutable_instrument::MutableOccurrenceSignature>,
+    // One key serves both identity lookup and reconstructed mutable signature.
+    // Analytic records canonicalize every unused detail, including padding.
+    onset_beat: BeatTime,
+    gate_end_beat: BeatTime,
+    pitch: u8,
+    channel: u8,
+    velocity: u8,
+    kind: u8,
+    padding: [u8; 4],
 }
+
+impl MidiOccurrenceSuppression {
+    pub(crate) const fn analytic(
+        key: crate::mutable_instrument::MutableOccurrenceKey,
+        until_frame: u64,
+    ) -> Self {
+        Self {
+            track: key.track,
+            clip: key.clip,
+            note: key.note,
+            iteration: key.iteration,
+            loop_pass: key.loop_pass,
+            until_frame,
+            onset_beat: BeatTime::ZERO,
+            gate_end_beat: BeatTime::ZERO,
+            pitch: 0,
+            channel: 0,
+            velocity: 0,
+            kind: 0,
+            padding: [0; 4],
+        }
+    }
+
+    pub(crate) const fn mutable(
+        signature: crate::mutable_instrument::MutableOccurrenceSignature,
+        until_frame: u64,
+    ) -> Self {
+        let (onset_beat, gate_end_beat, pitch, channel, velocity) = signature.details();
+        Self {
+            onset_beat,
+            gate_end_beat,
+            pitch,
+            channel,
+            velocity,
+            kind: 1,
+            ..Self::analytic(signature.key(), until_frame)
+        }
+    }
+
+    /// Exact original value, including every key/beat/MIDI bit. No allocation
+    /// or provider lookup, and no integer/beat/velocity precision reduction.
+    pub(crate) const fn mutable_signature(
+        self,
+    ) -> Option<crate::mutable_instrument::MutableOccurrenceSignature> {
+        if self.kind == 1 {
+            Some(
+                crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
+                    crate::mutable_instrument::MutableOccurrenceKey {
+                        track: self.track,
+                        clip: self.clip,
+                        note: self.note,
+                        iteration: self.iteration,
+                        loop_pass: self.loop_pass,
+                    },
+                    self.onset_beat,
+                    self.gate_end_beat,
+                    self.pitch,
+                    self.channel,
+                    self.velocity,
+                ),
+            )
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod suppression_tests;
 
 /// Opaque copied analytic voice retained after a route is replaced.
 #[derive(Clone, Copy, Debug)]
@@ -216,6 +298,10 @@ impl MidiRenderSpan {
 }
 
 impl MidiReleaseVoice {
+    pub(crate) fn start_frame(&self) -> u64 {
+        self.start_frame
+    }
+
     pub(crate) fn context_ref(&self) -> Option<crate::midi_note_bank::SharedContextRef> {
         self.voice.context_ref()
     }

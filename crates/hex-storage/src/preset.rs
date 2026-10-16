@@ -55,18 +55,40 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(error) => write!(f, "device preset file error: {error}"),
-            Self::Json(error) => write!(f, "invalid device preset json: {error}"),
+            Self::Io(error) => f.write_str(match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    "device preset destination exists · choose a new filename"
+                }
+                std::io::ErrorKind::NotFound => "device preset file or folder is missing",
+                std::io::ErrorKind::PermissionDenied => {
+                    "device preset access denied · check file and folder permissions"
+                }
+                std::io::ErrorKind::ReadOnlyFilesystem => {
+                    "device preset location is read-only · choose a writable folder"
+                }
+                _ => "device preset file operation failed · check the file and folder",
+            }),
+            Self::Json(_) => {
+                f.write_str("invalid device preset json · choose a complete preset file")
+            }
             Self::Invalid(reason) => f.write_str(reason),
-            Self::PublishedButNotDurable { path, source } => write!(
+            Self::PublishedButNotDurable { path, .. } => write!(
                 f,
-                "complete device preset exists at {}; directory cleanup or durability failed: {source}",
+                "complete device preset exists at {}; directory cleanup or durability failed",
                 path.display()
             ),
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(source) | Self::PublishedButNotDurable { source, .. } => Some(source),
+            Self::Json(source) => Some(source),
+            Self::Invalid(_) => None,
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
@@ -259,6 +281,14 @@ mod tests {
         assert!(
             matches!(save_new(&path, &fixture()), Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
         );
+        let collision = save_new(&path, &fixture()).unwrap_err().to_string();
+        let late_collision = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "File exists",
+        ))
+        .to_string();
+        assert_eq!(collision, late_collision);
+        assert!(collision.contains("choose a new filename"));
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let huge = directory.join("huge.json");
         fs::write(&huge, vec![b' '; MAX_PRESET_BYTES + 1]).unwrap();

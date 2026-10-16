@@ -102,17 +102,13 @@ pub(crate) struct SharedContextIdentity {
 pub(crate) struct SharedContextId(u64);
 
 impl SharedContextId {
-    pub(crate) fn fresh() -> Result<Self, Invalid> {
+    fn fresh() -> Result<Self, Invalid> {
         NEXT_CONTEXT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 next.checked_add(1)
             })
             .map(Self)
             .map_err(|_| Invalid("shared instrument context identity exhausted"))
-    }
-    pub(crate) fn continuation_id(self) -> Result<hex_lattice::AnalyticContinuationId, Invalid> {
-        hex_lattice::AnalyticContinuationId::new(self.0)
-            .map_err(|_| Invalid("shared analytic continuation identity is invalid"))
     }
 }
 
@@ -176,16 +172,61 @@ impl SharedContextOwner {
         {
             return Ok(None);
         }
-        context_transition(
-            self.context(),
-            self.continuation_id()?,
-            previous.context(),
-            previous.continuation_id()?,
-            self.identity == previous.identity,
-            transition,
-            performance_frame,
-            self.identity.sample_rate,
-        )
+        let Some(target) = self.context().analytic_continuation() else {
+            return Ok(None);
+        };
+        let Some(source) = previous.context().analytic_continuation() else {
+            return Ok(None);
+        };
+        if target.format() != source.format() {
+            return Ok(None);
+        }
+        let source_id = previous.continuation_id()?;
+        if self.identity == previous.identity {
+            // A control preparation may recreate an identical context without
+            // reuse. Rebind the fixed original start, retaining absolute clock
+            // and duration; unrelated publication must not restart its ramp.
+            return transition
+                .map(|transition| {
+                    let target_id = self.continuation_id()?;
+                    let start = target
+                        .prepare_start(target_id, source, source_id, transition.start())
+                        .map_err(|_| {
+                            Invalid("shared analytic continuation identity rebinding was refused")
+                        })?;
+                    hex_lattice::AnalyticContinuation::new(
+                        target_id,
+                        start,
+                        transition.start_frame(),
+                        transition.duration(),
+                    )
+                    .map_err(|_| Invalid("shared analytic continuation clock is invalid"))
+                })
+                .transpose();
+        }
+        let boundary = match transition {
+            Some(transition) => source
+                .parameters_at(source_id, &transition, performance_frame)
+                .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?,
+            None => source.endpoint(source_id),
+        };
+        let target_id = self.continuation_id()?;
+        let start = match target.prepare_start(target_id, source, source_id, &boundary) {
+            Ok(start) => start,
+            Err(hex_lattice::AnalyticContinuationError::IncompatibleSource) => return Ok(None),
+            Err(_) => return Err(Invalid("shared analytic continuation source was refused")),
+        };
+        let duration =
+            hex_lattice::AnalyticContinuation::default_duration(self.identity.sample_rate)
+                .map_err(|_| Invalid("shared analytic continuation duration is invalid"))?;
+        let transition =
+            hex_lattice::AnalyticContinuation::new(target_id, start, performance_frame, duration)
+                .map_err(|_| Invalid("shared analytic continuation clock is invalid"))?;
+        // Check the provider's clock/identity law before admitting any voice.
+        target
+            .parameters_at(target_id, &transition, performance_frame)
+            .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?;
+        Ok(Some(transition))
     }
 
     pub(crate) fn same_configuration(&self, other: &Self) -> bool {
@@ -205,9 +246,33 @@ pub(crate) struct SharedAnalyticContextTable {
     owners: Vec<Arc<SharedContextOwner>>,
     ids: Vec<(SharedContextId, u16)>,
     payload_bytes: usize,
+    mutable_continuations: Vec<(TrackId, DeviceId)>,
 }
 
 impl SharedAnalyticContextTable {
+    /// Exhaustive audited empty-table payload check for the opt-in compiler.
+    /// Vec headers belong to this outer payload; nonzero spare capacities or
+    /// nested handles are unsupported rather than assumed free/complete.
+    pub(crate) fn require_empty_owned_storage(&self) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            owners,
+            ids,
+            payload_bytes,
+            mutable_continuations,
+        } = self;
+        if !owners.is_empty()
+            || owners.capacity() != 0
+            || !ids.is_empty()
+            || ids.capacity() != 0
+            || *payload_bytes != 0
+            || !mutable_continuations.is_empty()
+            || mutable_continuations.capacity() != 0
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        Ok(())
+    }
+
     pub(crate) fn empty() -> Arc<Self> {
         Arc::new(Self::default())
     }
@@ -222,6 +287,10 @@ impl SharedAnalyticContextTable {
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| Invalid("could not reserve shared instrument context owners"))?;
         let mut payload_bytes = 0_usize;
+        let mut mutable_continuations = Vec::new();
+        mutable_continuations
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| Invalid("could not reserve instrument continuation identities"))?;
 
         for track in project.tracks() {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
@@ -230,6 +299,24 @@ impl SharedAnalyticContextTable {
             let prepared = registry
                 .prepare_instrument(device.state(), project.sample_rate())
                 .map_err(|_| Invalid("track instrument state is unsupported"))?;
+            if prepared.prefers_mutable_continuation()
+                || previous.is_some_and(|old| {
+                    old.mutable_continuations
+                        .contains(&(track.id(), device.id()))
+                })
+            {
+                if prepared
+                    .prepare_mutable_continuation_runtime()
+                    .map_err(|_| Invalid("mutable continuation runtime is unsupported"))?
+                    .is_some()
+                {
+                    mutable_continuations.push((track.id(), device.id()));
+                    continue;
+                }
+                if prepared.prefers_mutable_continuation() {
+                    return Err(Invalid("mutable continuation capability disappeared"));
+                }
+            }
             let Some(context) = prepared
                 .prepare_shared_analytic_context()
                 .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?
@@ -240,7 +327,7 @@ impl SharedAnalyticContextTable {
                 track: track.id(),
                 device: device.id(),
                 device_type: device.state().type_id(),
-                state: device.state().clone().without_output_gain(),
+                state: device.state().clone().without_host_gains(),
                 sample_rate: project.sample_rate(),
             };
             if previous
@@ -308,7 +395,12 @@ impl SharedAnalyticContextTable {
             owners,
             ids,
             payload_bytes,
+            mutable_continuations,
         }))
+    }
+
+    pub(crate) fn requires_mutable_continuation(&self, track: TrackId, device: DeviceId) -> bool {
+        self.mutable_continuations.contains(&(track, device))
     }
 
     pub(crate) fn owners(&self) -> impl Iterator<Item = (u16, &SharedContextOwner)> {
@@ -373,6 +465,13 @@ impl SharedAnalyticContextTable {
             .ok_or(Invalid("shared instrument context owner size overflow"))?;
         owner_handles
             .checked_add(id_index)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.mutable_continuations
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<(TrackId, DeviceId)>())?,
+                )
+            })
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
             .ok_or(Invalid("shared instrument context owner size overflow"))
     }
@@ -385,71 +484,6 @@ impl SharedAnalyticContextTable {
 
 #[allow(dead_code)]
 fn _prepared_config_is_send_sync<T: PreparedNativeInstrument>() {}
-
-/// Shared pure provider preflight, used by authored and transient owners.
-#[allow(clippy::too_many_arguments)] // Explicit identities, applied boundary and immutable provider pair.
-pub(crate) fn context_transition(
-    target_context: &dyn PreparedSharedAnalyticContext,
-    target_id: hex_lattice::AnalyticContinuationId,
-    source_context: &dyn PreparedSharedAnalyticContext,
-    source_id: hex_lattice::AnalyticContinuationId,
-    same_configuration: bool,
-    transition: Option<hex_lattice::AnalyticContinuation>,
-    performance_frame: u64,
-    sample_rate: u32,
-) -> Result<Option<hex_lattice::AnalyticContinuation>, Invalid> {
-    let Some(target) = target_context.analytic_continuation() else {
-        return Ok(None);
-    };
-    let Some(source) = source_context.analytic_continuation() else {
-        return Ok(None);
-    };
-    if target.format() != source.format() {
-        return Ok(None);
-    }
-    if same_configuration {
-        // A control preparation may recreate an identical context without
-        // reuse. Rebind the fixed original start, retaining absolute clock
-        // and duration; unrelated publication must not restart its ramp.
-        return transition
-            .map(|transition| {
-                let start = target
-                    .prepare_start(target_id, source, source_id, transition.start())
-                    .map_err(|_| {
-                        Invalid("shared analytic continuation identity rebinding was refused")
-                    })?;
-                hex_lattice::AnalyticContinuation::new(
-                    target_id,
-                    start,
-                    transition.start_frame(),
-                    transition.duration(),
-                )
-                .map_err(|_| Invalid("shared analytic continuation clock is invalid"))
-            })
-            .transpose();
-    }
-    let boundary = match transition {
-        Some(transition) => source
-            .parameters_at(source_id, &transition, performance_frame)
-            .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?,
-        None => source.endpoint(source_id),
-    };
-    let start = match target.prepare_start(target_id, source, source_id, &boundary) {
-        Ok(start) => start,
-        Err(hex_lattice::AnalyticContinuationError::IncompatibleSource) => return Ok(None),
-        Err(_) => return Err(Invalid("shared analytic continuation source was refused")),
-    };
-    let duration = hex_lattice::AnalyticContinuation::default_duration(sample_rate)
-        .map_err(|_| Invalid("shared analytic continuation duration is invalid"))?;
-    let transition =
-        hex_lattice::AnalyticContinuation::new(target_id, start, performance_frame, duration)
-            .map_err(|_| Invalid("shared analytic continuation clock is invalid"))?;
-    // Check the provider's clock/identity law before admitting any voice.
-    target
-        .parameters_at(target_id, &transition, performance_frame)
-        .map_err(|_| Invalid("shared analytic continuation boundary was refused"))?;
-    Ok(Some(transition))
-}
 
 #[cfg(test)]
 mod tests {
@@ -555,6 +589,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_audio_only_storage_refuses_spare_continuation_backing() {
+        let mut table = SharedAnalyticContextTable::default();
+        assert!(table.require_empty_owned_storage().is_ok());
+        table.mutable_continuations.try_reserve_exact(1).unwrap();
+        assert!(table.mutable_continuations.is_empty());
+        assert_eq!(
+            table.require_empty_owned_storage(),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
+    }
+
+    #[test]
     fn maximum_context_table_handle_and_index_layout_is_bounded() {
         let owner_handles = MAX_SHARED_CONTEXTS_PER_REVISION
             .checked_mul(std::mem::size_of::<Arc<SharedContextOwner>>())
@@ -565,8 +611,8 @@ mod tests {
         let table_header = std::mem::size_of::<SharedAnalyticContextTable>();
         assert_eq!(owner_handles, 2_048);
         assert_eq!(id_index_entries, 4_096);
-        assert_eq!(table_header, 56);
-        assert_eq!(owner_handles + id_index_entries + table_header, 6_200);
+        assert_eq!(table_header, 80);
+        assert_eq!(owner_handles + id_index_entries + table_header, 6_224);
     }
 
     #[test]

@@ -1,5 +1,14 @@
 # Bounded streamed playback delivery
 
+## current opt-in native boundary
+
+PR237 connects the closed constructor path to exact worker-backed chunk readiness;
+see [exact native streamed readiness](streamed-native-readiness.md). Its BUFFERING
+transaction holds unready chunk clocks/DSP and preserves earlier successful chunks.
+The historical borrowed-page miss/clock-progress behavior described below remains
+unchanged for legacy callers. Native Session/UI integration, seek/launch preparation,
+100-track deadlines and broader #24 acceptance remain open.
+
 ## Next concrete outcome
 
 Exercise an actual verified media worker, fixed page ownership queues and engine
@@ -282,143 +291,3 @@ streaming are also open. Ordinary endpoint/lease final Drop is not realtime-safe
 The user requested a pause after this unit to redirect work toward quicker
 practical usefulness. No further implementation or prewarm/native admission
 work was started; preserve the full roadmap for that discussion.
-
-## Graph/catalog binding stage — Pulse24 / draft PR177, 13 October 2026
-
-`hex-stream::VerifiedStreamRevision` pairs the exact immutable prepared graph
-with the actual verified catalog owner. Its control-side constructor consumes
-both owners, borrows every streamed source and checks complete catalog membership:
-generation/asset key, fingerprint, source/project rates, frame counts and
-conversion version. Unused catalog sources are allowed. Failure returns both
-inputs unchanged through `StreamRevisionMismatch::into_parts`; no partial owner
-installation or worker mutation occurs. The first mismatched source key is
-reported. Distinct catalogs remain distinguishable even when metadata/keys and
-the graph Arc are identical. The wrapper intentionally has no Clone implementation.
-
-The engine exposes `PreparedRevision::streamed_sources()` as a borrowed iterator:
-compiled Arrangement track/clip order first, then Session `audio_clips()` inventory
-order. Repeated source references remain separate; resident audio and MIDI are
-omitted. Iteration allocates nothing, clones no Arc and exposes no mutable or
-private clip state. Engine retains no dependency on stream.
-
-Graph owners may retain separate old/candidate bindings to one catalog. Existing
-Busy shutdown refuses while either lease remains and returns the control/pages
-pair unchanged. Releasing the wrappers on control permits the existing exact
-pool-accounting shutdown. If the wrapper holds the final catalog reference after
-control/pages retire, its final release stops/wakes/joins on its control reclamation
-thread. Borrowing a graph or catalog is not authorization to construct, clone or
-finally drop owners on a callback. No native callback integration is added here.
-
-Focused coverage includes wrong generation/fingerprint/source and project rates/
-frame counts/conversion contracts, Session-only mismatches, mixed streamed and
-resident Arrangement/Session enumeration, borrowed metadata remaining valid after
-external preparation handles retire, unchanged Arc counts, distinct same-key
-catalogs, independent old/candidate graphs, transactional Busy recovery and final
-wrapper-owned worker reclamation. The existing real-worker Session allocation
-probe now retains a verified binding and checks allocation-free metadata iteration;
-construction/reclamation remain outside its measured render scopes.
-
-This is the first bounded source stage of the full long-project streaming ticket,
-not completion of Pulse24. Native publication still explicitly refuses streams;
-resident import limits are unchanged. Endpoint publication/retirement,
-control-to-worker prewarm with installed protected-page acknowledgment, complete
-coexisting-catalog budgets, sustained advancing 100-track mixed-rate native
-playback and edit/seek/launch/fault/user acceptance remain unimplemented/unverified.
-PR177 stays draft/in progress. Its complete eight-criterion verification gate,
-including manual human_review and both native criteria, must remain intact.
-
-## Typed catalog/page pairing checkpoint — pulse24 / draft177
-
-`VerifiedPageEndpoint` consumes the existing `StreamCallbackPages` and verified
-`CatalogLease` on control. Validation checks both actual private catalog owner
-and pair identities before endpoint/worker mutation; identical metadata/source
-keys do not establish identity. The wrapper has no Clone implementation. Its
-borrowed page accessor reuses the existing engine-neutral MediaPages endpoint;
-it neither installs protected pages nor authorizes native publication.
-
-Mismatch retains both inputs; its owning error boxes the large page endpoint
-on control, following the existing shutdown error convention. Successful pairing
-and borrowed endpoint operations allocate/free nothing and create no Arc owners.
-Construction/error recovery and final disposal are control-only operations.
-`into_parts` returns pages and lease intact. Release that lease and graph leases
-on control before calling the unchanged `StreamControl::shutdown(pages)`.
-Remaining leases cause transactional Busy refusal with the original control/pages
-pair; no new shutdown method silently releases owners before a refusal.
-
-Tests independently alter owner and pair identity, reject distinct catalogs with
-identical keys, recover owners, render actual borrowed worker PCM, preserve cached
-pages through repeated Busy refusals, and reclaim/join with exact buffer accounting
-on a named control thread. The allocation probe covers successful construction
-and borrowed use, not the existing whole native callback/shared-context handoff.
-
-Allocation-capacity reporting is completed in the subsequent checkpoint below.
-No provisional 192 MiB aggregate admission or eight-graph policy is implemented.
-Native streaming refusal, resident/component limits and full acceptance remain.
-
-
-## Actual allocation-capacity reporting — pulse24 / draft177
-
-`VerifiedPageEndpoint::allocation_footprint()` borrows the pairing's complete
-`StreamAllocationFootprint` without locks, allocation, ownership clones or
-mutation. `StreamRuntime::allocation_footprint()` preserves the headless facade
-and returns a control-side snapshot after catalog verification, using the existing
-catalog mutex but creating no lease. Endpoint and catalog leases also expose their
-respective component reports. Queries do not authorize playback/admission.
-
-The report distinguishes three disjoint retained allocation classes:
-
-- Endpoint-exclusive cache, pending-key, source-key and held-return vector
-  capacities, including unused slots. Cache entries charge pointers, not another
-  copy of their page payloads.
-- Shared transport: four queue slot allocations and queue object data, catalog
-  owner/stop-flag data, all PageBuffer object data and PCM box payloads. These are
-  charged once per actual catalog/pool, regardless of queue halves, lease count
-  or whether a page is free, ready, cached, returning or held.
-- Worker/catalog: Source vector slots (including inline reader objects and their
-  fixed verification scratch), separately owned definition/reader path capacities,
-  reader digest manifests, one shared kernel object/table per reused rate pair,
-  independent catalog-membership metadata slots/object, source scratch and worker
-  free/held-page/held-failure vector capacities. Legacy CatalogFootprint's scratch,
-  manifest and table fields are subcomponents, not additional additive charges.
-
-Construction-only definition and kernel-cache vector capacities are reported
-separately. The checked construction bound adds the definition slots and twice
-kernel-cache capacity (old/new allocations can coexist during Vec growth), and
-replaces retained kernel table bytes with the existing conservative table
-reservation, and adds the largest observed pre-boxing page Vec allocation once
-to bound possible shrink overlap. It deliberately bounds potentially overlapping lifetimes; it is not
-an observed peak. Checked products/sums/subtraction return None on overflow or
-an inconsistent kernel reservation; no saturation or wrapping is budget evidence.
-
-The narrow media APIs expose only the reader's private path capacity and kernel
-object data size. They reveal no private ownership or mutable state and allocate
-or clone nothing. Per-component ceilings and their existing enforcement semantics
-remain unchanged; the report does not silently make logical path limits into
-capacity limits or impose aggregate/graph-domain policy.
-
-Capacity bytes exclude allocator rounding/headers, opaque standard-library Arc
-control blocks, catalog-channel/thread/OS bookkeeping, stack/thread-local storage,
-caller-owned handles and prepared graph/history/export storage. Inline objects
-inside vector slots are already counted. This is the complete owned data-capacity
-report for the listed stream resources, not process RSS or an exact allocator bill.
-A future project-wide ledger must enumerate all live catalog identities, count
-shared resources once, and account separately for excluded resources before
-choosing an aggregate admission cap. 192 MiB/eight graphs remain unapproved.
-
-The real two-source, one-shared-kernel Linux fixture uses four pages, 8,192 source
-scratch frames and intentionally over-reserved definition paths/vector slots.
-It reports endpoint 712 bytes, transport 133,537 bytes and worker/catalog
-733,172 bytes: 867,421 retained bytes, with a 14,000,445-byte conservative
-construction bound. Definition path capacity is 2,142 bytes versus 94 logical
-bytes; reader path capacity is 94, manifests 64, and one kernel table is 532,480
-bytes. These platform/fixture-specific values are retained in test logs, not
-portable size constants or a native100-track admission proof. Tests check actual
-capacities, shared-kernel deduplication, inline scratch classification, unused
-capacity, checked overflow and report stability through extra control leases
-and real queue/cache page movement. The allocation probe measures report queries
-and checked totals without allocation/free; no whole native callback clone claim.
-
-Native consumption, combined pages/observer rendering, shared-context handoff,
-installed-page prewarm/readiness, aggregate admission and full optimized native
-playback/edit/seek/launch/fault acceptance remain outstanding. PR177 stays draft
-and Pulse24 blocked under the readiness/evidence hold.

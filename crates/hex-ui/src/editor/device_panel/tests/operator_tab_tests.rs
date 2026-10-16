@@ -34,23 +34,32 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     });
     visual.update(|window, _| lfo.focus(window));
     visual.run_until_parked();
-    assert_eq!(visual.rendered_background(row("lfo")), background(0x474747));
+    assert_eq!(
+        visual.rendered_background(row("lfo")),
+        background(device_layout_style().surface)
+    );
     for _ in 0..3 {
         visual.simulate_keystrokes("tab");
-        assert_eq!(visual.rendered_background(row("lfo")), background(0x474747));
+        assert_eq!(
+            visual.rendered_background(row("lfo")),
+            background(device_layout_style().surface)
+        );
     }
-    // Amount -> filter toggle, then its two selectors and two dials -> pitch toggle,
+    // Amount -> filter toggle, then its selector and two dials -> pitch toggle,
     // then three pitch dials -> global routing icon. No pointer event or forced draw.
-    for (title, tabs) in [("filter", 1), ("pitch env", 5), ("global", 4)] {
+    for (title, tabs) in [("filter", 1), ("pitch env", 4), ("global", 4)] {
         for _ in 0..tabs {
             visual.simulate_keystrokes("tab");
         }
         assert_eq!(
             visual.rendered_background(row(title)),
-            background(0x474747),
+            background(device_layout_style().surface),
             "{title} paints immediately"
         );
-        assert_eq!(visual.rendered_background(row("lfo")), background(0x363636));
+        assert_eq!(
+            visual.rendered_background(row("lfo")),
+            background(device_layout_style().rail)
+        );
     }
     visual.simulate_keystrokes("enter");
     let algorithm = editor.read_with(cx, |view, app| {
@@ -66,7 +75,7 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     visual.run_until_parked();
     assert_eq!(
         visual.rendered_background(detail),
-        background(0x191919),
+        background(device_layout_style().background),
         "focused detail stays dark"
     );
     let bounds = visual
@@ -77,7 +86,7 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     visual.simulate_click(bounds.center(), Modifiers::default());
     assert_eq!(
         visual.rendered_background(detail),
-        background(0x191919),
+        background(device_layout_style().background),
         "pointer-focused detail stays dark"
     );
     editor.read_with(cx, |view, _| {
@@ -467,9 +476,9 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
             let row =
                 Box::leak(format!("operator-row-{}-{operator}", device.value()).into_boxed_str());
             let color = if operator == 3 - index / 5 {
-                0x474747
+                device_layout_style().surface
             } else {
-                0x363636
+                device_layout_style().rail
             };
             assert_eq!(
                 visual.rendered_background(row),
@@ -486,7 +495,6 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
     // Preview child focus reveals its row without making the row a Tab stop
     // or changing its switch, project state, or neighboring row's focus mode.
     for (field, title) in [
-        (operator_panel::preview::Field::FilterFrequency, "filter"),
         (operator_panel::preview::Field::PitchEnvelope, "pitch env"),
         (operator_panel::preview::Field::Time, "global"),
     ] {
@@ -510,7 +518,7 @@ fn operator_shell_controls_precede_selectors_and_sections_follow_child_focus(
             }
             assert_eq!(
                 view.device_panel.operator_previews[&device].enabled,
-                [true; 2]
+                [true; 1]
             );
             assert_eq!(view.state.as_ref().unwrap().project, original);
             assert_eq!(view.state.as_ref().unwrap().revision, revision);
@@ -531,7 +539,6 @@ fn operator_preview_invalid_drafts_refuse_forward_and_reverse_tab(cx: &mut TestA
     visual.run_until_parked();
     for (field, valid) in [
         (operator_panel::preview::Field::FineB, "12"),
-        (operator_panel::preview::Field::FilterFrequency, "500"),
         (operator_panel::preview::Field::PitchEnvelope, "20"),
         (operator_panel::preview::Field::Time, "30"),
     ] {
@@ -759,4 +766,143 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
             "leaving Operator deactivates every section"
         )
     });
+}
+
+#[gpui::test]
+fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let focus = editor.read_with(cx, |view, app| {
+        let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(20005),
+        }] else {
+            panic!("frequency")
+        };
+        entity.focus_handle(app)
+    });
+    visual.update(|window, _| focus.focus(window));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Filter
+        );
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        for parameter in 20001..=20007 {
+            assert!(view.device_panel.controls.contains_key(&ParameterKey {
+                device,
+                parameter: hex_lattice_contract::ParameterId::from_static(parameter)
+            }));
+        }
+    });
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-20005-knob", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = knob.center();
+    let moved = point(start.x, start.y - px(20.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0
+            && v.pending_requests.is_empty()
+            && v.device_gesture.snapshot().is_none()
+    });
+    let changed = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+    assert_ne!(changed, original);
+    visual.simulate_keystrokes("cmd-z");
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, original)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, changed)
+    });
+    // Commit a typed value and immediately Undo through the normal shortcut
+    // after moving focus. This exercises the pending terminal/barrier path.
+    let field = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-20005-value", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("1375");
+    visual.simulate_keystrokes("enter tab cmd-z");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project,
+            changed,
+            "one keyboard Undo restores the entire pre-typed state"
+        );
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture_barriers.is_empty()
+            && view.device_gesture.snapshot().is_none()
+    });
+    let changed = editor.read_with(cx, |view, _| {
+        let project = view.state.as_ref().unwrap().project.clone();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                project.device(device).unwrap().state(),
+                hex_lattice_contract::ParameterId::from_static(20005),
+            )
+            .unwrap(),
+            ParameterValue::Float(1375.0)
+        );
+        project
+    });
+    let path = std::env::temp_dir().join(format!(
+        "hex-filter-{}-{}.hex",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump_until(&editor, cx, |v| {
+        v.worker_requests_pending == 0 && v.pending_requests.is_empty()
+    });
+    let reload = Service::new(48000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert_eq!(
+        reopened.state.project.device(device).unwrap().state(),
+        changed.device(device).unwrap().state()
+    );
+    std::fs::remove_file(path).unwrap();
 }

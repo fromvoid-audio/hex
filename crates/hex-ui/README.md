@@ -247,10 +247,13 @@ for native acceptance and finite MIDI limitations.
 Session logging is injected by desktop through `hex-diagnostics`; only that
 crate's worker owns log file I/O. See [session diagnostics](../../docs/diagnostics.md).
 
-The file menu dispatches bounded Live-set import to `hex-session`; compatibility
-consent is explicit, unsaved work must be saved first, and failed candidates
-never replace the current project. Format parsing belongs to `hex-live-set`.
 Device rails support middle-button horizontal panning and a compact bottom-status
 chain overview with a draggable viewport frame, click/wheel navigation and a
 device-pane toggle. Tracks and returns share the measured GPUI scroll handle;
 navigation is view state and does not enter project history.
+
+The explicit `hex-desktop --profile-time-selection` mode embeds the real editor
+in a disposable offline native profiling root. It injects input only into that
+window and reports scene-paint/following-frame timing, with isolated preferences
+and no recovery journal. Normal startup/editing is unchanged. See
+../../docs/time-selection-profile.md for fixture shape and timing limitations.

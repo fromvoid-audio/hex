@@ -91,8 +91,9 @@ impl EditorView {
     ) -> Option<Div> {
         let (_, clip_id, _, duration, ..) = self.selected_clip_data()?;
         let clip = state.project.clip(clip_id)?;
-        let fade = clip.fade();
-        let inherited = fade_is_inherited(fade, duration);
+        let fade = clip.retained_fade();
+        let retained = clip.audio_edit().is_some();
+        let inherited = retained || fade_is_inherited(fade, duration);
         let admitted = fade_edit_admitted(
             self.opening_project,
             self.close_prompt_open,
@@ -125,6 +126,7 @@ impl EditorView {
                     "lengthen fade in by 5 ms",
                     ("fade-in-up", clip_id.value()),
                 )
+                .debug_selector(|| "fade-in-up".into())
                 .on_click(cx.listener(|view, _, _, cx| {
                     view.adjust_selected_fade(true, true);
                     cx.notify();
@@ -140,7 +142,11 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| ClipTooltip {
-                            name: format!("fade in · {fade_in_ms} ms · {} frames", fade.fade_in()),
+                            name: format!(
+                                "{}fade in · {fade_in_ms} ms · {} reference frames",
+                                if retained { "retained " } else { "" },
+                                fade.fade_in()
+                            ),
                         })
                         .into()
                     })
@@ -179,7 +185,8 @@ impl EditorView {
                     .tooltip(move |_, cx| {
                         cx.new(|_| ClipTooltip {
                             name: format!(
-                                "fade out · {fade_out_ms} ms · {} frames",
+                                "{}fade out · {fade_out_ms} ms · {} reference frames",
+                                if retained { "retained " } else { "" },
                                 fade.fade_out()
                             ),
                         })
@@ -188,25 +195,26 @@ impl EditorView {
                     .child(theme::text(format!("↘ {}", compact_fade_time(fade_out_ms)))),
             )
             .child(
-                button("×", "reset clip fades", ("fade-reset", clip_id.value())).on_click(
-                    cx.listener(|view, _, _, cx| {
+                button("×", "reset clip fades", ("fade-reset", clip_id.value()))
+                    .debug_selector(|| "fade-reset".into())
+                    .on_click(cx.listener(|view, _, _, cx| {
                         view.reset_selected_fades();
                         cx.notify();
-                    }),
-                ),
+                    })),
             );
         if inherited {
             controls = controls.child(
                 div()
                     .id(("fade-inherited", clip_id.value()))
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .debug_selector(||"retained-fade-disclosure".into())
                     .tooltip(|_, cx| {
                         cx.new(|_| ClipTooltip {
-                            name: "fades use the original split span; editing reanchors and clamps both fades to this clip".into(),
+                            name: "retained fades show authored reference-frame durations; the curve follows its frozen musical projection; editing reanchors and clamps both fades to this clip".into(),
                         })
                         .into()
                     })
-                    .child(theme::text("split")),
+                    .child(theme::text(if retained{"retained"}else{"split"})),
             );
         }
         Some(controls)
@@ -231,7 +239,7 @@ impl EditorView {
         let Some(clip) = state.project.clip(clip_id) else {
             return;
         };
-        let fade = clip.fade();
+        let fade = clip.retained_fade();
         let step = fade_step_frames(state.project.sample_rate());
         let (current, opposite) = if fade_in {
             (fade.fade_in(), fade.fade_out())
@@ -278,7 +286,7 @@ impl EditorView {
             return;
         };
         if state.project.clip(clip_id).is_none_or(|clip| {
-            let fade = clip.fade();
+            let fade = clip.retained_fade();
             fade.span() == duration
                 && fade.offset() == 0
                 && fade.fade_in() == 0
@@ -363,3 +371,6 @@ mod tests {
         assert!(!fade_is_inherited(reanchored, 600));
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod musical_tests;

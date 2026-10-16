@@ -1,4 +1,3 @@
-use crate::{AllocationCapacity, CatalogAllocationFootprint, ConstructionAllocationFootprint};
 use crate::{
     endpoint::{PageBuffer, PageRequest},
     types::{
@@ -32,6 +31,32 @@ struct Source {
     plan: ResamplePlan,
 }
 
+#[cfg(test)]
+// Observe actual worker publication/holding without exposing a production API.
+// The gate also honors Stop, so a failed test cannot strand a paused worker.
+pub(crate) struct TestWorkerHooks {
+    pub(crate) entered: SyncSender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+    pub(crate) publications: SyncSender<usize>,
+}
+
+#[cfg(test)]
+impl TestWorkerHooks {
+    fn wait_for_release(&self, stop: &AtomicBool) -> bool {
+        if self.entered.send(()).is_err() {
+            return false;
+        }
+        while !stop.load(Ordering::Acquire) {
+            match self.release.recv_timeout(Duration::from_millis(2)) {
+                Ok(()) => return true,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+        false
+    }
+}
+
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
@@ -39,6 +64,7 @@ pub(crate) fn run_worker(
     mut queues: WorkerQueues,
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
+    #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
 ) -> Vec<Box<PageBuffer>> {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
@@ -60,24 +86,31 @@ pub(crate) fn run_worker(
     };
     let catalog_message = catalog.as_ref().map_or_else(
         |error| Err(*error),
-        |(sources, footprint, allocations, construction)| {
-            let mut allocations = *allocations;
-            allocations.free_page_handles =
-                AllocationCapacity::of::<Box<PageBuffer>>(free_pages.capacity());
-            allocations.held_page_handles =
-                AllocationCapacity::of::<Box<PageBuffer>>(held_pages.capacity());
-            allocations.held_failures =
-                AllocationCapacity::of::<StreamFailure>(held_failures.capacity());
-            verified_membership(sources, *footprint, allocations, *construction)
+        |(sources, footprint, data)| {
+            let mut data = *data;
+            data.free_page_handles =
+                crate::AllocationData::of::<Box<PageBuffer>>(free_pages.capacity());
+            data.held_page_handles =
+                crate::AllocationData::of::<Box<PageBuffer>>(held_pages.capacity());
+            data.held_failures =
+                crate::AllocationData::of::<StreamFailure>(held_failures.capacity());
+            verified_membership(sources, *footprint, data)
         },
     );
     if catalog_result.send(catalog_message).is_err() {
         return free_pages;
     }
-    let (mut sources, _, _, _) = match catalog {
+    let (mut sources, _footprint, _data) = match catalog {
         Ok(sources) => sources,
         Err(_) => return free_pages,
     };
+    #[cfg(test)]
+    if test_hooks
+        .as_ref()
+        .is_some_and(|hooks| !hooks.wait_for_release(&stop))
+    {
+        return free_pages;
+    }
     loop {
         while let Ok(page) = queues.returns.pop() {
             free_pages.push(page);
@@ -128,10 +161,16 @@ pub(crate) fn run_worker(
         };
         let source = &mut sources[source_index];
         match render_page(source, key, &mut page, &mut source_scratch, &stop) {
-            Ok(()) => match queues.ready.push(page) {
-                Ok(()) => {}
-                Err(PushError::Full(page)) => held_pages.push(page),
-            },
+            Ok(()) => {
+                match queues.ready.push(page) {
+                    Ok(()) => {}
+                    Err(PushError::Full(page)) => held_pages.push(page),
+                }
+                #[cfg(test)]
+                if let Some(hooks) = &test_hooks {
+                    let _ = hooks.publications.send(held_pages.len());
+                }
+            }
             Err(kind) => {
                 page.frames.fill([0.0; 2]);
                 page.key = None;
@@ -160,8 +199,7 @@ pub(crate) fn run_worker(
 fn verified_membership(
     sources: &[Source],
     footprint: CatalogFootprint,
-    mut allocations: CatalogAllocationFootprint,
-    construction: ConstructionAllocationFootprint,
+    mut data: crate::WorkerData,
 ) -> Result<VerifiedCatalog, StreamFailureKind> {
     let mut members = Vec::new();
     members
@@ -173,16 +211,11 @@ fn verified_membership(
             .map(|source| source.definition.metadata.clone()),
     );
     members.sort_unstable_by_key(StreamedSourceMetadata::key);
-    allocations.membership_slots =
-        AllocationCapacity::of::<StreamedSourceMetadata>(members.capacity());
-    allocations.catalog_object_bytes = std::mem::size_of::<VerifiedCatalog>();
-    allocations
-        .bytes()
-        .ok_or(StreamFailureKind::CapacityExhausted)?;
+    data.membership = crate::AllocationData::of::<StreamedSourceMetadata>(members.capacity());
+    data.catalog_object = std::mem::size_of::<VerifiedCatalog>();
     Ok(VerifiedCatalog {
+        data,
         footprint,
-        allocations,
-        construction,
         sources: members,
     })
 }
@@ -192,15 +225,7 @@ fn build_catalog(
     mut definitions: Vec<SourceDefinition>,
     source_scratch: &mut Vec<[f32; 2]>,
     stop: &AtomicBool,
-) -> Result<
-    (
-        Vec<Source>,
-        CatalogFootprint,
-        CatalogAllocationFootprint,
-        ConstructionAllocationFootprint,
-    ),
-    StreamFailureKind,
-> {
+) -> Result<(Vec<Source>, CatalogFootprint, crate::WorkerData), StreamFailureKind> {
     if definitions.len() > config.max_sources {
         return Err(StreamFailureKind::CapacityExhausted);
     }
@@ -211,15 +236,8 @@ fn build_catalog(
     if verified_reader_scratch_bytes > config.max_reader_scratch_bytes {
         return Err(StreamFailureKind::CapacityExhausted);
     }
-    let definition_slots = AllocationCapacity::of::<SourceDefinition>(definitions.capacity());
-    let mut definition_path_bytes = 0_usize;
-    let mut reader_path_bytes = 0_usize;
-    let mut kernel_object_bytes = 0_usize;
     let mut catalog_path_bytes = 0_usize;
     for definition in &definitions {
-        definition_path_bytes = definition_path_bytes
-            .checked_add(definition.path.capacity())
-            .ok_or(StreamFailureKind::CapacityExhausted)?;
         catalog_path_bytes = catalog_path_bytes
             .checked_add(definition.path.as_os_str().len())
             .ok_or(StreamFailureKind::CapacityExhausted)?;
@@ -227,6 +245,13 @@ fn build_catalog(
             return Err(StreamFailureKind::CapacityExhausted);
         }
     }
+    let mut data = crate::WorkerData {
+        construction_definition_slots: crate::AllocationData::of::<SourceDefinition>(
+            definitions.capacity(),
+        ),
+        source_scratch: crate::AllocationData::of::<[f32; 2]>(source_scratch.capacity()),
+        ..Default::default()
+    };
     definitions.sort_unstable_by_key(|definition| definition.key);
     for pair in definitions.windows(2) {
         if pair[0].key == pair[1].key {
@@ -256,9 +281,6 @@ fn build_catalog(
                 stop.load(Ordering::Acquire)
             })
             .map_err(map_import_error)?;
-        reader_path_bytes = reader_path_bytes
-            .checked_add(reader.path_capacity_bytes())
-            .ok_or(StreamFailureKind::CapacityExhausted)?;
         let reader_manifest = reader.page_manifest_bytes();
         manifest_bytes = manifest_bytes
             .checked_add(reader_manifest)
@@ -294,14 +316,22 @@ fn build_catalog(
             let kernel =
                 ResampleKernel::new(reader.sample_rate(), definition.metadata.project_rate())
                     .map_err(map_import_error)?;
-            kernel_object_bytes = kernel_object_bytes
-                .checked_add(kernel.shared_object_bytes())
-                .ok_or(StreamFailureKind::CapacityExhausted)?;
             kernel_bytes = kernel_bytes
                 .checked_add(kernel.table_payload_bytes())
                 .ok_or(StreamFailureKind::CapacityExhausted)?;
             if kernel_bytes > config.max_kernel_table_bytes {
                 return Err(StreamFailureKind::CapacityExhausted);
+            }
+            let old_capacity = kernels.capacity();
+            if kernels.len() == old_capacity {
+                data.construction_cache_old_backings = data
+                    .construction_cache_old_backings
+                    .checked_add(
+                        old_capacity
+                            .checked_mul(std::mem::size_of::<(u32, u32, ResampleKernel)>())
+                            .ok_or(StreamFailureKind::CapacityExhausted)?,
+                    )
+                    .ok_or(StreamFailureKind::CapacityExhausted)?;
             }
             kernels
                 .try_reserve(1)
@@ -345,8 +375,72 @@ fn build_catalog(
         .capacity()
         .checked_mul(std::mem::size_of::<hex_engine::Frame>())
         .ok_or(StreamFailureKind::CapacityExhausted)?;
+    data.source_slots = crate::AllocationData::of::<Source>(sources.capacity());
+    data.construction_kernel_cache =
+        crate::AllocationData::of::<(u32, u32, ResampleKernel)>(kernels.capacity());
+    data.kernel_handles = sources.len();
+    let mut kernel_coverage_known = true;
+    for source in &sources {
+        let Source {
+            definition,
+            reader,
+            plan,
+        } = source;
+        if !kernels
+            .iter()
+            .any(|(_, _, kernel)| plan.uses_kernel_allocation(kernel))
+        {
+            kernel_coverage_known = false;
+        }
+        let SourceDefinition {
+            key: _,
+            path,
+            metadata: _,
+            reader_limits: _,
+        } = definition;
+        let layout = reader.control_data_layout();
+        data.definition_paths = data
+            .definition_paths
+            .checked_add(path.capacity())
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+        data.reader_paths = data
+            .reader_paths
+            .checked_add(layout.path_capacity)
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+        data.manifests = data
+            .manifests
+            .checked_add(
+                layout
+                    .manifest_capacity
+                    .checked_mul(layout.manifest_element_bytes)
+                    .ok_or(StreamFailureKind::CapacityExhausted)?,
+            )
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+    }
+    for (index, (_, _, kernel)) in kernels.iter().enumerate() {
+        if kernels[..index]
+            .iter()
+            .any(|(_, _, old)| old.shares_allocation_with(kernel))
+        {
+            continue;
+        }
+        let layout = kernel.control_data_layout();
+        data.kernel_objects = data
+            .kernel_objects
+            .checked_add(layout.owner_payload_bytes)
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+        data.kernel_weights = data
+            .kernel_weights
+            .checked_add(
+                layout
+                    .weight_capacity
+                    .checked_mul(layout.weight_element_bytes)
+                    .ok_or(StreamFailureKind::CapacityExhausted)?,
+            )
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+    }
+    data.constructor_complete = kernel_coverage_known;
     let source_count = sources.len();
-    let source_slots = AllocationCapacity::of::<Source>(sources.capacity());
     Ok((
         sources,
         CatalogFootprint {
@@ -358,23 +452,7 @@ fn build_catalog(
             verified_reader_scratch_bytes,
             source_scratch_bytes: scratch_bytes,
         },
-        CatalogAllocationFootprint {
-            source_slots,
-            definition_path_bytes,
-            reader_path_bytes,
-            manifest_bytes,
-            kernel_object_bytes,
-            kernel_weight_bytes: kernel_bytes,
-            source_scratch: AllocationCapacity::of::<hex_engine::Frame>(source_scratch.capacity()),
-            ..CatalogAllocationFootprint::default()
-        },
-        ConstructionAllocationFootprint {
-            definition_slots,
-            kernel_cache_slots: AllocationCapacity::of::<(u32, u32, ResampleKernel)>(
-                kernels.capacity(),
-            ),
-            kernel_table_peak_bound_bytes: kernel_budget_reserved,
-        },
+        data,
     ))
 }
 
@@ -543,7 +621,7 @@ fn hold_failure(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hex_engine::{StreamSourceKey, StreamedSourceMetadata};
     use hex_media::{VerifiedWavReaderLimits, WavReaderLimits};
@@ -552,20 +630,26 @@ mod tests {
         fs::{self, OpenOptions},
         io::Write,
         path::PathBuf,
-        sync::atomic::AtomicBool,
+        sync::atomic::{AtomicBool, AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    struct Fixture(PathBuf);
+    pub(crate) struct Fixture(pub(crate) PathBuf);
 
     impl Fixture {
-        fn pcm16() -> Self {
+        pub(crate) fn pcm16() -> Self {
+            Self::pcm16_frames(4096)
+        }
+
+        pub(crate) fn pcm16_frames(frames: u16) -> Self {
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos();
+            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "hex-stream-cancel-{}-{stamp}.wav",
+                "hex-stream-cancel-{}-{stamp}-{sequence}.wav",
                 std::process::id()
             ));
             let mut file = OpenOptions::new()
@@ -574,7 +658,7 @@ mod tests {
                 .open(&path)
                 .expect("create fixture");
             file.write_all(b"RIFF").expect("RIFF");
-            file.write_all(&(36_u32 + 4096 * 4).to_le_bytes())
+            file.write_all(&(36_u32 + u32::from(frames) * 4).to_le_bytes())
                 .expect("riff length");
             file.write_all(b"WAVEfmt ").expect("WAVE format");
             file.write_all(&16_u32.to_le_bytes())
@@ -588,9 +672,9 @@ mod tests {
             file.write_all(&4_u16.to_le_bytes()).expect("block align");
             file.write_all(&16_u16.to_le_bytes()).expect("bit depth");
             file.write_all(b"data").expect("data header");
-            file.write_all(&(4096_u32 * 4).to_le_bytes())
+            file.write_all(&(u32::from(frames) * 4).to_le_bytes())
                 .expect("data length");
-            for index in 0..4096_i16 {
+            for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
                 file.write_all(&index.to_le_bytes()).expect("left sample");
                 file.write_all(&(-index).to_le_bytes())
                     .expect("right sample");

@@ -275,8 +275,10 @@ mod tests {
                 });
                 editor.update(cx, |view, _| {
                     view.state = Some(Arc::new(ViewState {
+                        canonical_audio_source: None,
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
+                        audio_clip_waveforms: std::collections::BTreeMap::new(),
                         midi_preview: Arc::new(Default::default()),
                         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                         timeline_frames: 384_000,
@@ -315,8 +317,10 @@ mod tests {
                 .expect("reorder second path");
             let current = view.state.as_ref().expect("state");
             let dirty = ViewState {
+                canonical_audio_source: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: current.timeline_frames,

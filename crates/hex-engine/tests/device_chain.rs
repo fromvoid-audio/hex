@@ -312,9 +312,9 @@ impl NativeDeviceDefinition for TestDevice {
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         let (scale, latency) = match state.payload() {
-            [] => (1.0, None),
-            [2] => (0.5, None),
-            [3] => (2.0, Some(1)),
+            [] => (1.0, Some(0)),
+            [2] => (0.5, Some(0)),
+            [3] => (2.0, None),
             _ => return Err(DeviceContractError::MalformedState),
         };
         Ok(Some(Box::new(SquarePrepared { scale, latency })))
@@ -681,42 +681,37 @@ fn auto_pan_state_round_trips_through_project_snapshot_and_undoes_as_one_edit() 
 }
 
 #[test]
-fn return_effect_compilation_requires_explicit_zero_algorithmic_latency() {
+fn return_effect_compilation_requires_known_algorithmic_latency() {
     let definitions: [&dyn NativeDeviceDefinition; 2] = [&UTILITY_DEFINITION, &TestDevice];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
-    for state in [
-        TestDevice.default_state().unwrap(),
-        NativeDeviceState::new(TEST_TYPE, 1, vec![3]).unwrap(),
-    ] {
-        let (mut editor, asset, track) = imported_audio_project();
-        let return_track = match editor
-            .execute(Command::AddReturnTrack {
-                name: "return".into(),
-            })
-            .unwrap()
-        {
-            Created::ReturnTrack(id) => id,
-            other => panic!("unexpected result: {other:?}"),
-        };
-        editor
-            .execute(Command::InsertReturnDevice {
-                return_track,
-                before: None,
-                state,
-            })
-            .unwrap();
-        editor
-            .execute(Command::SetReturnSend {
-                track,
-                return_track,
-                gain: 0.5,
-            })
-            .unwrap();
-        let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.5, -0.25]]).unwrap())]);
-        let error =
-            compile::project_with_registry(editor.project(), &media, &registry).unwrap_err();
-        assert!(error.0.contains("unknown or nonzero algorithmic latency"));
-    }
+    let state = NativeDeviceState::new(TEST_TYPE, 1, vec![3]).unwrap();
+    let (mut editor, asset, track) = imported_audio_project();
+    let return_track = match editor
+        .execute(Command::AddReturnTrack {
+            name: "return".into(),
+        })
+        .unwrap()
+    {
+        Created::ReturnTrack(id) => id,
+        other => panic!("unexpected result: {other:?}"),
+    };
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track,
+            before: None,
+            state,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track,
+            gain: 0.5,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.5, -0.25]]).unwrap())]);
+    let error = compile::project_with_registry(editor.project(), &media, &registry).unwrap_err();
+    assert!(error.0.contains("latency is unknown"));
 }
 
 #[test]
@@ -735,6 +730,13 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
         ParameterValue::Float(-6.0206),
     )
     .unwrap();
+    let first_state = hex_engine::patch_native_device_parameter(
+        &first_state,
+        hex_engine::DEVICE_INPUT_GAIN.id,
+        ParameterValue::Float(-12.0),
+    )
+    .unwrap();
+    let input_gain = 10.0_f32.powf(-12.0 / 20.0);
     // A device-owned edit must retain the independent host trim.
     let first_state = hex_engine::patch_native_device_parameter(
         &first_state,
@@ -743,6 +745,7 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
     )
     .unwrap();
     assert_eq!(first_state.output_gain_millidb(), -6021);
+    assert_eq!(first_state.input_gain_db(), -12.0);
     let first = add_device(&mut editor, track, first_state);
     let second = add_device(
         &mut editor,
@@ -772,10 +775,16 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
     let mut output = [[0.0; 2]; 1];
     playback.render(&mut output).unwrap();
     let gain = 10.0_f32.powf(-6.021 / 20.0);
-    assert!((output[0][0] + 0.25 * gain).abs() < 1e-6);
-    assert!((output[0][1] + 0.5 * gain).abs() < 1e-6);
-    assert_eq!(first_meter.take_peaks(), [0.5, gain]);
-    assert_eq!(second_meter.take_peaks(), [gain, gain * 0.5]);
+    assert!((output[0][0] + 0.25 * gain * input_gain).abs() < 1e-6);
+    assert!((output[0][1] + 0.5 * gain * input_gain).abs() < 1e-6);
+    assert_eq!(
+        first_meter.take_peaks(),
+        [0.5 * input_gain, gain * input_gain]
+    );
+    assert_eq!(
+        second_meter.take_peaks(),
+        [gain * input_gain, gain * input_gain * 0.5]
+    );
     // A renderer sharing prepared data cannot contaminate native UI readings.
     let mut export = Playback::try_from_prepared_with_session(prepared).unwrap();
     export.apply(PlaybackCommand::Play);

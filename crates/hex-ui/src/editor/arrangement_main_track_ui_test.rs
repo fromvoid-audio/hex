@@ -39,8 +39,10 @@ fn project_with_returns(count: usize) -> (Project, Vec<ReturnId>) {
 fn completed_event(state: &ViewState) -> Event {
     Event {
         state: Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
@@ -54,10 +56,12 @@ fn completed_event(state: &ViewState) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        computer_keyboard_complete: None,
         audio_batch_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,
@@ -154,8 +158,10 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
     for count in [0, 2, 40] {
         editor.update(cx, |view, cx| {
             view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::default(),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 384_000,
@@ -300,6 +306,83 @@ fn main_lane_drag_selects_all_tracks_and_copy_uses_project_scope(cx: &mut TestAp
     visual.simulate_keystrokes("cmd-c");
     editor.read_with(cx, |view, _| {
         assert_eq!(view.last_time_request, Some(("copy", None)));
+    });
+}
+
+#[gpui::test]
+fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut TestAppContext) {
+    let (handle, editor) = editor_window(cx, project_with_tracks(3), Arc::default());
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        // Main and regular rows can differ by one pixel (or more after layout changes).
+        for (left, width, start) in [(284.0, 1460.0, 0), (200.0, 680.0, 48_000)] {
+            view.viewport = Some(super::viewport::Viewport {
+                start,
+                length: 192_000,
+            });
+            let viewport =
+                view.visible_viewport(view.state.as_ref().expect("state").timeline_frames);
+            let lane = super::drag::LaneBounds {
+                left,
+                width,
+                top: 400.0,
+                height: 30.0,
+            };
+            view.main_track_lane_bounds = Some(lane);
+            view.main_track_lane_epoch = view.drag_layout_generation;
+            for regular in view.drag_lanes.values_mut() {
+                regular.left = left;
+                regular.width = width - 1.0;
+            }
+            let x = left + width * 0.2;
+            let y = lane.top + lane.height * 0.7;
+            let expected = viewport.start + viewport.length / 5;
+            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            view.update_time_selection_gesture(x, y, true);
+            assert!(view.finish_time_selection_gesture());
+            assert!(
+                view.normalized_time_selection().is_none(),
+                "stationary click became a range"
+            );
+            assert_eq!(view.edit_cursor.expect("cursor").frame, expected);
+
+            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            assert!(view.update_time_selection_gesture(left + width * 0.6, y, true));
+            assert!(view.finish_time_selection_gesture());
+            let range = view.normalized_time_selection().expect("main range");
+            assert_eq!(
+                (range.start(), range.end()),
+                (expected, viewport.start + viewport.length * 3 / 5)
+            );
+            assert_eq!(range.tracks().len(), 3);
+            assert!(view.time_selection_project_scope);
+            assert!(view.selected_track.is_none());
+
+            // Grabbing the selected rectangle without moving must not shift its contents.
+            let handle_y = lane.top + 2.0;
+            assert!(view.begin_main_time_range_move_gesture(x, handle_y));
+            assert!(view.update_time_range_move_gesture(x, handle_y, true));
+            assert!(view.finish_time_range_move_gesture());
+            assert!(view.last_enqueued_edit.is_none());
+
+            assert!(view.begin_main_time_selection_gesture(x, y, true));
+            // Inside Main's right edge but outside the narrower regular lane:
+            // the timer must not spuriously scroll the viewport.
+            view.update_time_selection_gesture(left + width - 0.5, y, true);
+            let now = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            assert!(!view.tick_time_gesture_autoscroll(now));
+            assert_eq!(view.visible_viewport(384_000), viewport);
+            let selection = view.time_selection;
+            view.main_track_lane_epoch = view.drag_layout_generation.wrapping_add(1);
+            assert!(!view.update_time_selection_gesture(x, y, true));
+            assert_eq!(
+                view.time_selection, selection,
+                "stale Main geometry must not use a regular row"
+            );
+            view.main_track_lane_epoch = view.drag_layout_generation;
+            assert!(view.finish_time_selection_gesture());
+        }
     });
 }
 

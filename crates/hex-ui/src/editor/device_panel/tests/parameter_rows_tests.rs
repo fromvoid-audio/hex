@@ -66,6 +66,8 @@ fn exercise(
     editor.update(cx, |view, cx| {
         let old = view.state.as_ref().unwrap();
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
+            audio_clip_waveforms: old.audio_clip_waveforms.clone(),
             project: Arc::new(model.project().clone()),
             waveforms: Default::default(),
             midi_preview: old.midi_preview.clone(),
@@ -242,6 +244,31 @@ fn exercise(
             "paired row {row}"
         );
     }
+    // Current main also owns whole-device snapshot gestures (for example
+    // harmonic edits). Keep their owner mounted until the gesture retires.
+    editor.update(cx, |view, cx| {
+        view.device_gesture.reset();
+        view.device_gesture
+            .begin_snapshot(
+                view.project_generation,
+                device,
+                hex_lattice_contract::DeviceParameterSnapshot::new(&[
+                    (first, ParameterValue::Float(0.5)),
+                    (second, ParameterValue::Float(0.5)),
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for row in [0, 9, 21, 35] {
+        assert!(
+            visual.debug_bounds(row_selector(device, row)).is_some(),
+            "snapshot row {row}"
+        );
+    }
+    editor.update(cx, |view, _| view.device_gesture.reset());
     // Selector dropdown state pins independently of keyboard focus.
     scroll_rows(&editor, &mut visual, device, 0.0);
     let choice_key = ParameterKey {

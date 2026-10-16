@@ -94,13 +94,22 @@ impl Project {
     /// Validate global identities, endpoints, gain, pair uniqueness and the
     /// complete DAG. Returned records are metadata, not playback admission.
     pub fn validate_return_feed_snapshot(snapshot: &Snapshot) -> Result<Vec<ReturnFeed>, Invalid> {
+        if snapshot.audio_feeds.len() > crate::MAX_AUDIO_FEEDS
+            || snapshot.midi_routes.len() > crate::MAX_MIDI_ROUTES
+        {
+            return Err(Invalid("authored routing edge limit reached"));
+        }
         if snapshot.return_feeds.len() > MAX_RETURN_FEEDS {
             return Err(Invalid("return feed limit reached"));
         }
         let mut legacy = snapshot.clone();
         legacy.return_feeds.clear();
-        let base = Self::from_snapshot(legacy)?;
+        legacy.audio_feeds.clear();
+        legacy.midi_routes.clear();
+        let mut base = Self::from_snapshot(legacy)?;
         let mut seen = existing_ids(snapshot);
+        seen.extend(snapshot.audio_feeds.iter().map(|r| r.id));
+        seen.extend(snapshot.midi_routes.iter().map(|r| r.id));
         let mut pairs = BTreeSet::new();
         let mut feeds = Vec::with_capacity(snapshot.return_feeds.len());
         let mut edges = Vec::with_capacity(snapshot.return_feeds.len());
@@ -143,6 +152,8 @@ impl Project {
             });
         }
         base.validate_routing_proposal(&edges)?;
+        base.routing = feeds.clone();
+        base.adopt_playable_snapshot(snapshot)?;
         Ok(feeds)
     }
 
@@ -162,7 +173,7 @@ impl Project {
     }
 }
 
-fn existing_ids(snapshot: &Snapshot) -> BTreeSet<u64> {
+pub(crate) fn existing_ids(snapshot: &Snapshot) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     ids.extend(snapshot.assets.iter().map(|a| a.id));
     for track in &snapshot.tracks {

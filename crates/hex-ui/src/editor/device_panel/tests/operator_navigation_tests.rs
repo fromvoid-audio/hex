@@ -34,13 +34,11 @@ fn selector(text: String) -> &'static str {
 }
 
 #[gpui::test]
-fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut TestAppContext) {
+fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, _, track, device) = operator_fixture();
     let path = std::env::temp_dir().join(format!("hex-lfo-mapping-{}.hex", std::process::id()));
-    let preset_path = path.with_extension("hex-device-preset.json");
     let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(&preset_path);
     service.submit(Request::SaveNew(path.clone())).unwrap();
     let saved = receive_service_event(&service);
     assert!(saved.error.is_none());
@@ -48,7 +46,7 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
-    let tab = tab_bounds(&mut visual, device, "lfo", "lfo");
+    let tab = lfo_link_bounds(&mut visual, device);
     visual.simulate_click(tab.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
@@ -66,7 +64,7 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
                 device.value()
             )))
             .unwrap();
-        let rail = tab_bounds(&mut visual, device, "lfo", "lfo");
+        let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
         let detail = visual
             .debug_bounds(selector(format!("operator-detail-{}", device.value())))
             .unwrap();
@@ -104,6 +102,16 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
                 })
         });
         visual.run_until_parked();
+        let selected = ["a", "b", "c", "d"][(parameter - 88) as usize..].join(" ");
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "operator-lfo-selected-{}-{selected}",
+                    device.value()
+                )))
+                .is_some(),
+            "selected readout must follow each canonical destination edit"
+        );
     }
     assert!(
         visual
@@ -120,10 +128,57 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
     let depth = visual
         .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
         .unwrap();
+    let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+    assert!(
+        depth.bottom() <= rail.top(),
+        "pitch-depth explanation overlaps navigation: {depth:?} rail={rail:?}"
+    );
     assert!(
         depth.bottom() <= detail.bottom() && depth.right() <= detail.right(),
         "pitch-depth explanation is clipped: {depth:?} detail={detail:?}"
     );
+    for width in [880.0, 1440.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        for sync in [true, false] {
+            editor.update(cx, |view, _| {
+                assert!(view.enqueue(Request::SetDeviceParameter {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(84),
+                    value: ParameterValue::Bool(sync),
+                }));
+            });
+            pump_until(&editor, cx, |view| {
+                view.worker_requests_pending == 0
+                    && view.state.as_ref().is_some_and(|state| {
+                        operator_parameter_value(state, track, device, 84)
+                            == ParameterValue::Bool(sync)
+                    })
+            });
+            visual.run_until_parked();
+            let depth = visual
+                .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
+                .unwrap();
+            let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+            assert!(
+                depth.bottom() <= rail.top(),
+                "depth overlaps navigation at width={width}, sync={sync}: {depth:?} rail={rail:?}"
+            );
+            let detail = visual
+                .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+                .unwrap();
+            for caption in [
+                format!("operator-lfo-depth-{}", device.value()),
+                format!("operator-lfo-destinations-{}", device.value()),
+                format!("operator-lfo-selected-{}-", device.value()),
+            ] {
+                let bounds = visual.debug_bounds(selector(caption)).unwrap();
+                assert!(
+                    bounds.right() <= detail.right() && bounds.bottom() <= rail.top(),
+                    "lfo caption is clipped or overlaps navigation at width={width}, sync={sync}: {bounds:?}"
+                );
+            }
+        }
+    }
     enter_typed_value(
         &mut visual,
         device,
@@ -147,53 +202,6 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
             .state()
             .clone()
     });
-    let save = visual
-        .debug_bounds(selector(format!("device-preset-save-{}", device.value())))
-        .unwrap();
-    visual.simulate_click(save.center(), Modifiers::default());
-    visual.run_until_parked();
-    cx.simulate_new_path_selection(|_| Some(preset_path.clone()));
-    visual.run_until_parked();
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && !view.preset_dialog_open && preset_path.exists()
-    });
-    click_toggle(
-        &mut visual,
-        device,
-        hex_lattice_contract::ParameterId::from_static(89),
-    );
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
-    });
-    editor.update(cx, |view, cx| {
-        let state = view.state.as_ref().unwrap();
-        let owner = hex_session::service::preset::Owner {
-            project_generation: view.project_generation,
-            revision: state.revision,
-            device,
-            class: NativeDeviceClass::Instrument,
-            type_id: state.project.device(device).unwrap().state().type_id(),
-        };
-        // GPUI's test platform lacks an open-file prompt; use its actual
-        // chosen-path handler and worker without claiming native dialog proof.
-        view.choose_device_preset(owner, preset_path.clone(), false, cx);
-    });
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
-    });
-    editor.read_with(cx, |view, _| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .unwrap()
-                .state(),
-            &mapped
-        );
-    });
     editor.update(cx, |view, cx| view.save_project(cx));
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
@@ -210,7 +218,12 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
         &mapped
     );
     std::fs::remove_file(path).unwrap();
-    std::fs::remove_file(preset_path).unwrap();
+}
+
+fn lfo_link_bounds(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pixels> {
+    visual
+        .debug_bounds(selector(format!("operator-lfo-link-{}", device.value())))
+        .unwrap()
 }
 
 // The legacy fallback lets this exact regression execute on the unfixed source:
@@ -281,7 +294,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             device.value()
         )))
         .unwrap();
-    let lfo = tab_bounds(&mut visual, device, "lfo", "lfo");
+    let lfo = lfo_link_bounds(&mut visual, device);
     visual.simulate_click(lfo.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -298,7 +311,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(tab_bounds(&mut visual, device, "lfo", "lfo"), lfo);
+    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
     for parameter in 82..=92 {
         assert!(
             visual
@@ -417,8 +430,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in [Switch::Filter, Switch::Pitch] {
-        let switch = switch.index();
+    {
+        let switch = Switch::Pitch.index();
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",

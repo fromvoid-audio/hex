@@ -216,3 +216,83 @@ fn occupied_move_and_removed_owner_preserve_exact_committed_history() {
         points
     );
 }
+
+#[test]
+fn arming_gain_recording_preserves_canonical_revision_dirty_history_and_cache() {
+    let service = Service::new(48000, 16, 0).unwrap();
+    event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "record".into(),
+        }))
+        .unwrap();
+    let added = event(&service);
+    let Created::Track(track) = added.created.unwrap() else {
+        panic!("track")
+    };
+    let revision = added.state.revision;
+    let canonical = added.state.project.clone();
+    for (generation, stamp) in [(1, revision), (0, revision + 1)] {
+        service
+            .submit(Request::ArmGainRecording {
+                project_generation: generation,
+                revision: stamp,
+                track,
+            })
+            .unwrap();
+        let refused = event(&service);
+        assert!(refused.error.unwrap().contains("project changed"));
+        assert!(refused.playback.is_none());
+        assert_eq!(refused.state.project, canonical);
+    }
+    service
+        .submit(Request::ArmGainRecording {
+            project_generation: 0,
+            revision,
+            track,
+        })
+        .unwrap();
+    let armed = event(&service);
+    assert!(armed.error.is_none(), "{:?}", armed.error);
+    assert_eq!(armed.state.revision, revision);
+    assert_eq!(armed.state.project, canonical);
+    assert_eq!(armed.state.unsaved, added.state.unsaved);
+    assert_eq!(
+        (armed.state.can_undo, armed.state.can_redo),
+        (added.state.can_undo, added.state.can_redo)
+    );
+    let playback = armed.playback.unwrap();
+    assert_eq!(
+        playback.prepared_revision().unwrap().gain_recording_track(),
+        Some(track)
+    );
+    assert!(playback.gain_recording_ready(track.value()));
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(
+        undone.state.project.track(track).is_none(),
+        "arming did not add an undo step"
+    );
+    assert_eq!(
+        undone
+            .playback
+            .unwrap()
+            .prepared_revision()
+            .unwrap()
+            .gain_recording_track(),
+        None
+    );
+    service.submit(Request::Redo).unwrap();
+    let redone = event(&service);
+    assert_eq!(redone.state.project, canonical);
+    assert_eq!(
+        redone
+            .playback
+            .unwrap()
+            .prepared_revision()
+            .unwrap()
+            .gain_recording_track(),
+        None,
+        "canonical cache stays unarmed"
+    );
+}

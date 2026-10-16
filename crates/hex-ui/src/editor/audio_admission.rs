@@ -11,6 +11,13 @@ pub(super) struct ProjectRevision {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StoppedPlaybackRestore {
+    Preparing,
+    Ready,
+    Published(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AdmissionState {
     Pending,
     Applied,

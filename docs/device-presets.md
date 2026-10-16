@@ -23,7 +23,7 @@ filtering would require a separately coordinated platform API change.
 The independent JSON envelope has `format: "hex-device-preset"`, `schema: 1`,
 `class` (`instrument` or `effect`), `type_id`, `state_version`, and a complete
 opaque byte-array `payload`. It contains no project identity, device identity,
-neighbor ordering, bypass, host output trim, or external assets. Unknown envelope fields, formats,
+neighbor ordering, bypass, host input/output trims, or external assets. Unknown envelope fields, formats,
 schemas, classes, malformed type identifiers, version zero, and oversized payloads
 are rejected. The existing 4096-byte native-state and 128-byte type-id limits are
 unchanged. The file limit derives from worst-case compact byte-array JSON plus
@@ -34,8 +34,8 @@ must validate the state and support its version; newer/unknown/malformed native
 states refuse before mutation. Existing provider-supported legacy migrations
 remain authoritative. Presets preserve original payload bytes and native state
 version rather than re-encoding a migration or stripping unsupported content. Host-owned
-output trim stays at the target's exact millidB value during load and Undo/Redo;
-it is not part of the native opaque-payload envelope.
+input/output trims stay at the target's exact millidB values during load and Undo/Redo;
+they are not part of the native opaque-payload envelope.
 Envelope schema 1 has no migration to other envelope versions.
 
 Dialogs capture project generation, canonical revision, stable device identity,
@@ -46,7 +46,7 @@ and open the dialog again. The worker owns all preset I/O. A compatible load use
 one `ReplaceDeviceState` prepared transaction and existing live admission; failed
 admission preserves canonical state, history and audio. Undo restores the previous
 complete device state; Redo restores the preset. Save alone does not dirty or
-change the canonical project.
+change the canonical project. Deferred preset requests are discarded if the active device gesture fails to finalize; the visible refusal remains and no preset I/O is submitted.
 
 ## original acceptance retained
 
@@ -89,3 +89,19 @@ return, inherited-release and late-refusal regressions cover the integration.
 This does not add host musical typing; PR190 runtime evidence remains separate
 and is not a prerequisite invented for the preset workflow. Optimized macOS
 preset acceptance must use the complete integrated candidate, not an older bundle.
+
+## current-main integration — 16 october 2026
+
+The focused service/storage/dialog/header wiring is restored after current main
+excluded the inherited draft preset workflow. Current routing, compensation,
+shared widget styling, input/output metering and capture mix predicates remain
+authoritative. Service regression state uses the current Operator version-11
+416-byte payload, retaining the filter, enable and LFO state. Both host gain trims
+remain target-owned through load and one Undo/Redo.
+
+The nonzero input-trim regression reproduced a reset to unity before repair.
+The actual worker compile-refusal fixture reproduced preset requests remaining
+queued after failed finalization; repaired retirement submits no preset I/O.
+Focused storage/service/rendered-widget results and final exact-source full CI
+are recorded with PR187. Historical Mac evidence applies to its earlier candidate;
+final-source native dialog, input and listening acceptance remain open.

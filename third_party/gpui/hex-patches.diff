@@ -1,628 +1,3 @@
---- a/src/app/test_context.rs
-+++ b/src/app/test_context.rs
-@@ -122,0 +123,6 @@
-+    /// Cursor last delivered to the test platform, independent of hit testing.
-+    /// This is not evidence of physical native cursor appearance.
-+    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
-+        self.test_platform.cursor_style()
-+    }
-+
-@@ -677,0 +684,23 @@
-+    /// Returns the cursor request selected by the current rendered hitbox.
-+    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
-+    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
-+        self.update(|window, _| window.rendered_frame.cursor_style(window))
-+    }
-+
-+    /// Background of the last painted quad exactly matching a debug element's bounds.
-+    /// Reads the completed scene without drawing or injecting pointer events.
-+    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
-+        self.update(|window, _| {
-+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
-+            let scaled = bounds.scale(window.scale_factor());
-+            window
-+                .rendered_frame
-+                .scene
-+                .quads
-+                .iter()
-+                .rev()
-+                .find(|quad| quad.bounds == scaled)
-+                .map(|quad| quad.background)
-+        })
-+    }
-+
---- a/src/elements/div.rs
-+++ b/src/elements/div.rs
-@@ -1227,0 +1228 @@
-+        accessibility: None,
-@@ -1236,0 +1238,4 @@
-+    accessibility: Option<(
-+        crate::AccessibilityDescriptor,
-+        crate::accessibility::AccessibilityCallback,
-+    )>,
-@@ -1240,0 +1246,11 @@
-+    /// Expose this actual laid-out control through the native semantic boundary.
-+    /// IDs must identify the owner lifetime, not an index or reusable label.
-+    pub fn accessibility(
-+        mut self,
-+        descriptor: crate::AccessibilityDescriptor,
-+        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
-+    ) -> Self {
-+        self.accessibility = Some((descriptor, std::rc::Rc::new(action)));
-+        self
-+    }
-+
-@@ -1412,0 +1429,12 @@
-+                if let Some((descriptor, callback)) = &self.accessibility {
-+                    let bounds = bounds.intersect(&window.content_mask().bounds);
-+                    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
-+                        window.next_frame.accessibility.insert(
-+                            crate::AccessibilityNode {
-+                                descriptor: descriptor.clone(),
-+                                bounds,
-+                            },
-+                            callback.clone(),
-+                        );
-+                    }
-+                }
-@@ -2906,0 +2935,12 @@
-+impl Stateful<Div> {
-+    /// Attach native semantics to this stateful control without changing its layout.
-+    pub fn accessibility(
-+        mut self,
-+        descriptor: crate::AccessibilityDescriptor,
-+        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
-+    ) -> Self {
-+        self.element = self.element.accessibility(descriptor, action);
-+        self
-+    }
-+}
-+
---- a/src/gpui.rs
-+++ b/src/gpui.rs
-@@ -8,0 +9,2 @@
-+mod accessibility;
-+pub use accessibility::*;
---- a/src/interactive.rs
-+++ b/src/interactive.rs
-@@ -363,0 +364,4 @@
-+    /// True when the platform inverted device scroll direction for user preferences.
-+    /// Raw `delta` remains suitable for ordinary content scrolling.
-+    pub direction_inverted_from_device: bool,
-+
-@@ -374,0 +379,14 @@
-+}
-+
-+impl ScrollWheelEvent {
-+    /// Device-direction delta before the platform's user-preference inversion.
-+    /// This is opt-in: ordinary scrolling should continue using `delta`.
-+    pub fn physical_delta(&self) -> ScrollDelta {
-+        if !self.direction_inverted_from_device {
-+            return self.delta;
-+        }
-+        match self.delta {
-+            ScrollDelta::Pixels(delta) => ScrollDelta::Pixels(point(-delta.x, -delta.y)),
-+            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
-+        }
-+    }
---- a/src/platform/linux/platform.rs
-+++ b/src/platform/linux/platform.rs
-@@ -705 +705 @@
--            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
-+            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
-@@ -712,0 +713,2 @@
-+            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
-+            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
---- a/src/platform/linux/wayland/client.rs
-+++ b/src/platform/linux/wayland/client.rs
-@@ -1790,0 +1791 @@
-+                                direction_inverted_from_device: false,
-@@ -1802,0 +1804 @@
-+                            direction_inverted_from_device: false,
---- a/src/platform/linux/wayland.rs
-+++ b/src/platform/linux/wayland.rs
-@@ -17 +17 @@
--            CursorStyle::Arrow => Shape::Default,
-+            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
-@@ -24,0 +25,2 @@
-+            CursorStyle::ResizeLeftBracket => Shape::WResize,
-+            CursorStyle::ResizeRightBracket => Shape::EResize,
---- a/src/platform/linux/x11/client.rs
-+++ b/src/platform/linux/x11/client.rs
-@@ -2217,0 +2218 @@
-+        direction_inverted_from_device: false,
---- a/src/platform/mac/events.rs
-+++ b/src/platform/mac/events.rs
-@@ -235,0 +236,2 @@
-+                    let direction_inverted: cocoa::base::BOOL =
-+                        msg_send![native_event, isDirectionInvertedFromDevice];
-@@ -236,0 +239 @@
-+                        direction_inverted_from_device: direction_inverted == YES,
---- a/src/platform/mac/platform.rs
-+++ b/src/platform/mac/platform.rs
-@@ -22 +22 @@
--        NSPasteboardTypeTIFF, NSSavePanel, NSWindow,
-+        NSPasteboardTypeTIFF, NSImage, NSSavePanel, NSWindow,
-@@ -26,2 +26,2 @@
--        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
--        NSUInteger, NSURL,
-+        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
-+        NSSize, NSString, NSUInteger, NSURL,
-@@ -45,0 +46 @@
-+    rc::StrongPtr,
-@@ -70,0 +72,89 @@
-+
-+/// A cached transparent cursor avoids NSCursor's process-wide hide count.
-+fn make_hidden_cursor() -> Option<StrongPtr> {
-+    unsafe {
-+        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(1.0, 1.0));
-+        if image == nil {
-+            return None;
-+        }
-+        let image = StrongPtr::new(image);
-+        let _: () = msg_send![*image, lockFocus];
-+        let color: id = msg_send![class!(NSColor), clearColor];
-+        let _: () = msg_send![color, set];
-+        let _: () = msg_send![class!(NSBezierPath), fillRect: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0))];
-+        let _: () = msg_send![*image, unlockFocus];
-+        let allocated: id = msg_send![class!(NSCursor), alloc];
-+        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(0.0, 0.0)];
-+        if cursor == nil {
-+            return None;
-+        }
-+        Some(StrongPtr::new(cursor))
-+    }
-+}
-+
-+/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
-+fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
-+    unsafe {
-+        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
-+        if image == nil {
-+            return None;
-+        }
-+        let image = StrongPtr::new(image);
-+        let _: () = msg_send![*image, lockFocus];
-+        let path: id = msg_send![class!(NSBezierPath), bezierPath];
-+        if path == nil {
-+            let _: () = msg_send![*image, unlockFocus];
-+            return None;
-+        }
-+
-+        let center_x = 12.0;
-+        let toward = if points_left { -1.0 } else { 1.0 };
-+        let bracket = if points_left { 1.0 } else { -1.0 };
-+        let segments = [
-+            (NSPoint::new(center_x, 4.0), NSPoint::new(center_x, 20.0)),
-+            (
-+                NSPoint::new(center_x, 4.0),
-+                NSPoint::new(center_x + bracket * 5.0, 4.0),
-+            ),
-+            (
-+                NSPoint::new(center_x, 20.0),
-+                NSPoint::new(center_x + bracket * 5.0, 20.0),
-+            ),
-+            (
-+                NSPoint::new(center_x, 12.0),
-+                NSPoint::new(center_x + toward * 7.0, 12.0),
-+            ),
-+            (
-+                NSPoint::new(center_x + toward * 7.0, 12.0),
-+                NSPoint::new(center_x + toward * 4.0, 15.0),
-+            ),
-+            (
-+                NSPoint::new(center_x + toward * 7.0, 12.0),
-+                NSPoint::new(center_x + toward * 4.0, 9.0),
-+            ),
-+        ];
-+        for (start, end) in segments {
-+            let _: () = msg_send![path, moveToPoint: start];
-+            let _: () = msg_send![path, lineToPoint: end];
-+        }
-+
-+        let white: id = msg_send![class!(NSColor), whiteColor];
-+        let _: () = msg_send![white, setStroke];
-+        let _: () = msg_send![path, setLineWidth: 4.0_f64];
-+        let _: () = msg_send![path, setLineCapStyle: 1_isize];
-+        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
-+        let _: () = msg_send![path, stroke];
-+        let black: id = msg_send![class!(NSColor), blackColor];
-+        let _: () = msg_send![black, setStroke];
-+        let _: () = msg_send![path, setLineWidth: 1.75_f64];
-+        let _: () = msg_send![path, stroke];
-+        let _: () = msg_send![*image, unlockFocus];
-+
-+        let allocated: id = msg_send![class!(NSCursor), alloc];
-+        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
-+        if cursor == nil {
-+            return None;
-+        }
-+        Some(StrongPtr::new(cursor))
-+    }
-+}
-@@ -179,0 +270,3 @@
-+    hidden_cursor: Option<StrongPtr>,
-+    resize_left_bracket_cursor: Option<StrongPtr>,
-+    resize_right_bracket_cursor: Option<StrongPtr>,
-@@ -199,0 +293,5 @@
-+        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
-+            (None, None)
-+        } else {
-+            (make_bracket_cursor(true), make_bracket_cursor(false))
-+        };
-@@ -221,0 +320,3 @@
-+            hidden_cursor: if headless { None } else { make_hidden_cursor() },
-+            resize_left_bracket_cursor,
-+            resize_right_bracket_cursor,
-@@ -973,2 +1074,17 @@
--            let new_cursor: id = match style {
--                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-+            let bracket_cursor = {
-+                let state = self.0.lock();
-+                match style {
-+                    CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
-+                    CursorStyle::ResizeLeftBracket => state
-+                        .resize_left_bracket_cursor
-+                        .as_ref()
-+                        .map(|cursor| **cursor),
-+                    CursorStyle::ResizeRightBracket => state
-+                        .resize_right_bracket_cursor
-+                        .as_ref()
-+                        .map(|cursor| **cursor),
-+                    _ => None,
-+                }
-+            };
-+            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
-+                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -983,0 +1100,2 @@
-+                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
-+                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1126 @@
--            };
-+            });
---- a/src/platform/mac/window.rs
-+++ b/src/platform/mac/window.rs
-@@ -0,0 +1,2 @@
-+#[path = "accessibility.rs"]
-+mod native_accessibility;
-@@ -107,0 +110 @@
-+        native_accessibility::initialize_class();
-@@ -112,0 +116,9 @@
-+            decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
-+            decl.add_method(
-+                sel!(accessibilityChildren),
-+                native_accessibility::children as extern "C" fn(&Object, Sel) -> id,
-+            );
-+            decl.add_method(
-+                sel!(accessibilityLabel),
-+                native_accessibility::root_label as extern "C" fn(&Object, Sel) -> id,
-+            );
-@@ -161,0 +174,8 @@
-+                    handle_view_event as extern "C" fn(&Object, Sel, id),
-+                );
-+                decl.add_method(
-+                    sel!(rightMouseDragged:),
-+                    handle_view_event as extern "C" fn(&Object, Sel, id),
-+                );
-+                decl.add_method(
-+                    sel!(otherMouseDragged:),
-@@ -283,0 +304 @@
-+        decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
-@@ -388,0 +410 @@
-+    accessibility: Option<Arc<native_accessibility::NativeBridge>>,
-@@ -407,0 +430 @@
-+    hide_native_window_controls: bool,
-@@ -425,0 +449,19 @@
-+        if self.hide_native_window_controls {
-+            unsafe {
-+                for button_kind in [
-+                    NSWindowButton::NSWindowCloseButton,
-+                    NSWindowButton::NSWindowMiniaturizeButton,
-+                    NSWindowButton::NSWindowZoomButton,
-+                ] {
-+                    let button: id = msg_send![
-+                        self.native_window,
-+                        standardWindowButton: button_kind
-+                    ];
-+                    if button != nil {
-+                        let _: () = msg_send![button, setHidden: YES];
-+                    }
-+                }
-+            }
-+            return;
-+        }
-+
-@@ -706,0 +749 @@
-+                accessibility: None,
-@@ -712,0 +756,3 @@
-+                hide_native_window_controls: titlebar
-+                    .as_ref()
-+                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
-@@ -739,0 +786,8 @@
-+            if let Some(bridge) =
-+                native_accessibility::register(handle.window_id().as_u64(), native_view)
-+            {
-+                native_accessibility::attach(native_window, &bridge);
-+                native_accessibility::attach(native_view, &bridge);
-+                window.0.lock().accessibility = Some(bridge);
-+            }
-+
-@@ -933,0 +988 @@
-+        self.revoke_accessibility();
-@@ -953,0 +1009,51 @@
-+    fn revoke_accessibility(&self) {
-+        let bridge = self.0.lock().accessibility.clone();
-+        if let Some(bridge) = bridge {
-+            native_accessibility::revoke(&bridge);
-+        }
-+    }
-+    fn on_accessibility_action(
-+        &self,
-+        callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
-+    ) {
-+        let bridge = self.0.lock().accessibility.clone();
-+        if let Some(bridge) = bridge {
-+            native_accessibility::set_callback(&bridge, callback);
-+        }
-+    }
-+    fn publish_accessibility(&self, nodes: Vec<crate::AccessibilityNode>, refused: bool) {
-+        let (bridge, frames) = {
-+            let state = self.0.lock();
-+            let Some(bridge) = state.accessibility.clone() else {
-+                return;
-+            };
-+            let height = state.content_size().height.0;
-+            let frames = nodes
-+                .iter()
-+                .map(|node| {
-+                    let b = node.bounds;
-+                    let local = NSRect::new(
-+                        NSPoint::new(
-+                            b.origin.x.0 as f64,
-+                            (height - b.origin.y.0 - b.size.height.0) as f64,
-+                        ),
-+                        NSSize::new(b.size.width.0 as f64, b.size.height.0 as f64),
-+                    );
-+                    let screen: NSRect = unsafe {
-+                        let rect: NSRect =
-+                            msg_send![state.native_view.as_ptr(), convertRect: local toView: nil];
-+                        msg_send![state.native_window, convertRectToScreen: rect]
-+                    };
-+                    [
-+                        screen.origin.x,
-+                        screen.origin.y,
-+                        screen.size.width,
-+                        screen.size.height,
-+                    ]
-+                })
-+                .collect();
-+            (bridge, frames)
-+        };
-+        native_accessibility::publish(&bridge, nodes, frames, refused);
-+    }
-+
-@@ -1610,0 +1717 @@
-+        native_accessibility::detach(this);
-@@ -1617,0 +1725 @@
-+        native_accessibility::detach(this);
-@@ -2058,0 +2167 @@
-+    native_accessibility::revoke_object(this);
---- a/src/platform/test/platform.rs
-+++ b/src/platform/test/platform.rs
-@@ -93,0 +94,4 @@
-+    pub(crate) fn cursor_style(&self) -> CursorStyle {
-+        *self.active_cursor.lock()
-+    }
-+
---- a/src/platform/windows/events.rs
-+++ b/src/platform/windows/events.rs
-@@ -555,0 +556 @@
-+            direction_inverted_from_device: false,
-@@ -601,0 +603 @@
-+            direction_inverted_from_device: false,
---- a/src/platform/windows/util.rs
-+++ b/src/platform/windows/util.rs
-@@ -126,0 +127,2 @@
-+        | CursorStyle::ResizeLeftBracket
-+        | CursorStyle::ResizeRightBracket
---- a/src/platform.rs
-+++ b/src/platform.rs
-@@ -0,0 +1,2 @@
-+#[cfg(any(target_os = "macos", test))]
-+mod accessibility_bridge;
-@@ -491,0 +494,8 @@
-+    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
-+    /// Revoke before accepted close callbacks or UI-owned resources are released.
-+    fn revoke_accessibility(&self) {}
-+    fn on_accessibility_action(
-+        &self,
-+        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
-+    ) {
-+    }
-@@ -1228,0 +1239 @@
-+                hide_native_window_controls: Default::default(),
-@@ -1257,0 +1269,4 @@
-+
-+    /// Hide the standard macOS close, minimize, and zoom buttons.
-+    /// This does not change the native titlebar or window movement/resizing flags.
-+    pub hide_native_window_controls: bool,
-@@ -1411,0 +1427,4 @@
-+    /// A persistent invisible cursor for a window-scoped pointer adjustment.
-+    /// macOS uses a transparent image, without changing NSCursor hide counts.
-+    Hidden,
-+
-@@ -1438,0 +1458,6 @@
-+
-+    /// A bracket cursor for trimming an item from its left edge.
-+    ResizeLeftBracket,
-+
-+    /// A bracket cursor for trimming an item from its right edge.
-+    ResizeRightBracket,
---- a/src/taffy.rs
-+++ b/src/taffy.rs
-@@ -312 +312 @@
--            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
-+            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
---- a/src/view.rs
-+++ b/src/view.rs
-@@ -211,0 +212 @@
-+                        && !window.rendered_frame.accessibility.invalid
---- a/src/window.rs
-+++ b/src/window.rs
-@@ -667,0 +668 @@
-+    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
-@@ -691,0 +693 @@
-+    accessibility_index: usize,
-@@ -713,0 +716 @@
-+            accessibility: Default::default(),
-@@ -740,0 +744 @@
-+        self.accessibility = Default::default();
-@@ -753,0 +758,3 @@
-+
-+        #[cfg(any(test, feature = "test-support"))]
-+        self.debug_bounds.clear();
-@@ -817,0 +825,9 @@
-+// A frame-owned cursor override must restore even when its window is destroyed.
-+struct HiddenCursorRestore(Rc<dyn crate::Platform>);
-+
-+impl Drop for HiddenCursorRestore {
-+    fn drop(&mut self) {
-+        self.0.set_cursor_style(CursorStyle::Arrow);
-+    }
-+}
-+
-@@ -822,0 +839 @@
-+    hidden_cursor_restore: Option<HiddenCursorRestore>,
-@@ -1097,0 +1115,3 @@
-+                        if !active {
-+                            window.hidden_cursor_restore.take();
-+                        }
-@@ -1123,0 +1144,10 @@
-+        platform_window.on_accessibility_action({
-+            let mut cx = cx.to_async();
-+            Box::new(move |request: crate::AccessibilityRequest| {
-+                handle
-+                    .update(&mut cx, |_, window, cx| {
-+                        window.perform_accessibility_request(&request, cx)
-+                    })
-+                    .unwrap_or(false)
-+            })
-+        });
-@@ -1210,0 +1241 @@
-+            hidden_cursor_restore: None,
-@@ -1373,0 +1405,7 @@
-+    /// Whether this window currently owns an invisible cursor override.
-+    /// Test support only: this does not establish physical cursor appearance.
-+    #[cfg(any(test, feature = "test-support"))]
-+    pub fn has_hidden_cursor_override(&self) -> bool {
-+        self.hidden_cursor_restore.is_some()
-+    }
-+
-@@ -1375,0 +1414,2 @@
-+        self.platform_window.revoke_accessibility();
-+        self.hidden_cursor_restore.take();
-@@ -1910,0 +1951,55 @@
-+    /// Current bounded, actually mounted semantic nodes in rendered order.
-+    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
-+        self.rendered_frame
-+            .accessibility
-+            .nodes
-+            .iter()
-+            .filter(|_| !self.rendered_frame.accessibility.invalid)
-+            .map(|(node, _)| node)
-+    }
-+
-+    /// Revalidate a native request's exact acknowledged revision before UI dispatch.
-+    pub fn perform_accessibility_request(
-+        &mut self,
-+        request: &crate::AccessibilityRequest,
-+        cx: &mut App,
-+    ) -> bool {
-+        let callback = self
-+            .rendered_frame
-+            .accessibility
-+            .nodes
-+            .iter()
-+            .find(|(node, _)| {
-+                node.descriptor.id == request.id && node.descriptor.revision == request.revision
-+            })
-+            .filter(|(node, _)| {
-+                !self.rendered_frame.accessibility.invalid
-+                    && node.descriptor.permits(&request.action)
-+            })
-+            .map(|(_, callback)| callback.clone());
-+        callback.is_some_and(|callback| callback(request, self, cx))
-+    }
-+
-+    /// Dispatch a UI action using the current published revision, still checking the live owner.
-+    pub fn perform_accessibility_action(
-+        &mut self,
-+        id: crate::AccessibilityId,
-+        action: &crate::AccessibilityAction,
-+        cx: &mut App,
-+    ) -> bool {
-+        let revision = self
-+            .accessibility_nodes()
-+            .find(|node| node.descriptor.id == id)
-+            .map(|node| node.descriptor.revision);
-+        revision.is_some_and(|revision| {
-+            self.perform_accessibility_request(
-+                &crate::AccessibilityRequest {
-+                    id,
-+                    revision,
-+                    action: action.clone(),
-+                },
-+                cx,
-+            )
-+        })
-+    }
-+
-@@ -1943,0 +2039,4 @@
-+        self.platform_window.publish_accessibility(
-+            self.accessibility_nodes().cloned().collect(),
-+            self.rendered_frame.accessibility.invalid,
-+        );
-@@ -2222,0 +2322 @@
-+            accessibility_index: self.next_frame.accessibility.nodes.len(),
-@@ -2232,0 +2333,8 @@
-+        for (node, callback) in &self.rendered_frame.accessibility.nodes
-+            [range.start.accessibility_index..range.end.accessibility_index]
-+        {
-+            self.next_frame
-+                .accessibility
-+                .insert(node.clone(), callback.clone());
-+        }
-+        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
-@@ -3527,7 +3635,11 @@
--    fn reset_cursor_style(&self, cx: &mut App) {
--        // Set the cursor only if we're the active window.
--        if self.is_window_hovered() {
--            let style = self
--                .rendered_frame
--                .cursor_style(self)
--                .unwrap_or(CursorStyle::Arrow);
-+    fn reset_cursor_style(&mut self, cx: &mut App) {
-+        let style = self
-+            .rendered_frame
-+            .cursor_style(self)
-+            .unwrap_or(CursorStyle::Arrow);
-+        // A captured value drag remains invisible outside window bounds. The
-+        // override is renewed by paint, so removing its widget restores it.
-+        if style == CursorStyle::Hidden && self.is_window_active() {
-+            if self.hidden_cursor_restore.is_none() {
-+                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
-+            }
-@@ -3534,0 +3647,10 @@
-+        } else {
-+            self.hidden_cursor_restore.take();
-+            if self.is_window_hovered() {
-+                cx.platform
-+                    .set_cursor_style(if style == CursorStyle::Hidden {
-+                        CursorStyle::Arrow
-+                    } else {
-+                        style
-+                    });
-+            }
 --- /dev/null
 +++ b/src/accessibility.rs
 @@ -0,0 +1,243 @@
@@ -869,6 +244,168 @@
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
 +}
+--- a/src/app/test_context.rs
++++ b/src/app/test_context.rs
+@@ -122,0 +123,6 @@
++    /// Cursor last delivered to the test platform, independent of hit testing.
++    /// This is not evidence of physical native cursor appearance.
++    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
++        self.test_platform.cursor_style()
++    }
++
+@@ -677,0 +684,45 @@
++    /// Returns the cursor request selected by the current rendered hitbox.
++    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
++    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
++        self.update(|window, _| window.rendered_frame.cursor_style(window))
++    }
++
++    /// Background of the last filled quad exactly matching a debug element's bounds.
++    /// Border-only quads have transparent fills and do not replace the surface.
++    /// Reads the completed scene without drawing or injecting pointer events.
++    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
++                .map(|quad| quad.background)
++        })
++    }
++
++    /// Rounded geometry and ancestor mask of the last filled scene quad matching
++    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
++    /// GPU framebuffer or native display readback.
++    pub fn rendered_surface_geometry(
++        &mut self,
++        selector: &'static str,
++    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
++                .map(|quad| (quad.corner_radii, quad.content_mask.bounds))
++        })
++    }
++
+--- a/src/elements/div.rs
++++ b/src/elements/div.rs
+@@ -1227,0 +1228 @@
++        accessibility: None,
+@@ -1236,0 +1238,4 @@
++    accessibility: Option<(
++        crate::AccessibilityDescriptor,
++        crate::accessibility::AccessibilityCallback,
++    )>,
+@@ -1240,0 +1246,11 @@
++    /// Expose this actual laid-out control through the native semantic boundary.
++    /// IDs must identify the owner lifetime, not an index or reusable label.
++    pub fn accessibility(
++        mut self,
++        descriptor: crate::AccessibilityDescriptor,
++        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
++    ) -> Self {
++        self.accessibility = Some((descriptor, std::rc::Rc::new(action)));
++        self
++    }
++
+@@ -1412,0 +1429,12 @@
++                if let Some((descriptor, callback)) = &self.accessibility {
++                    let bounds = bounds.intersect(&window.content_mask().bounds);
++                    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
++                        window.next_frame.accessibility.insert(
++                            crate::AccessibilityNode {
++                                descriptor: descriptor.clone(),
++                                bounds,
++                            },
++                            callback.clone(),
++                        );
++                    }
++                }
+@@ -2906,0 +2935,12 @@
++impl Stateful<Div> {
++    /// Attach native semantics to this stateful control without changing its layout.
++    pub fn accessibility(
++        mut self,
++        descriptor: crate::AccessibilityDescriptor,
++        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
++    ) -> Self {
++        self.element = self.element.accessibility(descriptor, action);
++        self
++    }
++}
++
+--- a/src/gpui.rs
++++ b/src/gpui.rs
+@@ -8,0 +9,2 @@
++mod accessibility;
++pub use accessibility::*;
+--- a/src/interactive.rs
++++ b/src/interactive.rs
+@@ -363,0 +364,4 @@
++    /// True when the platform inverted device scroll direction for user preferences.
++    /// Raw `delta` remains suitable for ordinary content scrolling.
++    pub direction_inverted_from_device: bool,
++
+@@ -374,0 +379,14 @@
++}
++
++impl ScrollWheelEvent {
++    /// Device-direction delta before the platform's user-preference inversion.
++    /// This is opt-in: ordinary scrolling should continue using `delta`.
++    pub fn physical_delta(&self) -> ScrollDelta {
++        if !self.direction_inverted_from_device {
++            return self.delta;
++        }
++        match self.delta {
++            ScrollDelta::Pixels(delta) => ScrollDelta::Pixels(point(-delta.x, -delta.y)),
++            ScrollDelta::Lines(delta) => ScrollDelta::Lines(point(-delta.x, -delta.y)),
++        }
++    }
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -0,0 +1,2 @@
++#[cfg(any(target_os = "macos", test))]
++mod accessibility_bridge;
+@@ -491,0 +494,8 @@
++    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
++    /// Revoke before accepted close callbacks or UI-owned resources are released.
++    fn revoke_accessibility(&self) {}
++    fn on_accessibility_action(
++        &self,
++        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
++    ) {
++    }
+@@ -1228,0 +1239 @@
++                hide_native_window_controls: Default::default(),
+@@ -1257,0 +1269,4 @@
++
++    /// Hide the standard macOS close, minimize, and zoom buttons.
++    /// This does not change the native titlebar or window movement/resizing flags.
++    pub hide_native_window_controls: bool,
+@@ -1411,0 +1427,4 @@
++    /// A persistent invisible cursor for a window-scoped pointer adjustment.
++    /// macOS uses a transparent image, without changing NSCursor hide counts.
++    Hidden,
++
+@@ -1438,0 +1458,6 @@
++
++    /// A bracket cursor for trimming an item from its left edge.
++    ResizeLeftBracket,
++
++    /// A bracket cursor for trimming an item from its right edge.
++    ResizeRightBracket,
 --- /dev/null
 +++ b/src/platform/accessibility_bridge.rs
 @@ -0,0 +1,288 @@
@@ -1160,6 +697,32 @@
 +        assert!(!bridge.revoke());
 +    }
 +}
+--- a/src/platform/linux/platform.rs
++++ b/src/platform/linux/platform.rs
+@@ -705 +705 @@
+-            CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
++            CursorStyle::Hidden | CursorStyle::Arrow => &[DEFAULT_CURSOR_ICON_NAME],
+@@ -712,0 +713,2 @@
++            CursorStyle::ResizeLeftBracket => &["w-resize", "left_side"],
++            CursorStyle::ResizeRightBracket => &["e-resize", "right_side"],
+--- a/src/platform/linux/wayland.rs
++++ b/src/platform/linux/wayland.rs
+@@ -17 +17 @@
+-            CursorStyle::Arrow => Shape::Default,
++            CursorStyle::Hidden | CursorStyle::Arrow => Shape::Default,
+@@ -24,0 +25,2 @@
++            CursorStyle::ResizeLeftBracket => Shape::WResize,
++            CursorStyle::ResizeRightBracket => Shape::EResize,
+--- a/src/platform/linux/wayland/client.rs
++++ b/src/platform/linux/wayland/client.rs
+@@ -1790,0 +1791 @@
++                                direction_inverted_from_device: false,
+@@ -1802,0 +1804 @@
++                            direction_inverted_from_device: false,
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -2217,0 +2218 @@
++        direction_inverted_from_device: false,
 --- /dev/null
 +++ b/src/platform/mac/accessibility.rs
 @@ -0,0 +1,957 @@
@@ -2120,3 +1683,469 @@
 +        send_sync::<ElementData>();
 +    }
 +}
+--- a/src/platform/mac/events.rs
++++ b/src/platform/mac/events.rs
+@@ -235,0 +236,2 @@
++                    let direction_inverted: cocoa::base::BOOL =
++                        msg_send![native_event, isDirectionInvertedFromDevice];
+@@ -236,0 +239 @@
++                        direction_inverted_from_device: direction_inverted == YES,
+--- a/src/platform/mac/platform.rs
++++ b/src/platform/mac/platform.rs
+@@ -22 +22 @@
+-        NSPasteboardTypeTIFF, NSSavePanel, NSWindow,
++        NSPasteboardTypeTIFF, NSImage, NSSavePanel, NSWindow,
+@@ -26,2 +26,2 @@
+-        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSProcessInfo, NSRange, NSString,
+-        NSUInteger, NSURL,
++        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
++        NSSize, NSString, NSUInteger, NSURL,
+@@ -45,0 +46 @@
++    rc::StrongPtr,
+@@ -70,0 +72,89 @@
++
++/// A cached transparent cursor avoids NSCursor's process-wide hide count.
++fn make_hidden_cursor() -> Option<StrongPtr> {
++    unsafe {
++        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(1.0, 1.0));
++        if image == nil {
++            return None;
++        }
++        let image = StrongPtr::new(image);
++        let _: () = msg_send![*image, lockFocus];
++        let color: id = msg_send![class!(NSColor), clearColor];
++        let _: () = msg_send![color, set];
++        let _: () = msg_send![class!(NSBezierPath), fillRect: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0))];
++        let _: () = msg_send![*image, unlockFocus];
++        let allocated: id = msg_send![class!(NSCursor), alloc];
++        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(0.0, 0.0)];
++        if cursor == nil {
++            return None;
++        }
++        Some(StrongPtr::new(cursor))
++    }
++}
++
++/// Original high-contrast bracket cursor artwork; cached by `MacPlatformState`.
++fn make_bracket_cursor(points_left: bool) -> Option<StrongPtr> {
++    unsafe {
++        let image: id = NSImage::alloc(nil).initWithSize_(NSSize::new(24.0, 24.0));
++        if image == nil {
++            return None;
++        }
++        let image = StrongPtr::new(image);
++        let _: () = msg_send![*image, lockFocus];
++        let path: id = msg_send![class!(NSBezierPath), bezierPath];
++        if path == nil {
++            let _: () = msg_send![*image, unlockFocus];
++            return None;
++        }
++
++        let center_x = 12.0;
++        let toward = if points_left { -1.0 } else { 1.0 };
++        let bracket = if points_left { 1.0 } else { -1.0 };
++        let segments = [
++            (NSPoint::new(center_x, 4.0), NSPoint::new(center_x, 20.0)),
++            (
++                NSPoint::new(center_x, 4.0),
++                NSPoint::new(center_x + bracket * 5.0, 4.0),
++            ),
++            (
++                NSPoint::new(center_x, 20.0),
++                NSPoint::new(center_x + bracket * 5.0, 20.0),
++            ),
++            (
++                NSPoint::new(center_x, 12.0),
++                NSPoint::new(center_x + toward * 7.0, 12.0),
++            ),
++            (
++                NSPoint::new(center_x + toward * 7.0, 12.0),
++                NSPoint::new(center_x + toward * 4.0, 15.0),
++            ),
++            (
++                NSPoint::new(center_x + toward * 7.0, 12.0),
++                NSPoint::new(center_x + toward * 4.0, 9.0),
++            ),
++        ];
++        for (start, end) in segments {
++            let _: () = msg_send![path, moveToPoint: start];
++            let _: () = msg_send![path, lineToPoint: end];
++        }
++
++        let white: id = msg_send![class!(NSColor), whiteColor];
++        let _: () = msg_send![white, setStroke];
++        let _: () = msg_send![path, setLineWidth: 4.0_f64];
++        let _: () = msg_send![path, setLineCapStyle: 1_isize];
++        let _: () = msg_send![path, setLineJoinStyle: 1_isize];
++        let _: () = msg_send![path, stroke];
++        let black: id = msg_send![class!(NSColor), blackColor];
++        let _: () = msg_send![black, setStroke];
++        let _: () = msg_send![path, setLineWidth: 1.75_f64];
++        let _: () = msg_send![path, stroke];
++        let _: () = msg_send![*image, unlockFocus];
++
++        let allocated: id = msg_send![class!(NSCursor), alloc];
++        let cursor: id = msg_send![allocated, initWithImage: *image hotSpot: NSPoint::new(12.0, 12.0)];
++        if cursor == nil {
++            return None;
++        }
++        Some(StrongPtr::new(cursor))
++    }
++}
+@@ -179,0 +270,3 @@
++    hidden_cursor: Option<StrongPtr>,
++    resize_left_bracket_cursor: Option<StrongPtr>,
++    resize_right_bracket_cursor: Option<StrongPtr>,
+@@ -199,0 +293,5 @@
++        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
++            (None, None)
++        } else {
++            (make_bracket_cursor(true), make_bracket_cursor(false))
++        };
+@@ -221,0 +320,3 @@
++            hidden_cursor: if headless { None } else { make_hidden_cursor() },
++            resize_left_bracket_cursor,
++            resize_right_bracket_cursor,
+@@ -973,2 +1074,17 @@
+-            let new_cursor: id = match style {
+-                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
++            let bracket_cursor = {
++                let state = self.0.lock();
++                match style {
++                    CursorStyle::Hidden => state.hidden_cursor.as_ref().map(|cursor| **cursor),
++                    CursorStyle::ResizeLeftBracket => state
++                        .resize_left_bracket_cursor
++                        .as_ref()
++                        .map(|cursor| **cursor),
++                    CursorStyle::ResizeRightBracket => state
++                        .resize_right_bracket_cursor
++                        .as_ref()
++                        .map(|cursor| **cursor),
++                    _ => None,
++                }
++            };
++            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
++                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
+@@ -983,0 +1100,2 @@
++                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
++                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
+@@ -1008 +1126 @@
+-            };
++            });
+--- a/src/platform/mac/window.rs
++++ b/src/platform/mac/window.rs
+@@ -0,0 +1,2 @@
++#[path = "accessibility.rs"]
++mod native_accessibility;
+@@ -107,0 +110 @@
++        native_accessibility::initialize_class();
+@@ -112,0 +116,9 @@
++            decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
++            decl.add_method(
++                sel!(accessibilityChildren),
++                native_accessibility::children as extern "C" fn(&Object, Sel) -> id,
++            );
++            decl.add_method(
++                sel!(accessibilityLabel),
++                native_accessibility::root_label as extern "C" fn(&Object, Sel) -> id,
++            );
+@@ -161,0 +174,8 @@
++                    handle_view_event as extern "C" fn(&Object, Sel, id),
++                );
++                decl.add_method(
++                    sel!(rightMouseDragged:),
++                    handle_view_event as extern "C" fn(&Object, Sel, id),
++                );
++                decl.add_method(
++                    sel!(otherMouseDragged:),
+@@ -283,0 +304 @@
++        decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
+@@ -388,0 +410 @@
++    accessibility: Option<Arc<native_accessibility::NativeBridge>>,
+@@ -407,0 +430 @@
++    hide_native_window_controls: bool,
+@@ -425,0 +449,19 @@
++        if self.hide_native_window_controls {
++            unsafe {
++                for button_kind in [
++                    NSWindowButton::NSWindowCloseButton,
++                    NSWindowButton::NSWindowMiniaturizeButton,
++                    NSWindowButton::NSWindowZoomButton,
++                ] {
++                    let button: id = msg_send![
++                        self.native_window,
++                        standardWindowButton: button_kind
++                    ];
++                    if button != nil {
++                        let _: () = msg_send![button, setHidden: YES];
++                    }
++                }
++            }
++            return;
++        }
++
+@@ -706,0 +749 @@
++                accessibility: None,
+@@ -712,0 +756,3 @@
++                hide_native_window_controls: titlebar
++                    .as_ref()
++                    .is_some_and(|titlebar| titlebar.hide_native_window_controls),
+@@ -739,0 +786,8 @@
++            if let Some(bridge) =
++                native_accessibility::register(handle.window_id().as_u64(), native_view)
++            {
++                native_accessibility::attach(native_window, &bridge);
++                native_accessibility::attach(native_view, &bridge);
++                window.0.lock().accessibility = Some(bridge);
++            }
++
+@@ -933,0 +988 @@
++        self.revoke_accessibility();
+@@ -953,0 +1009,51 @@
++    fn revoke_accessibility(&self) {
++        let bridge = self.0.lock().accessibility.clone();
++        if let Some(bridge) = bridge {
++            native_accessibility::revoke(&bridge);
++        }
++    }
++    fn on_accessibility_action(
++        &self,
++        callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
++    ) {
++        let bridge = self.0.lock().accessibility.clone();
++        if let Some(bridge) = bridge {
++            native_accessibility::set_callback(&bridge, callback);
++        }
++    }
++    fn publish_accessibility(&self, nodes: Vec<crate::AccessibilityNode>, refused: bool) {
++        let (bridge, frames) = {
++            let state = self.0.lock();
++            let Some(bridge) = state.accessibility.clone() else {
++                return;
++            };
++            let height = state.content_size().height.0;
++            let frames = nodes
++                .iter()
++                .map(|node| {
++                    let b = node.bounds;
++                    let local = NSRect::new(
++                        NSPoint::new(
++                            b.origin.x.0 as f64,
++                            (height - b.origin.y.0 - b.size.height.0) as f64,
++                        ),
++                        NSSize::new(b.size.width.0 as f64, b.size.height.0 as f64),
++                    );
++                    let screen: NSRect = unsafe {
++                        let rect: NSRect =
++                            msg_send![state.native_view.as_ptr(), convertRect: local toView: nil];
++                        msg_send![state.native_window, convertRectToScreen: rect]
++                    };
++                    [
++                        screen.origin.x,
++                        screen.origin.y,
++                        screen.size.width,
++                        screen.size.height,
++                    ]
++                })
++                .collect();
++            (bridge, frames)
++        };
++        native_accessibility::publish(&bridge, nodes, frames, refused);
++    }
++
+@@ -1610,0 +1717 @@
++        native_accessibility::detach(this);
+@@ -1617,0 +1725 @@
++        native_accessibility::detach(this);
+@@ -2058,0 +2167 @@
++    native_accessibility::revoke_object(this);
+--- a/src/platform/test/platform.rs
++++ b/src/platform/test/platform.rs
+@@ -93,0 +94,4 @@
++    pub(crate) fn cursor_style(&self) -> CursorStyle {
++        *self.active_cursor.lock()
++    }
++
+--- a/src/platform/windows/events.rs
++++ b/src/platform/windows/events.rs
+@@ -555,0 +556 @@
++            direction_inverted_from_device: false,
+@@ -601,0 +603 @@
++            direction_inverted_from_device: false,
+--- a/src/platform/windows/util.rs
++++ b/src/platform/windows/util.rs
+@@ -126,0 +127,2 @@
++        | CursorStyle::ResizeLeftBracket
++        | CursorStyle::ResizeRightBracket
+--- a/src/taffy.rs
++++ b/src/taffy.rs
+@@ -312 +312 @@
+-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
++            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+--- a/src/view.rs
++++ b/src/view.rs
+@@ -211,0 +212 @@
++                        && !window.rendered_frame.accessibility.invalid
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -667,0 +668 @@
++    pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
+@@ -691,0 +693 @@
++    accessibility_index: usize,
+@@ -713,0 +716 @@
++            accessibility: Default::default(),
+@@ -740,0 +744 @@
++        self.accessibility = Default::default();
+@@ -753,0 +758,3 @@
++
++        #[cfg(any(test, feature = "test-support"))]
++        self.debug_bounds.clear();
+@@ -817,0 +825,9 @@
++// A frame-owned cursor override must restore even when its window is destroyed.
++struct HiddenCursorRestore(Rc<dyn crate::Platform>);
++
++impl Drop for HiddenCursorRestore {
++    fn drop(&mut self) {
++        self.0.set_cursor_style(CursorStyle::Arrow);
++    }
++}
++
+@@ -822,0 +839 @@
++    hidden_cursor_restore: Option<HiddenCursorRestore>,
+@@ -1097,0 +1115,3 @@
++                        if !active {
++                            window.hidden_cursor_restore.take();
++                        }
+@@ -1123,0 +1144,10 @@
++        platform_window.on_accessibility_action({
++            let mut cx = cx.to_async();
++            Box::new(move |request: crate::AccessibilityRequest| {
++                handle
++                    .update(&mut cx, |_, window, cx| {
++                        window.perform_accessibility_request(&request, cx)
++                    })
++                    .unwrap_or(false)
++            })
++        });
+@@ -1210,0 +1241 @@
++            hidden_cursor_restore: None,
+@@ -1373,0 +1405,7 @@
++    /// Whether this window currently owns an invisible cursor override.
++    /// Test support only: this does not establish physical cursor appearance.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn has_hidden_cursor_override(&self) -> bool {
++        self.hidden_cursor_restore.is_some()
++    }
++
+@@ -1375,0 +1414,2 @@
++        self.platform_window.revoke_accessibility();
++        self.hidden_cursor_restore.take();
+@@ -1910,0 +1951,55 @@
++    /// Current bounded, actually mounted semantic nodes in rendered order.
++    pub fn accessibility_nodes(&self) -> impl Iterator<Item = &crate::AccessibilityNode> {
++        self.rendered_frame
++            .accessibility
++            .nodes
++            .iter()
++            .filter(|_| !self.rendered_frame.accessibility.invalid)
++            .map(|(node, _)| node)
++    }
++
++    /// Revalidate a native request's exact acknowledged revision before UI dispatch.
++    pub fn perform_accessibility_request(
++        &mut self,
++        request: &crate::AccessibilityRequest,
++        cx: &mut App,
++    ) -> bool {
++        let callback = self
++            .rendered_frame
++            .accessibility
++            .nodes
++            .iter()
++            .find(|(node, _)| {
++                node.descriptor.id == request.id && node.descriptor.revision == request.revision
++            })
++            .filter(|(node, _)| {
++                !self.rendered_frame.accessibility.invalid
++                    && node.descriptor.permits(&request.action)
++            })
++            .map(|(_, callback)| callback.clone());
++        callback.is_some_and(|callback| callback(request, self, cx))
++    }
++
++    /// Dispatch a UI action using the current published revision, still checking the live owner.
++    pub fn perform_accessibility_action(
++        &mut self,
++        id: crate::AccessibilityId,
++        action: &crate::AccessibilityAction,
++        cx: &mut App,
++    ) -> bool {
++        let revision = self
++            .accessibility_nodes()
++            .find(|node| node.descriptor.id == id)
++            .map(|node| node.descriptor.revision);
++        revision.is_some_and(|revision| {
++            self.perform_accessibility_request(
++                &crate::AccessibilityRequest {
++                    id,
++                    revision,
++                    action: action.clone(),
++                },
++                cx,
++            )
++        })
++    }
++
+@@ -1943,0 +2039,4 @@
++        self.platform_window.publish_accessibility(
++            self.accessibility_nodes().cloned().collect(),
++            self.rendered_frame.accessibility.invalid,
++        );
+@@ -2222,0 +2322 @@
++            accessibility_index: self.next_frame.accessibility.nodes.len(),
+@@ -2232,0 +2333,8 @@
++        for (node, callback) in &self.rendered_frame.accessibility.nodes
++            [range.start.accessibility_index..range.end.accessibility_index]
++        {
++            self.next_frame
++                .accessibility
++                .insert(node.clone(), callback.clone());
++        }
++        self.next_frame.accessibility.invalid |= self.rendered_frame.accessibility.invalid;
+@@ -3527,7 +3635,11 @@
+-    fn reset_cursor_style(&self, cx: &mut App) {
+-        // Set the cursor only if we're the active window.
+-        if self.is_window_hovered() {
+-            let style = self
+-                .rendered_frame
+-                .cursor_style(self)
+-                .unwrap_or(CursorStyle::Arrow);
++    fn reset_cursor_style(&mut self, cx: &mut App) {
++        let style = self
++            .rendered_frame
++            .cursor_style(self)
++            .unwrap_or(CursorStyle::Arrow);
++        // A captured value drag remains invisible outside window bounds. The
++        // override is renewed by paint, so removing its widget restores it.
++        if style == CursorStyle::Hidden && self.is_window_active() {
++            if self.hidden_cursor_restore.is_none() {
++                self.hidden_cursor_restore = Some(HiddenCursorRestore(cx.platform.clone()));
++            }
+@@ -3534,0 +3647,10 @@
++        } else {
++            self.hidden_cursor_restore.take();
++            if self.is_window_hovered() {
++                cx.platform
++                    .set_cursor_style(if style == CursorStyle::Hidden {
++                        CursorStyle::Arrow
++                    } else {
++                        style
++                    });
++            }
+@@ -3576,0 +3699,6 @@
++    }
++
++    /// Dispatch input through this window's existing event path, without exposing
++    /// private propagation metadata or generating operating-system input events.
++    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
++        self.dispatch_event(event, cx);
