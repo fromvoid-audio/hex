@@ -57,6 +57,17 @@ impl PreparedSharedAnalyticNote {
 /// `prepare_note`; `sample` borrows compact note data and must be deterministic,
 /// allocation-free, and free of interior mutation.
 pub trait PreparedSharedAnalyticContext: Send + Sync {
+    /// Optional provider identity for an explicitly authorized analytic-to-mutable import.
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+    /// Optional provider-defined coefficient continuation. Default providers
+    /// retain their immutable sampler law across publication. Opted-in methods
+    /// must be bounded, read-only and allocation-free, including refusal paths.
+    fn analytic_continuation(&self) -> Option<&dyn crate::PreparedAnalyticContinuation> {
+        None
+    }
+
     /// Total bytes owned by this context, including allocations reachable only
     /// through it. The host checks this against its finite per-context limit.
     fn declared_context_bytes(&self) -> usize;
@@ -121,10 +132,27 @@ impl PreparedAnalyticNote {
     }
 }
 
+/// Control-side declaration of the entire exclusively owned provider pointee
+/// and nested heap payload. This is not allocator/RSS measurement or a DSP
+/// runtime declaration. Shared, Weak, or opaque children require Unknown.
+/// Static program storage is outside graph ownership and must be documented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedStorageDeclaration {
+    Unknown,
+    ExclusiveOnly { bytes: usize },
+}
+
 /// Immutable sample-rate-specific instrument configuration prepared on the
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.
 pub trait PreparedNativeInstrument: Send + Sync {
+    /// Fixed algorithmic buffering latency at this prepared sample rate.
+    /// Unknown is explicit; envelope attack, filter phase and musical release
+    /// are not buffering latency. A mutable factory must agree with its source.
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        None
+    }
+
     /// Prepare the immutable sampler for one authored pitch/velocity pair.
     /// Implementations must be deterministic for a fixed prepared instrument
     /// configuration, sample rate, pitch and velocity. The engine may intern

@@ -1,6 +1,8 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 #![cfg(feature = "allocation-probe")]
 
+#[path = "callback_allocations/output_capture.rs"]
+mod output_capture;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
@@ -132,6 +134,9 @@ impl hex_lattice::NativeInstrumentDefinition for SharedContextFixtureDefinition 
 }
 
 impl hex_lattice::PreparedNativeInstrument for SharedContextFixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(
         &self,
         _: u8,
@@ -190,6 +195,9 @@ struct MutableFixtureRuntime {
     key: u32,
     level: f32,
     voices: [MutableFixtureVoice; 64],
+    // Real inline state above the former 4 KiB instrument cap. All mutable
+    // publication/render/rollback/tail probes below exercise its full copy.
+    history: [u8; 8192],
 }
 
 impl hex_lattice_contract::NativeDeviceMetadata for MutableFixtureDefinition {
@@ -262,6 +270,9 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFixtureDefinition {
 }
 
 impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn prepare_note(
         &self,
         _: u8,
@@ -280,6 +291,9 @@ impl hex_lattice::PreparedNativeInstrument for MutableFixturePrepared {
 }
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -300,6 +314,7 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFixtureFactory {
             key: self.level.to_bits(),
             level: self.level,
             voices: [MutableFixtureVoice::default(); 64],
+            history: [0; 8192],
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -313,6 +328,9 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
+        if output_capture::refuse_gateoff(events) {
+            return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
         for event in events {
             let (offset, id, on) = match *event {
                 hex_lattice::NativeInstrumentEvent::NoteOn {
@@ -408,6 +426,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
+            self.history = old.history;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -2146,14 +2165,11 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
             (2, ParameterValue::Choice(1)),
         ]
     } else {
-        &[]
+        &[
+            (8, ParameterValue::Bool(true)),
+            (8, ParameterValue::Bool(false)),
+        ]
     };
-    if !eq8_enabled {
-        editor.execute(Command::SetDeviceBypass {
-            device: changed_return,
-            bypassed: true,
-        })?;
-    }
     for &(parameter, value) in edits {
         let current = editor
             .project()
@@ -2202,8 +2218,12 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
         revision = next_revision;
     }
     if !eq8_enabled {
-        // The Utility path retains its original bypass transition and generic
-        // retired-tail ownership coverage; it does not use EQ8 retargeting.
+        // Keep the original bypass/retired-tail coverage after measuring actual
+        // mute and unmute parameter handoffs above.
+        editor.execute(Command::SetDeviceBypass {
+            device: changed_return,
+            bypassed: true,
+        })?;
         let next_revision = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &media,
@@ -3113,6 +3133,93 @@ fn mutable_arrangement_transport_loop_callback_is_allocation_and_deallocation_fr
     assert!(
         heard_note,
         "Arrangement loop fixture rendered no instrument audio"
+    );
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn mutable_arrangement_source_and_transport_loops_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "combined loop".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected MIDI track".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected default instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(5)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_ratio(3, 2)?,
+        duration: BeatTime::from_quarters(2)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?;
+    editor.execute(Command::SetMidiClipSource {
+        clip,
+        source_length: BeatTime::from_quarters(5)?,
+        source_start: BeatTime::from_ratio(1, 2)?,
+        loop_start: BeatTime::from_quarters(1)?,
+        loop_end: BeatTime::from_quarters(2)?,
+        looping: true,
+        length: BeatTime::from_quarters(5)?,
+    })?;
+    editor.execute(Command::SetLoopRegion {
+        start: 30_000,
+        end: 78_000,
+        enabled: true,
+    })?;
+
+    let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(graph)?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial combined-loop publication failed")?;
+    control
+        .session_command_with_ticket(SessionPlaybackCommand::Play)
+        .map_err(|_| "combined-loop Play admission failed")?;
+
+    let mut output = [[0.0; 2]; 128];
+    let mut heard_note = false;
+    // 210,000 frames cross the initial pass and three transport-loop wraps.
+    for _ in 0..1_641 {
+        measured_block(&mut callback, &mut output);
+        heard_note |= output.iter().any(|frame| frame[0] != 0.0);
+    }
+    assert!(
+        heard_note,
+        "combined loop fixture rendered no instrument audio"
     );
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);

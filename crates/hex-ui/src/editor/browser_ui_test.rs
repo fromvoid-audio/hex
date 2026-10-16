@@ -108,7 +108,9 @@ fn browser_drag_fixture_with_tracks(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -157,7 +159,9 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
                     can_undo: false,
                     can_redo: false,
@@ -213,7 +217,9 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
                     can_undo: false,
                     can_redo: false,
@@ -361,7 +367,9 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                 view.state = Some(Arc::new(ViewState {
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
                     can_undo: true,
                     can_redo: false,
@@ -1637,6 +1645,7 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             label: "loop.wav".into(),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(std::cell::Cell::new(false)),
             copy_modifier: Rc::new(std::cell::Cell::new(false)),
@@ -1695,7 +1704,9 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         view.state = Some(Arc::new(ViewState {
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -1713,6 +1724,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             label: "loop.wav".into(),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),
@@ -1753,6 +1765,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             origin_pointer_x: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),
@@ -1930,4 +1943,44 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
         std::fs::read(&preferences_path).expect("corrupt file remains"),
         corrupt
     );
+}
+
+#[gpui::test]
+fn browser_sample_drop_above_first_track_shows_line_and_inserts_before_it(cx: &mut TestAppContext) {
+    let (handle, editor, tracks, _directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["first", "second"]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual.debug_bounds("browser-entry-0").expect("sample row");
+    let selector = Box::leak(format!("arrangement-lane-{}", tracks[0].value()).into_boxed_str());
+    let first = visual.debug_bounds(selector).expect("first lane");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = point(
+        first.origin.x + first.size.width / 2.0,
+        first.origin.y + px(1.0),
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insert-preview").is_some());
+    assert!(visual.debug_bounds("clip-drop-preview").is_none());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        let (dropped_path, anchor, _) = view
+            .last_enqueued_import_to_new_track
+            .as_ref()
+            .expect("new track import");
+        assert_eq!(dropped_path, &path);
+        assert_eq!(*anchor, Some(tracks[0]));
+        assert!(view.last_enqueued_import_to_track.is_none());
+    });
 }
