@@ -3,6 +3,7 @@
 //! The audio host must retain this custody through cancellation and abandonment.
 use crate::audio_only_inputs::*;
 mod arrangement_clips;
+mod storage;
 pub(crate) use arrangement_clips::ArrangementClips;
 #[cfg(test)]
 #[path = "session_inventory_assembly_tests.rs"]

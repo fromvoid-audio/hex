@@ -360,6 +360,89 @@ impl SessionSharedConstruction {
         }
     }
 }
+impl SessionSharedConstruction {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        arrangement: Option<&'a OwnedShared<SharedAnalyticContextTable>>,
+        inventory: InventorySharedView<'a>,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::Owner;
+        self.observe_at(
+            arrangement,
+            InventorySharedView {
+                sine: inventory.sine,
+                contexts: inventory.contexts,
+            },
+        )?;
+        let Self {
+            sine,
+            arrangement_contexts,
+            session_contexts,
+            handles,
+            disposal: _,
+            next: _,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+            #[cfg(test)]
+                probes: _,
+        } = self;
+        if let Some(owner) = sine {
+            if owner.control_storage_declaration()
+                != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                    bytes: std::mem::size_of::<SineTable>(),
+                })
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            l.shared(
+                owner.arc(),
+                owner.parts(),
+                Owner::exclusive(owner),
+                handles[0],
+                None,
+            )?;
+        }
+        if let Some((owner, declaration)) = inventory.sine {
+            if owner.control_storage_declaration()
+                != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                    bytes: std::mem::size_of::<SineTable>(),
+                })
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            l.shared(
+                owner,
+                declaration.parts(owner),
+                Owner::exclusive(owner),
+                handles[0],
+                None,
+            )?;
+        }
+        for (owner, id) in [
+            arrangement_contexts.as_ref().or(arrangement),
+            session_contexts.as_ref().or(inventory.contexts),
+        ]
+        .into_iter()
+        .zip([handles[1], handles[2]])
+        {
+            if let Some(owner) = owner {
+                owner.require_empty_owned_storage()?;
+                l.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(owner),
+                    id,
+                    None,
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

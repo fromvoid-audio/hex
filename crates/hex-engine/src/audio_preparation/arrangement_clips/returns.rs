@@ -452,3 +452,92 @@ impl ArrangementReturnMetadata<'_> {
 #[cfg(test)]
 #[path = "return_tests.rs"]
 mod tests;
+
+impl ReturnAssembly {
+    pub(super) fn visit_audio_storage<'a>(
+        &'a self,
+        l: &mut crate::AudioRootStorageLedger<'a>,
+        root: &'a [ReturnBus],
+        external_feed: Option<&'a crate::return_feed_plan::ReturnFeedPlan>,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::Owner;
+        self.capacity_at(false, root, external_feed)?;
+        let Self {
+            rows,
+            feed,
+            active: _,
+            cursor: _,
+            phase: _,
+            growth,
+            #[cfg(test)]
+                fail_after: _,
+            #[cfg(test)]
+                panic_after: _,
+            #[cfg(test)]
+                probe: _,
+        } = self;
+        l.vec(rows)?;
+        l.growth(*growth)?;
+        feed.visit_audio_storage(l, external_feed)?;
+        for r in rows {
+            let Row {
+                id: _,
+                ordinal: _,
+                gain: _,
+                muted: _,
+                chain,
+                bare,
+                declaration,
+                handle,
+                bus: _,
+                root_index: _,
+                disposal: _,
+            } = r;
+            if let Some(bus) = r.actual(root)? {
+                let ReturnBus {
+                    id: _,
+                    gain: _,
+                    muted: _,
+                    matrix: _,
+                    device_chain,
+                } = bus;
+                if !device_chain.is_empty() {
+                    return Err(AudioStorageError::UnknownStorage);
+                }
+                l.shared(
+                    device_chain,
+                    declaration.as_ref().and_then(|d| d.parts(device_chain)),
+                    Owner::exclusive(device_chain),
+                    *handle,
+                    None,
+                )?;
+            } else {
+                if let Some(owner) = chain {
+                    if !owner.is_empty() {
+                        return Err(AudioStorageError::UnknownStorage);
+                    }
+                    l.shared(
+                        owner.arc(),
+                        owner.parts(),
+                        Owner::exclusive(owner),
+                        *handle,
+                        None,
+                    )?;
+                }
+                if let Some(owner) = bare {
+                    if !owner.is_empty() {
+                        return Err(AudioStorageError::UnknownStorage);
+                    }
+                    l.shared(
+                        owner,
+                        declaration.as_ref().and_then(|d| d.parts(owner)),
+                        Owner::exclusive(owner),
+                        *handle,
+                        None,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
