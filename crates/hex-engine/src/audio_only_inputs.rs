@@ -207,89 +207,19 @@ impl OwnedAudioInputs {
         sources: Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,
     ) -> Result<Self, Box<AudioInputsRefusal>> {
-        let mut aliases = Vec::new();
         let mut capacity = AudioPreparationCapacity {
             original_source_capacity: sources.capacity(),
             ..AudioPreparationCapacity::default()
         };
-        let result = (|| {
-            capacity.source_container_bytes = sources
-                .capacity()
-                .checked_mul(std::mem::size_of::<(AssetId, OwnedAudioSource)>())
-                .ok_or(AudioStorageError::Overflow)?;
-            let alias_limit = reservation
-                .handle_obligations
-                .checked_sub(sources.len())
-                .ok_or(AudioStorageError::Capacity)?;
-            aliases
-                .try_reserve_exact(alias_limit)
-                .map_err(|_| AudioStorageError::Allocation)?;
-            capacity.alias_capacity = aliases.capacity();
-            capacity.alias_container_bytes = aliases
-                .capacity()
-                .checked_mul(std::mem::size_of::<AliasRow>())
-                .ok_or(AudioStorageError::Overflow)?;
-            capacity.bank_container_bytes = std::mem::size_of::<Self>();
-            let retained = capacity
-                .source_container_bytes
-                .checked_add(capacity.alias_container_bytes)
-                .and_then(|n| n.checked_add(capacity.bank_container_bytes))
-                .ok_or(AudioStorageError::Overflow)?;
-            let retained = retained
-                .checked_add(reservation.caller_retained_bytes)
-                .ok_or(AudioStorageError::Overflow)?;
-            let peak = retained
-                .checked_add(reservation.caller_construction_bytes)
-                .ok_or(AudioStorageError::Overflow)?;
-            if retained > reservation.max_prepared_data_bytes
-                || peak > reservation.max_construction_data_bytes
-            {
-                return Err(AudioStorageError::ReservationExceeded);
-            }
-            let mut allocation_count = 0_usize;
-            for (index, (_, source)) in sources.iter().enumerate() {
-                if !sources[..index]
-                    .iter()
-                    .any(|(_, old)| crate::audio_input_storage::same(old, source))
-                {
-                    allocation_count = allocation_count
-                        .checked_add(match &source.kind {
-                            SourceKind::Resident(_) => 2,
-                            SourceKind::Streamed(_) => 1,
-                        })
-                        .ok_or(AudioStorageError::Overflow)?;
-                }
-            }
-            if sources.len() > reservation.handle_obligations
-                || allocation_count > reservation.allocation_items
-            {
-                return Err(AudioStorageError::Capacity);
-            }
-            for (index, (id, _)) in sources.iter().enumerate() {
-                if sources[..index].iter().any(|(previous, _)| previous == id) {
-                    return Err(AudioStorageError::DuplicateAsset);
-                }
-            }
-            // These are only actual BANK container observations, never complete
-            // graph/domain/allocator-memory totals or a prepared admission.
-            let bank = handle()?;
-            Ok(bank)
-        })();
-        match result {
-            Ok(bank) => {
-                aliases.resize_with(
-                    reservation.handle_obligations - sources.len(),
-                    AliasRow::default,
-                );
-                Ok(Self {
-                    sources,
-                    capacity,
-                    bank,
-                    custodian: 1,
-                    aliases,
-                    reservation,
-                })
-            }
+        match Self::prepare_sources(&sources, reservation, &mut capacity) {
+            Ok((aliases, bank)) => Ok(Self {
+                sources,
+                capacity,
+                bank,
+                custodian: 1,
+                aliases,
+                reservation,
+            }),
             Err(reason) => Err(Box::new(AudioInputsRefusal {
                 reason,
                 sources,
@@ -297,6 +227,105 @@ impl OwnedAudioInputs {
                 capacity,
             })),
         }
+    }
+    /// A host-held source collection remains in its persistent destination
+    /// throughout every fallible bank validation/allocation. On success only
+    /// fixed moves occur into the already-empty destination. No source owner is
+    /// returned in a transient error or dropped on refusal.
+    pub fn try_new_in_place(
+        sources: &mut Vec<(AssetId, OwnedAudioSource)>,
+        reservation: AudioStorageReservation,
+        destination: &mut Option<Self>,
+    ) -> Result<(), AudioStorageError> {
+        if destination.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let mut capacity = AudioPreparationCapacity {
+            original_source_capacity: sources.capacity(),
+            ..AudioPreparationCapacity::default()
+        };
+        let (aliases, bank) = Self::prepare_sources(sources, reservation, &mut capacity)?;
+        *destination = Some(Self {
+            sources: std::mem::take(sources),
+            capacity,
+            bank,
+            custodian: 1,
+            aliases,
+            reservation,
+        });
+        Ok(())
+    }
+    fn prepare_sources(
+        sources: &[(AssetId, OwnedAudioSource)],
+        reservation: AudioStorageReservation,
+        capacity: &mut AudioPreparationCapacity,
+    ) -> Result<(Vec<AliasRow>, u64), AudioStorageError> {
+        let mut aliases = Vec::new();
+        capacity.source_container_bytes = capacity
+            .original_source_capacity
+            .checked_mul(std::mem::size_of::<(AssetId, OwnedAudioSource)>())
+            .ok_or(AudioStorageError::Overflow)?;
+        let alias_limit = reservation
+            .handle_obligations
+            .checked_sub(sources.len())
+            .ok_or(AudioStorageError::Capacity)?;
+        aliases
+            .try_reserve_exact(alias_limit)
+            .map_err(|_| AudioStorageError::Allocation)?;
+        capacity.alias_capacity = aliases.capacity();
+        capacity.alias_container_bytes = aliases
+            .capacity()
+            .checked_mul(std::mem::size_of::<AliasRow>())
+            .ok_or(AudioStorageError::Overflow)?;
+        capacity.bank_container_bytes = std::mem::size_of::<Self>();
+        let retained = capacity
+            .source_container_bytes
+            .checked_add(capacity.alias_container_bytes)
+            .and_then(|n| n.checked_add(capacity.bank_container_bytes))
+            .ok_or(AudioStorageError::Overflow)?;
+        let retained = retained
+            .checked_add(reservation.caller_retained_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        let peak = retained
+            .checked_add(reservation.caller_construction_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        if retained > reservation.max_prepared_data_bytes
+            || peak > reservation.max_construction_data_bytes
+        {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        let mut allocation_count = 0_usize;
+        for (index, (_, source)) in sources.iter().enumerate() {
+            if !sources[..index]
+                .iter()
+                .any(|(_, old)| crate::audio_input_storage::same(old, source))
+            {
+                allocation_count = allocation_count
+                    .checked_add(match &source.kind {
+                        SourceKind::Resident(_) => 2,
+                        SourceKind::Streamed(_) => 1,
+                    })
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        if sources.len() > reservation.handle_obligations
+            || allocation_count > reservation.allocation_items
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        for (index, (id, _)) in sources.iter().enumerate() {
+            if sources[..index].iter().any(|(previous, _)| previous == id) {
+                return Err(AudioStorageError::DuplicateAsset);
+            }
+        }
+        // These are only actual BANK container observations, never complete
+        // graph/domain/allocator-memory totals or a prepared admission.
+        let bank = handle()?;
+        aliases.resize_with(
+            reservation.handle_obligations - sources.len(),
+            AliasRow::default,
+        );
+        Ok((aliases, bank))
     }
 }
 
@@ -471,6 +500,45 @@ mod tests {
         assert_eq!(refusal.reason, AudioStorageError::UnsupportedConstructor);
         eprintln!("hex audio bank evidence: {test}; branch=unsupported-refusal");
         false
+    }
+    #[test]
+    fn in_place_bank_refusal_and_transfer_preserve_actual_collection_backing() {
+        if !constructor_supported("rooted_source_collection") {
+            return;
+        }
+        let ids = ids();
+        let source = OwnedAudioSource::try_resident(48_000, vec![[0.5; 2]; 8])
+            .ok()
+            .unwrap();
+        let handle = source.handle;
+        let mut sources = Vec::with_capacity(5);
+        sources.push((ids[0], source));
+        let original = (sources.as_ptr(), sources.capacity());
+        let mut destination = None;
+        let mut insufficient = reservation();
+        insufficient.handle_obligations = 0;
+        assert_eq!(
+            OwnedAudioInputs::try_new_in_place(&mut sources, insufficient, &mut destination),
+            Err(AudioStorageError::Capacity)
+        );
+        assert_eq!((sources.as_ptr(), sources.capacity()), original);
+        assert_eq!(sources[0].1.handle, handle);
+        assert!(destination.is_none());
+        OwnedAudioInputs::try_new_in_place(&mut sources, reservation(), &mut destination).unwrap();
+        assert!(sources.is_empty());
+        assert_eq!(sources.capacity(), 0);
+        let bank = destination.as_ref().unwrap();
+        assert_eq!((bank.sources.as_ptr(), bank.sources.capacity()), original);
+        assert_eq!(bank.sources[0].1.handle, handle);
+        let bank_identity = bank.test_bank_identity();
+        assert_eq!(
+            OwnedAudioInputs::try_new_in_place(&mut sources, reservation(), &mut destination),
+            Err(AudioStorageError::SourceMismatch)
+        );
+        assert_eq!(
+            destination.as_ref().unwrap().test_bank_identity(),
+            bank_identity
+        );
     }
     #[test]
     fn retained_vec_capacity_and_wrapper_are_independent_charges_without_pcm_copy() {

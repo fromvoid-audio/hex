@@ -75,6 +75,18 @@ pub struct AudioArrangementRefusal {
     pub inputs: OwnedAudioInputs,
     pub capacity: AudioArrangementCapacity,
 }
+/// A nonowning refusal: the caller's in-place bank remains in its original
+/// persistent destination, including when partially reserved preparation fails.
+#[derive(Debug)]
+pub struct AudioArrangementStartRefusal {
+    pub reason: AudioStorageError,
+    pub capacity: AudioArrangementCapacity,
+}
+struct ReservedStages {
+    slots: Vec<SourceSlot>,
+    capacity: AudioArrangementCapacity,
+    next: u64,
+}
 #[derive(Clone, Copy, Default)]
 struct Stages {
     include_session: bool,
@@ -363,6 +375,79 @@ impl AudioPreparationCustody {
         inputs: OwnedAudioInputs,
         stages: Stages,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
+        match self.reserve_stages_on_control(project, generation, &inputs, stages) {
+            Ok(reserved) => Ok(self.construct_reserved_on_control(Some(inputs), stages, reserved)),
+            Err(refusal) => Err(Box::new(AudioArrangementRefusal {
+                reason: refusal.reason,
+                inputs,
+                capacity: refusal.capacity,
+            })),
+        }
+    }
+    /// Build only the closed audio/Utility prepared class. The caller reserves a
+    /// persistent bank destination before invoking this route; it remains there
+    /// throughout fallible reservation. The final move into this custodian is
+    /// nonfallible, followed by the existing persistent caught construction.
+    /// Context is correlation metadata, not source or publication authority.
+    pub fn begin_prepared_revision_in_place_on_control(
+        &mut self,
+        project: &hex_project::Project,
+        generation: u64,
+        context: AudioSourceContext,
+        inputs: &mut Option<OwnedAudioInputs>,
+    ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
+        self.begin_prepared_revision_with(project, generation, context, inputs, || {})
+    }
+    fn begin_prepared_revision_with(
+        &mut self,
+        project: &hex_project::Project,
+        generation: u64,
+        context: AudioSourceContext,
+        inputs: &mut Option<OwnedAudioInputs>,
+        after_reserve: impl FnOnce(),
+    ) -> Result<AudioPreparationToken, Box<AudioArrangementStartRefusal>> {
+        let stages = Stages {
+            include_session: true,
+            assemble_session: true,
+            assemble_arrangement: true,
+            assemble_tracks: true,
+            assemble_returns: true,
+            assemble_preview: true,
+            assemble_project: true,
+            assemble_revision: true,
+        };
+        let Some(bank) = inputs.as_ref() else {
+            return Err(Box::new(AudioArrangementStartRefusal {
+                reason: AudioStorageError::SourceMismatch,
+                capacity: AudioArrangementCapacity::default(),
+            }));
+        };
+        let reserved = match catch_unwind(AssertUnwindSafe(|| {
+            let reserved = self.reserve_stages_on_control(project, generation, bank, stages)?;
+            after_reserve();
+            Ok::<_, Box<AudioArrangementStartRefusal>>(reserved)
+        })) {
+            Ok(result) => result?,
+            Err(payload) => {
+                self.first_panic = Some(payload);
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                return Err(Box::new(AudioArrangementStartRefusal {
+                    reason: AudioStorageError::UnknownStorage,
+                    capacity: self.capacity,
+                }));
+            }
+        };
+        let token = self.construct_reserved_on_control(inputs.take(), stages, reserved);
+        self.source_context = Some(context);
+        Ok(token)
+    }
+    fn reserve_stages_on_control(
+        &mut self,
+        project: &hex_project::Project,
+        generation: u64,
+        inputs: &OwnedAudioInputs,
+        stages: Stages,
+    ) -> Result<ReservedStages, Box<AudioArrangementStartRefusal>> {
         let Stages {
             include_session,
             assemble_session,
@@ -370,20 +455,16 @@ impl AudioPreparationCustody {
             assemble_tracks,
             assemble_returns,
             assemble_preview,
-            assemble_project,
+            assemble_project: _,
             assemble_revision,
         } = stages;
         let mut slots = Vec::new();
         let mut capacity = AudioArrangementCapacity::default();
-        let result = self.preflight(project, generation, &inputs, &mut slots, &mut capacity);
+        let result = self.preflight(project, generation, inputs, &mut slots, &mut capacity);
         let next = match result {
             Ok(next) => next,
             Err(reason) => {
-                return Err(Box::new(AudioArrangementRefusal {
-                    reason,
-                    inputs,
-                    capacity,
-                }));
+                return Err(Box::new(AudioArrangementStartRefusal { reason, capacity }));
             }
         };
         self.source_context = None;
@@ -410,7 +491,7 @@ impl AudioPreparationCustody {
             self.structure.capacity.previous_growth_backing_bytes = 0;
             let result = catch_unwind(AssertUnwindSafe(|| {
                 self.session
-                    .reserve(project, generation, &inputs, slots.len())?;
+                    .reserve(project, generation, inputs, slots.len())?;
                 self.structure.reserve(project, &self.session)?;
                 self.tempo.reserve(project)?;
                 if assemble_revision {
@@ -463,7 +544,7 @@ impl AudioPreparationCustody {
                 }
                 if assemble_arrangement {
                     self.arrangement_clips
-                        .reserve(&slots, &inputs, project, stages)?;
+                        .reserve(&slots, inputs, project, stages)?;
                 }
                 Ok(())
             }));
@@ -578,16 +659,39 @@ impl AudioPreparationCustody {
                         self.phase = AudioPreparationPhase::FailedIncomplete;
                     }
                 }
-                return Err(Box::new(AudioArrangementRefusal {
-                    reason,
-                    inputs,
-                    capacity,
-                }));
+                return Err(Box::new(AudioArrangementStartRefusal { reason, capacity }));
             }
         }
+        Ok(ReservedStages {
+            slots,
+            capacity,
+            next,
+        })
+    }
+    fn construct_reserved_on_control(
+        &mut self,
+        inputs: Option<OwnedAudioInputs>,
+        stages: Stages,
+        reserved: ReservedStages,
+    ) -> AudioPreparationToken {
+        let ReservedStages {
+            slots,
+            capacity,
+            next,
+        } = reserved;
+        let Stages {
+            include_session,
+            assemble_session,
+            assemble_arrangement,
+            assemble_tracks,
+            assemble_returns,
+            assemble_preview,
+            assemble_project,
+            assemble_revision,
+        } = stages;
         // Vacant destination validated above. Fixed moves only; no owner dropped.
         self.slots = slots;
-        self.bank = Some(inputs);
+        self.bank = inputs;
         self.incarnation = next;
         self.capacity = capacity;
         self.phase = AudioPreparationPhase::Constructing;
@@ -694,10 +798,10 @@ impl AudioPreparationCustody {
                 self.phase = AudioPreparationPhase::FailedIncomplete;
             }
         }
-        Ok(AudioPreparationToken {
+        AudioPreparationToken {
             root: self.root,
             incarnation: next,
-        })
+        }
     }
     fn preflight(
         &self,
@@ -1279,6 +1383,125 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    #[test]
+    fn rooted_bank_reservation_refusal_preserves_exact_bank_then_success_transfers_once() {
+        if !constructor_supported("rooted_preparation_input") {
+            return;
+        }
+        for streamed in [false, true] {
+            let (project, bank, _) = arrangement_clip_tests::fixture(streamed, false, 2);
+            let identity = bank.test_bank_identity();
+            let mut bank = Some(bank);
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            let context = AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 42,
+            };
+            let refusal = custody
+                .begin_prepared_revision_in_place_on_control(&project, 0, context, &mut bank)
+                .err()
+                .unwrap();
+            assert_eq!(refusal.reason, AudioStorageError::SourceMismatch);
+            assert_eq!(bank.as_ref().unwrap().test_bank_identity(), identity);
+            assert_eq!(custody.phase(), AudioPreparationPhase::Vacant);
+            let token = custody
+                .begin_prepared_revision_in_place_on_control(&project, 11, context, &mut bank)
+                .unwrap();
+            assert!(bank.is_none());
+            assert_eq!(
+                custody.bank.as_ref().unwrap().test_bank_identity(),
+                identity
+            );
+            assert_eq!(custody.source_context(), Some(context));
+            let mut draft = crate::AudioCandidateDraft::new_on_control();
+            draft.prepare_on_control(&custody, &token).unwrap();
+            let mut custody = Some(custody);
+            let mut token = Some(token);
+            let mut owner = None;
+            draft
+                .finish_on_control(&mut custody, &mut token, &mut owner)
+                .unwrap();
+            assert!(custody.is_none() && token.is_none());
+            let mut owner = owner.unwrap();
+            owner.dispose_on_control().unwrap();
+            assert_eq!(
+                owner
+                    .recover_inputs_on_control()
+                    .unwrap()
+                    .test_bank_identity(),
+                identity
+            );
+        }
+    }
+    #[test]
+    fn rooted_bank_survives_reservation_unwind_and_partial_constructor_failure() {
+        if !constructor_supported("rooted_preparation_unwind") {
+            return;
+        }
+        struct Payload(Arc<AtomicUsize>);
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let (project, bank, _) = arrangement_clip_tests::fixture(false, false, 2);
+        let identity = bank.test_bank_identity();
+        let mut bank = Some(bank);
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        let context = AudioSourceContext {
+            project_generation: 2,
+            editor_revision: 9,
+        };
+        let drops = Arc::new(AtomicUsize::new(0));
+        let payload = drops.clone();
+        assert_eq!(
+            custody
+                .begin_prepared_revision_with(&project, 11, context, &mut bank, || {
+                    std::panic::panic_any(Payload(payload))
+                })
+                .err()
+                .unwrap()
+                .reason,
+            AudioStorageError::UnknownStorage
+        );
+        assert_eq!(bank.as_ref().unwrap().test_bank_identity(), identity);
+        assert_eq!(custody.phase(), AudioPreparationPhase::FailedIncomplete);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let first = custody.first_panic.as_ref().unwrap().as_ref() as *const dyn Any as *const ();
+        assert!(
+            custody
+                .begin_prepared_revision_in_place_on_control(&project, 11, context, &mut bank)
+                .is_err()
+        );
+        custody.close_on_control();
+        custody.cleanup_on_control();
+        assert_eq!(
+            custody.first_panic.as_ref().unwrap().as_ref() as *const dyn Any as *const (),
+            first
+        );
+        assert_eq!(bank.as_ref().unwrap().test_bank_identity(), identity);
+        drop(custody);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+        custody.panic_after = Some(1);
+        let token = custody
+            .begin_prepared_revision_in_place_on_control(&project, 11, context, &mut bank)
+            .unwrap();
+        assert!(bank.is_none());
+        assert!(custody.matches(&token));
+        assert_eq!(custody.phase(), AudioPreparationPhase::FailedIncomplete);
+        assert_eq!(
+            custody.bank.as_ref().unwrap().test_bank_identity(),
+            identity
+        );
+        custody.close_on_control();
+        custody.cleanup_on_control();
+        assert!(custody.recover_on_control(&token).is_none());
+        assert_eq!(
+            custody.bank.as_ref().unwrap().test_bank_identity(),
+            identity
+        );
+    }
     fn constructor_supported(test: &str) -> bool {
         if crate::pcm_arc::native_layout_known() {
             eprintln!("hex preparation evidence: {test}; branch=supported-constructor");
