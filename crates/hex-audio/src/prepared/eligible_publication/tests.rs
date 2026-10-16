@@ -4,6 +4,8 @@ mod fanout;
 #[cfg(feature = "allocation-probe")]
 mod native_resources;
 #[cfg(feature = "allocation-probe")]
+mod pages;
+#[cfg(feature = "allocation-probe")]
 mod stream_fixture;
 #[cfg(feature = "allocation-probe")]
 mod utility_fixture;

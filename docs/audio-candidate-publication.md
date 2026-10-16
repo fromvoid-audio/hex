@@ -230,3 +230,29 @@ exercise short-page/role/pool/receipt refusal and exact pair return, and verify
 normal pool conservation. These component receipts still do not authorize native
 installation: binding to the captured canonical source context, exact engine
 window and real callback transaction remains required.
+
+## exact page endpoint custody (PR237 checkpoint)
+
+Readiness registration reserves the real publication-ring chunk before consuming
+an original pair. A successful seal moves that domain's single page endpoint in
+one constructor-created capsule; every future generation shares its fixed
+callback domain slot instead of cloning a producer. The capsule's actual Box
+payload is reserved against remaining retained/construction DATA before sealing.
+The two fixed return signals have actual DATA payloads and four declared internal
+handles; their opaque Arc headers remain RESOURCE costs. Default legacy domain
+registration remains unchanged.
+
+Sealing runs outside ordinary bank/terminal locks. The original terminal barrier
+then chooses either the actual queue fill or accepted closed-Root cleanup. A loan
+is never published behind completed terminal draining. Only authoritative retained
+domain uses and retirement under the bank can request its return; the callback
+reads that signal without locking and moves the same capsule through its existing
+bounded return ring. Endpoint restoration and capsule metadata destruction happen
+on the lifecycle worker before join, READY and report reuse.
+
+Terminal extraction requires both actual guard releases and the completed stream
+handle. Its persistent page slots retain extracted loans through both carrier
+destructors, so a later destructor panic pins the exact endpoints without a join
+or retry. Application callback nonrenderability still does not certify native OS
+Dispose success. This endpoint checkpoint does not enable streamed installation;
+engine demand, command-prefix and per-chunk BUFFERING wiring remain PR237 work.

@@ -2,6 +2,32 @@
 //! seam does not itself grant native installation or page readiness.
 use super::*;
 impl Control {
+    /// Move the one exact page endpoint into this native channel. Queue pressure
+    /// refuses before pair construction; successful late closure stays accepted
+    /// in Root cleanup custody and never publishes behind terminal extraction.
+    pub fn register_audio_candidate_domain_with_readiness(
+        &mut self,
+        domain: crate::candidate_catalog::CandidateDomain,
+        reservation: hex_stream::StreamReadinessReservation,
+    ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
+        if !self.native_custody || self.closing.load(Acquire) {
+            return Err(Box::new(crate::AudioCandidateDomainRefusal {
+                reason: "candidate native custody unavailable",
+                domain,
+            }));
+        }
+        let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
+            return Err(Box::new(crate::AudioCandidateDomainRefusal {
+                reason: "candidate publication queue is full",
+                domain,
+            }));
+        };
+        self.candidate_root
+            .register_domain_pages(domain, reservation, |pages| {
+                chunk.fill_from_iter(std::iter::once(QueuedPublication::Domain(pages)));
+            })
+    }
+
     /// Reserve the opted-in constructor Root before its first accepted owner.
     /// The existing channel must be vacant; legacy publication stays unchanged
     /// on channels that do not opt in.
@@ -149,6 +175,21 @@ impl Control {
 mod tests;
 
 impl Callback {
+    pub(super) fn return_requested_domain_pages(&mut self) {
+        for index in 0..self.domain_pages.len() {
+            if self.held_retirement.is_some() || self.retired.is_full() {
+                return;
+            }
+            if self.domain_pages[index]
+                .as_ref()
+                .is_some_and(|pages| pages.return_requested())
+                && let Some(pages) = self.domain_pages[index].take()
+            {
+                self.return_publication(ReturnedPublication::Domain(pages));
+            }
+        }
+    }
+
     pub(super) fn advance_eligible_publication(&mut self) {
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {

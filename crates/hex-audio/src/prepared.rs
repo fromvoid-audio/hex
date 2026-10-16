@@ -195,11 +195,13 @@ impl ActivePublication {
     }
 }
 enum QueuedPublication {
+    Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::QueuedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::QueuedCandidate),
 }
 pub(crate) enum ReturnedPublication {
+    Domain(crate::candidate_custody::DomainEnvelope),
     Eligible(crate::candidate_custody::ReturnedEligibleCandidate),
     Legacy(Publication),
     Candidate(crate::candidate_custody::ReturnedCandidate),
@@ -734,6 +736,7 @@ pub struct Callback {
     test_admit_candidate: bool,
     deferred: Option<Publication>,
     deferred_eligible: Option<crate::candidate_custody::QueuedEligibleCandidate>,
+    domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
     terminal_disposal_pending: bool,
@@ -828,6 +831,7 @@ pub fn channel_with_spectrum(
             test_admit_candidate: false,
             deferred: None,
             deferred_eligible: None,
+            domain_pages: std::array::from_fn(|_| None),
             held_retirement: None,
             terminal_disposal_pending: false,
             published_route_key: None,
@@ -1133,6 +1137,12 @@ impl Control {
                 break;
             };
             match publication {
+                ReturnedPublication::Domain(pages) => {
+                    if let Err(pages) = self.candidate_root.ingest_pages(pages) {
+                        self.held_control_return = Some(ReturnedPublication::Domain(pages));
+                        break;
+                    }
+                }
                 ReturnedPublication::Eligible(value) => {
                     if let Err(value) = self.candidate_root.ingest_eligible(value) {
                         self.held_control_return = Some(ReturnedPublication::Eligible(value));
@@ -1353,6 +1363,27 @@ impl Callback {
         self.closing.store(true, Release);
         self.candidate_root.close();
     }
+    pub(crate) fn has_domain_pages(&self) -> bool {
+        self.domain_pages.iter().any(Option::is_some)
+    }
+    pub(crate) fn extract_domain_pages_on_control(
+        &mut self,
+        destination: &mut [Option<crate::candidate_custody::DomainEnvelope>; 2],
+    ) -> bool {
+        if destination.iter().any(Option::is_some)
+            || self.domain_pages.iter().enumerate().any(|(index, pages)| {
+                pages.as_ref().is_some_and(|pages| {
+                    pages.index_for(self.candidate_root.root_id()) != Some(index)
+                })
+            })
+        {
+            return false;
+        }
+        for (from, to) in self.domain_pages.iter_mut().zip(destination) {
+            *to = from.take();
+        }
+        true
+    }
     pub(crate) fn drain_candidate_custody_on_control(&mut self) -> bool {
         self.close_candidate_custody_on_control();
         if self.terminal_disposal_pending {
@@ -1370,6 +1401,7 @@ impl Callback {
                     .map(|value| ReturnedPublication::Eligible(value.reject_before_install()))
                     .or_else(|| {
                         self.publications.pop().ok().map(|queued| match queued {
+                            QueuedPublication::Domain(pages) => ReturnedPublication::Domain(pages),
                             QueuedPublication::Eligible(value) => {
                                 ReturnedPublication::Eligible(value.reject_before_install())
                             }
@@ -1389,6 +1421,16 @@ impl Callback {
                 self.terminal_disposal_pending = false;
             } else if let Some(value) = self.held_retirement.take() {
                 let refused = match value {
+                    ReturnedPublication::Domain(pages) => {
+                        if let Some(index) = pages.index_for(self.candidate_root.root_id())
+                            && self.domain_pages[index].is_none()
+                        {
+                            self.domain_pages[index] = Some(pages);
+                            None
+                        } else {
+                            Some(ReturnedPublication::Domain(pages))
+                        }
+                    }
                     ReturnedPublication::Candidate(value) => self
                         .candidate_root
                         .ingest(value)
@@ -1446,6 +1488,7 @@ impl Callback {
                 return;
             }
         }
+        self.return_requested_domain_pages();
         if self.closing.load(Acquire) {
             // A candidate return may end this block early; closing is already
             // silent and must expose stopped status at every such frontier.
@@ -1489,6 +1532,10 @@ impl Callback {
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
                     let publication = match publication {
+                        QueuedPublication::Domain(pages) => {
+                            self.return_publication(ReturnedPublication::Domain(pages));
+                            return;
+                        }
                         QueuedPublication::Eligible(value) => {
                             self.return_publication(ReturnedPublication::Eligible(
                                 value.reject_before_install(),
@@ -1543,6 +1590,15 @@ impl Callback {
             && let Ok(publication) = self.publications.pop()
         {
             match publication {
+                QueuedPublication::Domain(pages) => {
+                    if let Some(index) = pages.index_for(self.candidate_root.root_id())
+                        && self.domain_pages[index].is_none()
+                    {
+                        self.domain_pages[index] = Some(pages);
+                    } else {
+                        self.return_publication(ReturnedPublication::Domain(pages));
+                    }
+                }
                 QueuedPublication::Eligible(value) => {
                     self.deferred_eligible = Some(value);
                 }

@@ -3571,3 +3571,12 @@ compatibility checks pass. Protected page borrows expose only installed keys and
 cannot schedule; an insufficient caller DATA allowance refuses before readiness
 backing allocation (negative control retained externally). Native page-loan
 placement, transport/BUFFERING and installation transactions remain unfinished.
+
+PR237 page-custody checkpoint: the single actual domain endpoint now traverses the
+existing native publication/return rings into fixed callback slots. Real pair
+join/report reuse waits for endpoint restoration; terminal custody retains loans
+through both guard releases, completed handle and normal carrier destruction.
+Five focused real-pair/ring/terminal/fault controls and the complete affected
+allocation-feature audio suite pass, including zero total/net callback allocation
+and deallocation on the exercised loan boundaries. Streamed install remains
+refused pending actual demand/prefix/BUFFERING integration.
