@@ -428,3 +428,167 @@ fn sentinel_preview_publication_returns_pcm_before_successful_constructor_seal()
     drop(errors);
     finish(&mut retirement);
 }
+
+#[test]
+fn rooted_preparation_retries_actual_publication_pressure_then_installs_and_recovers_same_owner() {
+    let _serial = serial();
+    let Some(mut first) = candidate() else {
+        return;
+    };
+    let limits = reservation(&mut first);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    let first_ticket = control
+        .stage_eligible_audio_candidate(first, Vec::new(), PublicationPolicy::InheritRuntime, 2)
+        .unwrap_or_else(|refused| panic!("{}", refused.reason));
+    let preparation = control
+        .reserve_audio_candidate_preparation(
+            crate::AudioCandidatePreparationReservation {
+                source_capacity: 1,
+                member_rows: limits.member_rows / limits.runtime_slots,
+                transfer_rows: limits.transfer_rows / limits.runtime_slots,
+                handle_rows: limits.handle_rows / limits.runtime_slots,
+                storage: hex_engine::AudioStorageReservation {
+                    allocation_items: 256,
+                    handle_obligations: 512,
+                    max_prepared_data_bytes: limits.max_retained_data_bytes / limits.runtime_slots,
+                    max_construction_data_bytes: limits.max_construction_peak_data_bytes
+                        / limits.runtime_slots,
+                    caller_retained_bytes: 0,
+                    caller_construction_bytes: 0,
+                },
+            },
+            Vec::new(),
+        )
+        .ok()
+        .unwrap();
+    use hex_project::{Command, Created, Editor};
+    let mut editor = Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "actual.wav".into(),
+            sample_rate: 48000,
+            frames: 8,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 0,
+            duration: 8,
+            source_offset: 0,
+            source_length: 8,
+            looping: false,
+        })
+        .unwrap();
+    let source = hex_engine::Audio::new(48000, vec![[0.75; 2]; 8]).unwrap();
+    let mut original = None;
+    let mut identity = None;
+    assert_eq!(
+        control
+            .prepare_audio_candidate_on_control(preparation, |cell| {
+                cell.copy_resident_source_on_control(asset, &source)?;
+                original = Some(cell.test_source_collection_identity());
+                cell.prepare_on_control(
+                    editor.project(),
+                    11,
+                    hex_engine::AudioSourceContext {
+                        project_generation: 2,
+                        editor_revision: 8,
+                    },
+                )?;
+                identity = cell.owner_on_control().map(|owner| owner.identity());
+                Ok(())
+            })
+            .unwrap(),
+        crate::AudioCandidatePreparationProgress::Ready
+    );
+    assert_eq!(
+        control
+            .stage_audio_candidate_preparation(preparation, 2)
+            .err(),
+        Some("playback publication already pending")
+    );
+    assert_eq!(control.status.submitted_revision.load(Acquire), 1);
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    let ticket = control
+        .stage_audio_candidate_preparation(preparation, 2)
+        .unwrap();
+    assert_eq!(control.status.submitted_revision.load(Acquire), 2);
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    let action = crate::prepared::PlaybackCommand::Play;
+    control.command(action).unwrap();
+    let mut output = [[0.0; 2]; 4];
+    let measured = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|callback, _| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        })
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 2);
+    assert_eq!(output, [[0.75; 2]; 4]);
+    // Original origins may still be covered by the live successor; replacement
+    // alone is not a disposal/credit barrier for those retained anchors.
+    control.request_shutdown();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    assert!(
+        !crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(())
+        )
+        .unwrap()
+    );
+    assert!(backend.is_none() && disposed);
+    drop(data);
+    drop(errors);
+    let _ = retirement.advance().unwrap();
+    let old = recover(&mut control, &first_ticket);
+    drop(old);
+    let recovered = recover(&mut control, &ticket);
+    assert_eq!(recovered.disposed.identity(), identity.unwrap());
+    let bank = recovered.inputs.test_bank_identity();
+    assert_eq!((bank.0, bank.1), original.unwrap());
+    assert_eq!(
+        recovered.return_kind,
+        crate::AudioCandidateReturnKind::FinalActive
+    );
+    drop(recovered);
+    drop(control);
+    finish(&mut retirement);
+}

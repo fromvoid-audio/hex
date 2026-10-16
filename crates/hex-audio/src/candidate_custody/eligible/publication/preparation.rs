@@ -3,9 +3,9 @@
 use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioCandidatePreparationToken {
-    root: u64,
-    slot: usize,
-    incarnation: u64,
+    pub(super) root: u64,
+    pub(super) slot: usize,
+    pub(super) incarnation: u64,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidatePreparationReservation {
@@ -33,6 +33,12 @@ pub(super) struct PreparationExecution {
     pending: bool,
     failed: bool,
     refusal: Option<&'static str>,
+}
+#[cfg(test)]
+impl PreparationExecution {
+    pub(super) fn test_summary(&self) -> (bool, bool, Option<&'static str>, bool) {
+        (self.pending, self.failed, self.refusal, self.cell.is_some())
+    }
 }
 impl Custody {
     pub(in crate::candidate_custody) fn reserve_runtime_preparation(
@@ -219,6 +225,114 @@ impl Custody {
         }
         Ok(token)
     }
+    pub(in crate::candidate_custody) fn bind_runtime_preparation_domains(
+        &self,
+        token: AudioCandidatePreparationToken,
+        domains: Vec<AudioCandidateDomainToken>,
+    ) -> Result<(), AudioCandidatePreparationRefusal> {
+        let Ok(mut work) = self.work.try_lock() else {
+            return Err(AudioCandidatePreparationRefusal {
+                reason: "candidate preparation is busy",
+                domains,
+            });
+        };
+        let Some(execution) = work
+            .publication
+            .preparations
+            .get_mut(token.slot)
+            .and_then(Option::as_mut)
+            .filter(|e| e.token == token && !e.pending && !e.failed && e.refusal.is_none())
+        else {
+            return Err(AudioCandidatePreparationRefusal {
+                reason: "candidate preparation is incomplete",
+                domains,
+            });
+        };
+        let checked = (|| {
+            let mut bank = lock(&self.bank);
+            let limits = bank
+                .publication
+                .reservation
+                .ok_or("candidate publication is not reserved")?;
+            let slot = bank
+                .publication
+                .slots
+                .get(token.slot)
+                .filter(|s| {
+                    bank.root == token.root
+                        && s.incarnation == token.incarnation
+                        && s.phase == Phase::Reserved
+                        && !s.preparation_retiring
+                        && s.preparation_reservation.is_some()
+                })
+                .ok_or("candidate preparation token differs")?;
+            if bank.closing || domains.len() > 2 {
+                return Err("candidate preparation is unavailable");
+            }
+            if execution.domains.capacity() != 0 {
+                return Err("candidate preparation domains already bound");
+            }
+            let metadata = domains
+                .capacity()
+                .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
+                .ok_or("candidate domain metadata overflow")?;
+            let retained = bank
+                .domains
+                .iter()
+                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+                .and_then(|n| n.checked_add(bank.publication.retained_bytes()?))
+                .and_then(|n| n.checked_add(metadata))
+                .ok_or("candidate DATA overflow")?;
+            let peak = bank
+                .domains
+                .iter()
+                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+                .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
+                .and_then(|n| n.checked_add(metadata))
+                .ok_or("candidate peak overflow")?;
+            if retained > limits.max_retained_data_bytes
+                || peak > limits.max_construction_peak_data_bytes
+            {
+                return Err("candidate domain metadata reservation exceeded");
+            }
+            let charge = slot
+                .retained
+                .checked_add(metadata)
+                .ok_or("candidate DATA overflow")?;
+            let peak_charge = slot
+                .peak
+                .checked_add(metadata)
+                .ok_or("candidate peak overflow")?;
+            for (index, domain) in domains.iter().enumerate() {
+                if domain.root != bank.root
+                    || domains[..index].contains(domain)
+                    || bank.domains.get(domain.slot).is_none_or(|s| {
+                        !s.matches(*domain)
+                            || s.phase != Phase::Accepted
+                            || s.retiring
+                            || s.owner.is_none()
+                            || s.uses == usize::MAX
+                    })
+                {
+                    return Err("candidate preparation domain is unavailable");
+                }
+            }
+            for domain in &domains {
+                bank.domains[domain.slot].uses += 1;
+            }
+            let slot = &mut bank.publication.slots[token.slot];
+            slot.retained = charge;
+            slot.peak = peak_charge;
+            Ok(())
+        })();
+        if let Err(reason) = checked {
+            return Err(AudioCandidatePreparationRefusal { reason, domains });
+        }
+        // The same dedicated guard and exact token preserve this destination;
+        // only a zero-capacity empty Vec is replaced after counter commitment.
+        execution.domains = domains;
+        Ok(())
+    }
     pub(in crate::candidate_custody) fn with_runtime_preparation(
         &self,
         token: AudioCandidatePreparationToken,
@@ -230,7 +344,7 @@ impl Custody {
             .work
             .try_lock()
             .map_err(|_| "candidate preparation is busy")?;
-        {
+        let retiring = {
             let bank = lock(&self.bank);
             let slot = bank
                 .publication
@@ -244,10 +358,8 @@ impl Custody {
             {
                 return Err("candidate preparation token differs");
             }
-            if bank.closing || slot.preparation_retiring {
-                return Ok(AudioCandidatePreparationProgress::Retiring);
-            }
-        }
+            bank.closing || slot.preparation_retiring
+        };
         let execution = work
             .publication
             .preparations
@@ -257,6 +369,9 @@ impl Custody {
             .ok_or("candidate preparation storage differs")?;
         if let Some(reason) = execution.refusal {
             return Ok(AudioCandidatePreparationProgress::Refused(reason));
+        }
+        if retiring {
+            return Ok(AudioCandidatePreparationProgress::Retiring);
         }
         if execution.pending || execution.failed {
             return Ok(AudioCandidatePreparationProgress::Refused(
@@ -300,12 +415,12 @@ impl Custody {
                 ));
             }
         }
+        if let Some(reason) = execution.refusal {
+            return Ok(AudioCandidatePreparationProgress::Refused(reason));
+        }
         let bank = lock(&self.bank);
         if bank.closing || bank.publication.slots[token.slot].preparation_retiring {
             return Ok(AudioCandidatePreparationProgress::Retiring);
-        }
-        if let Some(reason) = execution.refusal {
-            return Ok(AudioCandidatePreparationProgress::Refused(reason));
         }
         Ok(
             if execution
@@ -319,6 +434,153 @@ impl Custody {
                 AudioCandidatePreparationProgress::Collecting
             },
         )
+    }
+    pub(in crate::candidate_custody) fn stage_runtime_preparation(
+        &self,
+        root: &CandidateRoot,
+        token: AudioCandidatePreparationToken,
+        header: Header,
+        rate: u32,
+        enqueue: impl FnOnce(Queued),
+    ) -> Result<AudioCandidateTicket, &'static str> {
+        let mut work = self
+            .work
+            .try_lock()
+            .map_err(|_| "candidate preparation is busy")?;
+        let (reservation, external) = {
+            let bank = lock(&self.bank);
+            let slot = bank
+                .publication
+                .slots
+                .get(token.slot)
+                .filter(|slot| {
+                    bank.root == token.root
+                        && slot.incarnation == token.incarnation
+                        && slot.phase == Phase::Reserved
+                        && !slot.preparation_retiring
+                        && slot.preparation_reservation.is_some()
+                })
+                .ok_or("candidate preparation token differs")?;
+            if bank.closing {
+                return Err("candidate Root is closing");
+            }
+            let execution = work
+                .publication
+                .preparations
+                .get(token.slot)
+                .and_then(Option::as_ref)
+                .filter(|e| e.token == token && !e.pending && !e.failed && e.refusal.is_none())
+                .ok_or("candidate preparation is incomplete")?;
+            let external = execution
+                .domains
+                .capacity()
+                .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
+                .and_then(|n| n.checked_add(std::mem::size_of::<State>()))
+                .and_then(|n| {
+                    n.checked_add(
+                        slot.streaming
+                            .as_ref()
+                            .map_or(Some(0), |w| w.backing_bytes())?,
+                    )
+                })
+                .ok_or("candidate mutable runtime storage overflow")?;
+            (
+                bank.publication
+                    .reservation
+                    .ok_or("candidate publication is not reserved")?,
+                external,
+            )
+        };
+        let execution = work.publication.preparations[token.slot]
+            .as_mut()
+            .ok_or("candidate preparation storage differs")?;
+        let summary = match catch_unwind(AssertUnwindSafe(|| {
+            let owner = execution
+                .cell
+                .as_mut()
+                .and_then(|c| c.owner_on_control())
+                .ok_or("candidate preparation is not ready")?;
+            if owner.sample_rate() != rate
+                || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
+                || header.policy != crate::prepared::PublicationPolicy::InheritRuntime
+            {
+                return Err("candidate constructor rate or phase differs");
+            }
+            owner
+                .seal_constructor_with_runtime_storage_on_control(reservation.ledger(), external)
+                .map_err(|_| "candidate DATA or resource closure refused")
+        })) {
+            Ok(result) => result?,
+            Err(payload) => {
+                execution.failed = true;
+                work.publication.failed_payloads[token.slot] = Some(payload);
+                let mut bank = lock(&self.bank);
+                bank.publication.slots[token.slot].phase = Phase::Failed;
+                self.mark_closing(&mut bank);
+                return Err("candidate preparation is incomplete");
+            }
+        };
+        let barrier = lock(&root.0.bank);
+        if barrier.closing || barrier.retiring {
+            return Err("candidate Root is closing");
+        }
+        let owner = execution
+            .cell
+            .as_mut()
+            .and_then(|c| c.owner_on_control())
+            .ok_or("candidate preparation is not ready")?;
+        let plan = self.preflight_stage(
+            root,
+            owner,
+            &execution.domains,
+            header,
+            summary,
+            Some(token),
+        )?;
+        let state = Self::publication_state(plan.stamp, &execution.domains, header);
+        execution.pending = true;
+        // Split itself preflights while borrowed; only fixed moves follow its
+        // final take. A scalar refusal leaves the exact owner in this cell.
+        let parts = catch_unwind(AssertUnwindSafe(|| {
+            execution
+                .cell
+                .as_mut()
+                .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
+                .split_for_publication_on_control()
+        }));
+        let (runtime, anchors) = match parts {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(_)) => {
+                execution.pending = false;
+                return Err("candidate constructor split refused");
+            }
+            Err(payload) => {
+                execution.failed = true;
+                work.publication.failed_payloads[token.slot] = Some(payload);
+                let mut bank = lock(&self.bank);
+                bank.publication.slots[token.slot].phase = Phase::Failed;
+                self.mark_closing(&mut bank);
+                return Err("candidate preparation is incomplete");
+            }
+        };
+        let domains = std::mem::take(&mut execution.domains);
+        let (queued, ticket) = self.commit_stage(
+            root,
+            StageCommit {
+                runtime,
+                anchors,
+                domains,
+                header,
+                summary,
+                plan,
+                state,
+            },
+        );
+        enqueue(queued);
+        execution.pending = false;
+        drop(barrier);
+        self.advance_runtime_preparations(&mut work.publication, false);
+        Ok(ticket)
     }
     pub(in crate::candidate_custody) fn cancel_runtime_preparation(
         &self,
@@ -346,19 +608,27 @@ impl Custody {
             if execution.pending || execution.failed || work.failed_payloads[index].is_some() {
                 continue;
             }
+            let metadata_only = {
+                let bank = lock(&self.bank);
+                let slot = &bank.publication.slots[index];
+                slot.preparation_metadata_pending && slot.preparation_reservation.is_none()
+            };
             {
                 let mut bank = lock(&self.bank);
                 let closing = bank.closing;
                 let slot = &mut bank.publication.slots[index];
-                if slot.phase != Phase::Reserved
-                    || (!slot.preparation_retiring
-                        && !closing
-                        && !abandoned
-                        && execution.refusal.is_none())
+                if !metadata_only
+                    && (slot.phase != Phase::Reserved
+                        || (!slot.preparation_retiring
+                            && !closing
+                            && !abandoned
+                            && execution.refusal.is_none()))
                 {
                     continue;
                 }
-                slot.phase = Phase::Cleaning;
+                if !metadata_only {
+                    slot.phase = Phase::Cleaning;
+                }
             }
             execution.pending = true;
             let result = catch_unwind(AssertUnwindSafe(|| {
@@ -380,6 +650,18 @@ impl Custody {
                     }
                     continue;
                 }
+            }
+            if metadata_only {
+                let removed = work.preparations[index].take();
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(removed))) {
+                    work.failed_payloads[index] = Some(payload);
+                    let mut bank = lock(&self.bank);
+                    bank.publication.slots[index].phase = Phase::Failed;
+                    self.mark_closing(&mut bank);
+                } else {
+                    lock(&self.bank).publication.slots[index].preparation_metadata_pending = false;
+                }
+                continue;
             }
             // Domains are scalar associations; remove uses under the bank, then
             // destroy the actual metadata backing outside it before vacancy.
@@ -622,6 +904,128 @@ mod tests {
         assert!(!custody.cancel_runtime_preparation(token));
         assert!(custody.cancel_runtime_preparation(reused));
         custody.advance_publications_on_control(&root, false);
+        assert!(custody.complete());
+    }
+    #[test]
+    fn actual_preparation_refusal_remains_distinct_from_retiring_until_cleanup() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        let root = root();
+        let custody = &root.0.eligible;
+        let token = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .ok()
+            .unwrap();
+        let (project, asset, audio) = project();
+        let result = custody
+            .with_runtime_preparation(token, |cell| {
+                cell.copy_resident_source_on_control(asset, &audio)?;
+                // An invalid source generation is a real constructor refusal, not
+                // asynchronous Busy or a successful no-install publication.
+                cell.prepare_on_control(
+                    &project,
+                    0,
+                    hex_engine::AudioSourceContext {
+                        project_generation: 2,
+                        editor_revision: 8,
+                    },
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            result,
+            AudioCandidatePreparationProgress::Refused("candidate preparation refused")
+        );
+        assert!(lock(&custody.bank).publication.slots[token.slot].preparation_retiring);
+        assert_eq!(
+            custody
+                .with_runtime_preparation(token, |_| panic!("refused preparation retried"))
+                .unwrap(),
+            result
+        );
+        assert_eq!(lock(&custody.bank).publication.occupied(), Some(1));
+        custody.advance_publications_on_control(&root, false);
+        assert!(custody.complete());
+    }
+    #[test]
+    fn graph_reservation_precedes_source_start_and_one_shot_binding_holds_pair_until_cleanup() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            return;
+        }
+        let root = root();
+        let custody = &root.0.eligible;
+        let graph = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .ok()
+            .unwrap();
+        let domain = custody
+            .begin_preparation(
+                hex_stream::StreamConfig::with_pool_pages(4),
+                Vec::new(),
+                hex_stream::StreamReadinessReservation {
+                    extents_per_role: 2,
+                },
+            )
+            .ok()
+            .unwrap();
+        let wanted = Vec::from([domain]);
+        let ptr = wanted.as_ptr();
+        let cap = wanted.capacity();
+        // Wrong incarnation refuses before association/counter changes.
+        let refused = custody
+            .bind_runtime_preparation_domains(
+                AudioCandidatePreparationToken {
+                    incarnation: graph.incarnation + 1,
+                    ..graph
+                },
+                wanted,
+            )
+            .err()
+            .unwrap();
+        assert_eq!(
+            (refused.domains.as_ptr(), refused.domains.capacity()),
+            (ptr, cap)
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let pages = loop {
+            let (progress, pages) = custody.poll_preparation(domain).unwrap();
+            if progress == AudioCandidateDomainPreparationProgress::Ready {
+                break pages.unwrap();
+            }
+            assert!(pages.is_none());
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        custody
+            .bind_runtime_preparation_domains(graph, refused.domains)
+            .ok()
+            .unwrap();
+        assert_eq!(lock(&custody.bank).domains[domain.slot].uses, 1);
+        assert!(
+            custody
+                .bind_runtime_preparation_domains(graph, Vec::from([domain]))
+                .is_err()
+        );
+        assert!(custody.retire_domain(domain));
+        assert!(custody.ingest_pages(pages).is_ok());
+        custody.advance_on_control(false);
+        assert_eq!(
+            lock(&custody.bank).domains[domain.slot].phase,
+            Phase::Accepted
+        );
+        assert!(custody.cancel_runtime_preparation(graph));
+        custody.advance_publications_on_control(&root, false);
+        assert_eq!(lock(&custody.bank).domains[domain.slot].uses, 0);
+        let report = loop {
+            custody.advance_on_control(false);
+            if let Some(report) = custody.recover_domain(domain) {
+                break report;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert!(report.accounting_complete);
         assert!(custody.complete());
     }
     #[test]

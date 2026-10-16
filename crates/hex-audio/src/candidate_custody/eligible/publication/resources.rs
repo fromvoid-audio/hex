@@ -45,7 +45,7 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
                 .map_or(0, |native| native.channel_resources().1),
         )
 }
-fn occupied_handles(bank: &NativeBank) -> Option<usize> {
+fn occupied_handles(bank: &NativeBank, excluded_preparation: Option<usize>) -> Option<usize> {
     let mut handles = root_handle_bound(bank)?;
     for domain in &bank.domains {
         if let Some(resources) = domain.resources {
@@ -54,8 +54,11 @@ fn occupied_handles(bank: &NativeBank) -> Option<usize> {
             handles = handles.checked_add(bound.shared_handle_bound)?;
         }
     }
-    for slot in &bank.publication.slots {
-        if let Some(reservation) = slot.preparation_reservation {
+    for (index, slot) in bank.publication.slots.iter().enumerate() {
+        if let Some(reservation) = slot
+            .preparation_reservation
+            .filter(|_| Some(index) != excluded_preparation)
+        {
             handles = handles.checked_add(reservation.handle_rows)?;
         }
         if let Some(summary) = slot.summary {
@@ -70,11 +73,14 @@ pub(in crate::candidate_custody::eligible) fn remaining_handle_reservation(
     let Some(reservation) = bank.publication.reservation else {
         return Some(usize::MAX);
     };
-    reservation.handle_rows.checked_sub(occupied_handles(bank)?)
+    reservation
+        .handle_rows
+        .checked_sub(occupied_handles(bank, None)?)
 }
 pub(super) fn for_candidate(
     bank: &NativeBank,
     summary: AudioCandidateConstructorSummary,
+    excluded_preparation: Option<usize>,
 ) -> Result<Option<RootResourceWitness>, &'static str> {
     if bank
         .domains
@@ -84,7 +90,14 @@ pub(super) fn for_candidate(
         return Err("source construction is not sealed");
     }
     if summary.shared_resource_handles
-        > remaining_handle_reservation(bank).ok_or("constructor handle reservation exceeded")?
+        > bank
+            .publication
+            .reservation
+            .and_then(|r| {
+                r.handle_rows
+                    .checked_sub(occupied_handles(bank, excluded_preparation)?)
+            })
+            .ok_or("constructor handle reservation exceeded")?
     {
         return Err("constructor handle reservation exceeded");
     }
@@ -111,7 +124,7 @@ pub(super) fn for_candidate(
             .checked_add(9)
             .and_then(|n| n.checked_add(native.channel_resources().0))
             .ok_or("resource count overflow")?,
-        shared_handle_bound: occupied_handles(bank)
+        shared_handle_bound: occupied_handles(bank, excluded_preparation)
             .and_then(|n| n.checked_add(summary.shared_resource_handles))
             .ok_or("resource count overflow")?,
         lifecycle_workers: 1,

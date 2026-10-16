@@ -29,10 +29,20 @@ impl AudioCandidatePreparation {
         let requested = source_capacity
             .checked_mul(std::mem::size_of::<(AssetId, crate::OwnedAudioSource)>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|n| {
+                n.checked_add(
+                    reservation
+                        .handle_obligations
+                        .checked_mul(std::mem::size_of::<crate::audio_only_inputs::AliasRow>())?,
+                )
+            })
+            .and_then(|n| n.checked_add(reservation.caller_retained_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         if source_capacity > reservation.handle_obligations
             || requested > reservation.max_prepared_data_bytes
-            || requested > reservation.max_construction_data_bytes
+            || requested
+                .checked_add(reservation.caller_construction_bytes)
+                .is_none_or(|n| n > reservation.max_construction_data_bytes)
         {
             return Err(AudioStorageError::ReservationExceeded);
         }
@@ -65,6 +75,7 @@ impl AudioCandidatePreparation {
             || self.bank.is_some()
             || self.owner.is_some()
             || self.sources.len() == self.sources.capacity()
+            || self.resident_draft.capacity() != 0
         {
             return Err(AudioStorageError::Capacity);
         }
@@ -85,6 +96,20 @@ impl AudioCandidatePreparation {
             .capacity()
             .checked_mul(std::mem::size_of::<(AssetId, crate::OwnedAudioSource)>())
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|n| {
+                n.checked_add(
+                    self.reservation
+                        .handle_obligations
+                        .checked_mul(std::mem::size_of::<crate::audio_only_inputs::AliasRow>())?,
+                )
+            })
+            .and_then(|n| {
+                n.checked_add(
+                    self.resident_draft
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<crate::Frame>())?,
+                )
+            })
             .and_then(|n| n.checked_add(data))
             .and_then(|n| n.checked_add(additional))
             .and_then(|n| n.checked_add(self.reservation.caller_retained_bytes))
@@ -120,13 +145,7 @@ impl AudioCandidatePreparation {
         self.resident_draft
             .try_reserve_exact(audio.frames().len())
             .map_err(|_| AudioStorageError::Allocation)?;
-        let actual = self
-            .resident_draft
-            .capacity()
-            .checked_mul(std::mem::size_of::<crate::Frame>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<crate::AudioData>()))
-            .ok_or(AudioStorageError::Overflow)?;
-        self.validate_collection_bytes(actual)?;
+        self.validate_collection_bytes(std::mem::size_of::<crate::AudioData>())?;
         self.resident_draft.extend_from_slice(audio.frames());
         // This fixed constructor has no user code or recoverable unwind after
         // taking the Vec; all Result refusals return that exact Vec. Fatal OOM
@@ -165,7 +184,12 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
-        if self.failed || self.cleaning || self.complete || self.owner.is_some() {
+        if self.failed
+            || self.cleaning
+            || self.complete
+            || self.owner.is_some()
+            || self.resident_draft.capacity() != 0
+        {
             return Err(AudioStorageError::SourceMismatch);
         }
         if self.bank.is_none() && self.token.is_none() {
@@ -202,6 +226,15 @@ impl AudioCandidatePreparation {
                 .ok_or(AudioStorageError::SourceMismatch)?,
         )?;
         draft.finish_on_control(&mut self.custody, &mut self.token, &mut self.owner)
+    }
+    /// Scalar test observation of the actual rooted collection backing; never
+    /// an owner, source accessor or publication capability.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_source_collection_identity(&self) -> (usize, usize) {
+        (self.sources.as_ptr() as usize, self.sources.capacity())
+    }
+    pub(super) fn take_preflighted_owner(&mut self) -> Option<AudioCandidateOwner> {
+        self.owner.take()
     }
     pub fn owner_on_control(&mut self) -> Option<&mut AudioCandidateOwner> {
         self.owner.as_mut()

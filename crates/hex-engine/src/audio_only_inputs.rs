@@ -269,6 +269,21 @@ impl OwnedAudioInputs {
             .handle_obligations
             .checked_sub(sources.len())
             .ok_or(AudioStorageError::Capacity)?;
+        // Reject a known-insufficient caller allowance before allocating the
+        // alias backing; actual allocator capacity is still checked below.
+        let requested = alias_limit
+            .checked_mul(std::mem::size_of::<AliasRow>())
+            .and_then(|n| n.checked_add(capacity.source_container_bytes))
+            .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
+            .and_then(|n| n.checked_add(reservation.caller_retained_bytes))
+            .ok_or(AudioStorageError::Overflow)?;
+        if requested > reservation.max_prepared_data_bytes
+            || requested
+                .checked_add(reservation.caller_construction_bytes)
+                .is_none_or(|n| n > reservation.max_construction_data_bytes)
+        {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
         aliases
             .try_reserve_exact(alias_limit)
             .map_err(|_| AudioStorageError::Allocation)?;
@@ -520,6 +535,15 @@ mod tests {
         assert_eq!(
             OwnedAudioInputs::try_new_in_place(&mut sources, insufficient, &mut destination),
             Err(AudioStorageError::Capacity)
+        );
+        assert_eq!((sources.as_ptr(), sources.capacity()), original);
+        assert_eq!(sources[0].1.handle, handle);
+        assert!(destination.is_none());
+        let mut insufficient = reservation();
+        insufficient.max_prepared_data_bytes = 1;
+        assert_eq!(
+            OwnedAudioInputs::try_new_in_place(&mut sources, insufficient, &mut destination),
+            Err(AudioStorageError::ReservationExceeded)
         );
         assert_eq!((sources.as_ptr(), sources.capacity()), original);
         assert_eq!(sources[0].1.handle, handle);

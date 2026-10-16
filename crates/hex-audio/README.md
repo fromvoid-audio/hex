@@ -265,8 +265,15 @@ The caller's finite DATA/peak, member/transfer and handle reservations remain
 occupied through cancellation, close, refusal and sticky failures. Normal
 lifecycle cleanup destroys the original sources and emptied wrappers before
 vacancy; it never fabricates a NeverInstalled receipt for unpublished work.
-Same-cell queue staging and the Desktop adapter are subsequent PR239 integration
-work, not established by the construction/cleanup checkpoint alone.
+Queue staging borrows that same rooted owner through preflight and reserves the
+actual publication entry before the nonfallible Runtime/anchor split. Queue
+pressure preserves the preparation token, slot/incarnation, original bank and
+owner for retry; accepted work replaces its conservative reservation with actual
+charges without releasing domain coverage. Empty construction wrappers are
+reclaimed on the lifecycle worker before slot reuse. A source domain started
+after graph reservation can be bound once into the same cell, retaining the
+actual pair until graph cleanup and its pool report complete. The Desktop
+adapter remains subsequent PR239 integration work.
 
 The split Client also exposes Resident conditional-runtime cancellation through
 the existing one-slot forwarding cell. It borrows the exact submitted revision's

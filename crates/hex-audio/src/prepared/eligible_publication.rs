@@ -167,6 +167,17 @@ impl PublicationControl {
         self.candidate_root
             .reserve_runtime_preparation(reservation, domains)
     }
+    /// Bind a newly ready exact domain into the already-reserved graph cell.
+    /// This permits reserving graph construction BEFORE starting its source
+    /// worker; no second runtime slot or source registration is introduced.
+    pub fn bind_audio_candidate_preparation_domains(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        domains: Vec<crate::AudioCandidateDomainToken>,
+    ) -> Result<(), crate::AudioCandidatePreparationRefusal> {
+        self.candidate_root
+            .bind_runtime_preparation_domains(token, domains)
+    }
     /// The closure executes on the worker while dedicated construction custody
     /// remains rooted. No ordinary bank/terminal lock spans copies or compilation.
     pub fn prepare_audio_candidate_on_control(
@@ -177,6 +188,49 @@ impl PublicationControl {
         ) -> Result<(), hex_engine::AudioStorageError>,
     ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
         self.candidate_root.with_runtime_preparation(token, prepare)
+    }
+    /// Queue this exact rooted, completed preparation without returning an owner
+    /// to the adapter or releasing/reacquiring its reserved runtime/archive cell.
+    /// Busy/refusal retains all construction custody under the same token.
+    pub fn stage_audio_candidate_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context_generation: u64,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("candidate native custody unavailable");
+        }
+        if self.revision == u64::MAX {
+            return Err("playback revision exhausted");
+        }
+        if !self.status.publication_pending.reserve_publication() {
+            return Err("playback publication already pending");
+        }
+        let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
+            self.status.publication_pending.store(false, Release);
+            return Err("candidate publication queue is full");
+        };
+        let revision = self.revision + 1;
+        let header = (
+            revision,
+            context_generation,
+            PublicationPolicy::InheritRuntime,
+        );
+        match self
+            .candidate_root
+            .stage_runtime_preparation(token, self.rate, header, |queued| {
+                chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
+            }) {
+            Ok(ticket) => {
+                self.revision = revision;
+                self.status.submitted_revision.store(revision, Release);
+                Ok(ticket)
+            }
+            Err(reason) => {
+                self.status.publication_pending.store(false, Release);
+                Err(reason)
+            }
+        }
     }
     pub fn cancel_audio_candidate_preparation(
         &mut self,

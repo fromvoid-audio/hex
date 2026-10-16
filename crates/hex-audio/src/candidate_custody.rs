@@ -435,6 +435,18 @@ impl CandidateRoot {
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
+    pub(crate) fn bind_runtime_preparation_domains(
+        &self,
+        token: AudioCandidatePreparationToken,
+        domains: Vec<AudioCandidateDomainToken>,
+    ) -> Result<(), AudioCandidatePreparationRefusal> {
+        let result = self
+            .0
+            .eligible
+            .bind_runtime_preparation_domains(token, domains);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
     pub(crate) fn with_runtime_preparation(
         &self,
         token: AudioCandidatePreparationToken,
@@ -443,6 +455,27 @@ impl CandidateRoot {
         ) -> Result<(), hex_engine::AudioStorageError>,
     ) -> Result<AudioCandidatePreparationProgress, &'static str> {
         let result = self.0.eligible.with_runtime_preparation(token, prepare);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn stage_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        rate: u32,
+        header: (u64, u64, crate::prepared::PublicationPolicy),
+        enqueue: impl FnOnce(QueuedEligibleCandidate),
+    ) -> Result<AudioCandidateTicket, &'static str> {
+        let result = self.0.eligible.stage_runtime_preparation(
+            self,
+            token,
+            eligible::publication::Header {
+                revision: header.0,
+                context_generation: header.1,
+                policy: header.2,
+            },
+            rate,
+            enqueue,
+        );
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
@@ -1017,7 +1050,7 @@ impl CandidateRoot {
         let work = self.0.execution.try_lock().ok();
         let bank = lock(&self.0.bank);
         format!(
-            "root={} scheduled={} retiring={} slots={:?} work={:?}",
+            "root={} scheduled={} retiring={} slots={:?} work={:?} eligible={}",
             bank.root,
             bank.scheduled,
             bank.retiring,
@@ -1027,7 +1060,8 @@ impl CandidateRoot {
                 w.bank_drop_pending,
                 w.metadata_drop_pending,
                 w.first_panic.is_some()
-            ))
+            )),
+            self.0.eligible.test_publication_status()
         )
     }
     pub(crate) fn report(&self) -> AudioCandidateCustodyReport {
