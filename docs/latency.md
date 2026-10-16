@@ -22,17 +22,13 @@ provide both their exact normal result and zero audible delay. Transport
 acknowledgment, first audible sample, hardware latency and intrinsic DSP latency
 must be measured and reported separately.
 
-The current native seam exposes `PreparedNativeProcessor::algorithmic_latency_frames`
-as `Option<u32>`: a frame count is known latency, while `None` is unknown. The
-default is unknown. `StereoMatrix` declares exact zero latency, and registered
-Utility filter processors declare zero fixed buffering/lookahead delay. IIR
-phase/group delay is not algorithmic buffering latency and is not included.
-For Return effects, the compiler now requires registered effect preparation and
-explicit `Some(0)` processor latency; a matrix-only effect uses the memoryless
-zero-latency matrix contract. Unknown and nonzero Return processors refuse
-candidate compilation before history commit. This admits only zero-algorithmic-
-latency Return paths; it does not provide path compensation. General latency
-compensation, sidechains, feedback routing and plugins remain unimplemented.
+The native seam exposes known algorithmic frame counts or explicit unknown
+through prepared effect/instrument contracts. Enabled unknown latency refuses
+playback; bypass and memoryless matrices expose zero. Production graph
+compensation now propagates checked cumulative arrivals and owns bounded
+transactional rings, exact origin clocks, history transfer and export trim/drain.
+See [runtime latency compensation](latency-compensation.md) for current limits,
+stop-required transitions, test evidence and physical/native gaps.
 
 ## Host graph contract — planned
 

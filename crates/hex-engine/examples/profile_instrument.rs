@@ -84,6 +84,9 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("instrument {track_index:03}"),
             gain: 1.0,
@@ -152,6 +155,10 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
         });
     }
     Ok(Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: RATE,
         next_id,
         assets: Vec::new(),

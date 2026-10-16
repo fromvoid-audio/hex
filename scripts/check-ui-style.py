@@ -70,6 +70,9 @@ widgets = (
     'super::device_panel::bottom_bar(', 'overview)',
     # Shared host meter strip supplies lowercase tooltip text through theme::text.
     'gain_meters::render(', 'super::gain_meters::render(',
+    # Typed routing/recording components normalize their labels at the boundary.
+    'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    'binding.entity.clone())', 'super::super::gain_recording::controls(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

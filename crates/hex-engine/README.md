@@ -448,6 +448,31 @@ It prepares an injected 100-track/1,600-note fixture, checks inline/shared PCM
 outside timing, and reports render versus control construction separately.
 It is a headless benchmark, not a native callback deadline test.
 
+`SessionPlayback` and `playback::Playback` expose the combined borrowed
+`render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>` path. It uses
+the existing Session render transaction with both inputs; page and observer
+borrows are never retained. Observer code must not allocate, block, clone owners
+or retain sample slices. Post-node samples are speculative until both block
+render and caller final-output validation succeed. With no Session runtime,
+Playback's new observed path refuses before output/clock/provider/state mutation;
+with no observer it preserves existing page rendering. Existing public methods
+retain their contracts. This adds no stream dependency or native admission.
+
+Canonical stereo Return feeds use a bounded control-prepared topological plan
+with pinned ready ties in Arrangement and prepared Session/export kernels.
+Post-chain/matrix/gain/mute source output feeds destination input additively;
+current Main sums stay pinned, master runs once, and captured old chains remain
+Main-only. The no-feed loops keep their original arithmetic order. See
+[routing](../../docs/routing.md) for typed track inputs, MIDI sources and graph
+validation. Production compensation aligns declared delays; native deadlines and
+listening require separate evidence.
+
+Prepared track-gain lanes apply absolute sample-offset gain once after devices
+and before Main/sends in Arrangement, Session and export. No-automation paths
+remain; detached tails freeze the effective transition gain. Actual prepared knot
+capacity is reported separately from process memory and native deadline evidence.
+See [track gain automation](../../docs/track-gain-automation.md).
+
 Canonical selected TrackId/ReturnId outputs are available through control-built
 `OutputCapturePlan` and borrowed `OutputCapture` slices, transactionally committed
 with Main. See [the capture contract](../../docs/output-capture.md) for admitted
@@ -471,3 +496,24 @@ on control. Both preflight and commit fill borrowed scratch and return eligibili
 so neither creates or returns large inline plans on the callback stack. Actual
 capacities and the checked preflight bound are charged to preroll storage; declined
 queries reset the valid prefix, and handoff never resizes or drops the buffers.
+
+
+## Routing, touch and compensation
+
+Typed track inputs use a combined dependency schedule with Return feeds and
+sends. MIDI source selection compiles root-authored notes into each destination's
+actual instrument; Session inventory retains canonical UI cells separately from
+bounded routed templates. Audio owner and effective MIDI owner remain distinct.
+
+The `compensation` module owns control-validated latency plans and preallocated
+transactional stereo delays; `signal_graph` binds them to actual processors,
+instrument generation, faders and Main. Exact origin stamps drive downstream
+clock/gain queries, and compatible handoffs retain in-flight state. Unsupported
+live topology/history changes explicitly require Stop. Export trims causal
+startup while retaining the requested final frame. See
+[latency compensation](../../docs/latency-compensation.md) for limits and gaps.
+
+Prepared gain touch spans override the unchanged base lane only inside their
+half-open intervals. A separately armed transient fader supports audio-owned live
+values without editing the canonical project; delivery receipts and atomic take
+history belong to audio/session. See [gain recording](../../docs/gain-touch-spans.md).

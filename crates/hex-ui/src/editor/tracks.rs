@@ -870,8 +870,30 @@ impl EditorView {
             .items_center()
             .gap_1()
             .child(
+                button(
+                    "a",
+                    "show track gain automation",
+                    ("gain-lane", track_id.value()),
+                )
+                .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.show_gain_lane(track_id, window, cx);
+                })),
+            )
+            .child(
                 button("+", "increase track gain", ("gain-up", track_id.value())).on_click(
-                    cx.listener(move |view, _, _, cx| {
+                    cx.listener(move |view, _, window, cx| {
+                        if view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track_id))
+                            .is_some_and(|track| {
+                                !track.gain_envelope().is_empty()
+                                    || !track.gain_lane().spans().is_empty()
+                            })
+                        {
+                            view.show_gain_lane(track_id, window, cx);
+                        }
                         view.gain_by(track_id, 0.1);
                         cx.notify();
                     }),
@@ -879,7 +901,18 @@ impl EditorView {
             )
             .child(
                 button("−", "decrease track gain", ("gain-down", track_id.value())).on_click(
-                    cx.listener(move |view, _, _, cx| {
+                    cx.listener(move |view, _, window, cx| {
+                        if view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track_id))
+                            .is_some_and(|track| {
+                                !track.gain_envelope().is_empty()
+                                    || !track.gain_lane().spans().is_empty()
+                            })
+                        {
+                            view.show_gain_lane(track_id, window, cx);
+                        }
                         view.gain_by(track_id, -0.1);
                         cx.notify();
                     }),
@@ -890,7 +923,14 @@ impl EditorView {
                     .w(px(34.0))
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(format!("{:.0}%", track.gain() * 100.0))),
+                    .child(theme::text(
+                        if track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty()
+                        {
+                            format!("{:.0}%", track.gain() * 100.0)
+                        } else {
+                            "auto".into()
+                        },
+                    )),
             )
             .child(
                 button(

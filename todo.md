@@ -2294,7 +2294,6 @@ merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).
 
-
 ## 11 october 2026 — pulse2337: stable Operator time axis and stage caps
 
 Direct user clarification and two supplied Live screenshots establish fixed
@@ -2578,6 +2577,7 @@ matched Mac idle baseline or physical callback deadline is claimed. No runtime,
 fixture, comparator or admission limit changed. Final exact-head local CI is
 the separate source-review gate; native evidence limitations remain explicit.
 
+
 ## device selection fix — 13 october 2026
 
 Device cards now retain a transient selected DeviceId and share an accent
@@ -2647,3 +2647,56 @@ not complete Operator filter2326, higher-polyphony2226 or scalability2108.
   Refused plans reset their valid prefix; no callback allocation or cap increase.
 - Canonical PR #243 owns this focused fix. Exact-source full local CI and optimized
   guarded delivery are required; source tests do not establish native listening.
+
+## routing integration continuation — 16 october 2026 (pulse28 / pr184)
+
+Resumed the existing canonical branch and integrated current main without
+replacing the PR or its history. Preserved newer device gains, analytic
+continuation, default-stack handoff, device metering and same-pass output capture.
+Automated track captures now use each sample's effective post-device gain;
+ReturnFeed captures include the same post-fader signal and original retired
+Return tails exactly once without replaying feeds. Focused PCM regressions cover
+these combined paths.
+
+Schema23 writes complete combined state. Strict top-level key presence preserves
+both historical main and feature-branch schema18/19 meanings without parse-error
+fallback;20–22 remain readable. Nonzero device trims, provenance, opaque states,
+ReturnFeed, gain curve and epoch round trips are required regression evidence.
+Full exact-commit local CI is required before any readiness assertion. General
+audio/MIDI graph playback, actual automation recording, runtime delay-ring
+compensation and their discontinuity/ownership contracts remain unfinished.
+Issue28 and PR184 remain in progress/draft; its review-only hold is retained.
+No native interaction, listening, deadline or delivery success is implied.
+
+## complete routing implementation candidate — 16 october 2026 (pulse28 / pr184)
+
+The continuation above is superseded by the complete source implementation:
+canonical typed Track/Return stereo inputs, acyclic root-resolved MIDI sources,
+strict schema24 preservation, native routing controls, prepared gain touch spans
+and delivered-quantum recording with one atomic loop-normalized history edit.
+Production compensation uses actual processor/instrument declarations, bounded
+transactional rings and exact origin clocks through Arrangement, Session, capture
+and export. Compatible handoffs preserve in-flight history; nonzero timing/layout
+changes and MIDI source-layout changes require Stop. Zero-delay safe edits remain
+live. Compensation cannot remove physical latency.
+
+Source regressions cover actual routing PCM, source fanout/stop/relaunch and
+independent audio ownership, supported analytic import and unsupported feedback
+chase, late rollback, startup/final export samples, rate mismatch, cancellation,
+queue/credit exhaustion, loop normalization, history, strict migrations and selected
+zero-allocation callback paths. Full engine, audio allocation, project/storage,
+export feature suites and workspace/feature Clippy passed during development.
+Exact clean-candidate full local CI, release measurements and guarded stable native
+delivery are recorded in PR184/Pulse28, separately from optional native interaction,
+listening, physical deadlines and Windows acceptance. See docs/routing.md,
+docs/gain-touch-spans.md and docs/latency-compensation.md for the finite contracts.
+
+
+The final PR28 scope excludes previously merged draft prerequisites' Live-set
+adapter/CLI/UI and streaming wrapper extensions. Their source/history remains in
+PR150/Pulse32 and PR177/Pulse24. Neutral bounded import provenance and historical
+schema18/19 dispatch remain for faithful project migration; they expose no import
+command. The combined borrowed pages/observer engine seam remains because routing
+and gain-render regressions exercise it, without enabling native streamed
+publication or lifting resident limits. This separation does not complete or
+authorize either prerequisite feature.
