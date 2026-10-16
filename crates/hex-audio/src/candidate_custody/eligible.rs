@@ -89,6 +89,10 @@ pub(super) struct Custody {
     work: Mutex<NativeWork>,
 }
 impl Custody {
+    pub(super) fn prewarm_on_control(&self) {
+        drop(lock(&self.bank));
+        drop(lock(&self.work));
+    }
     pub(super) fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }

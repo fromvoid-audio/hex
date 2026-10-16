@@ -225,11 +225,12 @@ impl CandidateRoot {
             returns: Mutex::new(None),
         }));
         // Some supported std mutex implementations allocate lazily at first
-        // lock. Initialize the actual three locks during channel construction,
+        // lock. Initialize every actual lock during channel construction,
         // never during the legacy allocation-free control reclaim contract.
         drop(lock(&root.0.bank));
         drop(lock(&root.0.execution));
         drop(lock(&root.0.returns));
+        root.0.eligible.prewarm_on_control();
         Ok(root)
     }
     /// Ordinary control lock spans reservation and queue push: terminal closure
