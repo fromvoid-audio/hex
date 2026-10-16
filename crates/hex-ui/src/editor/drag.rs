@@ -131,7 +131,7 @@ pub(super) struct DropPreview {
     pub(super) position: ClipPosition,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct LaneBounds {
     pub(super) left: f32,
     pub(super) width: f32,
@@ -748,6 +748,7 @@ impl super::EditorView {
     }
 
     pub(super) fn begin_native_device_drag(&mut self, drag: &NativeDeviceDrag) {
+        self.arrangement_device_preview = None;
         self.active_clip_drag = None;
         self.active_browser_audio_drag = None;
         if matches!(drag.source, NativeDeviceDragSource::Browser { .. }) {
@@ -812,6 +813,7 @@ impl super::EditorView {
                     && Rc::ptr_eq(&active.destination, &drag.destination)
             })
         {
+            self.arrangement_device_preview = None;
             self.active_native_device_drag = None;
         }
         drag.destination.set(None);
@@ -819,6 +821,7 @@ impl super::EditorView {
     }
 
     pub(super) fn cancel_active_native_device_drag(&mut self) -> bool {
+        self.arrangement_device_preview = None;
         let Some(drag) = self.active_native_device_drag.take() else {
             return false;
         };
@@ -868,6 +871,16 @@ impl super::EditorView {
         let tracks = state.project.tracks();
         if tracks.is_empty() {
             return Some((None, timeline, pointer_y));
+        }
+
+        let first = tracks.first()?;
+        if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
+            let first_lane = *self.drag_lanes.get(&first.id())?;
+            // Reserve the same narrow insertion band at the first row's top,
+            // without adding empty layout space above the tracks.
+            if first_lane.top >= body.top && pointer_y <= first_lane.top + 3.0 {
+                return Some((Some(first.id()), timeline, first_lane.top));
+            }
         }
 
         for index in 1..tracks.len() {
