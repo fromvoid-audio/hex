@@ -14,10 +14,15 @@ canonical requests, undoes/redoes each edit, saves and reopens the authored stat
 with the same track/device identity. These checks establish original Hex behavior;
 they do not establish audible or measured Ableton parity.
 
-With filters active, mute suppresses their output after processing as well as
-zeroing their matrix input. Histories continue advancing with zero input, so
-unmuting does not restore frozen pre-mute histories. Bypass retains the shared
-runtime's existing behavior. No state schema or filter response law changes.
+With filters active, the processor zeroes both input and output while muted.
+Its matrix stays compatible across mute-only changes; both runtime twins must
+certify unchanged filter settings before adopting the old history. This prevents
+the handoff from retaining an audible old filter tail. Histories advance through
+zero input, so unmuting recovers continuously advanced state. Canonical track
+and Return regressions cover DC, bass-side and bass-audition handoffs, silence
+and unmute continuation; the Return callback probe measures mute/unmute too.
+Bypass retains the shared runtime's existing behavior. No state schema or filter
+response law changes.
 
 ## native checklist
 

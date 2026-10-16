@@ -10,7 +10,7 @@ const HISTORY_FLOOR: f64 = 1.0e-30;
 /// Bass mono uses an original fourth-order Linkwitz–Riley high-pass on the side
 /// signal. Audition uses the corresponding low-pass on the mid signal. Exact
 /// Live responses have not been measured.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedUtilityFilters {
     sample_rate: u32,
     dc_enabled: bool,
@@ -82,15 +82,15 @@ impl PreparedUtilityFilters {
         !self.dc_enabled && !self.bass_enabled && !self.output_muted
     }
 
-    /// Suppress the processor's output after filtering while continuing to
-    /// advance every enabled filter history from its input.
+    /// Zero the processor's input and output while continuing to advance every
+    /// filter history, including during compatible live mute handoffs.
     pub const fn with_output_mute(mut self, muted: bool) -> Self {
         self.output_muted = muted;
         self
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct BiquadCoefficients {
     b0: f64,
     b1: f64,
@@ -185,6 +185,11 @@ impl UtilityFilterProcessor {
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
+        let input = if self.prepared.output_muted {
+            [0.0; 2]
+        } else {
+            input
+        };
         let mut signal = [f64::from(input[0]), f64::from(input[1])];
         // Histories advance even while each mode is bypassed. Enabling a mode
         // therefore never resurrects an old signal; exact neutral output remains.
@@ -263,6 +268,15 @@ impl NativeProcessorRuntime for UtilityFilterProcessor {
             .as_any()
             .downcast_ref::<Self>()
             .is_some_and(|previous| self.prepared.sample_rate == previous.prepared.sample_rate)
+    }
+
+    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| {
+                self.prepared.with_output_mute(false) == previous.prepared.with_output_mute(false)
+            })
     }
 
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {

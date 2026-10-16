@@ -597,7 +597,13 @@ impl NativeDeviceDefinition for UtilityDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
-        PreparedUtility::new(decode_state(state)?)
+        let mut settings = decode_state(state)?;
+        // Stateful mute belongs to the processor, so its input matrix remains
+        // compatible across mute handoffs and no audible old tail is detached.
+        if settings.dc_remove || settings.bass_mono {
+            settings.mute = false;
+        }
+        PreparedUtility::new(settings)
             .map(|prepared| prepared.matrix())
             .map_err(|_| DeviceContractError::MalformedState)
     }

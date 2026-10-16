@@ -211,9 +211,12 @@ fn compatible_history_transfer_preserves_candidate_configuration() {
         old.process_frame([0.5, -0.25]);
     }
     let changed = PreparedUtilityFilters::new(48_000, true, true, 350.0, true).unwrap();
+    let muted = UtilityFilterProcessor::new(old.prepared.with_output_mute(true));
+    assert!(muted.can_retarget_parameters_from(&old));
     let mut continued = old;
     continued.reconfigure(changed);
     let mut candidate = UtilityFilterProcessor::new(changed);
+    assert!(!candidate.can_retarget_parameters_from(&old));
     assert!(candidate.inherit_history_from(&old));
     for _ in 0..128 {
         assert_eq!(
@@ -223,6 +226,7 @@ fn compatible_history_transfer_preserves_candidate_configuration() {
     }
     let different_rate = PreparedUtilityFilters::new(96_000, true, true, 350.0, true).unwrap();
     candidate.reconfigure(different_rate);
+    assert!(!candidate.can_retarget_parameters_from(&old));
     assert!(!candidate.inherit_history_from(&old));
     let mut fresh = UtilityFilterProcessor::new(different_rate);
     assert_eq!(

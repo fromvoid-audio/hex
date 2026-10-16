@@ -2,6 +2,11 @@
 
 The remaining focused correctness fix suppresses warmed DC/bass-filter residuals
 after Utility mute while histories continue advancing through the zeroed input.
+Canonical playback regression also reproduced an audible old tail surviving a
+mute handoff. Stateful mute now zeroes processor input/output with a stable matrix
+and strictly mute-only history retargeting. Track/Return DC, bass-side and audition
+silence/unmute continuity and actual Return callback allocation coverage protect
+the repair; broader filter-setting transitions retain existing policy.
 Service coverage edits all fourteen controls, checks per-edit undo/redo, and
 saves/reopens their canonical state and stable identity. Existing merged DSP,
 panel, shared layout and theme implementations are preserved.
