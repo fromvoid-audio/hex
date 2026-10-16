@@ -16,7 +16,8 @@ mod eligible;
 pub(crate) use eligible::DomainEnvelope;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
-    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate,
+    Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate, StreamInstall,
+    StreamOutcome, StreamProgress,
 };
 pub use eligible::{
     AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,
@@ -406,8 +407,9 @@ impl CandidateRoot {
     pub(crate) fn seal_publication(
         &self,
         owner: &mut AudioCandidateOwner,
+        domain_capacity: usize,
     ) -> Result<hex_engine::AudioCandidateConstructorSummary, &'static str> {
-        self.0.eligible.seal_for_stage(owner)
+        self.0.eligible.seal_for_stage(owner, domain_capacity)
     }
     /// The caller already holds an actual ring write chunk. The same short
     /// terminal barrier prevents a successful late push after terminal draining.

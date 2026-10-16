@@ -359,6 +359,24 @@ impl MediaPages for ProtectedStreamPages<'_> {
         // demand must return to readiness service, never schedule from render.
     }
 }
+/// Exclusive borrowed promotion prepared against exact held protection. It
+/// owns no endpoint and grants no engine/publication authority; dropping it has
+/// no effect. The exclusive borrow prevents changes before its fixed commit.
+pub struct PreparedRolePromotion<'a> {
+    loan: &'a mut ConstructorPageLoan,
+    from: ProtectionRole,
+}
+impl PreparedRolePromotion<'_> {
+    pub fn pages(&mut self) -> ProtectedStreamPages<'_> {
+        ProtectedStreamPages {
+            pages: &mut self.loan.pages,
+            extents: &self.loan.readiness.roles[self.from.index()].protected,
+        }
+    }
+    pub fn commit(self) {
+        self.loan.commit_promotion(self.from);
+    }
+}
 impl ConstructorPageLoan {
     pub fn submit(
         &mut self,
@@ -400,11 +418,99 @@ impl ConstructorPageLoan {
             extents: &self.readiness.roles[role.index()].protected,
         })
     }
+    /// Pure exact intent observation; neither a receipt nor engine demand proof.
+    pub fn matches_intent(
+        &self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        let slot = &self.readiness.roles[role.index()];
+        (slot.pending == Some(stamp) && slot.wanted == extents)
+            || (slot.installed == Some(stamp) && slot.protected == extents)
+    }
+    pub fn is_protected(
+        &self,
+        role: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        self.readiness.installed(&self.pages, role, stamp, extents)
+    }
+    /// After the host's actual musical commit, move an already acknowledged
+    /// held role to Active without allocating, cloning or scheduling. A host
+    /// with multiple domains prevalidates every can_promote before any commit.
+    pub fn can_promote(
+        &self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        from != ProtectionRole::Active
+            && self.is_protected(from, stamp, extents)
+            && self.readiness.roles[ProtectionRole::Active.index()]
+                .pending
+                .is_none()
+            && !self.readiness.roles[ProtectionRole::Active.index()].unread
+    }
+    pub fn prepare_promotion(
+        &mut self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> Option<PreparedRolePromotion<'_>> {
+        self.can_promote(from, stamp, extents).then_some(())?;
+        Some(PreparedRolePromotion { loan: self, from })
+    }
+    pub fn promote_to_active(
+        &mut self,
+        from: ProtectionRole,
+        stamp: ReadinessStamp,
+        extents: &[StreamPageExtent],
+    ) -> bool {
+        let Some(prepared) = self.prepare_promotion(from, stamp, extents) else {
+            return false;
+        };
+        prepared.commit();
+        true
+    }
+    fn commit_promotion(&mut self, from: ProtectionRole) {
+        self.readiness
+            .roles
+            .swap(from.index(), ProtectionRole::Active.index());
+        self.pages.endpoint.replace_protection(
+            ProtectionRole::Active.mask(),
+            &self.readiness.roles[ProtectionRole::Active.index()].protected,
+        );
+        self.pages.endpoint.replace_protection(from.mask(), &[]);
+        let old = &mut self.readiness.roles[from.index()];
+        old.wanted.clear();
+        old.protected.clear();
+        old.pending = None;
+        old.installed = None;
+        old.unread = false;
+    }
+    /// Catalog membership only. The native host separately validates exact
+    /// metadata through the actual retained constructor domain before splitting.
+    pub fn covers_key(&self, key: StreamSourceKey) -> bool {
+        self.readiness
+            .catalog
+            .catalog
+            .sources
+            .binary_search_by_key(&key, hex_engine::StreamedSourceMetadata::key)
+            .is_ok()
+    }
     pub fn cancel(&mut self, role: ProtectionRole, epoch: u64) -> bool {
         self.readiness.cancel(&mut self.pages, role, epoch)
     }
     pub fn covers_source(&self, source: &hex_engine::StreamedSourceMetadata) -> bool {
         self.readiness.catalog.covers_source(source)
+    }
+    /// Consume one actual worker failure and release only its pending request
+    /// key. The caller retains/reports the bounded diagnostic; no page or role
+    /// protection is dropped or certified by this observation.
+    pub fn take_failure(&mut self) -> Option<StreamFailure> {
+        self.pages.endpoint.take_failure()
     }
     pub fn take_failures(&mut self, output: &mut [StreamFailure]) -> usize {
         self.pages.take_failures(output)

@@ -114,7 +114,7 @@ assigns zero bytes to std/channel/thread/OS internals or upgrades the public
 borrowed ledger's completeness. Normal worker join, pool conservation and final
 endpoint/channel/metadata destruction precede its report. The native host keeps
 charges until report consumption and must enforce its global two-domain limit.
-Streamed native installation/readiness remains deferred. See
+Native readiness is connected only through the opted-in audio constructor path. See
 [constructor publication](../../docs/audio-candidate-publication.md).
 
 ## sealed readiness and endpoint loan (PR237 checkpoint)
@@ -141,5 +141,9 @@ a protected PCM page cannot be replaced by a duplicate shorter decode. The union
 of protected/outstanding pages must fit the actual existing cache, with no pool
 cap increase. Stamps are correlation data, not proof of engine demand or native
 publication. Audio must bind these operations to its real constructor and engine
-window before enabling streamed installation; that integration remains PR237.
+window before enabling streamed installation; PR237 connects that opted-in path.
+An exclusive borrowed promotion token validates all involved roles before commit,
+then moves the actual protected Vec backing to Active without allocation or a
+fallible second-domain commit. Bounded single failure consumption releases the
+actual failed pending key for retry; the native owner retains its diagnostic.
 Legacy borrowed pages retain their established miss behavior.

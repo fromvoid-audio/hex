@@ -3,7 +3,7 @@
 //! normally drops on control. No callback lock, clone or destructor is needed.
 use super::*;
 pub(crate) struct Active {
-    state: Box<State>,
+    pub(super) state: Box<State>,
 }
 pub(crate) struct FinalReturn(Returned);
 pub(crate) enum InstallDecision {
@@ -43,8 +43,9 @@ impl Queued {
     }
     pub(crate) fn prepare_install(
         &mut self,
-        previous: Option<&mut Active>,
+        mut previous: Option<&mut Active>,
         root: &CandidateRoot,
+        mut stream: Option<&mut StreamInstall<'_>>,
     ) -> InstallDecision {
         let next = &mut self.state;
         if !next
@@ -60,17 +61,7 @@ impl Queued {
                 hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
             );
         }
-        if next
-            .runtime
-            .as_ref()
-            .is_none_or(|r| r.contains_streamed_sources())
-        {
-            return InstallDecision::Refused(
-                hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
-            );
-        }
-        let decision = next.claims.as_ref().map(|claims| &claims.life.cancellation);
-        let Some(decision) = decision else {
+        let Some(decision) = next.claims.as_ref().map(|claims| &claims.life.cancellation) else {
             return InstallDecision::Refused(
                 hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
             );
@@ -80,6 +71,56 @@ impl Queued {
                 hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
             );
         }
+        let streamed = next
+            .runtime
+            .as_ref()
+            .is_none_or(|runtime| runtime.contains_streamed_sources());
+        if streamed {
+            let Some(request) = stream.as_deref_mut() else {
+                return InstallDecision::Refused(
+                    hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
+                );
+            };
+            match next.prepare_stream_window(
+                previous.as_mut().map(|old| &mut *old.state),
+                request,
+                hex_stream::ProtectionRole::Candidate,
+            ) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    if previous.is_some() {
+                        next.cancel_stream_pending(request.domains);
+                    }
+                    return InstallDecision::Retry;
+                }
+                Err(_) => {
+                    next.cancel_stream_pending(request.domains);
+                    return InstallDecision::Refused(
+                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
+                    );
+                }
+            }
+        }
+        let promotions = if streamed {
+            let Some(request) = stream else {
+                return InstallDecision::Retry;
+            };
+            match next.prepare_stream_commit(request.domains) {
+                Ok(promotions) => Some(promotions),
+                Err(_) => {
+                    return InstallDecision::Refused(
+                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let Some(decision) = next.claims.as_ref().map(|claims| &claims.life.cancellation) else {
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
+        };
         let Some(previous) = previous else {
             // Admission linearizes at this final open observation for an apply
             // that wins its CAS. Closure observed before it refuses; a decision
@@ -96,7 +137,13 @@ impl Queued {
                 Ordering::Acquire,
             ) {
                 Ok(_) | Err(APPLYING) => {
+                    if let Some(promotions) = promotions {
+                        for promotion in promotions.into_iter().flatten() {
+                            promotion.commit();
+                        }
+                    }
                     decision.store(FINISHED, Ordering::Release);
+                    next.record_stream_commit();
                     InstallDecision::Ready
                 }
                 Err(CANCELLED) => InstallDecision::Refused(
@@ -195,8 +242,26 @@ impl Queued {
         old.runtime = next.retired_runtime.take();
         old.manifest = next.manifest.take();
         old.covering_successor = next.spare_successor.take();
+        if let Some(promotions) = promotions {
+            for promotion in promotions.into_iter().flatten() {
+                promotion.commit();
+            }
+        }
         decision.store(FINISHED, Ordering::Release);
+        next.record_stream_commit();
         InstallDecision::Ready
+    }
+    pub(crate) fn streaming_enabled(&self) -> bool {
+        self.state.streaming.is_some() && self.contains_streamed_sources()
+    }
+    pub(crate) fn contains_streamed_sources(&self) -> bool {
+        self.state
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.contains_streamed_sources())
+    }
+    pub(crate) fn cancel_stream_readiness(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
+        self.state.cancel_stream_pending(domains);
     }
     /// Only called after prepare_install succeeds while both owners stay in
     /// persistent callback slots; moving this Box preserves the actual runtime.

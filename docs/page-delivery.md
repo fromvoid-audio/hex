@@ -1,5 +1,14 @@
 # Bounded streamed playback delivery
 
+## current opt-in native boundary
+
+PR237 connects the closed constructor path to exact worker-backed chunk readiness;
+see [exact native streamed readiness](streamed-native-readiness.md). Its BUFFERING
+transaction holds unready chunk clocks/DSP and preserves earlier successful chunks.
+The historical borrowed-page miss/clock-progress behavior described below remains
+unchanged for legacy callers. Native Session/UI integration, seek/launch preparation,
+100-track deadlines and broader #24 acceptance remain open.
+
 ## Next concrete outcome
 
 Exercise an actual verified media worker, fixed page ownership queues and engine

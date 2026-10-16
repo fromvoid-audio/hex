@@ -191,17 +191,22 @@ impl Endpoint {
     pub fn take_failures(&mut self, output: &mut [StreamFailure]) -> usize {
         let mut count = 0;
         for item in output {
-            let Ok(failure) = self.failure_rx.pop() else {
+            let Some(failure) = self.take_failure() else {
                 break;
             };
             *item = failure;
-            self.pending_remove(PageKey {
-                source: failure.key,
-                page_index: failure.page_index,
-            });
             count += 1;
         }
         count
+    }
+
+    pub(crate) fn take_failure(&mut self) -> Option<StreamFailure> {
+        let failure = self.failure_rx.pop().ok()?;
+        self.pending_remove(PageKey {
+            source: failure.key,
+            page_index: failure.page_index,
+        });
+        Some(failure)
     }
 
     pub fn stats(&self) -> EndpointStats {

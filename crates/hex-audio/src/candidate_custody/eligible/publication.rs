@@ -23,6 +23,7 @@ mod resources;
 mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
+pub(crate) use streaming::{StreamInstall, StreamOutcome, StreamProgress};
 mod disposal;
 pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
@@ -370,13 +371,44 @@ impl super::Custody {
     pub(in crate::candidate_custody) fn seal_for_stage(
         &self,
         owner: &mut AudioCandidateOwner,
+        domain_capacity: usize,
     ) -> Result<AudioCandidateConstructorSummary, &'static str> {
-        let reservation = lock(&self.bank)
-            .publication
-            .reservation
-            .ok_or("constructor publication is not reserved")?;
+        let (reservation, external_runtime_bytes) = {
+            let bank = lock(&self.bank);
+            let reservation = bank
+                .publication
+                .reservation
+                .ok_or("constructor publication is not reserved")?;
+            // Actual Vec capacity, including allocator spare capacity. Choose
+            // the greatest vacant workspace before sealing; subsequent stage
+            // validates the selected slot against that conservative amount.
+            let workspace = bank
+                .publication
+                .slots
+                .iter()
+                .filter(|slot| slot.phase == Phase::Vacant)
+                .try_fold(0usize, |bytes, slot| {
+                    Some(
+                        bytes.max(
+                            slot.streaming
+                                .as_ref()
+                                .map_or(Some(0), |w| w.backing_bytes())?,
+                        ),
+                    )
+                })
+                .ok_or("constructor runtime workspace overflow")?;
+            let external = domain_capacity
+                .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<State>()))
+                .and_then(|bytes| bytes.checked_add(workspace))
+                .ok_or("constructor mutable runtime storage overflow")?;
+            (reservation, external)
+        };
         owner
-            .seal_constructor_on_control(reservation.ledger())
+            .seal_constructor_with_runtime_storage_on_control(
+                reservation.ledger(),
+                external_runtime_bytes,
+            )
             .map_err(|_| "constructor DATA or resource closure refused")
     }
     /// Caller holds the same short publication/terminal bank barrier and a real
@@ -516,6 +548,15 @@ impl super::Custody {
                 .iter()
                 .position(|slot| slot.phase == Phase::Vacant)
                 .ok_or("constructor runtime cells are full")?;
+            let runtime_storage = bank.publication.slots[index]
+                .streaming
+                .as_ref()
+                .map_or(Some(0), |workspace| workspace.backing_bytes())
+                .and_then(|bytes| bytes.checked_add(metadata))
+                .ok_or("constructor mutable runtime storage overflow")?;
+            if runtime_storage > summary.external_runtime_bytes {
+                return Err("constructor mutable runtime reservation changed");
+            }
             let archive = bank
                 .publication
                 .archives

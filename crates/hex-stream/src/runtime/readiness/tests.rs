@@ -288,6 +288,7 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
         loan.service(ProtectionRole::Candidate, second, 2, 2),
         Ok(ReadinessProgress::InstalledProtected)
     );
+    assert!(!loan.can_promote(ProtectionRole::Candidate, second, &extents[..1]));
     assert!(loan.acknowledge(ProtectionRole::Candidate, second, &extents[..1]));
     assert!(loan.cancel(ProtectionRole::Active, 1));
     assert!(
@@ -298,6 +299,42 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
         loan.submit(ProtectionRole::Active, first, &extents),
         Err(ReadinessRefusal::StaleEpoch)
     );
+    assert!(loan.matches_intent(ProtectionRole::Candidate, second, &extents[..1]));
+    let actual_backing = loan.readiness.roles[ProtectionRole::Candidate.index()]
+        .protected
+        .as_ptr();
+    assert!(!loan.promote_to_active(ProtectionRole::Candidate, wrong, &extents[..1]));
+    #[cfg(feature = "allocation-probe")]
+    let measured = allocation_counter::measure(|| {
+        assert!(loan.promote_to_active(ProtectionRole::Candidate, second, &extents[..1]))
+    });
+    #[cfg(not(feature = "allocation-probe"))]
+    assert!(loan.promote_to_active(ProtectionRole::Candidate, second, &extents[..1]));
+    #[cfg(feature = "allocation-probe")]
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(
+        loan.readiness.roles[ProtectionRole::Active.index()]
+            .protected
+            .as_ptr(),
+        actual_backing
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, second, &extents[..1])
+            .is_some()
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Candidate, second, &extents[..1])
+            .is_none()
+    );
+
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
     assert!(loan.is_none());

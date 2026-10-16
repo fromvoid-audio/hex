@@ -2,10 +2,15 @@
 //! returns to the reserved Root slot before normal metadata destruction.
 use super::*;
 use hex_engine::StreamPageExtent;
+mod demand;
+pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress};
 pub(super) struct Workspace {
     pub(super) extents: [Vec<StreamPageExtent>; 2],
     pub(super) limit: usize,
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
+    pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
+    pub(super) role: Option<hex_stream::ProtectionRole>,
+    pub(super) predecessor: Option<AudioCandidateIdentity>,
 }
 impl Workspace {
     fn prepare(limit: usize) -> Result<Self, &'static str> {
@@ -18,9 +23,12 @@ impl Workspace {
             extents,
             limit,
             stamps: [None; 2],
+            active: [None; 2],
+            role: None,
+            predecessor: None,
         })
     }
-    fn backing_bytes(&self) -> Option<usize> {
+    pub(super) fn backing_bytes(&self) -> Option<usize> {
         self.extents.iter().try_fold(0usize, |bytes, rows| {
             rows.capacity()
                 .checked_mul(std::mem::size_of::<StreamPageExtent>())?
@@ -39,6 +47,9 @@ impl Workspace {
             rows.clear();
         }
         self.stamps = [None; 2];
+        self.active = [None; 2];
+        self.role = None;
+        self.predecessor = None;
     }
 }
 impl Custody {

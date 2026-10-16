@@ -19,6 +19,10 @@ pub(super) struct DomainPages {
     pub(super) token: AudioCandidateDomainToken,
     pub(super) loan: Option<hex_stream::ConstructorPageLoan>,
     pub(super) signal: Arc<DomainSignal>,
+    pub(super) epoch: u64,
+    // Last exact worker receipt, retained as bounded diagnostic metadata. Its
+    // consumption releases a failed pending request, never readiness authority.
+    pub(super) last_failure: Option<hex_stream::StreamFailure>,
 }
 impl DomainEnvelope {
     pub(super) fn new(
@@ -31,6 +35,8 @@ impl DomainEnvelope {
                 token,
                 loan: Some(loan),
                 signal,
+                epoch: 0,
+                last_failure: None,
             }),
         }
     }

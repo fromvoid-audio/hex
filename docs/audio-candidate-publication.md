@@ -202,7 +202,7 @@ identities survive. Other DSP/instruments/MIDI/compensation and broader original
 
 Streamed construction/accounting, actual verified-file catalog associations,
 wrong-context refusal and reuse of the same actual domain cell are exercised.
-Streamed installation still returns `StreamedPagesNotReady` until PR237. No page
+At the PR236 checkpoint streamed installation still returned `StreamedPagesNotReady`. No page
 endpoint moves to this callback and no readiness release is inferred. Native UI,
 listening and physical-deadline acceptance remain separate.
 
@@ -274,3 +274,14 @@ prepared owner's captured document context and actual outstanding domain loans;
 caller context numbers cannot relabel it. Default non-stream-enabled candidate
 staging keeps its existing readiness refusal. Native readiness/render integration
 is still unfinished at this checkpoint.
+
+
+## integrated initial/replacement readiness (PR237)
+
+The opt-in path now binds the retained exact endpoint, actual engine demand,
+canonical source context and staged command prefix before each chunk/install.
+See [exact native streamed readiness](streamed-native-readiness.md) for role
+promotion, partial BUFFERING, pressure/failure retry, real Pause/Stop ordering,
+mutable runtime accounting and remaining PR238/239/native acceptance boundaries.
+The earlier checkpoints above describe their staged source state, not the final
+readiness behavior. Default resident and non-opted-in paths remain unchanged.

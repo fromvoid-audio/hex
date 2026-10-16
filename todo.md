@@ -3587,3 +3587,19 @@ existing caller DATA allowances. Real cancellation/return keeps the original
 backing pointers/capacities, with overflow refusing before allocation. Stream
 opt-in staging validates the actual captured owner context and retained loans;
 default resident and disposal-only streamed staging remain unchanged.
+
+
+PR237 integrated readiness checkpoint: actual exact engine chunks now gate real
+worker-backed initial/replacement installation and opt-in rendering. Missing or
+capacity-refused chunks preserve previously committed PCM/clocks and report
+BUFFERING; real Pause/Stop pass pending Play, and grouped Utility transfer Retry
+releases speculative pins so the old active page can progress and the candidate
+can cancel. A real pool-pressure regression exposed unconsumed worker failures;
+bounded receipt consumption now releases their pending keys while retaining the
+last diagnostic. Actual native mutable wrapper/workspace capacity reduces the
+existing 32 MiB runtime allowance before split, in addition to caller DATA/peak
+reservations. Four actual native controls cover first Play/context refusal,
+partial/pressure behavior, observer offsets and Retry/cancel; source inspection
+and zero total/net probes retain their stated limits. Final exact full repository
+CI, PR238 seek/launch, PR239 UI composition and original #24/native acceptance remain
+open. See docs/streamed-native-readiness.md; final CI evidence is recorded externally.

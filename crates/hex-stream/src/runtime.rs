@@ -26,8 +26,8 @@ pub use storage::{
 };
 mod readiness;
 pub use readiness::{
-    ConstructorPageLoan, ProtectedStreamPages, ProtectionRole, ReadinessProgress, ReadinessRefusal,
-    ReadinessStamp, StreamReadinessReservation,
+    ConstructorPageLoan, PreparedRolePromotion, ProtectedStreamPages, ProtectionRole,
+    ReadinessProgress, ReadinessRefusal, ReadinessStamp, StreamReadinessReservation,
 };
 mod native_custody;
 pub use native_custody::{
