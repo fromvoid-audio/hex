@@ -13,6 +13,54 @@ The harmonic tool row now occupies the graph area above the stationary tabs;
 rendered overlap coverage accompanies the integration. Native/listening results
 and exact-source validation are recorded with the candidate PR/build evidence.
 
+## combined mutable loop acceptance — #2165 / PR251, 16 october 2026
+
+Source-loop PR98/#2214 and transport-loop PR100/#2215 remain the original
+implementations with their recorded finite native acceptance. The parent adds
+the missing combined-path regression: independently expanded linear PCM across
+repeated wraps, separate source-iteration/transport-pass identities, exclusive
+gate clamping and loop-start chase, compatible revision handoff, and callback
+allocation/deallocation measurement with both loops enabled. The contract and
+remaining seek/export/native limits are in
+[mutable transport loops](docs/mutable-transport-loops.md).
+
+Exact-source local validation is recorded with PR251. This adds no runtime or UI
+behavior and makes no new listening, physical deadline or Live parity claim.
+
+## utility completion candidate — #18 / PR250, 16 october 2026
+
+The remaining focused correctness fix suppresses warmed DC/bass-filter residuals
+after Utility mute while histories continue advancing through the zeroed input.
+Canonical playback regression also reproduced an audible old tail surviving a
+mute handoff. Stateful mute now zeroes processor input/output with a stable matrix
+and strictly mute-only history retargeting. Track/Return DC, bass-side and audition
+silence/unmute continuity and actual Return callback allocation coverage protect
+the repair; broader filter-setting transitions retain existing policy.
+Service coverage edits all fourteen controls, checks per-edit undo/redo, and
+saves/reopens their canonical state and stable identity. Existing merged DSP,
+panel, shared layout and theme implementations are preserved.
+See [the native checklist and reference unknowns](docs/utility-acceptance.md).
+Exact candidate local CI, optimized delivery and native results are recorded in
+PR250/Pulse18; no native acceptance or measured Live filter parity is claimed.
+
+## 16 October 2026 — native parameter metadata admission (#16 / PR249)
+
+- Recovered canonical issue linkage through supported Start Task; prior staged
+  runtime/device history remains preserved.
+- Shared descriptor validation rejects Unicode uppercase/control text, empty or
+  oversized units/choice labels, and selectors exceeding 256 alternatives. The
+  existing 128-byte label limit now covers each display field; lowercase Unicode
+  at the exact UTF-8 byte limit remains valid. Effect and instrument registries
+  already invoke this boundary; no state/schema or processing change is needed.
+- Regression reproduced the prior acceptance of an empty unit before the repair.
+  Contract/lattice/device checks pass (252 tests; two opt-in timing probes
+  ignored). Exact-source full local CI follows on the committed candidate.
+- Reconciled stale lattice documentation with the integrated mutable runtime,
+  ordered instrument and shared render/retirement source coverage.
+- Parent #16 remains open for its separately recorded acceptance. This focused
+  metadata stage supplies no new native listening, physical deadline, broad
+  scalability or device-parity evidence.
+
 ## device lane drops integration — #2333 / PR183, 16 october 2026
 
 The existing canonical device-drop implementation now integrates current main.
@@ -3094,3 +3142,30 @@ and native acceptance remain open. A bounded two-voice kernel prototype improved
 median latency12.4%, insufficient to justify runtime restructuring, and remains
 ignored evidence only. Full exact-source local CI and optimized stable-path
 delivery are still required; no merge, native acceptance or completion claimed.
+
+# 16 October 2026 — lfo assignment #2383 / pr173
+
+The strengthened rendered regression reproduced the depth caption overlapping
+navigation in synced mode at 880 px. Shared destination-caption rows and tighter
+vertical spacing repair the layout without replacing controls or focus owners.
+Free/synced modes at 880/1440 px now check caption boundaries against the actual
+navigation rail. Final integrated exact-source CI supersedes earlier-head evidence;
+native pixel/input/listening and reference acceptance remain separate.
+
+Recovered the existing canonical PR and preserved its commit history while
+integrating current main. The resulting change is limited to discoverable
+oscillator pitch mapping, selected-destination/depth readback and focused
+canonical/PCM/export/allocation coverage; inherited preset work stays outside
+this deliverable. Current shared widget styling and focus ownership are retained.
+See docs/operator-lfo-assignment.md for scope, reference limitations and the finite
+native checklist. Exact-source full CI and optimized delivery evidence are
+recorded separately with the PR/build; native/listening/reference review remains
+open, including deferred #2384 acceptance.
+
+PR158 integrates main d8230c4b before native candidate delivery. Conflicts retain
+the512-descriptor/64-snapshot contract and main's bounded Unicode display metadata.
+Combined harmonic/LFO allocation fixtures stagger release-time destination edits
+after harmonic range edits so neither coverage path masks the other. Main's loop,
+Utility and LFO-caption changes are preserved. The earlier716320d full run passed
+six preflight steps, then was cleanly interrupted (exit130) for this integration;
+it is not full-CI or merge evidence.

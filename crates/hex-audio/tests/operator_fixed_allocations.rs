@@ -285,6 +285,9 @@ fn operator_modulation_allocations(
         let mut accepted = None;
         // Reversal occurs before the 240-frame coefficient transition finishes.
         // The second pair straddles note-off at frame 6000, covering release too.
+        // Keep harmonic range reversals and LFO destination reversals distinct
+        // when this fixture enables both; both release edits follow note-off.
+        let lfo_release_edit = if harmonics { 50 } else { 48 };
         let edit = match block {
             5 | 46 => Some((513, ParameterValue::Bool(false))),
             6 | 47 => Some((513, ParameterValue::Bool(true))),
@@ -293,6 +296,12 @@ fn operator_modulation_allocations(
             4 | 49 if harmonics => Some((349, ParameterValue::Choice(2))),
             7 if harmonics => Some((57, ParameterValue::Choice(0))),
             8 if harmonics => Some((57, ParameterValue::Choice(4))),
+            at if lfo_sync.is_some() && (at == 10 || at == lfo_release_edit) => {
+                Some((89, ParameterValue::Bool(false)))
+            }
+            at if lfo_sync.is_some() && (at == 11 || at == lfo_release_edit + 1) => {
+                Some((89, ParameterValue::Bool(true)))
+            }
             2..=4 if filter => Some((20005, ParameterValue::Float(200.0 * block as f32))),
             2..=4 if lfo_sync.is_some() => Some((87, ParameterValue::Float(20.0 * block as f32))),
             _ => None,

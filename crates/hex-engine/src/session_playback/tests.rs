@@ -2033,6 +2033,119 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
 }
 
 #[test]
+fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail() {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    for (on_return, dc, bass, audition) in [
+        (false, true, false, false),
+        (false, false, true, false),
+        (false, false, true, true),
+        (true, true, false, false),
+        (true, false, true, false),
+        (true, false, true, true),
+    ] {
+        let mut snapshot = audio_project(0, 32, 4).snapshot();
+        let mut state = UTILITY_DEFINITION.default_state().unwrap();
+        for (parameter, value) in [
+            (parameter::DC_REMOVE, dc),
+            (parameter::BASS_MONO, bass),
+            (parameter::BASS_MONO_AUDITION, audition),
+        ] {
+            state = UTILITY_DEFINITION
+                .patch_parameter(&state, parameter, ParameterValue::Bool(value))
+                .unwrap();
+        }
+        let device = DeviceSnapshot {
+            id: snapshot.next_id,
+            bypassed: false,
+            state: state.clone(),
+        };
+        snapshot.next_id += 1;
+        if on_return {
+            let return_id = snapshot.next_id;
+            snapshot.next_id += 1;
+            snapshot.tracks[0]
+                .sends
+                .push(hex_project::SendLevelSnapshot {
+                    return_track: return_id,
+                    gain: 1.0,
+                });
+            snapshot
+                .return_tracks
+                .push(hex_project::ReturnTrackSnapshot {
+                    id: return_id,
+                    name: "filtered return".into(),
+                    gain: 1.0,
+                    muted: false,
+                    devices: vec![device],
+                });
+        } else {
+            snapshot.tracks[0].devices.push(device);
+        }
+        let project = legacy_project_from_snapshot(snapshot).unwrap();
+        let table = Arc::new(hex_devices::SineTable::new());
+        let asset = project
+            .assets()
+            .find(|asset| asset.id().value() == 4)
+            .unwrap()
+            .id();
+        let media = BTreeMap::from([(
+            asset,
+            crate::Audio::new(48_000, vec![[0.3, -0.1]; 32]).unwrap(),
+        )]);
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let revision = prepare(&project);
+        let clip = revision.session().audio_clips()[0].id;
+        let mut previous = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut reference = SessionPlayback::new(revision).unwrap();
+        for playback in [&mut previous, &mut reference] {
+            playback
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut warmup = [[0.0; 2]; 32];
+            playback.render(&mut warmup).unwrap();
+            assert!(warmup.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+        }
+
+        let mut muted_snapshot = project.snapshot();
+        let devices = if on_return {
+            &mut muted_snapshot.return_tracks[0].devices
+        } else {
+            &mut muted_snapshot.tracks[0].devices
+        };
+        devices[0].state = UTILITY_DEFINITION
+            .patch_parameter(&state, parameter::MUTE, ParameterValue::Bool(true))
+            .unwrap();
+        let muted_project = legacy_project_from_snapshot(muted_snapshot).unwrap();
+        let mut muted = SessionPlayback::new(prepare(&muted_project)).unwrap();
+        muted.try_inherit_state_from(&mut previous).unwrap();
+        let mut output = [[1.0; 2]; 16];
+        muted.render(&mut output).unwrap();
+        assert_eq!(
+            output, [[0.0; 2]; 16],
+            "mute retained an audible old filter for return={on_return}, dc={dc}, bass={bass}, audition={audition}"
+        );
+        assert!(muted.tail_groups.iter().all(Option::is_none));
+        // The reference's source has ended, so both filters advance through
+        // exactly sixteen zero-input frames. Unmute must recover that history.
+        reference.render(&mut [[0.0; 2]; 16]).unwrap();
+        let mut unmuted = SessionPlayback::new(prepare(&project)).unwrap();
+        unmuted.try_inherit_state_from(&mut muted).unwrap();
+        let mut expected = [[0.0; 2]; 16];
+        reference.render(&mut expected).unwrap();
+        unmuted.render(&mut output).unwrap();
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
 fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
     use hex_devices::utility::{UTILITY_DEFINITION, parameter};
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};

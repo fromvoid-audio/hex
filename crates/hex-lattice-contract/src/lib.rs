@@ -64,7 +64,10 @@ impl DeviceParameterSnapshot {
         Ok(())
     }
 }
+/// Maximum UTF-8 bytes in a parameter label, unit or choice label.
 pub const MAX_PARAMETER_LABEL_BYTES: usize = 128;
+/// Maximum alternatives exposed by one native parameter selector.
+pub const MAX_PARAMETER_CHOICES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceTypeId {
@@ -203,10 +206,7 @@ pub struct ParameterDescriptor {
 impl ParameterDescriptor {
     pub fn validate_descriptor(self) -> Result<(), DeviceContractError> {
         self.id.validate()?;
-        if self.label.is_empty()
-            || self.label.len() > MAX_PARAMETER_LABEL_BYTES
-            || !self.label.bytes().all(|byte| !byte.is_ascii_uppercase())
-        {
+        if !valid_parameter_text(self.label) {
             return Err(DeviceContractError::InvalidDescriptor);
         }
         if self.presentation == ParameterPresentation::LinearAmplitudeDecibels
@@ -224,17 +224,14 @@ impl ParameterDescriptor {
                 if !min.is_finite()
                     || !max.is_finite()
                     || min > max
-                    || unit.is_some_and(|value| {
-                        value.bytes().any(|byte| byte.is_ascii_uppercase())
-                    }) =>
+                    || unit.is_some_and(|value| !valid_parameter_text(value)) =>
             {
                 Err(DeviceContractError::InvalidDescriptor)
             }
             ParameterKind::Choice { labels }
                 if labels.is_empty()
-                    || labels.iter().any(|label| {
-                        label.is_empty() || label.bytes().any(|byte| byte.is_ascii_uppercase())
-                    }) =>
+                    || labels.len() > MAX_PARAMETER_CHOICES
+                    || labels.iter().any(|label| !valid_parameter_text(label)) =>
             {
                 Err(DeviceContractError::InvalidDescriptor)
             }
@@ -258,6 +255,16 @@ impl ParameterDescriptor {
             Err(DeviceContractError::InvalidParameterValue)
         }
     }
+}
+
+// Registry metadata is static, but its visible text and selector work must still
+// satisfy the shared display contract before either registry admits a device.
+fn valid_parameter_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PARAMETER_LABEL_BYTES
+        && !value
+            .chars()
+            .any(|character| character.is_uppercase() || character.is_control())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,6 +713,96 @@ mod tests {
         let state = NativeDeviceState::new(id, 1, vec![1, 2]).unwrap();
         let clone = state.clone();
         assert!(Arc::ptr_eq(&state.payload, &clone.payload));
+    }
+
+    #[test]
+    fn descriptor_text_and_choices_are_bounded_lowercase_display_metadata() {
+        let descriptor = ParameterDescriptor {
+            id: ParameterId::from_static(1),
+            label: "level",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.5),
+            presentation: ParameterPresentation::Linear,
+        };
+        let limit_text: &'static str =
+            Box::leak("é".repeat(MAX_PARAMETER_LABEL_BYTES / 2).into_boxed_str());
+        let oversized: &'static str =
+            Box::leak("x".repeat(MAX_PARAMETER_LABEL_BYTES + 1).into_boxed_str());
+        for text in ["", "Öutput", "line\nbreak", "null\0label", oversized] {
+            assert_eq!(
+                ParameterDescriptor {
+                    label: text,
+                    ..descriptor
+                }
+                .validate_descriptor(),
+                Err(DeviceContractError::InvalidDescriptor),
+                "label {text:?}"
+            );
+            assert_eq!(
+                ParameterDescriptor {
+                    kind: ParameterKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        unit: Some(text)
+                    },
+                    ..descriptor
+                }
+                .validate_descriptor(),
+                Err(DeviceContractError::InvalidDescriptor),
+                "unit {text:?}"
+            );
+            assert_eq!(
+                ParameterDescriptor {
+                    kind: ParameterKind::Choice {
+                        labels: Box::leak(vec![text].into_boxed_slice())
+                    },
+                    default: ParameterValue::Choice(0),
+                    ..descriptor
+                }
+                .validate_descriptor(),
+                Err(DeviceContractError::InvalidDescriptor),
+                "choice {text:?}"
+            );
+        }
+        assert!(
+            ParameterDescriptor {
+                label: limit_text,
+                kind: ParameterKind::Float {
+                    min: 0.0,
+                    max: 1.0,
+                    unit: Some(limit_text)
+                },
+                ..descriptor
+            }
+            .validate_descriptor()
+            .is_ok()
+        );
+        let choices: &'static [&'static str] =
+            Box::leak(vec![limit_text; MAX_PARAMETER_CHOICES].into_boxed_slice());
+        assert!(
+            ParameterDescriptor {
+                kind: ParameterKind::Choice { labels: choices },
+                default: ParameterValue::Choice((MAX_PARAMETER_CHOICES - 1) as u32),
+                ..descriptor
+            }
+            .validate_descriptor()
+            .is_ok()
+        );
+        let excessive: &'static [&'static str] =
+            Box::leak(vec!["choice"; MAX_PARAMETER_CHOICES + 1].into_boxed_slice());
+        assert_eq!(
+            ParameterDescriptor {
+                kind: ParameterKind::Choice { labels: excessive },
+                default: ParameterValue::Choice(0),
+                ..descriptor
+            }
+            .validate_descriptor(),
+            Err(DeviceContractError::InvalidDescriptor)
+        );
     }
 
     #[test]
