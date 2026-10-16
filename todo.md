@@ -1,3 +1,16 @@
+## verified document source/service checkpoint — pulse2544 / PR239, 16 october 2026
+
+Explicit verified New/Open branches before resident decode; imports/batches retain
+immutable verified source facts and use the existing mixed-source semantic
+compiler. History/source metadata budgets include Undo-retained facts, while
+canonical snapshots share verified path backing and pair actual worker context.
+Resident defaults remain. Verified events omit legacy Playback; offline export
+refuses explicitly (separate Pulse2650 / PR266). All163 Session tests, three
+focused real-reader/worker controls, strict Session Clippy and the UI compatibility
+check passed at this source checkpoint. Native facade/unique UI client/output
+ownership and actual service publication remain unfinished in PR239; no full-CI,
+manual UI or native delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+
 ## unsnapped main cursor — #2647 / PR263, 16 october 2026
 
 Main gestures now retain Main-lane pointer geometry for selection updates,

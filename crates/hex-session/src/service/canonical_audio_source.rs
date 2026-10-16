@@ -4,20 +4,33 @@ use super::*;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
     context: hex_engine::AudioSourceContext,
+    mode: crate::DocumentAudioMode,
+    sources: BTreeMap<hex_project::AssetId, crate::AudioSourceBinding>,
 }
 impl CanonicalAudioSourceSnapshot {
     pub(super) fn capture(
         project: &Arc<Project>,
         project_generation: u64,
         editor_revision: u64,
+        session: &Session,
     ) -> Self {
         Self {
             project: Arc::clone(project),
+            mode: session.audio_mode(),
+            sources: session.source_bindings(),
             context: hex_engine::AudioSourceContext {
                 project_generation,
                 editor_revision,
             },
         }
+    }
+    pub fn audio_mode(&self) -> crate::DocumentAudioMode {
+        self.mode
+    }
+    /// Immutable resolved bindings paired with this exact Project/context.
+    /// Facts only: native publication must match actual retained source leases.
+    pub fn sources(&self) -> &BTreeMap<hex_project::AssetId, crate::AudioSourceBinding> {
+        &self.sources
     }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context

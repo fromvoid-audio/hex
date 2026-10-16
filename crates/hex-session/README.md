@@ -124,7 +124,9 @@ intervals use project-rate frames. Worker open prepares one asset at a time and
 validates both source provenance and playback length before replacing the session.
 Each source is capped at 64 MiB / 8,000,000 frames; resident converted PCM has a
 separate 8,000,000-frame desktop ceiling, including assets retained for undo.
-Opening a saved project still requires its rate to match the active device.
+Resident opening still requires its rate to match the active device. An explicit
+verified-mode Open prepares a prospective document rate; desktop composition must
+open a fresh matching native output before publishing it.
 
 `service::prepare_audio_preview` is a read-only browser-drag preparation helper.
 It uses the same bounded WAV decode and project-rate resampler, then returns only
@@ -235,3 +237,16 @@ catalog generation remains independent. Old snapshots keep their original Projec
 and counters after later edits, and preview views have no canonical snapshot.
 The low-level engine context is correlation, not ownership or readiness authority.
 Actual UI streamed publication remains the later integration in Pulse2544/PR239.
+
+## verified document source preparation
+
+Explicit `NewWithAudioMode` / `OpenWithAudioMode` select metadata-only verified
+preparation before media decode. Ordinary New/Open/import behavior remains
+resident by default; a verified document's imports use bounded verified WAV facts
+and mixed-source semantic compilation, without full PCM or resident-duration
+charges. Canonical snapshots retain shared immutable resolved source facts and
+worker context; native constructor custody must be prepared independently.
+Verified-mode events never return legacy Playback, even for empty revisions.
+Waveform availability is explicit, and unsupported offline export is refused.
+See [canonical source plan](../../docs/streamed-session-source-plan.md) for source
+limits, history, semantic epochs, retained paths and remaining native composition.

@@ -5,7 +5,8 @@ use crate::arrangement_seek::{
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
-use crate::{PreparedImport, Session, SessionError};
+use crate::verified_import::VerifiedImportDestination;
+use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
@@ -16,12 +17,14 @@ mod audio_batch_tests;
 mod canonical_audio_source;
 pub mod preset;
 mod recovery;
+#[cfg(test)]
+mod verified_source_tests;
 pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
-use recovery::{absolute_document_path, checkpoint_project, open_source, project_for_save};
+use recovery::{absolute_document_path, checkpoint_project, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -319,6 +322,17 @@ pub enum Request {
         track: hex_project::TrackId,
         scene: hex_project::SceneId,
     },
+    /// Select a fresh document mode before any media preparation.
+    NewWithAudioMode {
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+    },
+    OpenWithAudioMode {
+        source: ProjectSource,
+        relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+    },
     Open(PathBuf),
     /// Recovery/relink opens prepare a complete candidate before adoption.
     OpenWith {
@@ -377,7 +391,13 @@ impl Request {
     }
 
     pub fn is_project_open(&self) -> bool {
-        matches!(self, Self::Open(_) | Self::OpenWith { .. })
+        matches!(
+            self,
+            Self::NewWithAudioMode { .. }
+                | Self::OpenWithAudioMode { .. }
+                | Self::Open(_)
+                | Self::OpenWith { .. }
+        )
     }
 }
 
@@ -693,6 +713,7 @@ fn view_state(
             &project,
             project_generation,
             revision,
+            session,
         )),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
@@ -913,6 +934,8 @@ fn run_worker(
             &request,
             Request::Open(_)
                 | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }
+                | Request::NewWithAudioMode { .. }
                 | Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
@@ -1284,14 +1307,63 @@ fn run_worker(
                     }
                     Err(reason) => error = Some(reason),
                 },
-                request @ (Request::Open(_) | Request::OpenWith { .. }) => {
+                Request::NewWithAudioMode { mode, reservation } => {
                     open_complete = true;
-                    let (source, relinks) = match request {
-                        Request::Open(path) => (ProjectSource::Saved(path), BTreeMap::new()),
-                        Request::OpenWith { source, relinks } => (source, relinks),
+                    let candidate = Session::new_with_audio_mode(
+                        session.project().sample_rate(),
+                        history_capacity,
+                        session.max_resident_frames(),
+                        mode,
+                        reservation,
+                    )
+                    .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
+                    .map_err(|reason| reason.to_string());
+                    match candidate.and_then(|candidate| {
+                        compile(&candidate, None).map(|prepared| (candidate, prepared))
+                    }) {
+                        Ok((candidate, prepared)) => {
+                            session = candidate;
+                            journal = None;
+                            media_base = None;
+                            document = None;
+                            unsaved = false;
+                            project_replaced = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("new project".into());
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                request @ (Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }) => {
+                    open_complete = true;
+                    let (source, relinks, mode, reservation) = match request {
+                        Request::Open(path) => (
+                            ProjectSource::Saved(path),
+                            BTreeMap::new(),
+                            DocumentAudioMode::Resident,
+                            None,
+                        ),
+                        Request::OpenWith { source, relinks } => {
+                            (source, relinks, DocumentAudioMode::Resident, None)
+                        }
+                        Request::OpenWithAudioMode {
+                            source,
+                            relinks,
+                            mode,
+                            reservation,
+                        } => (source, relinks, mode, reservation),
                         _ => continue,
                     };
-                    match open_source(&session, history_capacity, &source, &relinks) {
+                    match recovery::open_source_with_mode(
+                        &session,
+                        history_capacity,
+                        &source,
+                        &relinks,
+                        mode,
+                        reservation,
+                    ) {
                         Ok((candidate, candidate_base, candidate_document, dirty)) => {
                             match compile(
                                 &candidate,
@@ -1719,20 +1791,24 @@ fn run_worker(
                         .as_ref()
                         .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
                         .unwrap_or(0);
-                    let job = match (compiled.as_ref(), clip_end) {
-                        (_, 0) => Err("nothing to export".to_owned()),
-                        (Some((compiled_revision, prepared)), frames)
-                            if *compiled_revision == revision =>
-                        {
-                            Ok(ExportJob {
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: None,
-                            })
+                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        Err("offline export is unavailable for verified streaming".to_owned())
+                    } else {
+                        match (compiled.as_ref(), clip_end) {
+                            (_, 0) => Err("nothing to export".to_owned()),
+                            (Some((compiled_revision, prepared)), frames)
+                                if *compiled_revision == revision =>
+                            {
+                                Ok(ExportJob {
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: None,
+                                })
+                            }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
                     };
                     match job {
                         Ok(job) => export_job = Some(job),
@@ -1753,28 +1829,34 @@ fn run_worker(
                     control,
                     overwrite,
                 } => {
-                    let job = match compiled.as_ref() {
-                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                            let frames = frames.unwrap_or_else(|| {
-                                prepared
-                                    .arrangement()
-                                    .audible_end_frame()
-                                    .unwrap_or(0)
-                                    .saturating_sub(start)
-                            });
-                            if frames == 0 || start.checked_add(frames).is_none() {
-                                Err("invalid export range".to_owned())
-                            } else {
-                                Ok(ExportJob {
-                                    revision,
-                                    path: path.clone(),
-                                    prepared: Arc::clone(prepared),
-                                    frames,
-                                    controlled: Some((start, signal, control, overwrite)),
-                                })
+                    let job = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        Err("offline export is unavailable for verified streaming".to_owned())
+                    } else {
+                        match compiled.as_ref() {
+                            Some((compiled_revision, prepared))
+                                if *compiled_revision == revision =>
+                            {
+                                let frames = frames.unwrap_or_else(|| {
+                                    prepared
+                                        .arrangement()
+                                        .audible_end_frame()
+                                        .unwrap_or(0)
+                                        .saturating_sub(start)
+                                });
+                                if frames == 0 || start.checked_add(frames).is_none() {
+                                    Err("invalid export range".to_owned())
+                                } else {
+                                    Ok(ExportJob {
+                                        revision,
+                                        path: path.clone(),
+                                        prepared: Arc::clone(prepared),
+                                        frames,
+                                        controlled: Some((start, signal, control, overwrite)),
+                                    })
+                                }
                             }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
                     };
                     match job {
                         Ok(job) => {
@@ -1947,7 +2029,9 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback = if computer_keyboard_playback.is_some() {
+        let playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+            None
+        } else if computer_keyboard_playback.is_some() {
             computer_keyboard_playback
         } else if let Some(prepared) = canonical_prepared {
             Some(native_playback(prepared))
@@ -2070,6 +2154,22 @@ fn import(
     path: PathBuf,
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::NewTrack {
+                    before: None,
+                    start: 0,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());
@@ -2110,6 +2210,23 @@ fn import_to_track(
     previous: Option<&PreparedRevision>,
     overwrite: bool,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::Track {
+                    track,
+                    start,
+                    overwrite,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());
@@ -2153,6 +2270,22 @@ fn import_to_new_track(
     start: u64,
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::NewTrack {
+                    before: before_track,
+                    start,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let project = session.project();
     if project.tracks().len() >= hex_project::MAX_TRACKS {
         return Err("track limit reached".into());
@@ -2202,6 +2335,19 @@ fn import_to_session(
     scene: hex_project::SceneId,
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, String> {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let path = absolute_document_path(&path)?;
+        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::Session { track, scene },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());
