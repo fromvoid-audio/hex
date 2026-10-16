@@ -16,7 +16,10 @@ The generator refuses existing fixture files. Both sizes contain 50 audio plus
 1.5-beat clips on two-beat steps, and gaps. There are 100/10000 total clips and
 400/40000 authored notes. The fitted lane selection spans 21.3%–61.9%; the platform
 modifier disables snap, exercising partial boundaries. Paste/insert use an untimed
-copy and an actual main-lane cursor click at 71%.
+copy and an actual main-lane cursor click near 71% with normal grid snap enabled.
+Only this untimed cursor placement uses snap; measured selection drags remain free.
+The cursor must settle beyond the copied range with matching current generation,
+project scope and exactly equal range endpoints before timing the edit.
 
 The disposable native GPUI window embeds the real EditorView and normal session
 worker. Audio is offline. All three preferences paths are under a newly created
@@ -67,3 +70,11 @@ pending request, lane geometry/epoch, paint and probe state diagnostics. Native 
 and full final-source local CI remain separate evidence; a compiling harness does
 not establish any timing result. Record actual numbers without silently expanding
 this measurement PR into optimization work.
+
+An existing free-snap main-cursor projection bug was reproduced during setup:
+the main lane is one pixel wider than regular lanes, so the same mouse-down/up
+position can create a tiny nonempty range (38400–38426 in the focused UI fixture).
+The main down uses main geometry while up reprojects through a regular lane.
+The untimed snapped cursor setup avoids this known defect without changing editing
+behavior. It does not claim free-snap click correctness. Pulse #2647 and its
+separate [draft PR #263](https://github.com/PORTALSURFER/hex/pull/263) track the fix.

@@ -366,6 +366,21 @@ impl Profile {
                         cx,
                     );
                 }
+                let view = self.editor.read(cx);
+                let valid_cursor = view.edit_cursor.is_some_and(|cursor| {
+                    cursor.generation == view.project_generation
+                        && cursor.frame > self.sample.selection_end
+                        && view.time_selection_project_scope
+                        && view.time_selection.is_some_and(|range| {
+                            range.anchor_frame == cursor.frame && range.end_frame == cursor.frame
+                        })
+                });
+                if !valid_cursor {
+                    return self.finish(
+                        Some("paste cursor did not settle beyond the copied range".into()),
+                        cx,
+                    );
+                }
                 self.delay_until =
                     Instant::now() + Duration::from_millis(7 + (self.index as u64 * 3) % 11);
                 self.phase(7);
@@ -447,7 +462,10 @@ impl Profile {
             px(y),
         );
         let modifiers = Modifiers {
-            platform: true,
+            // Main-lane and regular-lane free projection currently differ by
+            // one pixel. Snap only this untimed cursor setup; measured selection
+            // drags remain free to exercise partial clip boundaries.
+            platform: !cursor,
             ..Default::default()
         };
         if let Some(probe) = &mut self.probe
@@ -601,5 +619,55 @@ impl Render for Profile {
             .w(px(1.0))
             .h(px(1.0)),
         )
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use super::super::clip_drag_ui_test::{audio_project, editor_window};
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+    use std::sync::Arc;
+
+    #[gpui::test]
+    fn snapped_paste_setup_clears_free_main_range(cx: &mut TestAppContext) {
+        cx.update(super::super::bind_editor_keys);
+        let (project, _, _, _) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual.debug_bounds("main-track-lane").expect("main lane");
+        let position = |fraction| {
+            point(
+                lane.origin.x + lane.size.width * fraction,
+                lane.origin.y + lane.size.height * 0.8,
+            )
+        };
+        let free = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(position(0.213), MouseButton::Left, free);
+        visual.simulate_mouse_move(position(0.619), MouseButton::Left, free);
+        visual.simulate_mouse_up(position(0.619), MouseButton::Left, free);
+        visual.run_until_parked();
+        let copied_end = editor.read_with(cx, |view, _| {
+            assert!(view.time_selection_project_scope);
+            view.normalized_time_selection()
+                .expect("source range")
+                .end()
+        });
+        visual.simulate_mouse_down(position(0.71), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(position(0.71), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(view.normalized_time_selection().is_none());
+            assert!(view.time_selection_project_scope);
+            let cursor = view.edit_cursor.expect("new cursor");
+            assert!(cursor.frame > copied_end);
+            assert_eq!(cursor.generation, view.project_generation);
+            let range = view.time_selection.expect("zero-width cursor range");
+            assert_eq!(range.anchor_frame, cursor.frame);
+            assert_eq!(range.end_frame, cursor.frame);
+        });
     }
 }
