@@ -70,11 +70,11 @@ cargo run -p hex-cli -- recover-project artifacts/project.hex artifacts/recovere
 ```
 
 User-test builds use the optimized stable development app at `artifacts/hex.app`,
-with exact-source CI, provenance, guarded replacement and retained rollback. The
-bundle script refuses to overwrite a running app, including macOS case-insensitive
+with exact-source CI, provenance and verified replacement without retained
+rollback copies. The bundle script refuses to overwrite a running app, including macOS case-insensitive
 `Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
 delivery. See [native test builds](docs/test-builds.md) for the required arguments
-and shared merge → delivery → user approval sequence.
+and repository-owned build/install process. Pulse manages tickets only.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by
 seven repetitions of an enveloped 220 Hz tone. Output creation refuses to

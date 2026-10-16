@@ -3846,10 +3846,10 @@ native checks remain separate gates. No merge is authorized by this task.
 ## stable optimized test delivery — Pulse #2408
 
 The existing native bundler now delegates to the guarded optimized delivery
-workflow in [test-builds.md](test-builds.md), PR #167. The configured post-merge
-action supplies one stable app plus exact-source CI/included revisions/checklist
-and retains prior-bundle rollback. Source/packaging evidence and native owner
-approval remain separate gates on Pulse #2408.
+workflow in [test-builds.md](test-builds.md), PR #167. The repository-owned
+installer supplies one stable app plus exact-source CI/included PR revisions/checklist. As of #2627 it retains no new rollback app
+copy; historical bundles remain untouched. Pulse manages tickets only. Native
+acceptance remains separate from source/packaging evidence.
 
 ## routing, recording and compensation implementation — pulse28 / pr184
 
