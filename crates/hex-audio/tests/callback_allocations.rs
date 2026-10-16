@@ -2165,14 +2165,11 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
             (2, ParameterValue::Choice(1)),
         ]
     } else {
-        &[]
+        &[
+            (8, ParameterValue::Bool(true)),
+            (8, ParameterValue::Bool(false)),
+        ]
     };
-    if !eq8_enabled {
-        editor.execute(Command::SetDeviceBypass {
-            device: changed_return,
-            bypassed: true,
-        })?;
-    }
     for &(parameter, value) in edits {
         let current = editor
             .project()
@@ -2221,8 +2218,12 @@ fn stateful_return_handoff_allocations(eq8_enabled: bool) -> Result<(), Box<dyn 
         revision = next_revision;
     }
     if !eq8_enabled {
-        // The Utility path retains its original bypass transition and generic
-        // retired-tail ownership coverage; it does not use EQ8 retargeting.
+        // Keep the original bypass/retired-tail coverage after measuring actual
+        // mute and unmute parameter handoffs above.
+        editor.execute(Command::SetDeviceBypass {
+            device: changed_return,
+            bypassed: true,
+        })?;
         let next_revision = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &media,
