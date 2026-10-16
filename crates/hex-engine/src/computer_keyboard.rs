@@ -793,6 +793,103 @@ mod integration_tests {
         );
     }
     #[test]
+    fn computer_keyboard_fader_applies_once_to_live_and_authored_notes() {
+        let (project, track) = super::tests::fixture();
+        let mut editor = Editor::new(project, 16).unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 48,
+                velocity: 80,
+                channel: 0,
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        snapshot.tracks[0].gain = 0.25;
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let instrument = hex_devices::prepare_legacy_sine_instrument(48000).unwrap();
+        let live = instrument.prepare_note(60, 100).unwrap();
+        let authored = instrument.prepare_note(48, 80).unwrap();
+        for playing in [false, true] {
+            let input = Arc::new(ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let mut runtime = Playback::from_prepared(prepare(&project));
+            runtime
+                .prepare_computer_keyboard(&project, track, input)
+                .unwrap();
+            if playing {
+                runtime.apply(PlaybackCommand::Play);
+            }
+            let mut output = [[0.0; 2]; 512];
+            runtime.render(&mut output).unwrap();
+            for (age, actual) in output.iter().enumerate() {
+                let sample = (live.sample(age as u64, u64::MAX)[0]
+                    + if playing {
+                        authored.sample(age as u64, 48000)[0]
+                    } else {
+                        0.0
+                    })
+                    * 0.25;
+                assert!(
+                    (actual[0] - sample).abs() < 1e-6,
+                    "playing={playing} age={age} actual={actual:?} expected={sample}"
+                );
+                assert!((actual[1] - sample).abs() < 1e-6);
+            }
+        }
+    }
+    #[test]
+    fn computer_keyboard_silent_session_route_still_renders_live_notes() {
+        let (project, track) = super::tests::fixture();
+        let input = Arc::new(ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut runtime = Playback::from_prepared(prepare(&project));
+        runtime
+            .prepare_computer_keyboard(&project, track, input)
+            .unwrap();
+        let mut groups = 0;
+        assert_eq!(
+            runtime.visit_candidate_groups(&mut |_, _, _| {
+                groups += 1;
+                Ok(())
+            }),
+            Err(crate::AudioStorageError::UnsupportedGraph)
+        );
+        assert_eq!(
+            groups, 5,
+            "only outer Playback locations may precede the live-input refusal"
+        );
+        runtime.apply(PlaybackCommand::Play);
+        runtime
+            .try_apply_action(crate::PlaybackAction::Session(
+                crate::SessionPlaybackCommand::StopTrack {
+                    track,
+                    quantization: crate::LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let mut output = [[0.0; 2]; 256];
+        runtime.render(&mut output).unwrap();
+        let instrument = hex_devices::prepare_legacy_sine_instrument(48000).unwrap();
+        let note = instrument.prepare_note(60, 100).unwrap();
+        for (age, actual) in output.iter().enumerate() {
+            assert_eq!(*actual, note.sample(age as u64, u64::MAX));
+        }
+        assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+    }
+    #[test]
     fn computer_keyboard_stopped_live_audio_follows_typed_routing_and_one_suffix() {
         use hex_devices::utility::{UTILITY_DEFINITION, parameter};
         let (source, track) = super::tests::fixture();
