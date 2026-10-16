@@ -31,6 +31,32 @@ struct Source {
     plan: ResamplePlan,
 }
 
+#[cfg(test)]
+// Observe actual worker publication/holding without exposing a production API.
+// The gate also honors Stop, so a failed test cannot strand a paused worker.
+pub(crate) struct TestWorkerHooks {
+    pub(crate) entered: SyncSender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+    pub(crate) publications: SyncSender<usize>,
+}
+
+#[cfg(test)]
+impl TestWorkerHooks {
+    fn wait_for_release(&self, stop: &AtomicBool) -> bool {
+        if self.entered.send(()).is_err() {
+            return false;
+        }
+        while !stop.load(Ordering::Acquire) {
+            match self.release.recv_timeout(Duration::from_millis(2)) {
+                Ok(()) => return true,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+        false
+    }
+}
+
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
@@ -38,6 +64,7 @@ pub(crate) fn run_worker(
     mut queues: WorkerQueues,
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
+    #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
 ) -> Vec<Box<PageBuffer>> {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
@@ -77,6 +104,13 @@ pub(crate) fn run_worker(
         Ok(sources) => sources,
         Err(_) => return free_pages,
     };
+    #[cfg(test)]
+    if test_hooks
+        .as_ref()
+        .is_some_and(|hooks| !hooks.wait_for_release(&stop))
+    {
+        return free_pages;
+    }
     loop {
         while let Ok(page) = queues.returns.pop() {
             free_pages.push(page);
@@ -127,10 +161,16 @@ pub(crate) fn run_worker(
         };
         let source = &mut sources[source_index];
         match render_page(source, key, &mut page, &mut source_scratch, &stop) {
-            Ok(()) => match queues.ready.push(page) {
-                Ok(()) => {}
-                Err(PushError::Full(page)) => held_pages.push(page),
-            },
+            Ok(()) => {
+                match queues.ready.push(page) {
+                    Ok(()) => {}
+                    Err(PushError::Full(page)) => held_pages.push(page),
+                }
+                #[cfg(test)]
+                if let Some(hooks) = &test_hooks {
+                    let _ = hooks.publications.send(held_pages.len());
+                }
+            }
             Err(kind) => {
                 page.frames.fill([0.0; 2]);
                 page.key = None;
@@ -598,6 +638,10 @@ pub(crate) mod tests {
 
     impl Fixture {
         pub(crate) fn pcm16() -> Self {
+            Self::pcm16_frames(4096)
+        }
+
+        pub(crate) fn pcm16_frames(frames: u16) -> Self {
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -614,7 +658,7 @@ pub(crate) mod tests {
                 .open(&path)
                 .expect("create fixture");
             file.write_all(b"RIFF").expect("RIFF");
-            file.write_all(&(36_u32 + 4096 * 4).to_le_bytes())
+            file.write_all(&(36_u32 + u32::from(frames) * 4).to_le_bytes())
                 .expect("riff length");
             file.write_all(b"WAVEfmt ").expect("WAVE format");
             file.write_all(&16_u32.to_le_bytes())
@@ -628,9 +672,9 @@ pub(crate) mod tests {
             file.write_all(&4_u16.to_le_bytes()).expect("block align");
             file.write_all(&16_u16.to_le_bytes()).expect("bit depth");
             file.write_all(b"data").expect("data header");
-            file.write_all(&(4096_u32 * 4).to_le_bytes())
+            file.write_all(&(u32::from(frames) * 4).to_le_bytes())
                 .expect("data length");
-            for index in 0..4096_i16 {
+            for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
                 file.write_all(&index.to_le_bytes()).expect("left sample");
                 file.write_all(&(-index).to_le_bytes())
                     .expect("right sample");

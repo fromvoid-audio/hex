@@ -3169,3 +3169,22 @@ after harmonic range edits so neither coverage path masks the other. Main's loop
 Utility and LFO-caption changes are preserved. The earlier716320d full run passed
 six preflight steps, then was cleanly interrupted (exit130) for this integration;
 it is not full-CI or merge evidence.
+
+## 16 October 2026 — deterministic stream shutdown fixture (#2636 / PR252)
+
+Moved the undrained-ready-queue shutdown fixture to its owning runtime unit tests
+with test-only real-worker barriers/publication observations. A deliberately
+delayed worker reproduced the old 30 ms setup assumption: zero queued pages were
+correctly reclaimed, so the expected-one assertion failed. The repaired fixture
+waits for one actual queued page and one actual worker-held page before shutdown;
+the negative control retains complete join/pool accounting with zero publication.
+Normal and allocation-probe stream suites pass. Final exact-source CI is recorded
+with PR252. Production shutdown, queue bounds and native streaming admission are
+unchanged; no new native-device or physical-deadline acceptance is claimed.
+
+PR158 also integrates main98a4dbd1's deterministic stream-shutdown test coverage.
+Production stream behavior is unchanged. The a532054e full18-step local run
+passed with clean identical source digestba1bd16caf4c2098f93016214e2799bbe9d988d8178022f3bc14236c831b03bf;
+it remains valid for that earlier candidate. The integrated candidate requires
+a fresh exact-source run. Native installation was safely refused while hex
+was running; no force-quit, replacement, reload or native acceptance occurred.
