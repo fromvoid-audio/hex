@@ -4,6 +4,7 @@ pub use hex_devices::SineTable;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };
@@ -280,6 +281,23 @@ pub fn patch_native_device_parameter_for_class(
         NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?
             .patch_parameter(state, parameter, value),
+    };
+    result.map_err(map_device_contract_error)
+}
+
+/// A bounded control-side transaction; publication happens only after preparation.
+pub fn patch_native_device_snapshot_for_class(
+    class: NativeDeviceClass,
+    state: &hex_lattice_contract::NativeDeviceState,
+    snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    let result = match class {
+        NativeDeviceClass::Effect => hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?
+            .patch_parameters(state, snapshot),
+        NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?
+            .patch_parameters(state, snapshot),
     };
     result.map_err(map_device_contract_error)
 }
@@ -1310,6 +1328,47 @@ impl Track {
         )
     }
 
+    pub(crate) fn render_raw_audio<P: MediaPages + ?Sized>(
+        &self,
+        start: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        let end = start
+            .checked_add(output.len() as u64)
+            .ok_or(Invalid("raw source range overflow"))?;
+        self.render_audio_range_captured_with_mix(
+            start,
+            end,
+            output,
+            pages,
+            None,
+            PreparedTrackMix::identity(),
+        );
+        Ok(())
+    }
+    pub(crate) fn render_raw_instrument(
+        &self,
+        start: u64,
+        performance: u64,
+        output: &mut [Frame],
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<(), Invalid> {
+        let end = start
+            .checked_add(output.len() as u64)
+            .ok_or(Invalid("raw instrument range overflow"))?;
+        self.render_instrument_range_with_mix(
+            (start, end),
+            output,
+            None,
+            performance,
+            suppressions,
+            None,
+            continuations,
+            PreparedTrackMix::identity(),
+        )
+    }
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
@@ -1374,15 +1433,35 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         pages: Option<&mut P>,
+        capture: Option<&mut [Frame]>,
+    ) {
+        self.render_audio_range_captured_with_mix(
+            start_frame,
+            end_frame,
+            output,
+            pages,
+            capture,
+            self.source_mix,
+        );
+    }
+
+    fn render_audio_range_captured_with_mix<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
         mut capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
     ) {
         if let Some(pages) = pages {
-            self.render_audio_range_with_pages_captured(
+            self.render_audio_range_with_pages_captured_with_mix(
                 start_frame,
                 end_frame,
                 output,
                 pages,
                 capture,
+                source_mix,
             );
             return;
         }
@@ -1394,6 +1473,7 @@ impl Track {
                     end_frame,
                     output,
                     capture.as_deref_mut(),
+                    source_mix,
                 );
             }
         }
@@ -1427,7 +1507,26 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         pages: &mut (impl MediaPages + ?Sized),
+        capture: Option<&mut [Frame]>,
+    ) {
+        self.render_audio_range_with_pages_captured_with_mix(
+            start_frame,
+            end_frame,
+            output,
+            pages,
+            capture,
+            self.source_mix,
+        );
+    }
+
+    fn render_audio_range_with_pages_captured_with_mix(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: &mut (impl MediaPages + ?Sized),
         mut capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
     ) {
         for clip in &self.clips {
             if !clip.is_streamed() {
@@ -1437,6 +1536,7 @@ impl Track {
                     end_frame,
                     output,
                     capture.as_deref_mut(),
+                    source_mix,
                 );
                 continue;
             }
@@ -1484,7 +1584,7 @@ impl Track {
                 let count = remaining.min(until_wrap);
                 let output_offset = (position - start_frame) as usize;
                 let rendered = render_streamed_page_span_captured(
-                    self.source_mix,
+                    source_mix,
                     source,
                     StreamedPageSpan {
                         source_frame,
@@ -1513,6 +1613,7 @@ impl Track {
         end_frame: u64,
         output: &mut [Frame],
         mut capture: Option<&mut [Frame]>,
+        source_mix: PreparedTrackMix,
     ) {
         let mut span_end = end_frame.min(clip.end);
         if !clip.looping {
@@ -1541,7 +1642,7 @@ impl Track {
                     sample[0] *= clip_gain;
                     sample[1] *= clip_gain;
                 }
-                self.source_mix.add_captured(
+                source_mix.add_captured(
                     frame,
                     sample,
                     capture
@@ -1551,7 +1652,7 @@ impl Track {
             }
         } else if source_phase == 0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix.add_captured(
+                source_mix.add_captured(
                     frame,
                     clip.at(span_start + offset as u64, 0),
                     capture
@@ -1561,7 +1662,7 @@ impl Track {
             }
         } else {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix.add_captured(
+                source_mix.add_captured(
                     frame,
                     clip.at(span_start + offset as u64, source_phase),
                     capture
@@ -1598,8 +1699,32 @@ impl Track {
         midi_onset_floor_exclusive: Option<u64>,
         performance_frame: u64,
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        capture: Option<&mut [Frame]>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<(), Invalid> {
+        self.render_instrument_range_with_mix(
+            (start_frame, end_frame),
+            output,
+            midi_onset_floor_exclusive,
+            performance_frame,
+            suppressions,
+            capture,
+            continuations,
+            self.source_mix,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Existing source render plus explicit gap-stage mix.
+    fn render_instrument_range_with_mix(
+        &self,
+        (start_frame, end_frame): (u64, u64),
+        output: &mut [Frame],
+        midi_onset_floor_exclusive: Option<u64>,
+        performance_frame: u64,
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
         mut capture: Option<&mut [Frame]>,
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
+        source_mix: PreparedTrackMix,
     ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
             if instrument.mutable {
@@ -1657,7 +1782,7 @@ impl Track {
                                 span.gate_end - span.start,
                             ) {
                                 Ok(sample) => {
-                                    self.source_mix.add_captured(
+                                    source_mix.add_captured(
                                         &mut target[(frame_position - chunk_start) as usize],
                                         sample,
                                         capture.as_deref_mut().and_then(|frames| {
@@ -2866,6 +2991,7 @@ mod tests {
     }
 }
 
+pub mod computer_keyboard;
 pub mod live;
 pub mod midi_compile;
 mod midi_note_bank;

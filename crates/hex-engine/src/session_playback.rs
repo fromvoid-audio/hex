@@ -247,11 +247,10 @@ struct TransitionMoment {
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
-    track_index: usize,
+    location: ReleaseLocation,
     track_id: TrackId,
     order: u64,
     mix: crate::PreparedTrackMix,
-    tail_group: Option<u16>,
     continuation: Option<SessionContinuation>,
     voice: MidiReleaseVoice,
 }
@@ -298,6 +297,7 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
@@ -391,6 +391,11 @@ fn effective_midi_route(
 }
 
 impl SessionPlayback {
+    pub(crate) fn computer_keyboard_latency_supported(&self) -> bool {
+        self.compensation
+            .as_ref()
+            .is_none_or(|runtime| runtime.graph.plan.max_latency_frames() == 0)
+    }
     pub(crate) fn new_audio_candidate(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::AudioStorageError> {
@@ -468,8 +473,8 @@ impl SessionPlayback {
     }
     /// Constructor-bound inventory of independently movable runtime owner
     /// locations, adapted from original177 owner_groups.rs. No callback visitor
-    /// or byte/handle completeness claim. The closed constructor class cannot
-    /// transfer child owners; vacant tail/context locations remain classified.
+    /// or byte/handle completeness claim. The closed constructor class permits
+    /// Utility Track/Tail transfers; other owning locations remain classified.
     pub(crate) fn visit_candidate_groups(
         &self,
         visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
@@ -477,6 +482,7 @@ impl SessionPlayback {
         // Exhaustive owning-field match: other buffers belong to the Session
         // container group, not independent transferable device/context groups.
         let Self {
+            computer_keyboard,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -525,6 +531,9 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
+        if computer_keyboard.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
         for index in 0..device_chains.len() {
             visit(0, index, true)?;
         }
@@ -1001,6 +1010,7 @@ impl SessionPlayback {
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {
+            computer_keyboard: None,
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,
@@ -1310,6 +1320,8 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+mod release_location;
+use release_location::ReleaseLocation;
 /// These tables never grow, shrink, swap ownership or allocate in handoff or
 /// rendering. Refusal/destruction of their storage belongs to control.
 fn reserve_analytic_continuations()
@@ -1325,8 +1337,10 @@ fn reserve_analytic_continuations()
     Ok(slots)
 }
 
+mod analytic_import;
 mod commands;
 mod handoff;
+mod harmonic_import;
 mod preroll;
 mod render;
 pub use capture::{
@@ -1338,6 +1352,8 @@ pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
+#[cfg(test)]
+mod harmonic_accounting;
 #[cfg(test)]
 mod tests;
 
@@ -1411,8 +1427,6 @@ mod render_diagnostic_tests {
         );
     }
 }
-
-mod analytic_import;
 mod gain_recording;
 #[cfg(test)]
 mod return_feed_tests;

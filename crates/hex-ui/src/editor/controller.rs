@@ -46,6 +46,8 @@ impl EditorView {
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_gain_recording();
+        visible_change |= self.tick_computer_keyboard();
+        visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -76,6 +78,12 @@ impl EditorView {
                         replace_error(&mut self.error, "an export is already pending");
                 }
                 Err(SubmitError::Closed(request)) => {
+                    if matches!(&request, Request::ImportAudioBatch { .. }) {
+                        if let Some(control) = self.audio_batch.take() {
+                            control.request_cancel();
+                        }
+                        self.audio_batch_progress = None;
+                    }
                     if matches!(request, Request::Export(_)) {
                         self.export_pending = false;
                     }
@@ -176,6 +184,15 @@ impl EditorView {
                 pending.project_generation,
             ) {
                 Ok(audio_revision) => {
+                    if self.stopped_playback_restore
+                        == Some(super::audio_admission::StoppedPlaybackRestore::Ready)
+                        && pending.install_fresh_runtime
+                    {
+                        self.stopped_playback_restore =
+                            Some(super::audio_admission::StoppedPlaybackRestore::Published(
+                                audio_revision,
+                            ));
+                    }
                     self.gain_recorder.published(
                         prepared_revision
                             .as_ref()
@@ -276,6 +293,13 @@ impl EditorView {
             if let Some(project) =
                 rejected_candidate_project(&self.playback_candidates, audio_revision)
             {
+                if self.stopped_playback_restore
+                    == Some(super::audio_admission::StoppedPlaybackRestore::Published(
+                        audio_revision,
+                    ))
+                {
+                    self.stopped_playback_restore = None;
+                }
                 visible_change |=
                     self.audio_admission
                         .rejected(project, audio_revision, reason.message());
@@ -319,6 +343,13 @@ impl EditorView {
                     && candidate.seek_request_id.is_none()
                 {
                     self.applied_project_revision = Some(candidate.state.revision);
+                    if matches!(
+                        self.stopped_playback_restore,
+                        Some(super::audio_admission::StoppedPlaybackRestore::Published(required))
+                            if candidate.audio_revision >= required
+                    ) {
+                        self.stopped_playback_restore = None;
+                    }
                 }
                 self.audible_playback = Some(candidate);
             } else if source == AppliedCandidateSource::InvalidPreview {
@@ -656,8 +687,33 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
-        if event.request_complete && event.error.is_some() && event.playback.is_none() {
+        if event.stopped_playback_restore_complete
+            && event.error.is_some()
+            && event.playback.is_none()
+        {
+            self.stopped_playback_restore = None;
+        }
+        if event.project_replaced {
+            self.stopped_playback_restore = None;
+        }
+        if event.request_complete
+            && event.computer_keyboard_complete.is_none()
+            && event.error.is_some()
+            && event.playback.is_none()
+        {
             self.gain_recorder.arm_failed();
+        }
+        if event
+            .audio_batch_complete
+            .as_ref()
+            .is_some_and(|completed| {
+                self.audio_batch
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, completed))
+            })
+        {
+            self.audio_batch = None;
+            self.audio_batch_progress = None;
         }
         if event.save_complete {
             self.saving_project = false;
@@ -674,6 +730,47 @@ impl EditorView {
             .restore_complete
             .is_some_and(|generation| self.recovery.generation() != Some(generation))
         {
+            return None;
+        }
+        if let Some(request_id) = event.computer_keyboard_complete {
+            let current = self.computer_keyboard.enabled
+                && !self.computer_keyboard.suspended
+                && request_id == self.computer_keyboard.request_id
+                && self.computer_keyboard.target
+                    == self
+                        .selected_track
+                        .map(|track| (self.project_generation, event.state.revision, track))
+                && self
+                    .computer_keyboard
+                    .input
+                    .as_ref()
+                    .is_some_and(|input| !input.is_cancelled())
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == event.state.revision);
+            if current {
+                if let Some(error) = event.error {
+                    self.error = Some(error);
+                }
+                if let Some(playback) = event.playback {
+                    let previous_reset = self
+                        .pending_playback
+                        .as_ref()
+                        .map(|pending| (pending.project_generation, pending.install_fresh_runtime));
+                    let mut pending = pending_playback_for_state(
+                        Arc::clone(&event.state),
+                        self.project_generation,
+                        playback,
+                    );
+                    pending.install_fresh_runtime = retained_install_fresh_policy(
+                        false,
+                        self.project_generation,
+                        previous_reset,
+                    );
+                    self.pending_playback = Some(pending);
+                }
+            }
             return None;
         }
         let successfully_opened_path =
@@ -1040,7 +1137,19 @@ impl EditorView {
                     }
                     _ => None,
                 });
-        if let Some(playback) = event.playback {
+        let mut stopped_restore_error = None;
+        if let Some(mut playback) = event.playback {
+            if event.stopped_playback_restore_complete {
+                self.stopped_playback_restore =
+                    Some(super::audio_admission::StoppedPlaybackRestore::Ready);
+                // Preserve the transient click toggle across the stopped reset.
+                // Voice/filter histories and the transport still start fresh.
+                if let Err(reason) = playback
+                    .try_apply_action(PlaybackAction::SetMetronome(self.metronome_enabled()))
+                {
+                    stopped_restore_error = Some(reason.message().to_owned());
+                }
+            }
             let previous_reset = self
                 .pending_playback
                 .as_ref()
@@ -1070,7 +1179,7 @@ impl EditorView {
             pending.prepared_revision = prepared_revision;
             pending.device_preview_identity = preview_identity;
             pending.install_fresh_runtime = retained_install_fresh_policy(
-                event.project_replaced,
+                event.project_replaced || event.stopped_playback_restore_complete,
                 self.project_generation,
                 previous_reset,
             );
@@ -1081,6 +1190,8 @@ impl EditorView {
             self.error = None;
         }
         if let Some(error) = event.error {
+            self.error = Some(error);
+        } else if let Some(error) = stopped_restore_error {
             self.error = Some(error);
         }
         if let Some(message) = playback_capability {
@@ -1176,6 +1287,27 @@ impl EditorView {
             });
         }
         #[cfg(test)]
+        if let Request::ImportAudioBatch {
+            paths, destination, ..
+        } = &request
+        {
+            if let [path] = paths.as_slice() {
+                match destination {
+                    hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
+                        self.last_enqueued_import_to_track =
+                            Some((path.clone(), *track, *start, true))
+                    }
+                    hex_session::import_batch::AudioBatchDestination::NewTracks {
+                        before_track,
+                        start,
+                    } => {
+                        self.last_enqueued_import_to_new_track =
+                            Some((path.clone(), *before_track, *start))
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
         match &request {
             Request::ImportToTrack { path, track, start } => {
                 self.last_enqueued_import_to_track = Some((path.clone(), *track, *start, false));
@@ -1196,6 +1328,11 @@ impl EditorView {
         }
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
+        }
+        if request.is_project_open() {
+            if let Some(control) = &self.audio_batch {
+                control.request_cancel();
+            }
         }
         if !matches!(&request, Request::Open(_) | Request::OpenWith { .. })
             && !allows_non_open_request(
@@ -1221,8 +1358,10 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
+                | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
@@ -1237,6 +1376,7 @@ impl EditorView {
                 | Request::Undo
                 | Request::Redo
                 | Request::RestorePlayback { .. }
+                | Request::RestoreStoppedPlayback
         ) {
             self.invalidate_prepared_seek();
         }
@@ -1248,6 +1388,8 @@ impl EditorView {
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
         ) && self.device_gesture.snapshot().is_some()
         {
@@ -1311,6 +1453,10 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        if self.stopped_playback_restore.is_some() {
+            self.error = Some("restoring stopped playback · wait before seeking".into());
+            return;
+        }
         if self.recovery.generation().is_some() {
             self.error = Some("audio recovery pending · cannot seek yet".into());
             return;
@@ -1495,6 +1641,7 @@ impl EditorView {
             return;
         };
         if self.recovery.generation().is_some()
+            || self.stopped_playback_restore.is_some()
             || self.opening_project
             || self.close_prompt_open
             || self.edit_pending()
@@ -1543,6 +1690,7 @@ impl EditorView {
             return;
         };
         if self.recovery.generation().is_some()
+            || self.stopped_playback_restore.is_some()
             || self.opening_project
             || self.close_prompt_open
             || self.edit_pending()
@@ -1623,6 +1771,10 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
+            self.error = Some("restoring stopped playback · wait before playing".into());
+            return;
+        }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.invalidate_prepared_seek();
         }
@@ -1764,6 +1916,25 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        // Stop explicitly discards voice histories. A previously refused edit
+        // or restoration can now install the canonical sound without inheriting
+        // an incompatible preview's history. Keep construction on the worker.
+        let restore = self.stopped_playback_restore.is_none()
+            && !self.edit_pending()
+            && self.device_gesture.snapshot().is_none()
+            && self.recovery.generation().is_none()
+            && self.audio.as_ref().is_some_and(|audio| {
+                self.state.as_ref().is_some_and(|state| {
+                    self.applied_project_revision != Some(state.revision)
+                        || self.audible_playback.as_ref().is_none_or(|audible| {
+                            audible.audio_revision
+                                != audio.control.status.applied_revision.load(Acquire)
+                                || audible.device_preview_identity.is_some()
+                        })
+                })
+            });
+        self.cancel_computer_keyboard();
+        self.computer_keyboard.suspended = true;
         self.cancel_scrub();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;
@@ -1777,6 +1948,12 @@ impl EditorView {
             audio.control.stop();
         }
         self.status = "stopped · returned to start".into();
+        if restore && self.enqueue(Request::RestoreStoppedPlayback) {
+            self.stopped_playback_restore =
+                Some(super::audio_admission::StoppedPlaybackRestore::Preparing);
+            self.status = "stopped · restoring current sound".into();
+            self.error = None;
+        }
     }
 }
 

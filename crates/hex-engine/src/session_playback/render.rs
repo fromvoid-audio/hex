@@ -1,4 +1,5 @@
 mod compensated;
+mod computer_keyboard;
 use super::{commands::transition_captures, *};
 use crate::compile::PreparedAudioSource;
 use crate::{MediaPages, MidiTiming, StreamedPageSpan, render_streamed_page_span};
@@ -112,7 +113,7 @@ impl SessionPlayback {
         mut capture: Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         output.fill([0.0; 2]);
-        if output.is_empty() || !self.playing {
+        if output.is_empty() || (!self.playing && self.computer_keyboard.is_none()) {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
             }
@@ -125,8 +126,18 @@ impl SessionPlayback {
                 .begin_transaction()
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
-        let result = self.render_playing(output, pages, &mut observer, &mut capture);
+        if let Some(keyboard) = &mut self.computer_keyboard {
+            keyboard.begin_block();
+        }
+        let result = if self.playing {
+            self.render_playing(output, pages, &mut observer, &mut capture)
+        } else {
+            self.render_keyboard_monitor(output, &mut observer, &mut capture)
+        };
         if result.is_err() {
+            if let Some(keyboard) = &mut self.computer_keyboard {
+                keyboard.rollback();
+            }
             if let Some(compensation) = self.compensation.as_mut() {
                 let _ = compensation.delays.rollback_transaction();
             }
@@ -142,11 +153,26 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
+            if let Some(keyboard) = &mut self.computer_keyboard {
+                keyboard.commit();
+            }
             if let Some(compensation) = self.compensation.as_mut() {
                 compensation
                     .delays
                     .commit_transaction()
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+            // The ordinary current context already owns the target endpoint.
+            // Retire only after the whole block commits; detached voices retain
+            // their own captured transition, and refused blocks keep this state.
+            for transition in &mut self.analytic_continuations {
+                if transition.as_ref().is_some_and(|transition| {
+                    transition
+                        .elapsed_at(self.performance_frame)
+                        .is_ok_and(|elapsed| elapsed == transition.duration())
+                }) {
+                    *transition = None;
+                }
             }
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
@@ -218,7 +244,11 @@ impl SessionPlayback {
             route_changed |= applied_route;
             if captured_release {
                 self.release_scratch.sort_unstable_by_key(|entry| {
-                    (entry.track_index, entry.tail_group, entry.order)
+                    (
+                        entry.location.track_index(),
+                        entry.location.tail_group(),
+                        entry.order,
+                    )
                 });
             }
             let mut chunk_frames = (output.len() - output_offset)
@@ -429,12 +459,17 @@ impl SessionPlayback {
                     .is_some_and(|runtime| !runtime.committed_is_quiescent())
             });
             let metered_instrument = self.device_metering && track.instrument_id.is_some();
-            let buffered = stateful_effects
+            let live_target = self
+                .computer_keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.track() == self.route_scratch[index].id);
+            let buffered = live_target
+                || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
                 || metered_instrument;
-            let ordered = track.requires_ordered_processing();
+            let ordered = live_target || track.requires_ordered_processing();
             let already_mixed = metered_instrument
                 && !ordered
                 && !stateful_effects
@@ -443,7 +478,7 @@ impl SessionPlayback {
             while self
                 .release_scratch
                 .get(release_cursor)
-                .is_some_and(|entry| entry.track_index < index)
+                .is_some_and(|entry| entry.location.track_index() < index)
             {
                 release_cursor += 1;
             }
@@ -451,15 +486,16 @@ impl SessionPlayback {
             while self
                 .release_scratch
                 .get(release_cursor)
-                .is_some_and(|entry| entry.track_index == index)
+                .is_some_and(|entry| entry.location.track_index() == index)
             {
                 release_cursor += 1;
             }
             let has_current_release = self.release_scratch[first_release..release_cursor]
                 .iter()
-                .any(|entry| entry.tail_group.is_none());
+                .any(|entry| entry.location.tail_group().is_none());
             let midi_route = effective_midi_route(&self.revision, &self.route_scratch, index)?;
-            let has_current_route = !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
+            let has_current_route = live_target
+                || !matches!(self.route_scratch[index].owner, RouteOwner::Silence)
                 || !matches!(midi_route.owner, RouteOwner::Silence);
             let has_current_effect_tail = !has_current_route
                 && !has_current_release
@@ -468,7 +504,10 @@ impl SessionPlayback {
                     .get(index)
                     .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()));
             if (buffered || ordered)
-                && (has_current_route || has_current_release || has_current_effect_tail)
+                && (has_current_route
+                    || has_current_release
+                    || has_current_effect_tail
+                    || live_target)
             {
                 let mut track_buffer = [[0.0; 2]; 256];
                 let render_output = &mut track_buffer[..output.len()];
@@ -481,6 +520,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: live_target,
                             timing: &timing,
                             table,
                         },
@@ -526,7 +566,7 @@ impl SessionPlayback {
                         track.instrument_meter.observe_input(render_output);
                     }
                     for release in &self.release_scratch[first_release..release_cursor] {
-                        if release.tail_group.is_none() {
+                        if release.location.tail_group().is_none() {
                             render_release_raw(
                                 release,
                                 table,
@@ -546,6 +586,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: live_target,
                             timing: &timing,
                             table,
                         },
@@ -581,6 +622,18 @@ impl SessionPlayback {
                         index,
                         render_output,
                     )?;
+                    if let Some(keyboard) = self
+                        .computer_keyboard
+                        .as_mut()
+                        .filter(|keyboard| keyboard.track() == self.route_scratch[index].id)
+                    {
+                        let clock = keyboard
+                            .musical_clock(&timing, performance_frame, true)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        keyboard
+                            .render(render_output, Some(&clock))
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
                     track.apply_instrument_output_gain(render_output);
                     if self.device_metering {
                         track.instrument_meter.observe_output(render_output);
@@ -625,7 +678,7 @@ impl SessionPlayback {
                     }
                 } else {
                     for release in &self.release_scratch[first_release..release_cursor] {
-                        if release.tail_group.is_none() {
+                        if release.location.tail_group().is_none() {
                             if already_mixed {
                                 render_release_captured(
                                     release,
@@ -661,6 +714,7 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
+                                raw: false,
                                 timing: &timing,
                                 table,
                             },
@@ -685,6 +739,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: false,
                             timing: &timing,
                             table,
                         },
@@ -736,6 +791,11 @@ impl SessionPlayback {
                     } else {
                         track.mix()
                     };
+                    let mix = if live_target {
+                        mix.without_effects()
+                    } else {
+                        mix
+                    };
                     if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
                         output[frame_index][0] += source[0];
@@ -769,7 +829,7 @@ impl SessionPlayback {
                 if selected {
                     let mut captured = [[0.0; 2]; 256];
                     for release in &self.release_scratch[first_release..release_cursor] {
-                        if release.tail_group.is_none() {
+                        if release.location.tail_group().is_none() {
                             render_release_captured(
                                 release,
                                 table,
@@ -800,7 +860,7 @@ impl SessionPlayback {
                     continue;
                 }
                 for release in &self.release_scratch[first_release..release_cursor] {
-                    if release.tail_group.is_none() {
+                    if release.location.tail_group().is_none() {
                         render_release_captured(
                             release,
                             table,
@@ -821,6 +881,7 @@ impl SessionPlayback {
                         suppressions: &self.suppression_scratch,
                         continuations: &self.analytic_continuations,
                         index,
+                        raw: false,
                         timing: &timing,
                         table,
                     },
@@ -834,6 +895,16 @@ impl SessionPlayback {
             }
         }
         self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+        self.render_return_buses(output, frame_offset, observer, capture)
+    }
+
+    fn render_return_buses(
+        &mut self,
+        output: &mut [Frame],
+        frame_offset: usize,
+        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
             for &index in arrangement.return_feed_plan.order() {
@@ -887,8 +958,10 @@ impl SessionPlayback {
                 }
             }
             // Captured chains feed Main only, never any current or old edge.
-            self.return_effect_tails
-                .render_chunk(output, frame_offset, capture)?;
+            if self.playing {
+                self.return_effect_tails
+                    .render_chunk(output, frame_offset, capture)?;
+            }
             return Ok(());
         }
         for (index, bus) in self
@@ -943,8 +1016,10 @@ impl SessionPlayback {
                 capture.add(OutputCaptureId::Return(bus.id), frame_offset, frames)?;
             }
         }
-        self.return_effect_tails
-            .render_chunk(output, frame_offset, capture)?;
+        if self.playing {
+            self.return_effect_tails
+                .render_chunk(output, frame_offset, capture)?;
+        }
         Ok(())
     }
     fn render_detached_tails(
@@ -961,14 +1036,14 @@ impl SessionPlayback {
         let mut rendered_mutable_tails = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut rendered_tail_suffixes = [false; SESSION_TAIL_GROUP_CAPACITY];
         let mut tail_cursor = self.release_scratch.partition_point(|entry| {
-            entry.track_index < self.revision.arrangement().tracks().len()
+            entry.location.track_index() < self.revision.arrangement().tracks().len()
         });
         while tail_cursor < self.release_scratch.len() {
             let release = self
                 .release_scratch
                 .get(tail_cursor)
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
-            let Some(group) = release.tail_group else {
+            let Some(group) = release.location.tail_group() else {
                 let mut captured = [[0.0; 2]; 256];
                 render_release_captured(
                     release,
@@ -999,7 +1074,7 @@ impl SessionPlayback {
             while self
                 .release_scratch
                 .get(tail_cursor)
-                .is_some_and(|entry| entry.tail_group == Some(group))
+                .is_some_and(|entry| entry.location.tail_group() == Some(group))
             {
                 tail_cursor += 1;
             }
@@ -1439,6 +1514,7 @@ struct RouteSourceContext<'a, T> {
     suppressions: &'a [MidiOccurrenceSuppression],
     continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,
+    raw: bool,
     timing: &'a T,
     table: &'a hex_devices::SineTable,
 }
@@ -1466,6 +1542,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         suppressions,
         continuations,
         index,
+        raw,
         timing,
         table,
     } = context;
@@ -1474,9 +1551,29 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         .tracks()
         .get(index)
         .ok_or(SessionPlaybackError::UnknownTrack)?;
-    let source_mix = track.source_mix();
+    let source_mix = if raw {
+        crate::PreparedTrackMix::identity()
+    } else {
+        track.source_mix()
+    };
     match route.owner {
         RouteOwner::Arrangement => {
+            if raw && matches!(stage, SourceStage::Audio) {
+                return track
+                    .render_raw_audio(arrangement_frame, output, pages.as_deref_mut())
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
+            if raw && matches!(stage, SourceStage::Instrument) {
+                return track
+                    .render_raw_instrument(
+                        arrangement_frame,
+                        performance_frame,
+                        output,
+                        suppressions,
+                        continuations,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
             let has_active_suppression = suppressions
                 .iter()
                 .any(|entry| entry.track == route.id && entry.until_frame > performance_frame);
@@ -1748,6 +1845,12 @@ struct InstrumentClock<'a, T: ?Sized> {
     start: u64,
 }
 impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentClock<'_, T> {
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.start.checked_add(u64::try_from(offset).ok()?)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        Some(true)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         let frame = self.start.checked_add(u64::try_from(offset).ok()?)?;
         self.timing.frame_to_beat(frame).ok().map(|beat| beat.raw())
@@ -1757,6 +1860,28 @@ impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentCl
 #[cfg(test)]
 mod observed_page_tests {
     use super::*;
+    #[test]
+    fn instrument_clock_exposes_nonzero_performance_across_content_loop_positions() {
+        use hex_lattice::NativeInstrumentClock;
+        let project = hex_project::Project::new(48_000).unwrap();
+        let timing = crate::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+        let clock = InstrumentClock {
+            timing: &timing,
+            start: 96_000,
+        };
+        assert_eq!(clock.performance_frame_at_offset(256), Some(96_256));
+        assert_eq!(clock.transport_is_running(), Some(true));
+        assert_eq!(clock.arrangement_frame_at_offset(0), None);
+        assert_eq!(
+            clock.beat_at_offset(256),
+            timing.frame_to_beat(96_256).ok().map(|b| b.raw())
+        );
+        let exhausted = InstrumentClock {
+            timing: &timing,
+            start: u64::MAX,
+        };
+        assert_eq!(exhausted.performance_frame_at_offset(1), None);
+    }
     struct NoPages {
         accesses: usize,
     }

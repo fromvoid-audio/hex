@@ -1,3 +1,132 @@
+## Operator harmonic authoring — pulse2342 / PR158
+
+Canonical 64-partial painting, 16/32/64 active ranges with hidden retention,
+User caching, Normalize/Repeat, atomic stroke history and persistence, and live
+voice continuation are implemented. Automated coverage and measured CPU/memory
+limits are in [operator harmonics](docs/operator-harmonics.md). Native macOS
+visual/listening acceptance remains user-owned. Dense 64-voice/four-oscillator
+workloads exceed some deadlines on the measured cloud CPU; no scalability or
+Live numeric parity claim is made.
+16 October continuation preserves nondefault host gains across snapshot
+migrations and integrates current main's shared composition and stable installer.
+The harmonic tool row now occupies the graph area above the stationary tabs;
+rendered overlap coverage accompanies the integration. Native/listening results
+and exact-source validation are recorded with the candidate PR/build evidence.
+## vector B edits and stopped playback recovery — #2643 / PR259, 16 october 2026
+
+Reproduced the user's compile error with an above-Nyquist B ratio and a separate
+active-filter handoff refusal with a supported B ratio. Invalid tuning leaves
+canonical state/history intact; all B/C/D levels affect serial-routed FM PCM.
+Default custom routing leaves B/C/D disconnected. Stop now requests canonical
+playback on the worker and installs fresh histories, with Play/Seek fenced until
+callback acknowledgment. Ordinary edits preserve existing history/refusal rules.
+The session suite, strict session Clippy, all491 enabled UI feature tests and
+the audio allocation-probe suite pass. A negative control disabling the recovery
+publication policy fails the focused UI regression as expected. Final-source
+full local CI is recorded separately; optimized Mac delivery and native
+listening/interaction remain open.
+See [Vector contract and checklist](docs/operator-native.md).
+
+## computer midi keyboard — PR257 / #2642, 16 october 2026
+
+Added the default-off toolbar/M keyboard with seventeen chromatic physical keys,
+Z/X octave and C/V finite velocity steps. Worker-prepared selected banks use the
+existing native instruments and ordinary graph custody, with independent bounded
+live voices, queue-independent cancellation and stopped monitoring that freezes
+musical clocks. Source tests cover PCM/release, mutable voices, routing, pressure,
+revision/history and focus/shortcut dispatch; callback allocation probes cover
+live publication, release, full-queue priority Stop and retirement. Exact final
+local CI/optimized build provenance is recorded by the PR coordinator. Native
+checklist and limits are in docs/midi.md. Positive-latency monitoring remains
+explicitly refused and tracked as #2644 / PR260; native listening/input acceptance
+remains open, without MIDI recording or hardware output claims.
+
+## knob history shortcut coverage — PR171 / #2374, 16 october 2026
+
+Strengthened the existing rendered Operator shared-control history fixture to use
+actual keyboard shortcuts for drag and typed edits, immediate Undo after typed
+commit/Tab focus movement, one-entry restoration and save/reopen after Redo. The
+current representative paths pass; the original unspecified native report is not
+reproduced, and no production history change or generic bug fix is claimed.
+The user will file a specific recurrence if observed. Full exact-source checks
+are recorded with PR171; native input acceptance remains separate. Pulse requires
+reauthentication here; no ticket completion is claimed.
+
+## controlled CLAP fixture tooling — PR199 / #20, 16 october 2026
+
+Integrated the isolated format-owned supervisor/native helpers and preserved
+scoped dependency/process boundaries. Official pinned CLAP headers/MIT notice and
+compiler/header/runtime closure are verified. All53 explicit Linux native cases,
+default protocol/unit tests and strict crate Clippy pass. Final exact-head native
+rerun/full CI are recorded with PR199. Mac's8 tests, SDK/toolchain/enrollment
+acceptance and production third-party/application hosting remain open. No guards
+were weakened or Linux results relabeled as Darwin evidence. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
+## controlled VST3 fixture tooling — PR193 / #21, 16 october 2026
+
+Integrated the isolated Linux scanner/offline helper crate and scoped hash,
+process and signal boundaries. Official pinned SDK/submodules, MIT notices,
+compiler/header/runtime closure and fixture receipts were verified. All10 scanner
+and12 offline native fixture tests pass, as do default protocol tests and strict
+crate Clippy. Final exact-head rerun/full CI are recorded in PR193. Production
+third-party containment, application hosting, real-time/editor/state integration,
+Mac/native/reference/listening and physical deadlines remain open. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
+## eq8 response measurement tooling — PR198 / #2251, 16 october 2026
+
+Reviewed actual prepared-response export and the bounded uncertainty comparator.
+Reproduced/fixed parser-recursion traceback and wrong-caller-checkout source
+attribution. All14 comparator and4 exporter tests pass, plus direct wrong-checkout
+provenance probes. Full exact-source checks are recorded with PR198. No measured
+Live dataset, adaptive-Q law/toggle or reference/native acceptance is claimed;
+parent acceptance remains open. Pulse requires reauthentication here; no ticket
+completion is claimed.
+
+## isolated eq8 oversampling study — PR191 / #2252, 16 october 2026
+
+Private test-only halfband processing, independent response/convolution oracles,
+allocation sensitivity and actual EQ runtime layout/admission refusal are reviewed.
+The proposed wrapper exceeds the unchanged effect runtime cap; no production
+oversampling processor/toggle or latency policy is introduced. Final exact-source
+checks are recorded with PR191. Storage/actual EQ integration, native/reference
+and physical deadline acceptance remain open. Pulse requires reauthentication
+here; no parent completion or ticket update is claimed.
+
+## private pitch-envelope math proofs — PR189 / #2327, 16 october 2026
+
+Reviewed the isolated signed normalized linear envelope and checked semitone
+frequency multiplier proofs, imported only by tests. They add no production
+codec/provider/runtime/UI or parameter domain. Source and allocation tests cover
+boundaries, partitions, independent frequency/phase oracles and atomic refusals.
+Final exact-source checks are recorded in PR189; the production pitch-envelope
+feature and native/reference acceptance remain open. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
+## retire completed active analytic ramps — 16 october 2026
+
+An existing generic coefficient regression reproduced active transition entries
+remaining after their five-millisecond endpoint, retaining an extra render path.
+Retirement now follows successful whole-render commit; ordinary current-context
+PCM stays exact, refused blocks retain clock/ramp and detached owners retain their
+captured transition. Focused continuation tests pass; full exact-source CI is
+recorded with the repair PR. Physical performance/native acceptance remain open.
+Pulse requires reauthentication here; no ticket write is claimed.
+
+## device preset integration — PR187 / #2375, 16 october 2026
+
+Restored focused preset service/storage/native-dialog/header wiring against current
+main, preserving current DSP/capture/shared-widget behavior and the version-11
+Operator payload. Nonzero host input trim now survives preset load alongside output
+trim; the save/load/one-Undo/Redo fixture reproduced its previous reset. Deferred
+preset requests are discarded after failed device finalization; the actual worker
+compile-refusal fixture reproduced their old retention. Errors retain diagnostic
+sources with lowercase app messages and consistent early/late collision guidance.
+Focused rendered save/load/cancel/stale/Return/Operator tests pass. Final exact-source
+full checks are recorded with PR187; native interaction/listening remain open.
+Pulse requires reauthentication here; no ticket state update is claimed.
+
 ## export finalization refusal — follow-up to PR152, 16 october 2026
 
 The new range/stem request now follows the legacy export refusal contract when a
@@ -2704,6 +2833,7 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 - Canonical badge toggles, history/save/reopen and pending/queue-refusal fixtures
   are integrated with PR156 navigation. New held/release/reversal callback probes,
   UI fixtures, full final local CI and user listening/UI acceptance remain open.
+
 ## 11 October 2026 — candidate-owned handoff scratch (Pulse2371 / PR166)
 
 - Isolated the handoff.rs-only patch from PR164's shared-scratch checkpoint;
@@ -3192,6 +3322,28 @@ interrupted at step7 after main advanced; it is not merge evidence. Combined
 source checks, a fresh complete exact-candidate run and guarded optimized delivery
 remain outstanding. Native interaction/listening and Windows evidence remain
 separate from automated source checks.
+
+
+## 16 October 2026 — Operator harmonic review candidate
+
+Pulse2342 / PR158 preserves64-voice non-LFO/feedback admission,64partials,
+f64 coefficients and the53,792-byte runtime pair. Bounded per-control overview
+geometry caching avoids repeated Fourier previews and duplicate cloned parameter
+scans. Fallible phase-basis reservation caches failures. Full64 fixed-width
+recurrences, strict u64 Nyquist caps, borrowed settled spectra, inactive LFO work,
+flat envelope decay and zero-modulation phase conversion remove redundant work.
+Independent sine-sum coverage now explicitly selects every cutoff0–64; phase
+reservation failure is tested. All237 device release tests, the focused harmonic
+callback allocation/deallocation probe, cached UI tests, rendered painter test
+and strict UI feature Clippy passed before the final full candidate validation.
+
+96k dense64-voice process CPU remains2.5–4.7ms/block depending on patch, against
+2.667ms duration; concurrent workload also caused wall-time overruns. Performance
+and native acceptance remain open. A bounded two-voice kernel prototype improved
+median latency12.4%, insufficient to justify runtime restructuring, and remains
+ignored evidence only. Full exact-source local CI and optimized stable-path
+delivery are still required; no merge, native acceptance or completion claimed.
+
 # 16 October 2026 — lfo assignment #2383 / pr173
 
 The strengthened rendered regression reproduced the depth caption overlapping
@@ -3211,6 +3363,14 @@ native checklist. Exact-source full CI and optimized delivery evidence are
 recorded separately with the PR/build; native/listening/reference review remains
 open, including deferred #2384 acceptance.
 
+PR158 integrates main d8230c4b before native candidate delivery. Conflicts retain
+the512-descriptor/64-snapshot contract and main's bounded Unicode display metadata.
+Combined harmonic/LFO allocation fixtures stagger release-time destination edits
+after harmonic range edits so neither coverage path masks the other. Main's loop,
+Utility and LFO-caption changes are preserved. The earlier716320d full run passed
+six preflight steps, then was cleanly interrupted (exit130) for this integration;
+it is not full-CI or merge evidence.
+
 ## 16 October 2026 — deterministic stream shutdown fixture (#2636 / PR252)
 
 Moved the undrained-ready-queue shutdown fixture to its owning runtime unit tests
@@ -3222,6 +3382,29 @@ the negative control retains complete join/pool accounting with zero publication
 Normal and allocation-probe stream suites pass. Final exact-source CI is recorded
 with PR252. Production shutdown, queue bounds and native streaming admission are
 unchanged; no new native-device or physical-deadline acceptance is claimed.
+
+PR158 also integrates main98a4dbd1's deterministic stream-shutdown test coverage.
+Production stream behavior is unchanged. The a532054e full18-step local run
+passed with clean identical source digestba1bd16caf4c2098f93016214e2799bbe9d988d8178022f3bc14236c831b03bf;
+it remains valid for that earlier candidate. The integrated candidate requires
+a fresh exact-source run. Native installation was safely refused while hex
+was running; no force-quit, replacement, reload or native acceptance occurred.
+
+
+## 16 October 2026 — harmonic painter display repair
+
+Native testing of PR158 candidate ce4788f8 found status-bar edits without visible
+harmonic painting. The instrument renderer temporarily removes its cached view
+during composition; the harmonic graph read that absent cache, so it never
+refreshed bars or the waveform preview. The focused repair passes the current
+borrowed parameter view into rendering and retains cached lookup for events.
+A rendered keyboard adjustment after painting/redraw reproduces stale widget
+values before the fix; additional coverage exercises a restored 16-partial bank.
+The oscillator layout reserves the upper field for painting and moves the small
+wave preview beside its selector below the stationary tabs, retaining Hex's theme.
+Targeted/full CI and a fresh optimized stable-path candidate are required; native
+painting, appearance and listening must be retested. No new native acceptance or
+merge is claimed, and the dense high-rate/FM CPU limitation remains open.
 
 
 ## 16 October 2026 — final-active audio-only custody (#2540 / PR235)
@@ -3265,3 +3448,106 @@ admission, OS-stop success, deadline, listening or complete-cost claim is made.
   missing carrier/resource pressure and post-extraction destructor panic have
   focused controls. Final integrated local-CI evidence will be recorded with PR236;
   fresh-runtime policies, readiness and full24/177/native acceptance remain open.
+
+
+## 16 October 2026 — Operator reference layout correction
+
+The user confirmed native harmonic painting works in b41f4e18/build3021950488;
+visual acceptance failed. A read-only native screenshot showed colliding phase
+and velocity text, full-width lower rows, a range dropdown and a blank preview.
+The revised composition uses the full upper field with stacked range buttons,
+two stationary graph tabs and a common lower envelope-left/oscillator-right
+inspector on both pages. Phase/feedback use percent codecs, LFO has a separate
+summary link, and masks/Normalize/fixed multiplier remain reachable. The shared
+curve canvas's zero height was reproduced by a rendered bounds regression before
+the size fix; no native acceptance is inferred from this source repair.
+Hiding the painter explicitly cancels its stroke while retaining preview cache.
+Current main4134e33b is integrated, retaining both sides of todo.md conflicts and
+upstream vendored license/patch whitespace. New exact-source local checks,
+optimized installation and user visual confirmation are required. Dense high-rate
+FM CPU and other unverified native/listening requirements remain open.
+
+
+The first fe062e54 FULL20 run stopped in workspace tests: the newly integrated
+preset fixture still asserted pre-harmonic v11/416-byte Operator state. The
+fixture now requires v12/1,488 bytes and exercises authored/hidden harmonics,
+range and Repeat through the existing complete-state load/Undo/Redo and neighbor
+identity checks. Production preset behavior is unchanged. This failed run is not
+merge or delivery evidence; the final source requires a new full run.
+
+## 16 October 2026 — companion host clock and finite tail prerequisites (#2646 / PR261)
+
+Added optional exact performance-frame and actual running-state observations to
+native instrument clocks, forwarding checked offsets and delayed transport-stamp
+origins. Stopped audition keeps its canonical-tempo musical clock but exposes no
+invented advancing transport origin. Centralized finite mutable tail admission
+at 140 seconds for authored tracks, checkpoints and keyboard audition, retaining
+all existing storage, voice, density, query and replay limits. Separate effect
+suffix limits are unchanged. Focused headless lattice/engine checks and remaining
+exact-source CI are recorded with PR261; this prerequisite does not implement
+Operator companion controls or establish native/listening/deadline acceptance.
+Follow-up integration removes the synthetic keyboard preparation clock and uses
+both twins' immutable event-only preflight instead. A clock-required provider
+reproduces the old preparation refusal and checks that actual rendering still
+refuses absent/unknown clocks without PCM or committed-history mutation.
+
+
+## 16 October 2026 — Operator harmonic inspector companions (#2342 / PR158)
+
+Added harmonic-column separators and the supplied Wave catalog, including saw 6,
+quantized sine and original noise sources. The compact inspector now exposes
+Time<Vel, envelope Vel, Key, Loop with conditional timing, phase R and Osc<Vel/Q.
+All/odd/even/Normalize implementation remains dormant in the interface. Hex theme,
+existing range buttons and outer controls are retained. State v14 preserves the
+complete legacy prefix and stable waveform/parameter identities. The host clock
+and finite-tail prerequisite is #2646 / PR261.
+
+Focused evidence: five rendered UI tests, complete preset Undo/Redo round trips,
+260 device unit tests plus 26 integration tests (two existing ignored), strict
+device Clippy, 64-note Loop/Sync/Trigger zero-allocation callback probes, and
+compensated Sync PCM partition equality pass. Runtime twins remain within the
+existing memory budgets with voice/partial counts and precision unchanged. Final
+full CI and optimized stable-path delivery require exact-candidate evidence.
+Native confirmation and dense high-rate/FM CPU acceptance remain open; exact
+Live transfer laws, noise algorithms and active companion-law history changes
+are not claimed as parity. The user's explicit candidate confirmation remains
+a merge requirement for both PRs.
+
+
+Companion integration found and reproduced a default-stack routed Session
+overflow. Borrowed per-voice legacy export and a compact event proof remove
+whole-runtime temporary copies without allocations, public API changes or cap
+reductions. The original reproducer, six engine harmonic-history tests, 261
+device unit plus 26 integration tests (two existing ignored) and nine existing
+Operator/EQ allocation fixtures pass. Mixed one-shot/release expiry and failed
+admission atomicity have focused coverage. Full exact-source CI must run again
+after this repair; previous failed reports remain history.
+
+The next full run passed 471 engine tests, including the old stack reproducer,
+but found a stale retained-recipe fixture expecting 430 contexts. The larger
+v14 context admits 426 under the unchanged 2 MiB ceiling; the exact accounting
+fixture and historical README qualification now reflect that size. No
+production admission or budget was changed. Final full CI is rerun after this
+fixture repair.
+## 16 October 2026 — issue14 native timing evidence
+
+Canonical merged PR31 was adopted into live Pulse through supported authenticated
+legacy linkage, without a duplicate feature PR. Supplement258 adds a disposable
+native GPUI timing harness and matched dense hybrid fixtures. Exact optimized
+sourcebc8da487 passed full20-step local CI; the complete129.916second capture
+validated360rows (320measured, zero failures). One/100-track selection paint
+medians are approximately7/33ms and command completion28–35/62–76ms.
+[Full report and raw evidence](docs/evidence/time-selection-2026-10-16/report.md)
+retain build/toolkit/fixture hashes, following-frame bounds and uncontrolled host
+load. Earlier failed runs are excluded. Existing functional native acceptance is
+preserved; no physical-display, constant-work or subjective smoothness claim.
+Dense UI acceptance remains Pulse29. Separate unsnapped cursor projection bug is
+Pulse2647/PR263; measured drags remain unsnapped, untimed paste setup uses snap.
+
+
+16 October merge continuation: the user explicitly requested merge and testing,
+superseding the earlier candidate-confirmation-before-merge hold. Integrated
+main245f8b2b timing evidence, preserving both todo histories. Both prerequisite
+and feature exact candidates require fresh full local CI before merge. Native
+acceptance and dense high-rate/FM deadline validation remain separate open
+test results; no numerical Live parity or deadline safety is inferred.

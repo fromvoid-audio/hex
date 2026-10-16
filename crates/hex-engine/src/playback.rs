@@ -293,6 +293,61 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    /// Control-side only: attach a selected instrument's bounded audition pool.
+    /// The ordinary graph publication owns preparation, inheritance and retirement.
+    pub fn prepare_computer_keyboard(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), Invalid> {
+        let canonical = project
+            .tracks()
+            .iter()
+            .find(|candidate| candidate.id() == track)
+            .and_then(hex_project::Track::instrument)
+            .ok_or(Invalid("computer keyboard track is unavailable"))?;
+        let compiled = self
+            .project
+            .tracks()
+            .iter()
+            .find(|candidate| candidate.canonical_track_id() == Some(track))
+            .ok_or(Invalid("computer keyboard track is unavailable"))?;
+        if project.sample_rate() != self.sample_rate()
+            || compiled.instrument_id != Some(canonical.id())
+            || compiled.instrument_state.as_ref() != Some(canonical.state())
+            || compiled.instrument_bypassed != canonical.bypassed()
+        {
+            return Err(Invalid("computer keyboard source does not match playback"));
+        }
+        let runtime = self.session_runtime.as_mut().ok_or(Invalid(
+            "computer keyboard requires prepared session playback",
+        ))?;
+        if !runtime.computer_keyboard_latency_supported() {
+            return Err(Invalid(
+                "computer keyboard monitoring is unavailable with positive latency devices",
+            ));
+        }
+        let candidate = Box::new(crate::computer_keyboard::ComputerKeyboardRuntime::prepare(
+            project, track, input,
+        )?);
+        let previous = runtime.computer_keyboard.replace(candidate);
+        if runtime.validate_candidate_runtime_storage(0).is_err() {
+            runtime.computer_keyboard = previous;
+            return Err(Invalid("computer keyboard exceeds graph storage budget"));
+        }
+        Ok(())
+    }
+
+    pub fn cancel_computer_keyboard(&mut self) {
+        if let Some(keyboard) = self
+            .session_runtime
+            .as_mut()
+            .and_then(|runtime| runtime.computer_keyboard.as_mut())
+        {
+            keyboard.cancel();
+        }
+    }
     pub(crate) fn new_audio_candidate(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::AudioStorageError> {
@@ -776,6 +831,16 @@ impl Playback {
     }
 
     fn apply_action_inner(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+        if matches!(
+            action,
+            PlaybackAction::Transport(
+                PlaybackCommand::Stop | PlaybackCommand::Seek(_) | PlaybackCommand::PlayFrom(_)
+            ) | PlaybackAction::Session(
+                crate::SessionPlaybackCommand::Stop | crate::SessionPlaybackCommand::Seek(_)
+            )
+        ) {
+            self.cancel_computer_keyboard();
+        }
         match action {
             PlaybackAction::SetMetronome(enabled) => {
                 if enabled && !self.metronome_supported() {
@@ -989,6 +1054,7 @@ impl Playback {
             }
         }
         self.inherit_metronome(previous);
+        previous.cancel_computer_keyboard();
         Ok(())
     }
 

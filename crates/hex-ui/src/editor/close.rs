@@ -87,8 +87,8 @@ impl EditorView {
         if self.device_gesture.has_pending_terminal() {
             return;
         }
-        if let Some(snapshot) = self.device_gesture.snapshot()
-            && let Err(error) = self.finish_device_gesture(snapshot.value)
+        if self.device_gesture.snapshot().is_some()
+            && let Err(error) = self.device_gesture.finish_current()
         {
             self.error = Some(error.into());
         }
@@ -608,6 +608,21 @@ mod window_tests {
         let export_control = hex_session::service::ExportControl::default();
         editor.update(cx, |view, _| {
             assert!(view.enqueue_device_barrier(Request::SaveNew(save_path.clone())));
+            let owner = hex_session::service::preset::Owner {
+                project_generation: view.project_generation,
+                revision: view.state.as_ref().unwrap().revision,
+                device,
+                class: hex_engine::NativeDeviceClass::Effect,
+                type_id,
+            };
+            assert!(view.enqueue_device_barrier(Request::SaveDevicePreset {
+                owner,
+                path: save_path.with_extension("hex-device-preset.json"),
+            }));
+            assert!(view.enqueue_device_barrier(Request::LoadDevicePreset {
+                owner,
+                path: save_path.with_extension("hex-device-preset.json"),
+            }));
             assert!(view.enqueue_device_barrier(Request::ExportRange {
                 path: export_path.clone(),
                 start: 0,

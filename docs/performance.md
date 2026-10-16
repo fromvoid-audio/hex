@@ -1,3 +1,13 @@
+## Project-wide selection — 16 October 2026
+
+The optimized native 1/100-track mixed audio/MIDI capture completed360rows
+(320measured, zero failures). Median selection paint was6.97–7.08ms versus
+32.46–32.75ms; UI-observed copy/cut/replace-paste/ripple-insert completion was
+28.03–35.25ms versus62.31–76.30ms.
+[Full distributions, raw data, exact-source provenance and limitations](evidence/time-selection-2026-10-16/report.md).
+Uncontrolled desktop load, synthetic in-process native dispatch, offline audio;
+no physical display/audio deadline or subjective smoothness claim.
+
 ## PR164 capture prefix clearing — 15 October 2026
 
 A release-mode headless comparison on Linux x86_64, AMD EPYC 9V74 (five exposed

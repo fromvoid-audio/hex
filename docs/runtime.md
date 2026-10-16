@@ -707,6 +707,7 @@ context leases remain within existing admission/preroll caps. Canonical badges
 queue Boolean edits and restore pending values on queue refusal. See
 [requirements](operator-enable.md) and [source evidence](operator-enable-continuation.md)
 for final automated and native acceptance still required.
+
 ## candidate-owned handoff scratch — Pulse2371 / PR166
 
 Prepared-playback continuation borrows the candidate's constructor-owned

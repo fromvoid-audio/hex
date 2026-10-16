@@ -73,6 +73,11 @@ actual processing, output matrix, gain/mute and residual tails before Main/maste
 Main master processing is excluded from every capture. Nonlinear Main processing
 means summing captures is not a Main reconstruction contract.
 
+Device metering preserves the same capture point. The analytic metering path
+already applies track gain/pan while summing voices; capture must not apply the
+fader again. A non-unity gain/pan PCM regression checks captured output before
+Main gain and exact Main equality against the ordinary unmetered renderer.
+
 Retired effect/instrument suffix groups explicitly retain their original TrackId.
 Current and retained generations with the same ID accumulate in that ID's slice.
 A removed owner remains its original ID, even when another track occupies its

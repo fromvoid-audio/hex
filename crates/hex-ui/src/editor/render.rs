@@ -145,6 +145,20 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        if self.audio_batch.is_some() {
+            bar = bar.child(
+                div()
+                    .id("cancel-audio-import")
+                    .debug_selector(|| "cancel-audio-import".into())
+                    .px_1()
+                    .cursor_pointer()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text("cancel import"))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.cancel_audio_batch(cx);
+                    })),
+            );
+        }
         let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
         let revision_label = self.audio_admission.label();
         let pending_commands = self
@@ -462,6 +476,14 @@ impl Render for EditorView {
                     }
                 }),
             )
+            .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+                view.computer_keyboard_down(event, window, cx);
+            }))
+            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                if view.computer_keyboard_up(&event.keystroke.key) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && view.cancel_active_native_device_drag() {
                     cx.stop_active_drag(window);
@@ -532,6 +554,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_audio_batch(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();

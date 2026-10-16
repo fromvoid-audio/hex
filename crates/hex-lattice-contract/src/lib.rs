@@ -1,11 +1,69 @@
 //! Bounded metadata and authored state shared across native device boundaries.
+#[cfg(test)]
+mod snapshot_tests;
 use std::{fmt, sync::Arc};
 
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
 pub const MAX_DEVICE_TYPE_ID_BYTES: usize = 128;
 pub const MAX_PARAMETER_ID: u32 = 65_535;
 pub const MAX_NATIVE_DEVICE_TYPES: usize = 256;
-pub const MAX_PARAMETERS_PER_DEVICE: usize = 256;
+pub const MAX_PARAMETERS_PER_DEVICE: usize = 512;
+pub const MAX_PARAMETER_SNAPSHOT_ENTRIES: usize = 64;
+
+/// Control-side atomic edits. Unused slots are canonical and cannot be supplied
+/// by callers; the callback consumes prepared device laws, never this payload.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeviceParameterSnapshot {
+    entries: [(ParameterId, ParameterValue); MAX_PARAMETER_SNAPSHOT_ENTRIES],
+    count: u8,
+}
+
+impl DeviceParameterSnapshot {
+    pub fn new(entries: &[(ParameterId, ParameterValue)]) -> Result<Self, DeviceContractError> {
+        if entries.is_empty() || entries.len() > MAX_PARAMETER_SNAPSHOT_ENTRIES {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        let mut snapshot = Self {
+            entries: [(ParameterId::from_static(1), ParameterValue::Float(0.0));
+                MAX_PARAMETER_SNAPSHOT_ENTRIES],
+            count: entries.len() as u8,
+        };
+        for (index, &(id, value)) in entries.iter().enumerate() {
+            id.validate()?;
+            if entries[..index].iter().any(|entry| entry.0 == id)
+                || matches!(value, ParameterValue::Float(value) if !value.is_finite())
+            {
+                return Err(DeviceContractError::InvalidParameterValue);
+            }
+            snapshot.entries[index] = (id, value);
+        }
+        Ok(snapshot)
+    }
+
+    pub fn entries(&self) -> &[(ParameterId, ParameterValue)] {
+        &self.entries[..usize::from(self.count)]
+    }
+
+    pub fn same_parameters(&self, other: &Self) -> bool {
+        self.count == other.count
+            && self
+                .entries()
+                .iter()
+                .zip(other.entries())
+                .all(|(a, b)| a.0 == b.0)
+    }
+
+    pub fn validate(&self, descriptors: &[ParameterDescriptor]) -> Result<(), DeviceContractError> {
+        for &(id, value) in self.entries() {
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.id == id)
+                .ok_or(DeviceContractError::UnknownParameter)?
+                .validate(value)?;
+        }
+        Ok(())
+    }
+}
 /// Maximum UTF-8 bytes in a parameter label, unit or choice label.
 pub const MAX_PARAMETER_LABEL_BYTES: usize = 128;
 /// Maximum alternatives exposed by one native parameter selector.
@@ -416,6 +474,21 @@ pub trait NativeDeviceMetadata: Sync {
         parameter: ParameterId,
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError>;
+
+    /// Full validation precedes private patching. Devices with compound laws
+    /// may override this to decode/encode once and adopt modes atomically.
+    fn patch_parameters(
+        &self,
+        state: &NativeDeviceState,
+        snapshot: &DeviceParameterSnapshot,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        snapshot.validate(self.descriptors())?;
+        let mut candidate = self.migrate_state(state)?;
+        for &(parameter, value) in snapshot.entries() {
+            candidate = self.patch_parameter(&candidate, parameter, value)?;
+        }
+        Ok(candidate)
+    }
 }
 
 #[cfg(test)]

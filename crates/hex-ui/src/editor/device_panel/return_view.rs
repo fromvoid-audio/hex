@@ -32,9 +32,11 @@ pub(super) fn render(
         .device_gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
+    super::snapshot::retire_invalid_owner(view, &alive);
     let stale_target_has_work = active_target.is_some_and(|target| match target {
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+        GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
         GestureTarget::ReturnSend { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
@@ -282,6 +284,14 @@ pub(super) fn render_return_effect(
             cx.notify();
         })),
     );
+    if device_view.is_ok() {
+        actions = actions.child(super::super::device_preset::actions(
+            id,
+            NativeDeviceClass::Effect,
+            selected,
+            cx,
+        ));
+    }
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {

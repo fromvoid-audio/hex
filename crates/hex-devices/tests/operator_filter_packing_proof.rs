@@ -202,5 +202,5 @@ fn measured_complete_transport_twin_is_rejected_even_before_prepared_owner_charg
     assert_eq!(size_of::<packing::Twin>(), 4168);
     assert_eq!(size_of::<[packing::Twin; 2]>(), 8336);
     assert!(size_of::<[packing::Twin; 2]>() > 8192);
-    assert_eq!(size_of::<packing::PreparedRoot>(), 1168);
+    assert_eq!(size_of::<packing::PreparedRoot>(), 1208);
 }

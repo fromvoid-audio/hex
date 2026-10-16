@@ -27,6 +27,8 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::DeviceRuntime)?
             .delays
             .push_transport_stamp(crate::compensation::TransportStamp {
+                performance_frame,
+                transport_is_running: self.playing,
                 arrangement_frame,
                 loop_pass,
                 performance_beat_raw: beat.raw(),
@@ -55,84 +57,102 @@ impl SessionPlayback {
                     let route = self.route_scratch[index];
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
-                    render_route_source_chunk(
-                        RouteSourceContext {
-                            revision: &self.revision,
-                            route,
-                            historical_floor: self.historical_floor_for(index),
-                            suppressions: &self.suppression_scratch,
-                            continuations: &self.analytic_continuations,
-                            index,
-                            timing: &timing,
-                            table: self.revision.session().sine_table(),
-                        },
-                        &mut self.spans,
-                        performance_frame,
-                        arrangement_frame,
-                        &mut audio,
-                        pages.as_deref_mut(),
-                        SourceStage::Audio,
-                    )?;
-                    for release in &self.release_scratch {
-                        if release.track_index == index && release.tail_group.is_none() {
-                            render_release_raw(
-                                release,
-                                self.revision.session().sine_table(),
-                                self.revision.arrangement().shared_contexts(),
-                                &self.retained_contexts,
-                                &self.analytic_continuations,
-                                performance_frame,
-                                &mut generator,
-                            )?;
-                        }
-                    }
-                    render_route_source_chunk(
-                        RouteSourceContext {
-                            revision: &self.revision,
-                            route: effective_midi_route(
-                                &self.revision,
-                                &self.route_scratch,
+                    if self.playing {
+                        render_route_source_chunk(
+                            RouteSourceContext {
+                                revision: &self.revision,
+                                route,
+                                historical_floor: self.historical_floor_for(index),
+                                suppressions: &self.suppression_scratch,
+                                continuations: &self.analytic_continuations,
                                 index,
-                            )?,
-                            historical_floor: self.historical_floor_for(index),
-                            suppressions: &self.suppression_scratch,
-                            continuations: &self.analytic_continuations,
-                            index,
-                            timing: &timing,
-                            table: self.revision.session().sine_table(),
-                        },
-                        &mut self.spans,
-                        performance_frame,
-                        arrangement_frame,
-                        &mut generator,
-                        pages.as_deref_mut(),
-                        SourceStage::Instrument,
-                    )?;
-                    render_mutable_instrument_chunk(
-                        MutableInstrumentChunkContext {
-                            revision: &self.revision,
-                            routes: &self.route_scratch,
-                            runtimes: &mut self.mutable_instruments,
-                            onsets: &mut self.mutable_onsets,
-                            suppressions: &self.suppression_scratch,
-                            events: &mut self.mutable_events,
-                            spans: &mut self.spans,
+                                raw: false,
+                                timing: &timing,
+                                table: self.revision.session().sine_table(),
+                            },
+                            &mut self.spans,
                             performance_frame,
                             arrangement_frame,
-                            arrangement_loop_pass: loop_pass,
-                            loop_region: if self.linear_arrangement_export {
-                                None
-                            } else {
-                                self.revision
-                                    .arrangement()
-                                    .loop_region()
-                                    .filter(|region| region.enabled())
+                            &mut audio,
+                            pages.as_deref_mut(),
+                            SourceStage::Audio,
+                        )?;
+                        for release in &self.release_scratch {
+                            if release.location.track_index() == index
+                                && release.location.tail_group().is_none()
+                            {
+                                render_release_raw(
+                                    release,
+                                    self.revision.session().sine_table(),
+                                    self.revision.arrangement().shared_contexts(),
+                                    &self.retained_contexts,
+                                    &self.analytic_continuations,
+                                    performance_frame,
+                                    &mut generator,
+                                )?;
+                            }
+                        }
+                        render_route_source_chunk(
+                            RouteSourceContext {
+                                revision: &self.revision,
+                                route: effective_midi_route(
+                                    &self.revision,
+                                    &self.route_scratch,
+                                    index,
+                                )?,
+                                historical_floor: self.historical_floor_for(index),
+                                suppressions: &self.suppression_scratch,
+                                continuations: &self.analytic_continuations,
+                                index,
+                                raw: false,
+                                timing: &timing,
+                                table: self.revision.session().sine_table(),
                             },
-                            timing: &timing,
-                        },
-                        index,
-                        &mut generator,
-                    )?;
+                            &mut self.spans,
+                            performance_frame,
+                            arrangement_frame,
+                            &mut generator,
+                            pages.as_deref_mut(),
+                            SourceStage::Instrument,
+                        )?;
+                        render_mutable_instrument_chunk(
+                            MutableInstrumentChunkContext {
+                                revision: &self.revision,
+                                routes: &self.route_scratch,
+                                runtimes: &mut self.mutable_instruments,
+                                onsets: &mut self.mutable_onsets,
+                                suppressions: &self.suppression_scratch,
+                                events: &mut self.mutable_events,
+                                spans: &mut self.spans,
+                                performance_frame,
+                                arrangement_frame,
+                                arrangement_loop_pass: loop_pass,
+                                loop_region: if self.linear_arrangement_export {
+                                    None
+                                } else {
+                                    self.revision
+                                        .arrangement()
+                                        .loop_region()
+                                        .filter(|region| region.enabled())
+                                },
+                                timing: &timing,
+                            },
+                            index,
+                            &mut generator,
+                        )?;
+                    }
+                    if let Some(keyboard) = self
+                        .computer_keyboard
+                        .as_mut()
+                        .filter(|keyboard| keyboard.track() == route.id)
+                    {
+                        let clock = keyboard
+                            .musical_clock(&timing, performance_frame, self.playing)
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        keyboard
+                            .render(&mut generator, Some(&clock))
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
                     let compensation = self
                         .compensation
                         .as_mut()
@@ -250,9 +270,11 @@ impl SessionPlayback {
         }
         // Only zero-latency routed layouts admit detached old chains. Positive
         // latency revisions refuse those transitions before moving audible owners.
-        self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
-        self.return_effect_tails
-            .render_chunk(output, frame_offset, capture)?;
+        if self.playing {
+            self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
+            self.return_effect_tails
+                .render_chunk(output, frame_offset, capture)?;
+        }
         Ok(())
     }
 }

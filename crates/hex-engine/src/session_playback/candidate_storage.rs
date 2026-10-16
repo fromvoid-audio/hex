@@ -11,6 +11,7 @@ impl SessionPlayback {
         l: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
         let Self {
+            computer_keyboard,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -59,7 +60,8 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open,
         } = self;
-        if compensation.is_some()
+        if computer_keyboard.is_some()
+            || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
             || mutable_instruments.iter().any(Option::is_some)

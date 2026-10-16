@@ -207,7 +207,7 @@
     "src/platform/windows/events.rs": "4972eba83521128b1da8dee0c1f7138d733b73b1d638ea57e1f60d992d5c498e",
     "src/platform/windows/util.rs": "00f650fd09cfef7b8eb48a3c8583018377174355c7f8d67feeff727db7888bc2",
     "src/platform.rs": "79706c2d99b144323e1c01d99bcb30c6b5813720a0c207a984c8ccd67895e6a4",
-    "src/window.rs": "9f10986bbcc2cc2a67e33134ac1c6f4e7255433c83e1fe08f8449ed725892219",
+    "src/window.rs": "94139a9698ee0b4094afed9dcf6e1cf817d6a74120ded1fdaef0d08a49b42552",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/platform/test/platform.rs": "f08a366fb7fdb2e9ec40ec3abc813dce4908f0371b97f1b5046635729a3e8f7f"
   }
