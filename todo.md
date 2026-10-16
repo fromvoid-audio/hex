@@ -1,3 +1,14 @@
+## device lane drops integration — #2333 / PR183, 16 october 2026
+
+The existing canonical device-drop implementation now integrates current main.
+Conflicts preserve both track/device commands and routing/gain-recording contracts;
+the stale-revision UI fixture retains audio-clip waveforms and gain previews.
+Device drops create tracks in empty space/above/between/after tracks or append
+an effect/replace an instrument on an existing lane, with one Undo/Redo.
+The retained Finder adapter remains original PR172 history. Exact final-source
+local CI and stable optimized delivery are recorded with PR183. Native user
+interaction/listening acceptance remains separate; no native input was automated.
+
 ## 13 October 2026 — drops above the first track (pulse2333 / pr183)
 
 The existing catalog-device Arrangement implementation is retained. Shared painted

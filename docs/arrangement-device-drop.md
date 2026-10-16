@@ -45,3 +45,12 @@ rendered device test now also covers trailing-space appends for both classes.
 Native checklist: drop Vector into an empty project, above row one, between two
 tracks and below the last track; confirm assigned device/order and one Undo.
 Repeat above row one with a sample and confirm its snapped placement and Undo.
+
+16 October integration: the owner requested merging the existing canonical PR183.
+Current main's routing, gain recording, private streaming roots, shared device
+compositions and final host-output validation are retained. The stale-revision
+rendered refusal fixture now preserves main's audio-clip waveform and gain-preview
+view fields when advancing its revision. Full final-source local CI and the
+repository-owned optimized stable installation are recorded with PR183; historical
+holds and build results above remain history. Native pointer/appearance/listening
+acceptance remains separate and has not been automated.
