@@ -173,6 +173,8 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        let _row_diagnostic =
+            super::render_diagnostic::scope(super::render_diagnostic::Kind::RowBuild);
         let ClipViewTimeline {
             viewport,
             grid,
@@ -208,6 +210,8 @@ impl EditorView {
         let move_display = self.time_range_move_display();
         let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
         for clip in track.clips() {
+            let _audio_diagnostic =
+                super::render_diagnostic::scope(super::render_diagnostic::Kind::AudioBuild);
             let Some(end) = clip.start().checked_add(clip.duration()) else {
                 continue;
             };

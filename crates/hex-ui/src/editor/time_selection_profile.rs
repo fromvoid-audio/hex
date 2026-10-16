@@ -89,6 +89,8 @@ struct Profile {
     first_diagnostic: Option<super::render_diagnostic::Stats>,
     following_diagnostic: Option<super::render_diagnostic::Stats>,
     frame_started: Option<Instant>,
+    leading_prepaint: Option<Instant>,
+    leading_paint: Option<Instant>,
 }
 
 pub(crate) fn open(
@@ -143,6 +145,8 @@ pub(crate) fn open(
                 first_diagnostic: None,
                 following_diagnostic: None,
                 frame_started: None,
+                leading_prepaint: None,
+                leading_paint: None,
             };
             cx.spawn_in(window, async move |this, cx| {
                 loop {
@@ -596,6 +600,12 @@ impl Profile {
                 at.duration_since(started),
             );
         }
+        if let Some(started) = self.leading_paint.take() {
+            super::render_diagnostic::record(
+                super::render_diagnostic::Kind::LeadingToTrailingPaint,
+                at.duration_since(started),
+            );
+        }
         self.paint_sequence += 1;
         let operation = self.operation();
         let view = self.editor.read(cx);
@@ -667,20 +677,63 @@ impl Render for Profile {
             self.frame_started = Some(Instant::now());
         }
         let content = self.editor.clone();
-        div().size_full().relative().child(content).child(
+        let leading = self.diagnostic.then(|| {
+            let prepaint_entity = entity.clone();
+            let paint_entity = entity.clone();
             canvas(
-                |_, _, _| (),
-                move |_, _, window, cx| {
+                move |_, _, cx| {
                     let at = Instant::now();
-                    entity.update(cx, |profile, cx| profile.paint(at, window, cx));
+                    prepaint_entity.update(cx, |profile, _| {
+                        if let Some(started) = profile.frame_started {
+                            super::render_diagnostic::record(
+                                super::render_diagnostic::Kind::RootToLeadingPrepaint,
+                                at.duration_since(started),
+                            );
+                        }
+                        profile.leading_prepaint = Some(at);
+                    });
+                },
+                move |_, _, _, cx| {
+                    let at = Instant::now();
+                    paint_entity.update(cx, |profile, _| profile.leading_paint = Some(at));
                 },
             )
             .absolute()
             .top_0()
             .left_0()
             .w(px(1.0))
-            .h(px(1.0)),
-        )
+            .h(px(1.0))
+        });
+        let trailing_prepaint = entity.clone();
+        div()
+            .size_full()
+            .relative()
+            .children(leading)
+            .child(content)
+            .child(
+                canvas(
+                    move |_, _, cx| {
+                        let at = Instant::now();
+                        trailing_prepaint.update(cx, |profile, _| {
+                            if let Some(started) = profile.leading_prepaint.take() {
+                                super::render_diagnostic::record(
+                                    super::render_diagnostic::Kind::LeadingToTrailingPrepaint,
+                                    at.duration_since(started),
+                                );
+                            }
+                        });
+                    },
+                    move |_, _, window, cx| {
+                        let at = Instant::now();
+                        entity.update(cx, |profile, cx| profile.paint(at, window, cx));
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .w(px(1.0))
+                .h(px(1.0)),
+            )
     }
 }
 
