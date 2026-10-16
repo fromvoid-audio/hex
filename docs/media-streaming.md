@@ -1,5 +1,9 @@
 # Large-project media streaming
 
+The planning-only [source/provider support matrix](streaming-source-support-matrix.md)
+maps the full Pulse #24 scope, exact constructor/accounting gaps and remaining
+native tests for #2536. Its initial audio-only class does not complete #24.
+
 ## Required outcome
 
 Long projects with 100 active audio tracks must play, seek, loop, launch Session

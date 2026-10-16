@@ -34,13 +34,11 @@ fn selector(text: String) -> &'static str {
 }
 
 #[gpui::test]
-fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut TestAppContext) {
+fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAppContext) {
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, _, track, device) = operator_fixture();
     let path = std::env::temp_dir().join(format!("hex-lfo-mapping-{}.hex", std::process::id()));
-    let preset_path = path.with_extension("hex-device-preset.json");
     let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(&preset_path);
     service.submit(Request::SaveNew(path.clone())).unwrap();
     let saved = receive_service_event(&service);
     assert!(saved.error.is_none());
@@ -104,6 +102,16 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
                 })
         });
         visual.run_until_parked();
+        let selected = ["a", "b", "c", "d"][(parameter - 88) as usize..].join(" ");
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "operator-lfo-selected-{}-{selected}",
+                    device.value()
+                )))
+                .is_some(),
+            "selected readout must follow each canonical destination edit"
+        );
     }
     assert!(
         visual
@@ -147,53 +155,6 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
             .state()
             .clone()
     });
-    let save = visual
-        .debug_bounds(selector(format!("device-preset-save-{}", device.value())))
-        .unwrap();
-    visual.simulate_click(save.center(), Modifiers::default());
-    visual.run_until_parked();
-    cx.simulate_new_path_selection(|_| Some(preset_path.clone()));
-    visual.run_until_parked();
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && !view.preset_dialog_open && preset_path.exists()
-    });
-    click_toggle(
-        &mut visual,
-        device,
-        hex_lattice_contract::ParameterId::from_static(89),
-    );
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
-    });
-    editor.update(cx, |view, cx| {
-        let state = view.state.as_ref().unwrap();
-        let owner = hex_session::service::preset::Owner {
-            project_generation: view.project_generation,
-            revision: state.revision,
-            device,
-            class: NativeDeviceClass::Instrument,
-            type_id: state.project.device(device).unwrap().state().type_id(),
-        };
-        // GPUI's test platform lacks an open-file prompt; use its actual
-        // chosen-path handler and worker without claiming native dialog proof.
-        view.choose_device_preset(owner, preset_path.clone(), false, cx);
-    });
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
-    });
-    editor.read_with(cx, |view, _| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .unwrap()
-                .state(),
-            &mapped
-        );
-    });
     editor.update(cx, |view, cx| view.save_project(cx));
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
@@ -210,7 +171,6 @@ fn lfo_pitch_assignment_clicks_commit_history_preset_and_project_reopen(cx: &mut
         &mapped
     );
     std::fs::remove_file(path).unwrap();
-    std::fs::remove_file(preset_path).unwrap();
 }
 
 // The legacy fallback lets this exact regression execute on the unfixed source:
@@ -230,6 +190,29 @@ fn tab_bounds(
             )))
         })
         .unwrap()
+}
+
+fn tab_to_routing(
+    visual: &mut VisualTestContext,
+    editor: &gpui::Entity<EditorView>,
+    device: DeviceId,
+) {
+    for _ in 0..96 {
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        if visual.update(|window, app| {
+            editor.read_with(app, |view, _| {
+                view.device_panel.operator_previews[&device]
+                    .routing_focus
+                    .as_ref()
+                    .unwrap()
+                    .is_focused(window)
+            })
+        }) {
+            return;
+        }
+    }
+    panic!("routing remains reachable in the complete tab order");
 }
 
 #[gpui::test]
@@ -394,8 +377,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in [Switch::Filter, Switch::Pitch] {
-        let switch = switch.index();
+    {
+        let switch = Switch::Pitch.index();
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",
@@ -466,8 +449,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
-    visual.simulate_keystrokes("tab");
-    visual.run_until_parked();
+    tab_to_routing(&mut visual, &editor, device);
     assert!(
         visual.update(|window, app| editor.read_with(app, |view, _| view
             .device_panel
@@ -489,7 +471,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     });
     visual.simulate_click(envelope.center(), Modifiers::default());
     visual.simulate_click(fine.center(), Modifiers::default());
-    visual.simulate_keystrokes("tab");
+    tab_to_routing(&mut visual, &editor, device);
     visual.simulate_keystrokes("space");
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {

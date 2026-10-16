@@ -21,9 +21,10 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 8;
-const ENABLE_STATE_VERSION: u32 = 8;
+pub const OPERATOR_STATE_VERSION: u32 = 11;
 const LFO_STATE_VERSION: u32 = 7;
+const FILTER_PARAMETERS: usize = crate::operator_filter::COUNT - 1;
+const ENABLE_STATE_VERSION: u32 = 8;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
@@ -47,6 +48,7 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + VELOCITY_SENSITIVITY_COUNT
     + FEEDBACK_COUNT
     + lfo::COUNT
+    + FILTER_PARAMETERS
     + enable::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
@@ -56,7 +58,8 @@ const VELOCITY_PAYLOAD_BYTES: usize =
 const FEEDBACK_COUNT: usize = OPERATORS;
 const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
 const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
-const PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
+const ENABLE_PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
+const PAYLOAD_BYTES: usize = ENABLE_PAYLOAD_BYTES + crate::operator_filter::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -347,13 +350,20 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT - lfo::COUNT - enable::COUNT + offset] = lfo[offset];
+        result[PARAMETER_COUNT - FILTER_PARAMETERS - enable::COUNT - lfo::COUNT + offset] =
+            lfo[offset];
         offset += 1;
     }
     let enabled = enable::descriptors();
     let mut offset = 0;
     while offset < enable::COUNT {
-        result[PARAMETER_COUNT - enable::COUNT + offset] = enabled[offset];
+        result[PARAMETER_COUNT - FILTER_PARAMETERS - enable::COUNT + offset] = enabled[offset];
+        offset += 1;
+    }
+    let filter = crate::operator_filter::descriptors();
+    let mut offset = 0;
+    while offset < FILTER_PARAMETERS {
+        result[PARAMETER_COUNT - FILTER_PARAMETERS + offset] = filter[offset];
         offset += 1;
     }
     result
@@ -371,6 +381,7 @@ pub struct OperatorSettings {
     feedback: [f32; OPERATORS],
     lfo: lfo::LfoSettings,
     enabled: enable::EnableSettings,
+    filter: crate::operator_filter::Settings,
 }
 
 impl OperatorSettings {
@@ -390,6 +401,7 @@ impl OperatorSettings {
             feedback: [0.0; OPERATORS],
             lfo: lfo::LfoSettings::default(),
             enabled: enable::EnableSettings::default(),
+            filter: crate::operator_filter::Settings::default(),
         }
     }
 
@@ -404,6 +416,7 @@ impl OperatorSettings {
             4 => VELOCITY_PAYLOAD_BYTES,
             FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
             LFO_STATE_VERSION => LFO_PAYLOAD_BYTES,
+            ENABLE_STATE_VERSION => ENABLE_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -491,11 +504,19 @@ impl OperatorSettings {
             lfo::LfoSettings::default()
         };
         let enabled = if state.state_version() >= ENABLE_STATE_VERSION {
-            enable::EnableSettings::decode(&state.payload()[LFO_PAYLOAD_BYTES..PAYLOAD_BYTES])?
+            enable::EnableSettings::decode(
+                &state.payload()[LFO_PAYLOAD_BYTES..ENABLE_PAYLOAD_BYTES],
+            )?
         } else {
             enable::EnableSettings::default()
         };
+        let filter = if state.state_version() == OPERATOR_STATE_VERSION {
+            crate::operator_filter::Settings::decode(&state.payload()[ENABLE_PAYLOAD_BYTES..])?
+        } else {
+            crate::operator_filter::Settings::default()
+        };
         let result = Self {
+            filter,
             fields,
             waveforms,
             tuning,
@@ -529,6 +550,7 @@ impl OperatorSettings {
         }
         self.lfo.append(&mut payload);
         self.enabled.append(&mut payload);
+        self.filter.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -545,6 +567,7 @@ impl OperatorSettings {
     > {
         self.tuning.modes()?;
         self.lfo.validate()?;
+        self.filter.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -695,6 +718,15 @@ impl OperatorSettings {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FilterVoiceSeed {
+    note: PreparedOperatorNote,
+    age: u64,
+    gate: Option<u64>,
+    previous: [f64; 4],
+    id: u64,
+}
+
 /// Generic Operator control metadata and shared analytic instrument definition.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OperatorMetadata;
@@ -705,7 +737,7 @@ impl NativeDeviceMetadata for OperatorMetadata {
         OPERATOR_TYPE_ID
     }
     fn display_name(&self) -> Option<&'static str> {
-        Some("operator")
+        Some("vector")
     }
     fn state_version(&self) -> u32 {
         OPERATOR_STATE_VERSION
@@ -729,6 +761,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.filter.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.enabled.read(parameter) {
             return Ok(value);
         }
@@ -800,6 +835,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.filter.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.enabled.patch(parameter, value)? {
             return settings.to_state();
         }
@@ -913,10 +951,14 @@ struct PreparedOperatorInstrument {
 }
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
-        if self.lfo_runtime.is_some() {
-            self.configuration
-                .prepare_lfo_note(pitch, velocity)
+        if let Some(factory) = self.lfo_runtime.as_ref() {
+            factory
+                .prepare_note_for_runtime(pitch, velocity)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         }
         Ok(())
@@ -959,7 +1001,7 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     }
 }
 
-struct PreparedOperatorContext {
+pub(super) struct PreparedOperatorContext {
     configuration: PreparedOperatorConfiguration,
     authored_state: NativeDeviceState,
     effective_levels: [f64; OPERATORS],
@@ -972,6 +1014,9 @@ impl PreparedSharedAnalyticContext for PreparedOperatorContext {
         Some(self)
     }
 
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn declared_context_bytes(&self) -> usize {
         // Charge the canonical payload even while the control factory shares
         // its Arc. The allocation includes the two reference-count words.
@@ -1042,3 +1087,6 @@ mod enable_tests;
 mod fixed_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod filter_runtime_tests;

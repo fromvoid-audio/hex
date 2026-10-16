@@ -15,8 +15,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
-import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 IDENTITY = "org.portalsurfer.hex.dev"
@@ -42,6 +40,37 @@ def sha(path: Path) -> str:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+@contextmanager
+def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False):
+    """Build/identify only; shared by delivery and nonactivating review staging.
+
+    The target lock spans compilation, source validation and the caller's copy.
+    This helper never installs, activates or launches an application.
+    """
+    with runner.guarded_release(adopt=adopt) as ownership:
+        argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
+        log_path = runner.output_dir / "optimized-build.log"
+        with log_path.open("w") as log:
+            process = subprocess.run(argv, cwd=runner.root, env=runner.env,
+                                     stdout=subprocess.PIPE, stderr=log, text=True, check=False)
+            log.write(process.stdout)
+        ownership.update(build_argv=argv, build_exit_code=process.returncode, build_log=str(log_path))
+        if process.returncode != 0:
+            raise DeliveryError(f"optimized build failed; retained log: {log_path}")
+        events = [json.loads(line) for line in process.stdout.splitlines() if line.startswith("{")]
+        binaries = [Path(event["executable"]) for event in events
+                    if event.get("reason") == "compiler-artifact" and event.get("executable")
+                    and event.get("target", {}).get("name") == package
+                    and event.get("profile", {}).get("opt_level") == "3"]
+        if len(binaries) != 1:
+            raise DeliveryError("no unique optimized artifact from Cargo")
+        ownership["artifact"] = runner.identify_release_artifact(binaries[0], argv)
+        if (not runner._capture_repository_state("release_artifact_tree")
+                or runner.summary["release_artifact_tree"] != runner.summary["start_tree"]):
+            raise DeliveryError("source changed during optimized compilation")
+        yield binaries[0], ownership
 
 
 def write_json(path: Path, value: object) -> None:
@@ -127,83 +156,108 @@ def activation_lock(app: Path):
         yield
 
 
-def recover(app: Path, journal: Path) -> None:
-    if not journal.exists():
+def install_workspace(app: Path) -> Path:
+    return app.parent / ".hex-install"
+
+
+def recover(app: Path) -> None:
+    # Older installers own this history. Never guess which app their journal owns.
+    legacy = app.parent / ".hex-test-build-transaction.json"
+    if os.path.lexists(legacy):
+        raise DeliveryError("legacy installation journal requires inspection; preserved unchanged")
+    workspace = install_workspace(app)
+    assert_plain_path(workspace)
+    if not workspace.exists():
         return
-    assert_plain_path(journal)
-    transaction = json.loads(journal.read_text())
-    if str(app).casefold() != str(transaction.get("destination", app)).casefold():
-        raise DeliveryError("activation journal belongs to another destination")
-    backup = Path(transaction["backup"])
-    stage = Path(transaction["stage"])
-    # Never act on arbitrary paths supplied by a malformed journal.
-    for path, prefix in ((backup, ".hex-rollback-"), (stage, ".hex-stage-")):
-        if path.parent != app.parent or not path.name.startswith(prefix):
-            raise DeliveryError("invalid activation journal; preserve it for manual recovery")
+    if not workspace.is_dir() or any(path.name not in ("stage.app", "previous.app")
+                                     for path in workspace.iterdir()):
+        raise DeliveryError("unexpected temporary installation contents; preserved for inspection")
+    stage, previous = workspace / "stage.app", workspace / "previous.app"
+    for path in (app, stage, previous):
         assert_plain_path(path)
-    assert_inactive(app)
-    assert_inactive(backup)
-    if not app.exists() and backup.exists():
-        assert_identity(backup)
-        backup.rename(app)
-    elif app.exists() and not stage.exists():
-        # New candidate has been renamed. Complete only if fully verified.
-        try:
+        assert_inactive(path)
+    if previous.exists():
+        if app.exists():
+            if stage.exists():
+                raise DeliveryError("ambiguous interrupted installation; temporary apps preserved")
+            try:
+                verify(app)
+            except (DeliveryError, OSError, ValueError, subprocess.CalledProcessError):
+                assert_identity(previous)
+                app.rename(stage)
+                previous.rename(app)
+                sync_directory(workspace)
+                sync_directory(app.parent)
+        else:
+            assert_identity(previous)
+            previous.rename(app)
+            sync_directory(workspace)
+            sync_directory(app.parent)
+    elif app.exists():
+        # A partial stage never displaced this existing app. After publication,
+        # stage is absent and only a verified new bundle permits cleanup.
+        if stage.exists():
+            assert_identity(app)
+        else:
             verify(app)
-        except (DeliveryError, OSError, ValueError, subprocess.CalledProcessError):
-            if not backup.exists():
-                raise
-            assert_identity(backup)
-            app.rename(stage)
-            backup.rename(app)
-    elif app.exists() and stage.exists():
-        assert_identity(app)  # interruption before old bundle was moved
-    else:
-        raise DeliveryError("interrupted first installation; retained stage requires manual inspection")
-    journal.unlink()
+    # Only these fixed temporary paths belong to this installer. Historical
+    # review/rollback apps and legacy journals are never collected.
+    for path in (stage, previous):
+        if path.exists():
+            shutil.rmtree(path)
+    workspace.rmdir()
     sync_directory(app.parent)
 
 
-def activate(app: Path, stage: Path, backup: Path | None = None) -> Path | None:
-    journal = app.parent / ".hex-test-build-transaction.json"
-    if journal.exists():
-        raise DeliveryError("unrecovered activation journal")
+def activate(app: Path, stage: Path) -> None:
+    workspace = install_workspace(app)
+    if stage != workspace / "stage.app":
+        raise DeliveryError("candidate must use the fixed temporary installation workspace")
+    previous = workspace / "previous.app"
+    assert_plain_path(workspace)
+    assert_plain_path(previous)
+    assert_plain_path(app)
+    if previous.exists():
+        raise DeliveryError("unfinished installation; retry before publishing another candidate")
     verify(stage)
     for path in stage.rglob("*"):
         if path.is_file():
             with path.open("rb") as source:
                 os.fsync(source.fileno())
+    for path in sorted((p for p in stage.rglob("*") if p.is_dir()), reverse=True):
+        sync_directory(path)
     sync_directory(stage)
+    sync_directory(workspace)
+    sync_directory(app.parent)
     assert_inactive(app)
     if app.exists():
         assert_identity(app)
-    backup = backup or app.parent / (".hex-rollback-" + uuid.uuid4().hex + ".app")
-    if backup.exists():
-        raise DeliveryError("rollback destination already exists")
-    write_json(journal, {"backup": str(backup), "stage": str(stage), "destination": str(app)})
     try:
-        # Check again immediately before replacement; never terminate a process.
+        # Recheck immediately before publication; never terminate a process.
         assert_inactive(app)
         if app.exists():
-            app.rename(backup)
+            app.rename(previous)
+            sync_directory(workspace)
             sync_directory(app.parent)
         stage.rename(app)
+        sync_directory(workspace)
         sync_directory(app.parent)
         verify(app)
     except (OSError, DeliveryError, ValueError, subprocess.CalledProcessError):
-        # Retain failed candidate for inspection, then restore the intact old app.
-        if backup.exists():
+        if previous.exists():
             assert_inactive(app)
-            assert_inactive(backup)
+            assert_inactive(previous)
             if app.exists():
                 app.rename(stage)
-            backup.rename(app)
+            previous.rename(app)
+            sync_directory(workspace)
             sync_directory(app.parent)
         raise
-    else:
-        journal.unlink()
-        sync_directory(app.parent)
-    return backup if backup.exists() else None
+    # previous.app is publication custody only, never a retained version backup.
+    if previous.exists():
+        shutil.rmtree(previous)
+    workspace.rmdir()
+    sync_directory(app.parent)
 
 
 def validate_ci(report: Path, runner, candidate: str) -> dict:
@@ -247,7 +301,7 @@ def build(args) -> dict:
     assert_plain_path(app)
     app.parent.mkdir(parents=True, exist_ok=True)
     with activation_lock(app):
-        recover(app, app.parent / ".hex-test-build-transaction.json")
+        recover(app)
         assert_inactive(app)
         if app.exists():
             assert_identity(app)
@@ -255,44 +309,32 @@ def build(args) -> dict:
         validate_ci(args.ci_report, runner, args.candidate)
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:
-            raise DeliveryError("include ticket revisions and PR head revisions")
+            raise DeliveryError("include PR head revisions")
         for item in included:
-            if (not isinstance(item, dict) or not isinstance(item.get("ticket"), int)
-                    or not isinstance(item.get("ticket_revision"), int) or item["ticket_revision"] <= 0
-                    or not isinstance(item.get("pr"), str)
+            if (not isinstance(item, dict) or not isinstance(item.get("pr"), str)
+                    or not item["pr"].startswith("https://github.com/PORTALSURFER/hex/pull/")
                     or not isinstance(item.get("head"), str) or len(item["head"]) != 40
                     or any(char not in "0123456789abcdef" for char in item["head"])):
-                raise DeliveryError("invalid included ticket/PR revision")
+                raise DeliveryError("invalid included PR revision")
         checklist = args.checklist.read_text()
         if not checklist.strip():
             raise DeliveryError("finite user checklist required")
         runner.output_dir.mkdir(parents=True)
         if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
             raise DeliveryError(str(runner.summary))
-        if not runner._prepare_target_cache():
-            raise DeliveryError(str(runner.summary.get("target_cache_error")))
-        try:
+        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False)) as (binary, release_ownership):
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
-            env = dict(runner.env)
-            argv = ["cargo", "build", "--release", "-p", "hex-desktop", "--locked", "--message-format=json"]
-            with (runner.output_dir / "optimized-build.log").open("w") as log:
-                process = subprocess.run(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=log, text=True, check=True)
-                log.write(process.stdout)
-            # Cargo's artifact event handles configured target dirs and target triples.
-            artifacts = [json.loads(line) for line in process.stdout.splitlines() if line.startswith("{")]
-            binaries = [Path(event["executable"]) for event in artifacts
-                        if event.get("reason") == "compiler-artifact" and event.get("executable")
-                        and event.get("target", {}).get("name") == "hex-desktop"
-                        and event.get("profile", {}).get("opt_level") == "3"]
-            if len(binaries) != 1:
-                raise DeliveryError("no unique optimized desktop artifact from Cargo")
+            argv = release_ownership["build_argv"]
             validate_ci(args.ci_report, runner, args.candidate)
-            stage = Path(tempfile.mkdtemp(prefix=".hex-stage-", suffix=".app", dir=app.parent))
+            workspace = install_workspace(app)
+            workspace.mkdir()
+            stage = workspace / "stage.app"
+            stage.mkdir()
             contents = stage / "Contents"
             (contents / "MacOS").mkdir(parents=True)
             (contents / "Resources/licenses").mkdir(parents=True)
-            shutil.copy2(binaries[0], contents / "MacOS/hex")
+            shutil.copy2(binary, contents / "MacOS/hex")
             for source, name in ((ROOT / "assets/fonts/ioskeley-mono/OFL.txt", "ioskeley-mono-OFL.txt"),
                                  (ROOT / "third_party/gpui/LICENSE-APACHE", "gpui-LICENSE-APACHE")):
                 shutil.copy2(source, contents / "Resources/licenses" / name)
@@ -308,36 +350,35 @@ def build(args) -> dict:
             # Rust's native linker ad-hoc signs the executable. The bundle is local,
             # unsigned packaging; never mutate that binary after hashing it.
             verify_native_executable(contents / "MacOS/hex")
-            backup = app.parent / (".hex-rollback-" + uuid.uuid4().hex + ".app")
             receipt = {"schema": 1, "version": version, "source": source, "candidate": args.candidate,
                        "source_sha256": runner.summary["start_tree"]["content_sha256"],
                        "profile": "release", "build_argv": argv, "target_directory": str(runner.cargo_identity["target_directory"]),
+                       "release_target_ownership": {key: release_ownership[key] for key in
+                           ("profile", "source", "packages", "target_directory", "owner_path",
+                            "lock_path", "action", "cleanup_status", "artifact")},
                        "ci_report": str(args.ci_report.resolve()), "ci_report_sha256": sha(args.ci_report),
                        "included": included, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "executable ad-hoc; bundle unsigned",
-                       "rollback_path": str(backup) if app.exists() else None, "files": inventory(stage)}
+                       "files": inventory(stage)}
             write_json(contents / "Resources/test-build.json", receipt)
             verify(stage)
             verify_native_executable(contents / "MacOS/hex")
             validate_ci(args.ci_report, runner, args.candidate)
-            backup = activate(app, stage, backup)
+            activate(app, stage)
             verify_native_executable(app / "Contents/MacOS/hex")
-            receipt["rollback_path"] = str(backup) if backup else None
             write_json(app.parent / "hex-test-build-receipt.json", receipt)
             return receipt
-        finally:
-            error = runner.target_lock.release() if runner.target_lock is not None else None
-            if error:
-                raise DeliveryError(error)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ci-report", type=Path, required=True)
     parser.add_argument("--candidate", required=True, help="full locally verified PR head")
-    parser.add_argument("--included", type=Path, required=True, help="JSON list of ticket/revision/pr/head objects")
+    parser.add_argument("--included", type=Path, required=True, help="JSON list of pr/head objects (ticket references optional)")
     parser.add_argument("--checklist", type=Path, required=True)
+    parser.add_argument("--adopt-release-target", action="store_true",
+                        help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
@@ -346,8 +387,9 @@ def main() -> int:
         receipt = build(args)
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0
-    except (DeliveryError, OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
-        print(f"test delivery incomplete: {error}; previous app/rollback and staged artifacts retained. "
+    except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
+            KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
+        print(f"test installation incomplete: {error}; temporary publication files preserved for retry. "
               "save and quit hex before retrying; no process was terminated", file=sys.stderr)
         return 1
 

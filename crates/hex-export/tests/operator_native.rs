@@ -200,17 +200,24 @@ fn mixed_waveform_operator_export_matches_partitioned_prepared_playback() {
 fn lfo_free_sync_and_feedback_export_match_registered_partitioned_playback() {
     for sync in [false, true] {
         for selected in [false, true] {
-            modulation_export(Some(sync), selected);
+            modulation_export(Some(sync), false, selected);
         }
     }
 }
 
 #[test]
 fn feedback_operator_full_prepared_export_matches_registered_playback() {
-    modulation_export(None, true);
+    modulation_export(None, false, true);
 }
 
-fn modulation_export(lfo: Option<bool>, selected: bool) {
+#[test]
+fn filter_modes_export_match_registered_playback_across_blocks_and_release() {
+    for sync in [None, Some(false), Some(true)] {
+        modulation_export(sync, true, true);
+    }
+}
+
+fn modulation_export(lfo: Option<bool>, filter: bool, selected: bool) {
     let state = patch_native_device_parameter_for_class(
         NativeDeviceClass::Instrument,
         &operator_state(),
@@ -227,6 +234,23 @@ fn modulation_export(lfo: Option<bool>, selected: bool) {
             (85, ParameterValue::Float(100.0)),
             (87, ParameterValue::Float(100.0)),
             (89, ParameterValue::Bool(selected)),
+        ] {
+            state = patch_native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )
+            .unwrap();
+        }
+    }
+    if filter {
+        for (id, value) in [
+            (20001, ParameterValue::Bool(true)),
+            (20002, ParameterValue::Choice(4)),
+            (20005, ParameterValue::Float(777.0)),
+            (20006, ParameterValue::Float(80.0)),
+            (20007, ParameterValue::Float(35.0)),
         ] {
             state = patch_native_device_parameter_for_class(
                 NativeDeviceClass::Instrument,

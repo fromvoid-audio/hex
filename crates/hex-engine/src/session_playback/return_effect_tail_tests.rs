@@ -16,6 +16,10 @@ struct HoldRuntime {
 }
 
 impl PreparedNativeProcessor for HoldDefinition {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -79,6 +83,10 @@ struct TailDefinition {
 }
 
 impl PreparedNativeProcessor for ScaleDefinition {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -126,6 +134,10 @@ impl NativeProcessorRuntime for ScaleRuntime {
 }
 
 impl PreparedNativeProcessor for TailDefinition {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -166,6 +178,7 @@ fn processor_instances_with_scale(
     let scale_state = Arc::new(NativeDeviceState::new(SCALE_TYPE, 1, vec![state_value]).unwrap());
     vec![
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 20,
             device_type: HOLD_TYPE,
@@ -176,6 +189,7 @@ fn processor_instances_with_scale(
             definition: Some(Arc::new(HoldDefinition)),
         },
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 21,
             device_type: SCALE_TYPE,
@@ -196,6 +210,7 @@ fn tail_instances(
 ) -> Vec<PreparedProcessorInstance> {
     (0..count)
         .map(|index| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 100 + index as u64,
             device_type: TAIL_TYPE,
@@ -387,6 +402,8 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         }];
         snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Hybrid {
             audio_clips: vec![hex_project::ClipSnapshot {
+                edit: None,
+                gain: hex_project::ClipGain::UNITY,
                 id: 31,
                 asset: 30,
                 start: 0,
@@ -641,10 +658,8 @@ fn removed_return_keeps_the_whole_old_chain_and_uses_current_master() {
     let new_project = prepared_return_project(false, 0.5);
     let return_id = old_project.return_tracks()[0].id();
     let mut previous = playback(&old_project);
-    let old_matrix = previous.revision.arrangement().return_buses()[0]
-        .matrix
-        .unwrap();
-    previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+    let old_matrix = previous.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    previous.return_chains[0] = active_chain(return_id, old_matrix);
     warm(&mut previous);
     assert!(!previous.return_chains[0].committed_range_is_quiescent(0..2));
 
@@ -1215,4 +1230,88 @@ fn full_return_tail_bank_refuses_atomically_and_retries_after_stop() {
             .iter()
             .all(Option::is_none)
     );
+}
+
+#[test]
+fn feed_capture_includes_retired_return_tail_once_without_refeeding_it() {
+    let mut snapshot = prepared_return_project(true, 0.5).snapshot();
+    snapshot.tracks.clear();
+    snapshot.return_tracks[0].gain = 1.0;
+    snapshot.session = hex_project::SessionSnapshot::default();
+    let source_id = snapshot.return_tracks[0].id;
+    let target_id = snapshot.next_id;
+    let feed_id = target_id + 1;
+    snapshot.next_id += 2;
+    snapshot.return_tracks.push(ReturnTrackSnapshot {
+        id: target_id,
+        name: "downstream".into(),
+        gain: 1.0,
+        muted: false,
+        devices: Vec::new(),
+    });
+    snapshot.return_feeds.push(hex_project::ReturnFeedSnapshot {
+        id: feed_id,
+        source: source_id,
+        destination: target_id,
+        gain: 0.5,
+    });
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    editor
+        .execute(hex_project::Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Return(editor.project().return_tracks()[1].id()),
+            destination: track,
+            gain: 0.5,
+        })
+        .unwrap();
+    let project = editor.project().clone();
+    let mut runtime = playback(&project);
+    assert!(runtime.compensation.is_some());
+    assert_eq!(runtime.revision.arrangement().main_latency_frames(), 0);
+    let source = runtime.revision.arrangement().return_buses()[0].id;
+    let target = runtime.revision.arrangement().return_buses()[1].id;
+    runtime.return_effect_tails.slots_mut()[0] = Some(ReturnEffectTail::new(
+        active_chain(source, StereoMatrix::identity()),
+        &runtime.revision.arrangement().return_buses()[0],
+    ));
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let plan = runtime
+        .output_capture_plan(
+            &[
+                OutputCaptureId::Return(source),
+                OutputCaptureId::Return(target),
+            ],
+            8,
+        )
+        .unwrap();
+    let mut offset = 0;
+    for count in [1, 2, 5] {
+        let mut main = vec![[9.0; 2]; count];
+        let mut source = main.clone();
+        let mut target = main.clone();
+        let mut buffers = [&mut source[..], &mut target[..]];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .unwrap();
+        for (index, frame) in main.iter().enumerate() {
+            let tail = if offset + index < 4 {
+                [0.5, -1.0]
+            } else {
+                [0.0; 2]
+            };
+            assert_eq!(capture.output(0).unwrap()[index], tail);
+            assert_eq!(capture.output(1).unwrap()[index], [0.0; 2]);
+            assert_eq!(*frame, tail.map(|sample| sample * 0.5));
+        }
+        offset += count;
+    }
 }
