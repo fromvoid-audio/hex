@@ -33,6 +33,15 @@ struct Domain {
     ready: bool,
     retiring: bool,
 }
+impl Domain {
+    fn request_retirement(&mut self, control: &mut hex_audio::prepared::PublicationControl) {
+        // Local cleanup intent survives Root's transition into Cleaning or
+        // Complete (including verification failure before our first request).
+        // Only exact report recovery removes this adapter record.
+        self.retiring = true;
+        let _ = control.retire_audio_candidate_domain(self.token);
+    }
+}
 struct Submitted {
     context: AudioSourceContext,
     ticket: AudioCandidateTicket,
@@ -346,7 +355,7 @@ impl NativeAudioSink {
                         .flatten()
                         .find(|d| d.token == token && !d.ready)
                     {
-                        domain.retiring = control.retire_audio_candidate_domain(token);
+                        domain.request_retirement(control);
                     }
                 }
             }
@@ -354,9 +363,10 @@ impl NativeAudioSink {
         if self.preparation.as_ref().is_some_and(|p| p.cancelling) {
             let token = self.preparation.as_ref().map(|p| p.token);
             if token.is_some_and(|token| {
-                control
-                    .prepare_audio_candidate_on_control(token, |_| Ok(()))
-                    .is_err()
+                matches!(
+                    control.prepare_audio_candidate_on_control(token, |_| Ok(())),
+                    Err(reason) if reason != "candidate preparation is busy"
+                )
             }) {
                 self.preparation = None;
             } else {
@@ -495,9 +505,7 @@ impl NativeAudioSink {
                                 .flatten()
                                 .any(|s| s.domain == Some(d.token))
                     }) {
-                        if control.retire_audio_candidate_domain(domain.token) {
-                            domain.retiring = true;
-                        }
+                        domain.request_retirement(control);
                     }
                     self.preparation = Some(pending);
                     self.observe(context, "busy", EditorPublicationState::Busy);
@@ -681,7 +689,7 @@ impl NativeAudioSink {
                 .flatten()
                 .find(|d| d.token == token && !d.ready)
             {
-                domain.retiring = control.retire_audio_candidate_domain(token);
+                domain.request_retirement(control);
             }
         }
         self.preparation = Some(pending);

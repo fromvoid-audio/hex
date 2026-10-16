@@ -20,6 +20,27 @@ local CI and merge evidence. The repository test-build receipt records optimized
 stable-path delivery. Native controller/UI/listening acceptance remains separate;
 see the supplied finite test checklist. Implementation, merge and disk installation
 must not be reported as measured Live sonic parity or native acceptance.
+## native superseded preparation cleanup — pulse2656 / PR272, 17 october 2026
+
+- Adapter retirement intent now survives actual Root Cleaning/Complete and
+  verification failure before its first explicit request. Exact report recovery
+  remains the only removal/reuse frontier; transient work contention retains the
+  cancelled preparation token instead of treating Busy as completion.
+- An actual Root/pair control fails before repair in0.03s, then covers repeated
+  retirement, verification failure, exact recovery and incarnation reuse. Rapid
+  New→Import before empty ACK exercises actual successor PCM with callback probes.
+  No Root policy, queue/capacity, native deadline or listening claim is added.
+
+## native downsample reader window — pulse2655 / PR271, 17 october 2026
+
+- Native verified reader limits now use the already reserved source-scratch
+  allowance instead of confusing 4096 output frames with source frames. Existing
+  worker window validation and file/source/page/runtime limits stay unchanged.
+- A small actual Session→native adapter 48 kHz→44.1 kHz control reproduces the old
+  catalog-capacity refusal in 0.37 s, then checks actual applied PCM and zero
+  total/net callback allocations after repair. Full 100-track/native listening
+  acceptance remains separately tracked by PR240/241; no physical claim here.
+
 ## connected verified document audio — pulse2544 / PR239, 17 october 2026
 
 - Desktop composes the actual Session worker/source snapshot with persistent

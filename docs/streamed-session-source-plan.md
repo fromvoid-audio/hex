@@ -15,7 +15,12 @@ frame counts use the canonical checked conversion function. No resident frame
 charge is fabricated and the resident duration ceiling is unchanged. Each source
 still obeys 64 MiB / 8,000,000 source-frame ceilings. Caller reservations also
 bound retained source count, actual path capacity, verification manifest capacity,
-header count and read window. Retained history consumes those reservations even
+header count and read window. Native reader windows use the existing stream
+source-scratch frame allowance, not the 4096-frame output page size. Downsampling
+48 kHz to 44.1 kHz requires up to 4530 source frames including the resampler halo.
+The worker still validates this source window against both reader and actual
+scratch bounds before catalog readiness; file/source/page/runtime caps remain
+unchanged. Retained history consumes those reservations even
 when Undo removes all current clips. Verification/readiness failure never adopts
 a partial canonical edit; valid canonical edits do not certify native admission.
 
@@ -250,3 +255,17 @@ inline slots and execution destinations are included by the existing actual Root
 size visitor; opaque synchronization/worker costs remain resource obligations.
 A pending unsealed domain cannot satisfy a new complete native claim. Desktop/UI
 composition remains outstanding at this source checkpoint.
+
+## Superseded preparation cleanup
+
+The Desktop adapter records retirement intent when supersession, cache eviction
+or preparation refusal chooses cleanup. It keeps that intent until recovery of
+that exact Root/domain/incarnation report removes the record. A Root retirement
+request returning false during Cleaning/Complete is not a reversal of the
+adapter's intent; verification may also begin retirement before its first request.
+Root alone retains pair/runtime custody, verifies normal destruction and pool
+conservation, and releases occupancy on actual report consumption. A transient
+busy preparation observation does not prove its cancelled token has disappeared.
+Rapid New→Import can supersede empty preparation before its ACK without requiring
+an artificial empty-graph installation step from the user. Unit window tests wait
+for that ACK only to isolate their source-window obligation.
