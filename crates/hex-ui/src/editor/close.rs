@@ -122,6 +122,9 @@ impl EditorView {
                     view.close_prompt_open = false;
                     if discard {
                         view.cancel_browser_sample_playback();
+                        if let Some(control) = &view.export_control {
+                            control.cancel();
+                        }
                         view.stop();
                     } else {
                         cx.notify();
