@@ -120,6 +120,12 @@ impl AppContext for TestAppContext {
 }
 
 impl TestAppContext {
+    /// Verify private cached-scene replay against the retained legacy painter.
+    /// Test support only; no window, native graphics or public scene API.
+    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
+        crate::scene::verify_bulk_replay()
+    }
+
     /// Cursor last delivered to the test platform, independent of hit testing.
     /// This is not evidence of physical native cursor appearance.
     pub fn platform_cursor_style(&self) -> crate::CursorStyle {

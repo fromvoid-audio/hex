@@ -33,11 +33,27 @@ where
     }
 
     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
+        self.insert_with_order(new_bounds, None)
+    }
+
+    /// Reserve an ordered interval for an already ordered replay subtree.
+    /// Check arithmetic before insertion mutates bounds, nodes or traversal state.
+    pub fn reserve(&mut self, bounds: Bounds<U>, span: u32) -> Option<u32> {
+        let previous_max = self.root.map_or(0, |root| self.nodes[root].max_ordering());
+        let base = previous_max.checked_add(1)?;
+        let ceiling = base.checked_add(span)?;
+        ceiling.checked_add(1)?; // Leave room for a following live insertion.
+        self.insert_with_order(bounds, Some(ceiling));
+        Some(base)
+    }
+
+    fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
         // If the tree is empty, make the root the new leaf.
         if self.root.is_none() {
-            let new_node = self.push_leaf(new_bounds, 1);
+            let order = reserved.unwrap_or(1);
+            let new_node = self.push_leaf(new_bounds, order);
             self.root = Some(new_node);
-            return 1;
+            return order;
         }
 
         // Search for the best place to add the new leaf based on heuristics.
@@ -64,12 +80,16 @@ where
                 .union(self.nodes[right].bounds())
                 .half_perimeter();
             if left_cost < right_cost {
-                max_intersecting_ordering =
-                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
+                if reserved.is_none() {
+                    max_intersecting_ordering =
+                        self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
+                }
                 index = left;
             } else {
-                max_intersecting_ordering =
-                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
+                if reserved.is_none() {
+                    max_intersecting_ordering =
+                        self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
+                }
                 index = right;
             }
         }
@@ -87,11 +107,11 @@ where
         else {
             unreachable!();
         };
-        if sibling_bounds.intersects(&new_bounds) {
+        if reserved.is_none() && sibling_bounds.intersects(&new_bounds) {
             max_intersecting_ordering = cmp::max(max_intersecting_ordering, *sibling_ordering);
         }
 
-        let ordering = max_intersecting_ordering + 1;
+        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
         let new_node = self.push_leaf(new_bounds, ordering);
         let new_parent = self.push_internal(sibling, new_node);
 
