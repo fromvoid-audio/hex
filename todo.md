@@ -13,6 +13,30 @@ The harmonic tool row now occupies the graph area above the stationary tabs;
 rendered overlap coverage accompanies the integration. Native/listening results
 and exact-source validation are recorded with the candidate PR/build evidence.
 
+## device lane drops integration — #2333 / PR183, 16 october 2026
+
+The existing canonical device-drop implementation now integrates current main.
+Conflicts preserve both track/device commands and routing/gain-recording contracts;
+the stale-revision UI fixture retains audio-clip waveforms and gain previews.
+Device drops create tracks in empty space/above/between/after tracks or append
+an effect/replace an instrument on an existing lane, with one Undo/Redo.
+The retained Finder adapter remains original PR172 history. Exact final-source
+local CI and stable optimized delivery are recorded with PR183. Native user
+interaction/listening acceptance remains separate; no native input was automated.
+
+## 13 October 2026 — drops above the first track (pulse2333 / pr183)
+
+The existing catalog-device Arrangement implementation is retained. Shared painted
+insertion targeting now recognizes the top three pixels of the first track for
+samples and devices, without adding a spacer. Sample insertion preview remains
+visible at the content's top edge. Rendered regressions failed before the fix
+(missing sample insertion line; device targeted the existing first track) and
+cover the repaired above-first destination plus device trailing-space appends.
+Automated results are retained with this task; native macOS user acceptance and
+the existing PR183 readiness/evidence hold remain pending. The linked Pulse task
+was resumed through Start Task; no duplicate issue was created. This follow-up
+extends PR183's existing implementation.
+
 ## native host conversion commitment — #2453 / PR192, 16 october 2026
 
 The focused current-main fix validates final host channel/sample conversion
@@ -411,6 +435,16 @@ before the fix; final focused/full source checks and native exact-candidate
 confirmation are recorded in Pulse2386/PR170. No native acceptance claim here.
 
 ## Operator fixed navigation and rail context — pulse2341 / PR156
+
+13 October 2026 — Pulse2333 / draft PR183: Arrangement catalog device drops
+use shared painted lane/gap/empty targeting, captured TrackId/instrument identity
+and a bounded worker request. Track creation plus generic device assignment is
+one prepared atomic command/Undo; hybrid defaults, audio/MIDI clips, effect state
+and prior selection are retained. Included original PR172 one-file OS adapter;
+no existing-device Arrangement moves or new DSP/routing/schema. Exact-source
+Linux evidence belongs to PR183; native optimized review build and human
+confirmation remain pending. Ticket blocked/draft under readiness/evidence hold.
+
 
 Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
 owner-guarded Fine/shell context are implemented. The original rendered
