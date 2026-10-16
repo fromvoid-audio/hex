@@ -351,3 +351,19 @@ keyboard regressions cover this boundary. Retained earlier failures and source
 passes remain historical; the canonical PR report records new exact-source local
 checks and pending native acceptance. No old build or check is transferred to this
 integrated candidate, and live typing acceptance stays explicitly deferred.
+
+## committed endpoint retirement — 16 october 2026
+
+Active analytic ramps are removed once a successful complete render commits at
+or beyond their exact endpoint. The current prepared context then supplies the
+same target samples through the ordinary path. Refused renders preserve the ramp
+and clock, including a requested block that would cross its endpoint. Detached
+voices keep their own captured transition and context until their existing
+ownership lifecycle retires them; this does not clear historical owners.
+
+The independent coefficient fixture reproduced retained active ramps before the
+repair. Arrangement/Session and held/released cases now verify exact-boundary
+retirement, partition-independent PCM through reversal and subsequent endpoint
+samples. The refusal fixture requests a block crossing the endpoint and confirms
+unchanged transition/clock and invalidated captures. Full exact-source checks are
+recorded with the focused fix PR; no physical timing or native acceptance is claimed.

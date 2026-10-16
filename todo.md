@@ -1,3 +1,13 @@
+## retire completed active analytic ramps — 16 october 2026
+
+An existing generic coefficient regression reproduced active transition entries
+remaining after their five-millisecond endpoint, retaining an extra render path.
+Retirement now follows successful whole-render commit; ordinary current-context
+PCM stays exact, refused blocks retain clock/ramp and detached owners retain their
+captured transition. Focused continuation tests pass; full exact-source CI is
+recorded with the repair PR. Physical performance/native acceptance remain open.
+Pulse requires reauthentication here; no ticket write is claimed.
+
 ## device preset integration — PR187 / #2375, 16 october 2026
 
 Restored focused preset service/storage/native-dialog/header wiring against current
