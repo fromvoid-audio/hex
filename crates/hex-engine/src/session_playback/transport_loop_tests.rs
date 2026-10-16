@@ -81,6 +81,188 @@ fn beat_raw_for_frames(frames: u64) -> u64 {
     ((u128::from(frames) * u128::from(Q) + 12_000) / 24_000) as u64
 }
 
+fn combined_loop_expanded_oracle_project() -> Project {
+    let mut snapshot = arrangement_loop_project().snapshot();
+    let first_note_id = snapshot.next_id;
+    let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+    | TrackContentSnapshot::Instrument(midi_clips)) = &mut snapshot.tracks[0].content
+    else {
+        panic!("fixture Arrangement MIDI clip")
+    };
+    let clip = &mut midi_clips[0];
+    clip.length_raw = 9 * Q;
+    clip.source_length_raw = 9 * Q;
+    clip.source_start_raw = 0;
+    clip.loop_start_raw = 0;
+    clip.loop_end_raw = 9 * Q;
+    clip.looping = false;
+    // Explicitly authored linear oracle for the combined source and transport
+    // sequence. Quarter-beat units include source gates clipped at transport
+    // seams and fresh attacks chased at each seam.
+    clip.notes = [
+        (4_u64, 6_u64),
+        (8, 10),
+        (12, 13),
+        (13, 14),
+        (16, 18),
+        (20, 21),
+        (21, 22),
+        (24, 26),
+        (28, 29),
+        (29, 30),
+        (32, 34),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (onset, end))| MidiNoteSnapshot {
+        id: first_note_id + index as u64,
+        start_raw: onset * Q / 4,
+        duration_raw: (end - onset) * Q / 4,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })
+    .collect();
+    snapshot.next_id = first_note_id + 11;
+    snapshot.loop_region = None;
+    legacy_project_from_snapshot(snapshot).expect("valid expanded combined-loop oracle")
+}
+
+#[test]
+fn mutable_source_and_transport_loops_match_authored_linear_occurrences_across_wraps() {
+    let mut source_loop = arrangement_loop_project().snapshot();
+    source_loop.loop_region =
+        Some(LoopRegion::new(30_000, 78_000, true).expect("valid transport loop"));
+    let source_loop = legacy_project_from_snapshot(source_loop).expect("combined loop project");
+    let expanded = combined_loop_expanded_oracle_project();
+    let whole = render_transport_project(&source_loop, 210_000, &[210_000]);
+    let expanded_whole = render_transport_project(&expanded, 210_000, &[210_000]);
+    let partitioned = render_transport_project(&source_loop, 210_000, &[1, 17, 127, 256]);
+    assert_eq!(whole, expanded_whole);
+    assert_eq!(whole, partitioned);
+
+    // Gate boundaries are authored in quarter-beat units (6,000 frames).
+    // Transport wraps clip the beat-three gates at beat 3.25 and chase the
+    // active beat-one source occurrence at each subsequent seam.
+    let expected = [
+        (4, 6, 0, 0),
+        (8, 10, 1, 0),
+        (12, 13, 2, 0),
+        (13, 14, 0, 1),
+        (16, 18, 1, 1),
+        (20, 21, 2, 1),
+        (21, 22, 0, 2),
+        (24, 26, 1, 2),
+        (28, 29, 2, 2),
+        (29, 30, 0, 3),
+        (32, 34, 1, 3),
+    ];
+    let mut playback = SessionPlayback::new(prepare_mutable(&source_loop))
+        .expect("combined source and transport loop admission");
+    playback
+        .apply(SessionPlaybackCommand::Play)
+        .expect("start combined loop proof run");
+    let mut offset = 0_usize;
+    let runtime_index = 0;
+    let mut seen_ids = Vec::new();
+    for (onset_units, gate_units, iteration, loop_pass) in expected {
+        let onset_frame = usize::try_from(onset_units * 6_000).expect("bounded fixture frame");
+        let mut before = vec![[0.0; 2]; onset_frame - offset];
+        playback
+            .render(&mut before)
+            .expect("render to authored onset");
+        offset = onset_frame;
+        let next_id = playback.mutable_instruments[runtime_index]
+            .as_ref()
+            .expect("mutable proof runtime")
+            .next_occurrence_id();
+        let mut onset = [[0.0; 2]; 1];
+        playback.render(&mut onset).expect("render authored onset");
+        offset += 1;
+        let runtime = playback.mutable_instruments[runtime_index]
+            .as_ref()
+            .expect("mutable proof runtime");
+        assert_eq!(runtime.next_occurrence_id(), next_id + 1);
+        let proof = runtime
+            .occurrence_proofs()
+            .iter()
+            .find(|proof| proof.onset_frame == onset_frame as u64)
+            .copied()
+            .expect("one occurrence at each authored onset");
+        assert_eq!(proof.id, seen_ids.len() as u64 + 1);
+        assert_eq!(proof.signature.key().iteration, iteration);
+        assert_eq!(proof.signature.key().loop_pass, loop_pass);
+        assert_eq!(proof.gate_end_frame, gate_units * 6_000);
+        seen_ids.push(proof.id);
+    }
+    assert_eq!(seen_ids, (1..=expected.len() as u64).collect::<Vec<_>>());
+    assert_eq!(
+        playback.mutable_instruments[runtime_index]
+            .as_ref()
+            .expect("mutable proof runtime")
+            .next_occurrence_id(),
+        expected.len() as u64
+    );
+
+    // Carry an active source occurrence across a compatible prepared revision
+    // handoff during the third transport pass and compare its continuation.
+    let mut active = SessionPlayback::new(prepare_mutable(&source_loop)).expect("active loop");
+    let mut reference = SessionPlayback::new(prepare_mutable(&source_loop)).expect("loop oracle");
+    for candidate in [&mut active, &mut reference] {
+        candidate
+            .apply(SessionPlaybackCommand::Play)
+            .expect("start handoff fixture");
+    }
+    let mut prefix = vec![[0.0; 2]; 195_000];
+    let mut reference_prefix = prefix.clone();
+    active
+        .render(&mut prefix)
+        .expect("render active loop prefix");
+    reference
+        .render(&mut reference_prefix)
+        .expect("render reference prefix");
+    assert_eq!(prefix, reference_prefix);
+    let active_proof = active.mutable_instruments[0]
+        .as_ref()
+        .expect("active mutable runtime")
+        .occurrence_proofs()
+        .iter()
+        .find(|proof| !proof.note_off_sent)
+        .copied()
+        .expect("active source gate at handoff");
+    let mut successor = SessionPlayback::new(prepare_mutable(&source_loop)).expect("successor");
+    successor
+        .try_inherit_state_from(&mut active)
+        .expect("compatible combined-loop revision handoff");
+    let inherited = successor.mutable_instruments[0]
+        .as_ref()
+        .expect("successor mutable runtime")
+        .occurrence_proofs()
+        .iter()
+        .find(|proof| proof.id == active_proof.id)
+        .copied()
+        .expect("active occurrence identity survives handoff");
+    assert_eq!(inherited, active_proof);
+    let mut actual = vec![[0.0; 2]; 60_000];
+    let mut expected_audio = actual.clone();
+    successor.render(&mut actual).expect("render successor");
+    reference
+        .render(&mut expected_audio)
+        .expect("render uninterrupted loop");
+    assert_eq!(actual, expected_audio);
+    assert_eq!(successor.arrangement_loop_pass, 4);
+    assert_eq!(
+        successor.mutable_instruments[0]
+            .as_ref()
+            .expect("successor mutable runtime")
+            .next_occurrence_id(),
+        reference.mutable_instruments[0]
+            .as_ref()
+            .expect("reference mutable runtime")
+            .next_occurrence_id()
+    );
+}
+
 #[test]
 fn mutable_transport_loops_admit_while_linear_export_still_refuses_source_loops() {
     let mut snapshot = arrangement_loop_project().snapshot();

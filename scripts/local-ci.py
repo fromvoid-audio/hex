@@ -31,11 +31,13 @@ DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 class Step:
     step_id: str
     argv: tuple[str, ...]
+    uses_cargo_target: bool = False
 
 
 QUICK_STEPS = (
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
+    Step("dependency-patches", ("python3", "scripts/check-dependency-patches.py")),
     Step("ui-style", ("python3", "scripts/check-ui-style.py")),
     Step("device-layout", ("python3", "scripts/check-device-layout.py")),
     Step("format", ("cargo", "fmt", "--all", "--check")),
@@ -47,6 +49,7 @@ FULL_STEPS = (
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
     ),
     *QUICK_STEPS,
+    Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
@@ -433,7 +436,7 @@ class LocalCiRunner:
 
     @staticmethod
     def _uses_cargo_target(step: Step) -> bool:
-        return bool(
+        return step.uses_cargo_target or bool(
             len(step.argv) > 1
             and step.argv[0] == "cargo"
             and step.argv[1] in {"build", "check", "test", "clippy", "run", "bench", "doc", "clean", "rustc"}

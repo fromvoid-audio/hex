@@ -34,6 +34,15 @@ struct PreviewKey {
 }
 
 #[derive(Clone)]
+struct PlaybackPreviewRequest {
+    generation: u64,
+    output_generation: u64,
+    output_status: Arc<hex_audio::prepared::Status>,
+    path: PathBuf,
+    sample_rate: u32,
+}
+
+#[derive(Clone)]
 struct PreviewRequest {
     key: PreviewKey,
     slot: PreviewSlot,
@@ -145,6 +154,9 @@ pub(super) struct BrowserState {
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
     _search_observer: gpui::Subscription,
+    playback_generation: u64,
+    playback_in_flight: bool,
+    playback_pending: Option<PlaybackPreviewRequest>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
     preview_in_flight: Option<PreviewRequest>,
     preview_pending: Option<PreviewRequest>,
@@ -201,6 +213,9 @@ impl BrowserState {
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
             _search_observer: observer,
+            playback_generation: 0,
+            playback_in_flight: false,
+            playback_pending: None,
             preview_cache: HashMap::new(),
             preview_in_flight: None,
             preview_pending: None,
@@ -463,6 +478,125 @@ impl EditorView {
         if let Some(request) = start {
             self.start_browser_scan(request, cx);
         }
+    }
+
+    pub(super) fn cancel_browser_sample_playback(&mut self) {
+        self.browser.playback_generation = self.browser.playback_generation.saturating_add(1);
+        self.browser.playback_pending = None;
+        if let Some(audio) = self.audio.as_mut() {
+            audio.control.sample_preview.cancel();
+        }
+    }
+
+    fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(generation) = self.browser.playback_generation.checked_add(1) else {
+            self.error = Some("sample preview request counter exhausted".into());
+            return;
+        };
+        if self
+            .error
+            .as_ref()
+            .is_some_and(|error| error.starts_with("sample preview"))
+        {
+            self.error = None;
+        }
+        self.browser.playback_generation = generation;
+        self.browser.playback_pending = None;
+        let Some(audio) = self.audio.as_mut() else {
+            self.error = Some("sample preview unavailable · no audio output".into());
+            return;
+        };
+        let output_generation = match audio.control.sample_preview.request() {
+            Ok(token) => token,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let request = PlaybackPreviewRequest {
+            generation,
+            output_generation,
+            output_status: audio.control.status.clone(),
+            path,
+            sample_rate: audio.sample_rate,
+        };
+        if self.browser.playback_in_flight {
+            self.browser.playback_pending = Some(request);
+        } else {
+            self.start_browser_sample_playback(request, cx);
+        }
+    }
+
+    fn start_browser_sample_playback(
+        &mut self,
+        request: PlaybackPreviewRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.browser.playback_in_flight = true;
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let path = request.path.clone();
+            let sample_rate = request.sample_rate;
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { hex_session::service::prepare_sample_preview(path, sample_rate) },
+                )
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.browser.playback_in_flight = false;
+                if request.generation == view.browser.playback_generation
+                    && let Some(audio) = view.audio.as_mut().filter(|audio| {
+                        Arc::ptr_eq(&audio.control.status, &request.output_status)
+                            && audio.sample_rate == request.sample_rate
+                    })
+                {
+                    let admitted = result.and_then(|pcm| {
+                        audio
+                            .control
+                            .sample_preview
+                            .publish(request.output_generation, pcm)
+                            .map_err(|error| error.to_string())
+                    });
+                    match admitted {
+                        Ok(()) => {
+                            if view
+                                .error
+                                .as_ref()
+                                .is_some_and(|error| error.starts_with("sample preview"))
+                            {
+                                view.error = None;
+                            }
+                            view.status = "sample preview started".into();
+                        }
+                        Err(error) => view.error = Some(format!("sample preview failed · {error}")),
+                    }
+                }
+                if let Some(pending) = view.browser.playback_pending.take() {
+                    view.start_browser_sample_playback(pending, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.browser.section != BrowserSection::Samples {
+            return;
+        }
+        if let Some(entry) = self
+            .browser_visible_entries(cx)
+            .get(self.browser.selected_index)
+            .cloned()
+        {
+            match entry.kind {
+                EntryKind::WaveAudio => self.play_browser_sample(entry.path, cx),
+                EntryKind::Directory => self.request_browser_scan(entry.path, cx),
+                EntryKind::Project => {}
+            }
+        }
+        cx.notify();
     }
 
     fn browser_preview_cell(&mut self, path: PathBuf, sample_rate: u32) -> PreviewSlot {
@@ -867,6 +1001,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_previous(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.browser.results_focused = true;
         self.browser.selected_index = self.browser.selected_index.saturating_sub(1);
         self.browser
             .scroll
@@ -875,6 +1010,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.browser.results_focused = true;
         let count = self.browser_visible_entries(cx).len();
         if count > 0 {
             self.browser.selected_index =
@@ -1429,6 +1565,12 @@ impl EditorView {
                     view.browser
                         .search
                         .update(cx, |input, _| input.focus(window));
+                    // Keep the editor's focusable ancestor from replacing the
+                    // explicit browser focus during this mouse-down's bubble.
+                    window.prevent_default();
+                    if click_kind == EntryKind::WaveAudio {
+                        view.play_browser_sample(click_path.clone(), cx);
+                    }
                     cx.notify();
                     if event.click_count >= 2 {
                         match click_kind {

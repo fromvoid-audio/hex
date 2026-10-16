@@ -89,6 +89,32 @@ pub struct EndpointStats {
 }
 
 impl Endpoint {
+    /// Control-only after worker join. Reserve for the entire actual pool before
+    /// entering cleanup. Never destroy a page while collecting/conserving it.
+    pub(crate) fn collect_disposal_pages(
+        &mut self,
+        output: &mut Vec<Box<PageBuffer>>,
+    ) -> Option<(usize, usize)> {
+        let mut ready = 0;
+        while !self.ready_rx.is_empty() {
+            if output.len() == output.capacity() {
+                return None;
+            }
+            let page = self.ready_rx.pop().ok()?;
+            output.push(page);
+            ready += 1;
+        }
+        let mut held = 0;
+        while !self.held_returns.is_empty() {
+            if output.len() == output.capacity() {
+                return None;
+            }
+            let page = self.held_returns.pop()?;
+            output.push(page);
+            held += 1;
+        }
+        Some((ready, held))
+    }
     pub(crate) fn new(
         cache_pages: usize,
         request_capacity: usize,

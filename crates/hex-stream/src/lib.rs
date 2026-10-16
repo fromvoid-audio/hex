@@ -14,9 +14,9 @@ pub use endpoint::EndpointStats;
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
     AudioStreamStorageSummary, CatalogLease, OpaqueStreamCost, OpaqueStreamHandleGroup,
-    PagePoolReport, ShutdownError, StreamBusy, StreamCallbackPages, StreamControl,
-    StreamHandleLocation, StreamOwningHandleObligation, StreamPairMismatch, StreamRuntime,
-    StreamSourceDomainObligation,
+    PagePoolReport, PreparedStreamDisposal, ShutdownError, StreamBusy, StreamCallbackPages,
+    StreamControl, StreamDisposalError, StreamDisposalPhase, StreamHandleLocation,
+    StreamOwningHandleObligation, StreamPairMismatch, StreamRuntime, StreamSourceDomainObligation,
 };
 pub use types::{
     CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,

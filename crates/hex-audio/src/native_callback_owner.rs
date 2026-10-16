@@ -1,0 +1,326 @@
+//! Once-only, coupled native closure custody, adapted from original177
+//! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
+//! destroys its contents. Receiving a carrier is not final-active quiescence.
+use crate::prepared::{Callback, Status};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+
+pub(crate) struct NativeCallbackOwner {
+    pub(crate) callback: Callback,
+    status: Arc<Status>,
+    #[cfg(test)]
+    probe: Option<DropProbe>,
+}
+impl NativeCallbackOwner {
+    pub(crate) fn run(&mut self, call: impl FnOnce(&mut Callback, &Status)) {
+        // Preserve ordinary Result-based fault handling. No callback unwind
+        // recovery is introduced at the native FFI boundary.
+        call(&mut self.callback, &self.status);
+    }
+}
+pub(crate) struct ErrorCallbackOwner {
+    status: Arc<Status>,
+    #[cfg(test)]
+    probe: Option<DropProbe>,
+}
+#[cfg(test)]
+struct DropProbe(Box<dyn FnMut() + Send>);
+#[cfg(test)]
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+impl ErrorCallbackOwner {
+    pub(crate) fn report(&self) {
+        self.status
+            .device_fault
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+pub(crate) struct Guard<T> {
+    owner: Option<Mutex<Box<T>>>,
+    cell: Arc<OnceLock<Mutex<Box<T>>>>,
+}
+struct Terminal<T> {
+    cell: Option<Arc<OnceLock<Mutex<Box<T>>>>>,
+}
+fn reserve<T>(value: T) -> (Guard<T>, Terminal<T>) {
+    let cell = Arc::new(OnceLock::new());
+    (
+        Guard {
+            owner: Some(Mutex::new(Box::new(value))),
+            cell: Arc::clone(&cell),
+        },
+        Terminal { cell: Some(cell) },
+    )
+}
+impl<T> Guard<T> {
+    pub(crate) fn owner_mut(&mut self) -> Option<&mut T> {
+        self.owner.as_mut().map(|owner| {
+            owner
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+        })
+    }
+}
+impl<T> Drop for Guard<T> {
+    fn drop(&mut self) {
+        self.publish_for_drop();
+    }
+}
+impl<T> Guard<T> {
+    fn publish_for_drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            // Private fresh cell, sole initializer; no provider or destructor.
+            self.cell.get_or_init(|| owner);
+        }
+        // The anchored terminal still owns a strong reference. This Drop never
+        // frees the root or its Box on a backend thread.
+    }
+}
+impl<T> Terminal<T> {
+    fn ready(&mut self) -> bool {
+        self.cell
+            .as_mut()
+            .is_some_and(|cell| cell.get().is_some() && Arc::get_mut(cell).is_some())
+    }
+    fn take(&mut self) -> Option<Box<T>> {
+        if !self.ready() {
+            return None;
+        }
+        let cell = self.cell.take()?;
+        match Arc::try_unwrap(cell) {
+            Ok(cell) => cell
+                .into_inner()
+                .map(|owner| owner.into_inner().unwrap_or_else(PoisonError::into_inner)),
+            Err(cell) => {
+                self.cell = Some(cell);
+                None
+            }
+        }
+    }
+}
+pub(crate) struct NativeTerminals {
+    data: Terminal<NativeCallbackOwner>,
+    errors: Terminal<ErrorCallbackOwner>,
+}
+pub(crate) fn reserve_native(
+    callback: Callback,
+    status: Arc<Status>,
+) -> (
+    Guard<NativeCallbackOwner>,
+    Guard<ErrorCallbackOwner>,
+    NativeTerminals,
+) {
+    let (data_guard, data) = reserve(NativeCallbackOwner {
+        callback,
+        status: Arc::clone(&status),
+        #[cfg(test)]
+        probe: None,
+    });
+    let (error_guard, errors) = reserve(ErrorCallbackOwner {
+        status,
+        #[cfg(test)]
+        probe: None,
+    });
+    (data_guard, error_guard, NativeTerminals { data, errors })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn both_guards_must_fully_release_after_publication_and_exact_boxes_drop_only_on_control() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        for errors_first in [false, true] {
+            let (control, mut data, mut errors, mut retirement) =
+                crate::prepared::candidate_tests::anchored();
+            let data_address = data.owner_mut().unwrap() as *mut NativeCallbackOwner as usize;
+            let error_address = errors.owner_mut().unwrap() as *mut ErrorCallbackOwner as usize;
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let data_records = records.clone();
+            let error_records = records.clone();
+            data.owner_mut().unwrap().probe = Some(DropProbe(Box::new(move || {
+                data_records
+                    .lock()
+                    .unwrap()
+                    .push((data_address, std::thread::current().id()))
+            })));
+            errors.owner_mut().unwrap().probe = Some(DropProbe(Box::new(move || {
+                error_records
+                    .lock()
+                    .unwrap()
+                    .push((error_address, std::thread::current().id()))
+            })));
+            data.publish_for_drop();
+            errors.publish_for_drop();
+            assert!(!retirement.advance().unwrap()); // published is not released
+            if errors_first {
+                std::thread::spawn(move || drop(errors)).join().unwrap();
+                assert!(!retirement.advance().unwrap());
+                std::thread::spawn(move || drop(data)).join().unwrap();
+            } else {
+                std::thread::spawn(move || drop(data)).join().unwrap();
+                assert!(!retirement.advance().unwrap());
+                std::thread::spawn(move || drop(errors)).join().unwrap();
+            }
+            assert!(records.lock().unwrap().is_empty());
+            assert!(retirement.advance().unwrap());
+            assert_eq!(
+                *records.lock().unwrap(),
+                [
+                    (data_address, std::thread::current().id()),
+                    (error_address, std::thread::current().id())
+                ]
+            );
+            drop(control);
+        }
+    }
+    #[test]
+    fn actual_data_destructor_panic_keeps_error_owner_and_first_control_payload_without_retry() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        use std::{
+            any::Any,
+            panic::{AssertUnwindSafe, catch_unwind},
+        };
+        struct Payload(Arc<AtomicUsize>);
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let (control, mut data, errors, mut retirement) =
+            crate::prepared::candidate_tests::anchored();
+        let payload_drops = Arc::new(AtomicUsize::new(0));
+        let payload = payload_drops.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        data.owner_mut().unwrap().probe = Some(DropProbe(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::panic::panic_any(Payload(payload.clone()));
+        })));
+        drop(data);
+        drop(errors);
+        // Same outer control-side catch as lifecycle retirement; the persistent
+        // retirement fields outlive the actual nested destructor unwind.
+        let first = catch_unwind(AssertUnwindSafe(|| retirement.advance()))
+            .err()
+            .unwrap();
+        let original = first.as_ref() as *const dyn Any as *const ();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(payload_drops.load(Ordering::SeqCst), 0);
+        assert!(retirement.errors.is_some());
+        assert!(retirement.advance().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(first.as_ref() as *const dyn Any as *const (), original);
+        drop(retirement);
+        drop(control); // explicit test control teardown
+        assert_eq!(payload_drops.load(Ordering::SeqCst), 0);
+        drop(first);
+        assert_eq!(payload_drops.load(Ordering::SeqCst), 1);
+    }
+}
+impl NativeTerminals {
+    fn receive_into(
+        &mut self,
+        data: &mut Option<Box<NativeCallbackOwner>>,
+        errors: &mut Option<Box<ErrorCallbackOwner>>,
+    ) -> Result<bool, ()> {
+        if data.is_some() || errors.is_some() {
+            return Err(());
+        }
+        // No clone/Weak/reset/raw cell API exists; readiness cannot regress while
+        // both actual terminal anchors remain borrowed here. Still secure each
+        // extracted owner in persistent storage before the next checked step.
+        if !self.data.ready() || !self.errors.ready() {
+            return Ok(false);
+        }
+        *data = self.data.take();
+        if data.is_none() {
+            return Err(());
+        }
+        *errors = self.errors.take();
+        if errors.is_none() {
+            return Err(());
+        }
+        Ok(true)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Disposal {
+    Unreceived,
+    Received,
+    Pending,
+    Complete,
+}
+/// Persistent lifecycle fields, always outside the execution unwind boundary.
+pub(crate) struct NativeRetirement {
+    terminals: Option<NativeTerminals>,
+    data: Option<Box<NativeCallbackOwner>>,
+    errors: Option<Box<ErrorCallbackOwner>>,
+    states: [Disposal; 2],
+    root: crate::candidate_custody::CandidateRoot,
+}
+impl NativeRetirement {
+    pub(crate) fn new(
+        terminals: NativeTerminals,
+        root: crate::candidate_custody::CandidateRoot,
+    ) -> Self {
+        Self {
+            terminals: Some(terminals),
+            data: None,
+            errors: None,
+            states: [Disposal::Unreceived; 2],
+            root,
+        }
+    }
+    pub(crate) fn root(&self) -> crate::candidate_custody::CandidateRoot {
+        self.root.clone()
+    }
+    /// This certifies only physical control custody/disposal. The caller still
+    /// owns backend stop/exposure observations; no final-active fact is minted.
+    pub(crate) fn advance(&mut self) -> Result<bool, ()> {
+        if self.states.contains(&Disposal::Pending) {
+            return Err(());
+        }
+        if self.states[0] == Disposal::Unreceived {
+            if self.data.is_some() || self.errors.is_some() {
+                return Err(());
+            }
+            let Some(terminals) = self.terminals.as_mut() else {
+                return Err(());
+            };
+            if !terminals.receive_into(&mut self.data, &mut self.errors)? {
+                return Ok(false);
+            }
+            self.states = [Disposal::Received; 2];
+        }
+        if self.states[0] == Disposal::Received {
+            let Some(data) = self.data.as_mut() else {
+                return Err(());
+            };
+            if !data.callback.drain_candidate_custody_on_control() {
+                return Ok(false);
+            }
+            self.states[0] = Disposal::Pending;
+            drop(self.data.take());
+            self.states[0] = Disposal::Complete;
+        }
+        if self.states[1] == Disposal::Received {
+            if self.errors.is_none() {
+                return Err(());
+            }
+            self.states[1] = Disposal::Pending;
+            drop(self.errors.take());
+            self.states[1] = Disposal::Complete;
+        }
+        if self.states != [Disposal::Complete; 2] {
+            return Err(());
+        }
+        self.terminals = None;
+        Ok(self.root.finish_on_control())
+    }
+}

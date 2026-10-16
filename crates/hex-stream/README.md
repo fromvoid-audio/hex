@@ -50,6 +50,14 @@ measures the split render-facing operations with the pinned dev-only allocation
 counter. Worker setup, page preparation, assertions, and shutdown stay outside the
 measured closure. This is a headless endpoint probe, not native device acceptance.
 
+The owning runtime unit fixture verifies shutdown with an undrained one-page
+ready queue and a second page actually held by the worker. Test-only channel
+barriers delay the real worker after catalog preparation; publication events,
+not a fixed sleep, establish the required queue state before shutdown. A delayed
+worker negative control reproduces the old 30 ms assumption yielding zero queued
+pages while still joining and reclaiming the complete pool. The hooks are absent
+from production builds; shutdown, queue bounds and callback behavior are unchanged.
+
 `cargo run --release -p hex-stream --example profile_100_long_sources` creates
 100 distinct sparse WAV files of 17,000,000 stereo frames each, catalogs their
 full logical contents, warms one far-offset page per asset, and renders 100
@@ -83,3 +91,14 @@ attest resolved sources for arbitrary custom Cargo `--config`/source replacement
 Unsupported observations stay Unknown. Ordinary runtime behavior and all
 component limits remain unchanged. See the exhaustive
 [DATA/obligation manifest](../../docs/audio-only-storage-accounting.md).
+
+## borrowed persistent pair disposal
+
+`PreparedStreamDisposal` is the control-side alternative used by native candidate
+custody. Preparation reserves collection storage before the exact original pair
+moves. Busy external leases leave the pair untouched; join occurs outside the
+worker mutex, retaining the first worker panic payload and endpoints on failure.
+Normal completion requires conservation of every fixed pool page before
+destruction. Failed disposal stays incomplete and is never retried. This does
+not change the legacy consuming shutdown API or certify native quiescence,
+complete cost or admission. See [never-installed disposal](../../docs/never-installed-audio-disposal.md).
