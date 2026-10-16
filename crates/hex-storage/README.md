@@ -146,18 +146,24 @@ Imported unsaved projects use that same latest-untitled checkpoint path. Recover
 retains schema-18 original-document provenance and prepares the complete media
 and playback candidate before adoption, without acquiring an overwrite association.
 
-Schema19 adds a required strict bounded routing envelope on schema18, preserving
-exact original provenance and opaque device state. Only legacy routing is admitted;
-nonempty authored edges validate then refuse before engine use. See
-[routing](../../docs/routing.md).
+New saves use schema23, the complete combined envelope for device input/output
+host gains, exact import provenance, Return feeds, base gain envelopes and
+recording-epoch metadata. Nonempty touch spans still refuse normal adoption,
+decode and save until every playback consumer supports them. The ordinary writer
+no longer selects a format based on which of those additions happens to be empty.
 
-Schema20 strictly persists canonical additive stereo Return feeds, selecting20
-only for nonempty feeds in the ordinary writer. Legacy projects keep the19 byte
-path; old writers refuse feed loss. Provenance, opaque payloads and migrations
-remain intact. See [routing](../../docs/routing.md) for the admitted finite stage
-and the remaining automation/latency/native acceptance.
+Historical versions18 and19 have two recorded shapes from independent branches.
+Decoding selects an envelope by top-level key presence, then applies its strict
+reader: main's legacy envelope has neither `import_provenance` nor `routing`;
+branch18 has provenance only; branch19 has both. A null or malformed present
+field still selects that reader. Inconsistent shapes and unknown/duplicate
+fields refuse; decoding never retries a different format after an error.
+Schemas20–22 retain explicit readers and their bounded migration contracts.
+The explicit schema20/22 writers preserve supported host trims through the shared
+device DTO; their output requires this integrated reader for those trims. They
+still refuse state they cannot represent instead of discarding it.
 
-Schema21 strictly persists canonical track-gain envelopes with every schema20
-field. Readers of legacy schemas migrate empty lanes; ordinary19/20 writers remain selected
-for projects without automation, and older envelope entry points refuse lane loss.
-See [track gain automation](../../docs/track-gain-automation.md).
+See [routing](../../docs/routing.md),
+[track gain automation](../../docs/track-gain-automation.md) and
+[gain touch metadata](../../docs/gain-touch-spans.md). This persistence integration
+does not implement recording, general MIDI routing or latency compensation.

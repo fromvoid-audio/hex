@@ -114,6 +114,7 @@ pub(super) fn bounded_gain_points<'de, D: serde::Deserializer<'de>>(
     d.deserialize_seq(Points)
 }
 impl DocumentV21 {
+    #[cfg(test)]
     pub(crate) fn from_project(project: &Project) -> Result<Self, StorageError> {
         if project.has_gain_touch_metadata() {
             return Err(StorageError::Invalid(

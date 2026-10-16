@@ -54,7 +54,7 @@ fn explicit_schema20_legacy_and_migrations_keep_provenance_opaque_states_and_def
     assert_eq!(doc["routing"], json!([]));
     assert_eq!(decode(&bytes).unwrap(), project);
     let default: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
-    assert_eq!(default["version"], 19);
+    assert_eq!(default["version"], 23);
     assert_eq!(default["import_provenance"], doc["import_provenance"]);
     assert_eq!(default["return_tracks"], doc["return_tracks"]);
     let mut legacy = doc;
@@ -81,7 +81,7 @@ fn valid_feed_decode_load_and_save_preserve_canonical_state_and_input() {
     assert_eq!(decode(&encode(&decoded).unwrap()).unwrap(), decoded);
     assert_eq!(
         serde_json::from_slice::<Value>(&encode(&decoded).unwrap()).unwrap()["version"],
-        20
+        23
     );
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

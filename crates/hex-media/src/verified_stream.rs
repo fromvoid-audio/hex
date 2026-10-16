@@ -81,6 +81,7 @@ impl VerifiedWavReader {
         }
         let preliminary_layout =
             wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
+        preliminary_layout.format.require_fixed_frames()?;
         if preliminary_layout.frames > limits.reader.max_source_frames {
             return Err(ImportError::LimitExceeded("source frames"));
         }
@@ -299,7 +300,7 @@ impl VerifiedWavReader {
             let decode_count = usize::try_from(available.min(requested))
                 .map_err(|_| ImportError::Invalid("window frame count exceeds address space"))?;
             let block_align = layout.format.block_align;
-            let mut frame_bytes = [0_u8; 8];
+            let mut frame_bytes = [0_u8; 16];
             let byte_offset = start_frame
                 .checked_mul(block_align as u64)
                 .and_then(|offset| layout.data_offset.checked_add(offset))

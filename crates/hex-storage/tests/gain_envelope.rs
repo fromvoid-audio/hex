@@ -1,3 +1,4 @@
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use hex_project::{
     BeatTime, Command, Created, Editor, GainInterpolation, GainPoint, ImportProvenance, Project,
 };
@@ -74,7 +75,7 @@ fn schema21_roundtrip_retains_every_lane_feed_send_provenance_and_opaque_payload
     let p = fixture();
     let bytes = encode(&p).unwrap();
     let doc: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 21);
+    assert_eq!(doc["version"], 23);
     assert_eq!(decode(&bytes).unwrap(), p);
     assert!(encode_schema20(&p).is_err());
     let dir = std::env::temp_dir().join(format!(
@@ -129,14 +130,14 @@ fn strict_new_lane_fields_order_modes_roles_limits_and_backports_refuse() {
     invalid["tracks"][0]["gain_envelope"] =
         json!(vec![base["tracks"][0]["gain_envelope"][0].clone(); 1025]);
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
-    for version in [19, 20, 23] {
+    for version in [19, 20, 24] {
         invalid = base.clone();
         invalid["version"] = json!(version);
         assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
     }
 }
 #[test]
-fn legacy20_and19_migrate_empty_lanes_and_keep_default_byte_selection() {
+fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
     let mut s = fixture().snapshot();
     for track in &mut s.tracks {
         track.gain_envelope.clear();
@@ -145,7 +146,7 @@ fn legacy20_and19_migrate_empty_lanes_and_keep_default_byte_selection() {
     let bytes = encode(&p).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        20
+        23
     );
     assert_eq!(decode(&bytes).unwrap(), p);
     let mut s = p.snapshot();
@@ -154,7 +155,7 @@ fn legacy20_and19_migrate_empty_lanes_and_keep_default_byte_selection() {
     let bytes = encode(&p).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        19
+        23
     );
     assert_eq!(decode(&bytes).unwrap(), p);
 }
@@ -167,7 +168,7 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        22
+        23
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut editor = Editor::new(project.clone(), 8).unwrap();
@@ -203,5 +204,149 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
         assert_eq!(p, previous);
         assert!(p.tracks()[0].gain_lane().spans().is_empty());
         assert_eq!(p.tracks()[0].gain_lane().recording_epoch(), 0);
+    }
+}
+
+#[test]
+fn schema23_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and_opaque_data() {
+    let mut snapshot = Project::new(48_000).unwrap().snapshot();
+    snapshot.import_provenance =
+        Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![0, 255, 42, 7]).unwrap());
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "combined".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::ReturnTrack(first_return) = editor
+        .execute(Command::AddReturnTrack {
+            name: "first return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    let Created::ReturnTrack(second_return) = editor
+        .execute(Command::AddReturnTrack {
+            name: "second return".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: first_return,
+            gain: 0.375,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetReturnFeed {
+            source: first_return,
+            destination: second_return,
+            gain: 0.625,
+        })
+        .unwrap();
+
+    let hosted_effect = |kind: &'static str, input: f32, output: f32| {
+        NativeDeviceState::new(DeviceTypeId::new(kind).unwrap(), 9, vec![0, 255, 17])
+            .unwrap()
+            .with_input_gain_db(input)
+            .unwrap()
+            .with_output_gain_db(output)
+            .unwrap()
+    };
+    let Created::Device(track_effect) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hosted_effect("vendor.track-effect", 2.5, -4.0),
+        })
+        .unwrap()
+    else {
+        panic!("track effect")
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: instrument,
+            state: hosted_effect("vendor.instrument", -3.5, 1.25),
+        })
+        .unwrap();
+    let Created::Device(return_effect) = editor
+        .execute(Command::InsertReturnDevice {
+            return_track: first_return,
+            before: None,
+            state: hosted_effect("vendor.return-effect", 5.0, -7.25),
+        })
+        .unwrap()
+    else {
+        panic!("return effect")
+    };
+
+    let mut snapshot = editor.project().snapshot();
+    snapshot.tracks[0].gain_envelope = vec![
+        GainPoint {
+            beat: BeatTime::ZERO,
+            gain: 0.2,
+            outgoing: GainInterpolation::Linear,
+        },
+        GainPoint {
+            beat: BeatTime::from_raw(480),
+            gain: 1.6,
+            outgoing: GainInterpolation::Step,
+        },
+    ];
+    snapshot.tracks[0].gain_touch_epoch = 23;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let bytes = encode(&project).unwrap();
+    let document: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(document["version"], 23);
+    assert_eq!(document["tracks"][0]["gain_touch_epoch"], 23);
+    assert!(
+        document["tracks"][0]["gain_touch_spans"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        document["import_provenance"]["original_bytes"],
+        json!([0, 255, 42, 7])
+    );
+    assert_eq!(document["routing"].as_array().unwrap().len(), 1);
+    assert_eq!(document["tracks"][0]["sends"][0]["gain"], json!(0.375));
+    assert_eq!(
+        document["tracks"][0]["devices"][0]["payload"],
+        json!([0, 255, 17])
+    );
+    assert_eq!(decode(&bytes).unwrap(), project);
+    for (id, input_millidb, output_millidb) in [
+        (track_effect, 2_500, -4_000),
+        (instrument, -3_500, 1_250),
+        (return_effect, 5_000, -7_250),
+    ] {
+        let restored = decode(&bytes).unwrap();
+        assert_eq!(
+            restored.device(id).unwrap().state(),
+            project.device(id).unwrap().state()
+        );
+        assert_eq!(
+            restored.device(id).unwrap().state().input_gain_millidb(),
+            input_millidb
+        );
+        assert_eq!(
+            restored.device(id).unwrap().state().output_gain_millidb(),
+            output_millidb
+        );
     }
 }

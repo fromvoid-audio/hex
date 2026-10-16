@@ -54,6 +54,8 @@ impl SessionPlayback {
         self.anchor = None;
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
+        self.analytic_continuations.fill(None);
+        self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
         self.suppressions.clear();
         self.release_order = 0;
@@ -138,6 +140,8 @@ impl SessionPlayback {
         self.arrangement_frame = frame;
         self.arrangement_loop_pass = 0;
         self.anchor = None;
+        self.analytic_continuations.fill(None);
+        self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
         self.suppressions.clear();
         self.historical_floor = None;
@@ -503,7 +507,7 @@ impl SessionPlayback {
                             span.start,
                             span.gate_end,
                             span.end,
-                            sampler,
+                            sampler.detach(&self.analytic_continuations),
                             source_frame,
                             performance_frame,
                         ) {
@@ -556,6 +560,7 @@ impl SessionPlayback {
                         .reconcile_at(performance_frame, None)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    entry.voice.detach(&self.analytic_continuations);
                     entry.continuation = None;
                 }
                 let prepared = self
@@ -601,10 +606,14 @@ impl SessionPlayback {
                     ) {
                         continue;
                     }
-                    if let Some(voice) = span
+                    if span.start_frame >= performance_frame {
+                        continue;
+                    }
+                    if let Some(mut voice) = span
                         .release_at(performance_frame)
                         .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
                     {
+                        voice.detach(&self.analytic_continuations);
                         let route = self
                             .routes
                             .get(index)

@@ -513,20 +513,18 @@ fn compile_device_effects(
 fn compile_effect_devices(
     source_devices: &[hex_project::Device],
     owner: hex_lattice::ProcessorChainOwner,
-    split: usize,
+    _split: usize,
     sample_rate: u32,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     require_zero_latency: bool,
 ) -> Result<CompiledEffectPlan, Invalid> {
-    let mut matrix = hex_lattice::StereoMatrix::identity();
-    let mut prefix = hex_lattice::StereoMatrix::identity();
-    let mut suffix = hex_lattice::StereoMatrix::identity();
     let mut devices = Vec::new();
     devices
         .try_reserve_exact(source_devices.len())
         .map_err(|_| Invalid("could not reserve prepared device chain"))?;
-    let mut stateful = false;
-    for (index, device) in source_devices.iter().enumerate() {
+
+    let mut admission_matrix = hex_lattice::StereoMatrix::identity();
+    for device in source_devices {
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
@@ -544,19 +542,27 @@ fn compile_effect_devices(
             ));
         }
         let processor = prepared_device.processor.map(std::sync::Arc::from);
-        stateful |= processor.is_some();
+
         let prepared = if device.bypassed() {
             hex_lattice::StereoMatrix::identity()
         } else {
             prepared_device.matrix
         };
-        matrix = matrix.then(prepared).map_err(|error| Invalid(error.0))?;
-        if index < split {
-            prefix = prefix.then(prepared).map_err(|error| Invalid(error.0))?;
-        } else {
-            suffix = suffix.then(prepared).map_err(|error| Invalid(error.0))?;
+        // Retain the existing finite-composition admission guard even though
+        // runtime processing now preserves individual device boundaries.
+        admission_matrix = admission_matrix
+            .then(prepared)
+            .map_err(|error| Invalid(error.0))?;
+        if !device.bypassed() {
+            let gain = migrated.output_gain_linear() * migrated.input_gain_linear();
+            let trim = hex_lattice::StereoMatrix::new([[gain, 0.0], [0.0, gain]])
+                .map_err(|error| Invalid(error.0))?;
+            admission_matrix = admission_matrix
+                .then(trim)
+                .map_err(|error| Invalid(error.0))?;
         }
         devices.push(hex_lattice::PreparedProcessorInstance {
+            meter: Default::default(),
             owner,
             device_id: device.id().value(),
             device_type: migrated.type_id(),
@@ -567,24 +573,12 @@ fn compile_effect_devices(
             definition: processor,
         });
     }
-    if stateful {
-        Ok(CompiledEffectPlan {
-            fused: None,
-            prefix: None,
-            suffix: None,
-            device_chain: devices,
-        })
-    } else {
-        let non_identity = |matrix: hex_lattice::StereoMatrix| {
-            (matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]).then_some(matrix)
-        };
-        Ok(CompiledEffectPlan {
-            fused: non_identity(matrix),
-            prefix: non_identity(prefix),
-            suffix: non_identity(suffix),
-            device_chain: Vec::new(),
-        })
-    }
+    Ok(CompiledEffectPlan {
+        fused: None,
+        prefix: None,
+        suffix: None,
+        device_chain: devices,
+    })
 }
 
 pub(crate) enum PreparedAudioSourceRef<'a> {

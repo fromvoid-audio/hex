@@ -21,7 +21,7 @@ impl From<&Device> for PreparedDeviceIdentity {
     fn from(device: &Device) -> Self {
         Self {
             id: device.id(),
-            state: device.state().clone(),
+            state: device.state().clone().without_host_gains(),
             bypassed: device.bypassed(),
         }
     }
@@ -320,7 +320,7 @@ impl PreparedRevision {
         self.arrangement
             .tracks()
             .iter()
-            .any(|track| track.has_mutable_instrument() || track.has_stateful_devices())
+            .any(|track| track.has_mutable_instrument() || track.has_device_chain())
             || self.arrangement.return_buses().iter().any(|bus| {
                 bus.device_chain
                     .iter()
@@ -398,10 +398,19 @@ fn prepare_mutable_track_revisions(
             "mutable revision descriptors do not match compiled tracks",
         ));
     }
+    // Keep bounded source/topology evidence for providers that authorize a
+    // future analytic import as well as for existing mutable owners.
+    let needs_descriptor = |track: &crate::Track| {
+        track.has_mutable_instrument()
+            || track
+                .instrument_id
+                .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
+                .is_some_and(|owner| owner.context().import_identity().is_some())
+    };
     let mutable_track_count = arrangement
         .tracks()
         .iter()
-        .filter(|track| track.has_mutable_instrument())
+        .filter(|track| needs_descriptor(track))
         .count();
     let mut revisions = Vec::new();
     revisions
@@ -420,7 +429,7 @@ fn prepare_mutable_track_revisions(
                 "mutable revision descriptor track ordering is inconsistent",
             ));
         }
-        if !compiled.has_mutable_instrument() {
+        if !needs_descriptor(compiled) {
             continue;
         }
         if track.devices().len() > MAX_DEVICES_PER_TRACK {

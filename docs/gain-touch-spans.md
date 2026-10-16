@@ -53,3 +53,13 @@ native interaction nor actual recording PCM. Worker1's endpoint-domain ownership
 escrow/reaper is not PCM/output transaction escrow or a gain-application ACK.
 The existing 256-frame render quantum versus whole hardware callback commit and
 rollback boundary remains unresolved for a future actual recording stage.
+
+## combined persistence integration — 16 october 2026
+
+New saves use the complete schema23 envelope. Historical schema18/19 branch
+shapes dispatch by key presence into strict readers; schemas20–22 remain readable.
+Device input/output host gains, opaque payloads, provenance, Return feeds, gain
+points and epoch metadata share one lossless snapshot path. The old ordinary
+writer selection described above is historical. See
+[storage](../crates/hex-storage/README.md). Nonempty touch-span adoption and actual
+recording remain refused; this adds no compensation.

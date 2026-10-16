@@ -32,7 +32,45 @@ fn fixture() -> Value {
             gain: 0.375,
         })
         .unwrap();
-    serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap()
+    let mut document: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
+    document["version"] = json!(19);
+    for track in document["tracks"].as_array_mut().unwrap() {
+        for key in ["gain_envelope", "gain_touch_spans", "gain_touch_epoch"] {
+            track.as_object_mut().unwrap().remove(key);
+        }
+    }
+    document
+}
+fn historical(version: u64, provenance: bool, routing: bool) -> Value {
+    let mut document = fixture();
+    document["version"] = json!(version);
+    if !provenance {
+        document
+            .as_object_mut()
+            .unwrap()
+            .remove("import_provenance");
+    }
+    if !routing {
+        document.as_object_mut().unwrap().remove("routing");
+    }
+    document
+}
+fn remove_host_trim_fields(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                remove_host_trim_fields(value);
+            }
+        }
+        Value::Object(object) => {
+            object.remove("input_gain_millidb");
+            object.remove("output_gain_millidb");
+            for value in object.values_mut() {
+                remove_host_trim_fields(value);
+            }
+        }
+        _ => {}
+    }
 }
 fn edge(source: Value, target: Value) -> Value {
     json!({"source":source,"target":target,"signal":{"kind":"audio","channels":2}})
@@ -47,30 +85,72 @@ fn refusal(document: &Value, expected: &str) {
 }
 
 #[test]
-fn schema19_roundtrip_and_schema18_migration_preserve_sends_provenance_and_opaque_states() {
-    let mut document = fixture();
-    assert_eq!(document["version"], 19);
-    assert_eq!(document["routing"], json!([]));
-    // Unknown vendor formats and reserved device-state versions are opaque here.
-    document["return_tracks"][0]["devices"] = json!([
-        {"id":100,"type_id":"vendor.future","state_version":9,"payload":[1,2,255],"bypassed":true},
-        {"id":101,"type_id":"vendor.future","state_version":10,"payload":[0,42],"bypassed":false}
-    ]);
-    document["next_id"] = json!(102);
-    let project = decode(&serde_json::to_vec(&document).unwrap()).unwrap();
-    assert!(project.authored_routing().is_empty());
-    assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
-    let current: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
-    assert_eq!(current["return_tracks"], document["return_tracks"]);
-    assert_eq!(current["tracks"], document["tracks"]);
-    assert_eq!(current["import_provenance"], document["import_provenance"]);
-    document["version"] = json!(18);
-    assert!(decode(&serde_json::to_vec(&document).unwrap()).is_err());
-    document.as_object_mut().unwrap().remove("routing");
-    assert_eq!(
-        decode(&serde_json::to_vec(&document).unwrap()).unwrap(),
-        project
+fn historical_main_and_branch_shapes_preserve_their_supported_data() {
+    // Main schema18/19 omitted both later fields. The branch added provenance
+    // in schema18 and routing in schema19; keep fixtures distinct so dispatch
+    // cannot accidentally accept a hybrid or mistake one branch for the other.
+    for (version, provenance, routing) in [
+        (18, false, false),
+        (19, false, false),
+        (18, true, false),
+        (19, true, true),
+    ] {
+        let mut document = historical(version, provenance, routing);
+        assert_eq!(document["version"], json!(version));
+        assert_eq!(document.get("import_provenance").is_some(), provenance);
+        assert_eq!(document.get("routing").is_some(), routing);
+        // Unknown vendor formats and reserved device-state versions are opaque here.
+        document["return_tracks"][0]["devices"] = json!([
+            {"id":100,"type_id":"vendor.future","state_version":9,"payload":[1,2,255],"bypassed":true},
+            {"id":101,"type_id":"vendor.future","state_version":10,"payload":[0,42],"bypassed":false}
+        ]);
+        document["next_id"] = json!(102);
+        let project = decode(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(project.authored_routing().is_empty());
+        assert_eq!(decode(&encode(&project).unwrap()).unwrap(), project);
+        let mut current: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
+        remove_host_trim_fields(&mut current);
+        remove_host_trim_fields(&mut document);
+        assert_eq!(current["return_tracks"], document["return_tracks"]);
+        let mut current_tracks = current["tracks"].clone();
+        for track in current_tracks.as_array_mut().unwrap() {
+            for key in ["gain_envelope", "gain_touch_spans", "gain_touch_epoch"] {
+                track.as_object_mut().unwrap().remove(key);
+            }
+        }
+        assert_eq!(current_tracks, document["tracks"]);
+        if provenance {
+            assert_eq!(current["import_provenance"], document["import_provenance"]);
+        } else {
+            assert!(current["import_provenance"].is_null());
+        }
+    }
+}
+
+#[test]
+fn historical_shape_collisions_and_duplicate_or_null_keys_are_refused() {
+    for document in [
+        historical(18, false, true),
+        historical(18, true, true),
+        historical(19, true, false),
+        historical(19, false, true),
+    ] {
+        assert!(
+            decode(&serde_json::to_vec(&document).unwrap()).is_err(),
+            "unexpected accepted shape: {document}"
+        );
+    }
+    let mut null_routes = historical(19, true, true);
+    null_routes["routing"] = Value::Null;
+    assert!(decode(&serde_json::to_vec(&null_routes).unwrap()).is_err());
+    let document = serde_json::to_string(&historical(19, true, true)).unwrap();
+    let duplicate = format!("{},\"routing\":null}}", &document[..document.len() - 1]);
+    assert!(decode(duplicate.as_bytes()).is_err());
+    let duplicate = format!(
+        "{},\"import_provenance\":null}}",
+        &document[..document.len() - 1]
     );
+    assert!(decode(duplicate.as_bytes()).is_err());
 }
 
 #[test]

@@ -8,9 +8,17 @@ use std::sync::Arc;
 
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
+mod device_reorder_tests;
 mod gate_ui_tests;
+mod navigation_ui_tests;
+mod operator_enable_ui_tests;
 mod operator_navigation_tests;
+mod operator_preview_navigation_tests;
+mod operator_tab_tests;
+
+mod operator_routing_readout_tests;
 mod saturator_ui_tests;
+mod shortcut_text_tests;
 
 fn receive_service_event(service: &Service) -> Event {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -201,6 +209,119 @@ fn pump_until(
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+#[gpui::test]
+fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("instrument")
+        .id();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (prefix, device) in [("instrument-device", instrument), ("effect-device", effect)] {
+        let bounds = visual
+            .debug_bounds(Box::leak(
+                format!("{prefix}-{}", device.value()).into_boxed_str(),
+            ))
+            .expect("device card");
+        let title = point(bounds.origin.x + px(40.0), bounds.origin.y + px(7.0));
+        visual.simulate_click(title, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.device_panel.selected_device, Some(device));
+            assert_eq!(view.state.as_ref().expect("state").revision, revision);
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+    // Right-clicking a different card must not change the left-click selection.
+    let bounds = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument.value()).into_boxed_str(),
+        ))
+        .expect("instrument");
+    let title = point(bounds.origin.x + px(40.0), bounds.origin.y + px(7.0));
+    visual.simulate_mouse_down(title, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(title, MouseButton::Right, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(effect))
+    });
+    let remove = visual
+        .debug_bounds(Box::leak(
+            format!("device-remove-{}", effect.value()).into_boxed_str(),
+        ))
+        .expect("remove action");
+    visual.simulate_click(remove.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        !view
+            .state
+            .as_ref()
+            .expect("state")
+            .project
+            .track(track)
+            .expect("track")
+            .devices()
+            .iter()
+            .any(|device| device.id() == effect)
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, None)
+    });
+}
+
+#[gpui::test]
+fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, return_track, device, _) = actor_return_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_track);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
+        ))
+        .expect("gain knob");
+    visual.simulate_mouse_down(knob.center(), MouseButton::Left, Modifiers::default());
+    let moved = point(knob.center().x, knob.center().y - px(12.0));
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(device));
+        assert!(view.device_gesture.snapshot().is_some());
+    });
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, Some(device))
+    });
+    editor.update(cx, |view, cx| {
+        view.focused_return = None;
+        cx.notify();
+    });
+    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, None)
+    });
+    editor.update(cx, |view, cx| {
+        view.device_panel.selected_device = Some(device);
+        view.project_generation += 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.device_panel.selected_device, None)
+    });
 }
 
 #[gpui::test]
@@ -570,7 +691,19 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card_selector =
         Box::leak(format!("device-drop-card-{}", instrument.value()).into_boxed_str());
     let card = visual.debug_bounds(card_selector).expect("instrument card");
-    assert_eq!(card.size.width, px(DEVICE_FRAME_WIDTH));
+    assert_eq!(
+        card.size.width,
+        px(DEVICE_FRAME_WIDTH + gain_meters::WIDTH + DEVICE_CHAIN_PADDING)
+    );
+    let painted_card = visual
+        .debug_bounds(Box::leak(
+            format!("instrument-device-{}", instrument.value()).into_boxed_str(),
+        ))
+        .expect("painted instrument card");
+    assert_eq!(
+        painted_card.size.width,
+        px(DEVICE_FRAME_WIDTH + gain_meters::WIDTH)
+    );
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -643,7 +776,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH)
+        px(operator_panel::OPERATOR_FRAME_WIDTH + gain_meters::WIDTH + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
@@ -701,13 +834,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(
-            !view
-                .device_panel
-                .controls
-                .keys()
-                .any(|key| key.device == instrument)
-        );
+        assert!(view.device_panel.has_only_host_control_for(instrument));
         assert!(
             !view
                 .device_panel
@@ -904,8 +1031,29 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let frame_selector =
         Box::leak(format!("instrument-device-{}", instrument_id.value()).into_boxed_str());
     let frame = visual.debug_bounds(frame_selector).expect("Operator frame");
-    assert_eq!(frame.size.width, px(operator_panel::OPERATOR_FRAME_WIDTH));
+    assert_eq!(
+        frame.size.width,
+        px(operator_panel::OPERATOR_FRAME_WIDTH + gain_meters::WIDTH)
+    );
     assert_eq!(frame.size.height, px(184.0));
+    for side in ["input", "output"] {
+        let selector = Box::leak(
+            format!(
+                "device-{}-parameter-{}-{side}-meter",
+                instrument_id.value(),
+                if side == "input" {
+                    hex_engine::DEVICE_INPUT_GAIN.id.value()
+                } else {
+                    hex_engine::DEVICE_OUTPUT_GAIN.id.value()
+                }
+            )
+            .into_boxed_str(),
+        );
+        let meter = visual.debug_bounds(selector).expect("device meter well");
+        assert_eq!(meter.size.width, px(8.0));
+        assert!(meter.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
+        assert!(meter.origin.x + meter.size.width <= frame.origin.x + frame.size.width);
+    }
     let body_selector =
         Box::leak(format!("operator-body-{}", instrument_id.value()).into_boxed_str());
     let body = visual.debug_bounds(body_selector).expect("Operator body");
@@ -958,7 +1106,8 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in 0..12 {
+    for field in operator_panel::preview::Field::ALL {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -969,7 +1118,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
     // Three-dial sections start beside the narrow switch/icon column,
     // rather than inheriting the LFO/filter selector column.
-    for field in [2, 5] {
+    for field in [
+        operator_panel::preview::Field::PitchEnvelope,
+        operator_panel::preview::Field::Time,
+    ] {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -1001,178 +1154,29 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let revision = editor.read_with(cx, |view, _| {
         view.state.as_ref().expect("project state").revision
     });
-    let lfo_toggle =
+    let pitch_toggle =
         Box::leak(format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str());
-    let toggle_bounds = visual
-        .debug_bounds(lfo_toggle)
-        .expect("local filter toggle");
-    visual.simulate_click(toggle_bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert!(!state.enabled[0], "right-shell toggle updates its UI state");
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-        assert!(view.device_panel.pending_values.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
-        let selector = &state.selectors[&operator_panel::preview::Choice::FilterMode];
-        selector
-            .entity
-            .read_with(cx, |selector, _| assert!(!selector.is_open()));
-    });
-    // Keep the compact-width layout assertions above, then expose the full
-    // horizontal device rail before interacting with the far-right controls.
-    visual.simulate_resize(size(px(1440.0), px(540.0)));
-    visual.run_until_parked();
-    let wave_selector = Box::leak(
-        format!("operator-preview-{}-selector-0", instrument_id.value()).into_boxed_str(),
-    );
-    let wave_bounds = visual
-        .debug_bounds(wave_selector)
-        .expect("local filter waveform selector");
-    assert!(wave_bounds.origin.x >= px(0.0));
-    assert!(wave_bounds.origin.x + wave_bounds.size.width <= px(1440.0));
-    visual.simulate_click(
-        point(
-            wave_bounds.origin.x + px(5.0),
-            wave_bounds.origin.y + px(4.0),
-        ),
-        Modifiers::default(),
-    );
-    visual.run_until_parked();
-    let wave_option = Box::leak(
-        format!(
-            "operator-preview-{}-selector-0-option-0",
-            instrument_id.value()
-        )
-        .into_boxed_str(),
-    );
-    let option_bounds = visual
-        .debug_bounds(wave_option)
-        .expect("filter waveform option");
-    visual.simulate_click(option_bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert_eq!(state.selected[0], 0, "selector changes its local selection");
-        state.selectors[&operator_panel::preview::Choice::FilterMode]
-            .entity
-            .read_with(cx, |selector, _| assert!(!selector.is_open()));
-    });
-    let rate_knob =
-        Box::leak(format!("operator-preview-{}-0-knob", instrument_id.value()).into_boxed_str());
-    let rate_value =
-        Box::leak(format!("operator-preview-{}-0-value", instrument_id.value()).into_boxed_str());
-    let rate_bounds = visual
-        .debug_bounds(rate_value)
-        .expect("local filter rate value");
-    let rate_knob_bounds = visual.debug_bounds(rate_knob).expect("local rate knob");
-    assert!(rate_bounds.origin.x + rate_bounds.size.width <= px(1440.0));
-    assert!(rate_knob_bounds.origin.x + rate_knob_bounds.size.width <= px(1440.0));
-    let rate_click = point(
-        rate_bounds.origin.x + rate_bounds.size.width / 2.0,
-        rate_bounds.origin.y + rate_bounds.size.height / 2.0,
-    );
-    visual.simulate_mouse_down(rate_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(rate_click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, cx| {
-        assert!(
-            view.device_panel.operator_previews[&instrument_id].controls
-                [&operator_panel::preview::Field::FilterFrequency]
-                .entity
-                .read_with(cx, |control, _| control.is_editing())
-        );
-    });
-    visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("250");
-    visual.simulate_keystrokes("enter");
+    let bounds = visual
+        .debug_bounds(pitch_toggle)
+        .expect("local pitch toggle");
+    visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        let rendered_rate = view.device_panel.operator_previews[&instrument_id].controls
-            [&operator_panel::preview::Field::FilterFrequency]
-            .entity
-            .read_with(cx, |control, _| control.value());
-        assert_ne!(rendered_rate, 198.0, "micro dial receives keyboard input");
-        assert_ne!(
-            view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::FilterFrequency as usize],
-            198.0,
-            "local numeric edit updates its view value"
-        );
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-        assert!(view.device_panel.pending_values.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(!view.device_panel.operator_previews[&instrument_id].enabled[0]);
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
     });
-    let committed_local_rate = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&instrument_id].values
-            [operator_panel::preview::Field::FilterFrequency as usize]
-    });
-    let wave_bounds = visual.debug_bounds(wave_selector).expect("wave selector");
-    visual.simulate_click(
-        point(
-            wave_bounds.origin.x + px(5.0),
-            wave_bounds.origin.y + px(4.0),
-        ),
-        Modifiers::default(),
-    );
-    visual.run_until_parked();
-    let rate_bounds = visual
-        .debug_bounds(rate_knob)
-        .expect("local filter rate knob");
-    let rate_start = rate_bounds.center();
-    let rate_moved = point(rate_start.x, rate_start.y - px(12.0));
-    visual.simulate_mouse_down(rate_start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(rate_moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.selected_track = Some(second_track);
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        assert_eq!(
-            view.device_panel.owner,
-            Some(DevicePanelOwner::Track(second_track))
-        );
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert_eq!(
-            state.values[operator_panel::preview::Field::FilterFrequency as usize],
-            committed_local_rate,
-            "owner changes preserve completed local values"
-        );
-        assert!(
-            !state.controls[&operator_panel::preview::Field::FilterFrequency]
-                .entity
-                .read_with(cx, |control, _| control.is_interacting())
-        );
-        assert!(
-            !state.selectors[&operator_panel::preview::Choice::FilterMode]
-                .entity
-                .read_with(cx, |selector, _| selector.is_open())
-        );
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-    });
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::FilterFrequency as usize],
-            committed_local_rate,
-            "local preview state remains available after returning to its owner"
-        );
-    });
     for operator in 0..4 {
         let row = Box::leak(
             format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
@@ -2365,11 +2369,25 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 control.origin.x + control.size.width <= lfo.origin.x + lfo.size.width - px(4.0)
             );
         }
-        for (title, fields) in [
-            ("filter", vec![0, 1]),
-            ("pitch env", vec![2, 3, 4]),
-            ("global", vec![5, 6, 7]),
-        ] {
+        let filter = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-filter", instrument_id.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        for parameter in [20001, 20002, 20005, 20006] {
+            let control = visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(control.origin.x >= filter.origin.x + px(4.0));
+            assert!(
+                control.origin.x + control.size.width
+                    <= filter.origin.x + filter.size.width - px(4.0)
+            );
+        }
+        for (title, fields) in [("pitch env", vec![0, 1, 2]), ("global", vec![3, 4, 5])] {
             let row = visual
                 .debug_bounds(Box::leak(
                     format!("operator-preview-row-{}-{title}", instrument_id.value())
@@ -2391,6 +2409,24 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 );
             }
         }
+    }
+    // LFO uses canonical controls after PR154, with the same accepted row inset.
+    let lfo_row = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-row-{}-lfo", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("canonical LFO row");
+    for parameter in [82, 85, 87] {
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("canonical LFO control");
+        assert!(control.origin.x >= lfo_row.origin.x + px(4.0));
+        assert!(
+            control.origin.x + control.size.width
+                <= lfo_row.origin.x + lfo_row.size.width - px(4.0)
+        );
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
@@ -2480,7 +2516,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     assert_eq!(panel.size.height, px(213.0));
     let frame_selector = Box::leak(format!("effect-device-{}", device.value()).into_boxed_str());
     let frame = visual.debug_bounds(frame_selector).expect("utility frame");
-    assert_eq!(frame.size.width, px(144.0));
+    assert_eq!(frame.size.width, px(144.0 + gain_meters::WIDTH));
     assert_eq!(frame.size.height, px(184.0));
     let input_selector = Box::leak(format!("utility-input-{}", device.value()).into_boxed_str());
     let output_selector = Box::leak(format!("utility-output-{}", device.value()).into_boxed_str());
@@ -2607,13 +2643,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         ))
         .expect("headphone audition control");
     assert_eq!(audition.size.width, px(14.0));
-    for suffix in [
-        "device-bypass",
-        "device-up",
-        "device-down",
-        "device-remove",
-        "device-drag-grip",
-    ] {
+    for suffix in ["device-bypass", "device-up", "device-down", "device-remove"] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
@@ -2942,7 +2972,7 @@ fn return_track_reuses_compact_utility_panel(cx: &mut TestAppContext) {
             format!("effect-device-{}", device.value()).into_boxed_str(),
         ))
         .expect("return Utility frame");
-    assert_eq!(frame.size.width, px(144.0));
+    assert_eq!(frame.size.width, px(144.0 + gain_meters::WIDTH));
     assert_eq!(frame.size.height, px(184.0));
     let body = visual
         .debug_bounds(Box::leak(
@@ -3098,7 +3128,7 @@ fn clipped_overflow_card_cannot_restore_a_drop_preview_outside_the_rail(cx: &mut
 }
 
 #[gpui::test]
-fn existing_device_header_grip_reorders_cards_by_stable_identity(cx: &mut TestAppContext) {
+fn existing_device_header_title_reorders_cards_by_stable_identity(cx: &mut TestAppContext) {
     let (service, _state, track, first, _, _) = actor_utility_fixture();
     let utility = hex_engine::native_device_catalog()
         .expect("registered utility")
@@ -3125,18 +3155,18 @@ fn existing_device_header_grip_reorders_cards_by_stable_identity(cx: &mut TestAp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
-    let grip_selector = Box::leak(format!("device-drag-grip-{}", first.value()).into_boxed_str());
+    let title_selector = Box::leak(format!("device-drag-title-{}", first.value()).into_boxed_str());
     let target_selector =
         Box::leak(format!("device-drop-card-{}", second.value()).into_boxed_str());
-    let grip = visual
-        .debug_bounds(grip_selector)
-        .expect("first device grip");
+    let title = visual
+        .debug_bounds(title_selector)
+        .expect("first device title");
     let target = visual
         .debug_bounds(target_selector)
         .expect("second device receiver");
     let down = point(
-        grip.origin.x + grip.size.width / 2.0,
-        grip.origin.y + grip.size.height / 2.0,
+        title.origin.x + title.size.width / 2.0,
+        title.origin.y + title.size.height / 2.0,
     );
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
@@ -3782,6 +3812,38 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     visual.run_until_parked();
     enter_typed_value(&mut visual, second_device, parameter, "250%");
 
+    let rail = visual.debug_bounds("device-chain-scroll").expect("rail");
+    visual.simulate_mouse_down(rail.center(), MouseButton::Middle, Modifiers::default());
+    let panned = point(rail.center().x - px(50.0), rail.center().y);
+    visual.simulate_mouse_move(panned, Some(MouseButton::Middle), Modifiers::default());
+    visual.simulate_mouse_up(panned, MouseButton::Middle, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let Some(ParameterControl::Float { entity, .. }) =
+            view.device_panel.controls.get(&ParameterKey {
+                device: second_device,
+                parameter,
+            })
+        else {
+            panic!("draft control");
+        };
+        assert!(
+            entity.read(cx).is_editing(),
+            "middle pan preserves typed draft"
+        );
+    });
+
+    let toggle = visual
+        .debug_bounds("device-panel-bottom-toggle")
+        .expect("bottom toggle")
+        .center();
+    visual.simulate_mouse_down(toggle, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.clip_view_open, "full queue preserves pane and draft")
+    });
+
     editor.update(cx, |view, cx| view.save_project(cx));
     editor.read_with(cx, |view, _| {
         assert!(!view.saving_project, "full barrier queue refuses the save");
@@ -4032,7 +4094,12 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         assert!(!control.is_editing(), "removed target cancels its draft");
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.device_panel.controls.is_empty());
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .all(|key| key.device != device)
+        );
         assert!(
             !view.device_panel.operator_pages.contains_key(&device),
             "removed device drops its page state"
@@ -4107,7 +4174,12 @@ fn invalid_return_numeric_draft_is_cancelled_when_its_owner_is_removed(cx: &mut 
         )
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.device_panel.controls.is_empty());
+        assert!(
+            view.device_panel
+                .controls
+                .keys()
+                .all(|key| key.device != device)
+        );
         assert!(view.state.as_ref().unwrap().project.track(track).is_some());
         assert_eq!(view.device_panel.message, None);
     });
@@ -4976,4 +5048,40 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
         &clipped_card,
         Some(&viewport),
     ));
+}
+
+#[gpui::test]
+fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("sine")
+        .id();
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [1280.0, 880.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        visual.run_until_parked();
+        for device in [instrument, effect] {
+            let title = visual
+                .debug_bounds(Box::leak(
+                    format!("device-drag-title-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("title");
+            let body = visual
+                .debug_bounds(Box::leak(
+                    format!("device-body-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("body");
+            assert_eq!(
+                title.size.height,
+                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+            );
+            assert_eq!(body.origin.y, title.bottom_left().y);
+            assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
+        }
+    }
 }

@@ -249,6 +249,25 @@ impl PreparedOperatorConfiguration {
         feedback: [f64; OPERATORS],
         previous: [f64; OPERATORS],
     ) -> (f32, [f64; OPERATORS]) {
+        self.sample_lfo_with_levels(table, note, age, gate, phases, feedback, previous, None)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Explicit integrated phases, recurrence and shared scalar override.
+    pub(crate) fn sample_lfo_with_levels(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age: u64,
+        gate: u64,
+        phases: &[u64; OPERATORS],
+        feedback: [f64; OPERATORS],
+        previous: [f64; OPERATORS],
+        levels: Option<[f64; OPERATORS]>,
+    ) -> (f32, [f64; OPERATORS]) {
+        let mut configuration = self.configuration;
+        if let Some(levels) = levels {
+            configuration.levels = levels;
+        }
         let mut amplitudes = self.envelopes.levels(age, gate);
         if amplitudes == [0.0; OPERATORS] {
             return (0.0, [0.0; OPERATORS]);
@@ -258,18 +277,17 @@ impl PreparedOperatorConfiguration {
         }
         let feedback = std::array::from_fn(|i| feedback[i] * previous[i]);
         let (routed, signals) = if self.waveforms == [OperatorWaveform::Sine; OPERATORS] {
-            self.configuration
+            configuration
                 .routed_output_with_feedback::<true>(table, 1, phases, amplitudes, feedback)
         } else if let Some(bank) = self.waveform_bank {
-            self.configuration
-                .routed_output_with_waveforms_and_feedback(
-                    table,
-                    bank,
-                    (1, phases),
-                    amplitudes,
-                    (&self.waveforms, &unpack_caps(note.harmonic_caps)),
-                    feedback,
-                )
+            configuration.routed_output_with_waveforms_and_feedback(
+                table,
+                bank,
+                (1, phases),
+                amplitudes,
+                (&self.waveforms, &unpack_caps(note.harmonic_caps)),
+                feedback,
+            )
         } else {
             return (0.0, [0.0; OPERATORS]);
         };
@@ -319,8 +337,43 @@ impl PreparedOperatorConfiguration {
         })
     }
 
+    /// Immutable enable continuation: borrow the unchanged note and override
+    /// only validated levels, with zero feedback. No owners or voice limits.
+    pub(crate) fn sample_with_oscillator_levels(
+        &self,
+        table: &SineTable,
+        note: &PreparedOperatorNote,
+        age_frames: u64,
+        gate_frames: u64,
+        levels: [f64; OPERATORS],
+    ) -> Result<f32, Invalid> {
+        if levels
+            .iter()
+            .any(|level| !level.is_finite() || !(0.0..=8.0).contains(level))
+            || !self.note_matches_configuration(note)
+        {
+            return Err(Invalid("invalid Operator enable continuation"));
+        }
+        let mut parameters = self.feedback_parameters([0.0; OPERATORS])?;
+        parameters.oscillator_levels = levels;
+        Ok(self
+            .sample_with_feedback_parameters(
+                table,
+                note,
+                age_frames,
+                gate_frames,
+                parameters,
+                [0.0; OPERATORS],
+            )
+            .0)
+    }
+
     pub(crate) const fn configuration_id(&self) -> u64 {
         self.configuration_id
+    }
+
+    pub(crate) const fn effective_oscillator_levels(&self) -> [f64; OPERATORS] {
+        self.oscillator_levels
     }
 
     pub(crate) fn retarget_compatible_with(&self, target: &PreparedOperatorConfiguration) -> bool {
@@ -335,7 +388,7 @@ impl PreparedOperatorConfiguration {
             && self.amplitude_velocity == target.amplitude_velocity
     }
 
-    pub(super) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
+    pub(crate) fn identical_to(&self, target: &PreparedOperatorConfiguration) -> bool {
         self.retarget_compatible_with(target)
             && self.oscillator_levels == target.oscillator_levels
             && self.configuration.routing.carriers == target.configuration.routing.carriers
@@ -514,3 +567,5 @@ const fn unpack_caps(packed: u32) -> [u8; OPERATORS] {
 
 #[cfg(test)]
 mod tests;
+
+mod filter;

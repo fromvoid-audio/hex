@@ -56,6 +56,9 @@ impl PostNodeIdentity {
     }
 }
 
+pub use hex_lattice::DeviceMeter;
+pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
+
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
@@ -80,6 +83,17 @@ pub(crate) fn render_streamed_page_span(
     span: StreamedPageSpan<'_>,
     output: &mut [Frame],
     pages: &mut (impl MediaPages + ?Sized),
+) -> usize {
+    render_streamed_page_span_captured(mix, source, span, output, pages, None)
+}
+
+pub(crate) fn render_streamed_page_span_captured(
+    mix: PreparedTrackMix,
+    source: &StreamedSourceMetadata,
+    span: StreamedPageSpan<'_>,
+    output: &mut [Frame],
+    pages: &mut (impl MediaPages + ?Sized),
+    mut capture: Option<&mut [Frame]>,
 ) -> usize {
     let StreamedPageSpan {
         source_frame,
@@ -117,7 +131,13 @@ pub(crate) fn render_streamed_page_span(
                     sample[1] *= gain;
                 }
             }
-            mix.add_unmuted(destination, sample);
+            mix.add_captured(
+                destination,
+                sample,
+                capture
+                    .as_deref_mut()
+                    .and_then(|frames| frames.get_mut(output_offset + offset)),
+            );
         }
         incomplete = !valid || available < count;
     }
@@ -174,6 +194,26 @@ pub fn patch_native_device_parameter_for_class(
     parameter: hex_lattice_contract::ParameterId,
     value: hex_lattice_contract::ParameterValue,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    if parameter == native_device_view::DEVICE_INPUT_GAIN.id {
+        native_device_view_for_class(class, state)?;
+        let hex_lattice_contract::ParameterValue::Float(gain) = value else {
+            return Err(Invalid("input gain must be a finite db value"));
+        };
+        return state
+            .clone()
+            .with_input_gain_db(gain)
+            .map_err(map_device_contract_error);
+    }
+    if parameter == native_device_view::DEVICE_OUTPUT_GAIN.id {
+        native_device_view_for_class(class, state)?;
+        let hex_lattice_contract::ParameterValue::Float(gain) = value else {
+            return Err(Invalid("output gain must be a finite db value"));
+        };
+        return state
+            .clone()
+            .with_output_gain_db(gain)
+            .map_err(map_device_contract_error);
+    }
     let result = match class {
         NativeDeviceClass::Effect => hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?
@@ -502,6 +542,9 @@ pub struct Track {
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     instrument_bypassed: bool,
+    instrument_input_gain: f32,
+    instrument_output_gain: f32,
+    instrument_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
     mutable_instrument: bool,
     mutable_looping_source: bool,
 }
@@ -594,10 +637,15 @@ impl PreparedTrackMix {
         self.channel_gain[1] *= gain;
         self
     }
-    fn add_unmuted(self, destination: &mut Frame, source: Frame) {
+
+    fn add_captured(self, destination: &mut Frame, source: Frame, capture: Option<&mut Frame>) {
         let source = self.apply_frame(source);
         destination[0] += source[0];
         destination[1] += source[1];
+        if let Some(capture) = capture {
+            capture[0] += source[0];
+            capture[1] += source[1];
+        }
     }
 
     fn without_effects(self) -> Self {
@@ -635,6 +683,9 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            instrument_input_gain: 1.0,
+            instrument_output_gain: 1.0,
+            instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
         })
@@ -653,9 +704,7 @@ impl Track {
         ordered_suffix: Option<hex_lattice::StereoMatrix>,
         device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
     ) -> Result<Self, Invalid> {
-        let stateful = device_chain
-            .iter()
-            .any(|device| device.definition.is_some());
+        let stateful = !device_chain.is_empty();
         let ordered = instrument_position != 0;
         let segmented =
             stateful || (ordered && (ordered_prefix.is_some() || ordered_suffix.is_some()));
@@ -681,6 +730,9 @@ impl Track {
             instrument_id: None,
             instrument_state: None,
             instrument_bypassed: false,
+            instrument_input_gain: 1.0,
+            instrument_output_gain: 1.0,
+            instrument_meter: Default::default(),
             mutable_instrument: false,
             mutable_looping_source: false,
         })
@@ -691,8 +743,20 @@ impl Track {
         instrument: Option<&hex_project::Device>,
     ) -> Self {
         self.instrument_id = instrument.map(hex_project::Device::id);
-        self.instrument_state = instrument.map(|device| device.state().clone());
+        self.instrument_state =
+            instrument.map(|device| device.state().clone().without_host_gains());
         self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
+        self.instrument_input_gain =
+            instrument.map_or(1.0, |device| device.state().input_gain_linear());
+        self.instrument_output_gain =
+            instrument.map_or(1.0, |device| device.state().output_gain_linear());
+        if self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0 {
+            self.source_mix = PreparedTrackMix {
+                channel_gain: [1.0; 2],
+                effects: None,
+                muted: false,
+            };
+        }
         self
     }
 
@@ -761,10 +825,8 @@ impl Track {
         &self.sends
     }
 
-    pub(crate) fn has_stateful_devices(&self) -> bool {
-        self.device_chain
-            .iter()
-            .any(|device| device.definition.is_some())
+    pub(crate) fn has_device_chain(&self) -> bool {
+        !self.device_chain.is_empty()
     }
 
     pub(crate) fn stateful_device_count(&self) -> usize {
@@ -792,10 +854,32 @@ impl Track {
     }
 
     pub(crate) fn requires_ordered_processing(&self) -> bool {
-        self.mutable_instrument
-            || self.has_stateful_devices()
+        (self.instrument_id.is_some()
+            && (self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0))
+            || self.mutable_instrument
+            || self.has_device_chain()
             || (self.has_ordered_instrument()
                 && (self.ordered_prefix.is_some() || self.ordered_suffix.is_some()))
+    }
+
+    pub(crate) fn apply_instrument_input_gain(&self, frames: &mut [Frame]) {
+        if !self.instrument_bypassed && self.instrument_input_gain != 1.0 {
+            for frame in frames {
+                frame[0] *= self.instrument_input_gain;
+                frame[1] *= self.instrument_input_gain;
+            }
+        }
+    }
+    pub(crate) fn apply_instrument_output_gain(&self, frames: &mut [Frame]) {
+        if !self.instrument_bypassed {
+            let gain = self.instrument_output_gain;
+            if gain != 1.0 {
+                for frame in frames {
+                    frame[0] *= gain;
+                    frame[1] *= gain;
+                }
+            }
+        }
     }
 
     pub(crate) fn apply_ordered_prefix(&self, frames: &mut [Frame]) {
@@ -827,7 +911,7 @@ impl Track {
                         })
                     })
         } else {
-            self.has_stateful_devices()
+            self.has_device_chain()
         }
     }
 
@@ -915,6 +999,7 @@ impl Track {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_additive_with_suppressions_and_pages(
         &self,
         start_frame: u64,
@@ -922,6 +1007,7 @@ impl Track {
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
         pages: Option<&mut (impl MediaPages + ?Sized)>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
@@ -934,12 +1020,13 @@ impl Track {
                 self.render_audio_range(start_frame, end_frame, output);
             }
             self.render_instrument_range_with_suppressions(
-                start_frame,
-                end_frame,
+                (start_frame, end_frame),
                 output,
                 None,
                 performance_frame,
                 suppressions,
+                None,
+                continuations,
             )?;
         }
         Ok(())
@@ -974,6 +1061,42 @@ impl Track {
         Ok(())
     }
 
+    // The direct Main fast path taps each existing source addition once. It
+    // does not regroup sources into a track buffer (which changes rounding).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_additive_captured<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        performance_frame: u64,
+        output: &mut [Frame],
+        suppressions: &[midi_template::MidiOccurrenceSuppression],
+        pages: Option<&mut P>,
+        capture: &mut [Frame],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<(), Invalid> {
+        let end_frame = start_frame
+            .checked_add(
+                u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?,
+            )
+            .ok_or(Invalid("render range overflow"))?;
+        if capture.len() != output.len() {
+            return Err(Invalid("capture length mismatch"));
+        }
+        if !self.source_mix.muted {
+            self.render_audio_range_captured(start_frame, end_frame, output, pages, Some(capture));
+            self.render_instrument_range_with_suppressions(
+                (start_frame, end_frame),
+                output,
+                None,
+                performance_frame,
+                suppressions,
+                Some(capture),
+                continuations,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn render_audio_additive_with_pages(
         &self,
         start_frame: u64,
@@ -988,24 +1111,27 @@ impl Track {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_instrument_additive_with_suppressions(
         &self,
         start_frame: u64,
         performance_frame: u64,
         output: &mut [Frame],
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         let length = u64::try_from(output.len()).map_err(|_| Invalid("render length overflow"))?;
         let end_frame = start_frame
             .checked_add(length)
             .ok_or(Invalid("render range overflow"))?;
         self.render_instrument_range_with_suppressions(
-            start_frame,
-            end_frame,
+            (start_frame, end_frame),
             output,
             None,
             performance_frame,
             suppressions,
+            None,
+            continuations,
         )
     }
 
@@ -1058,9 +1184,42 @@ impl Track {
     }
 
     fn render_audio_range(&self, start_frame: u64, end_frame: u64, output: &mut [Frame]) {
+        self.render_audio_range_captured::<dyn MediaPages>(
+            start_frame,
+            end_frame,
+            output,
+            None,
+            None,
+        );
+    }
+
+    fn render_audio_range_captured<P: MediaPages + ?Sized>(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        mut capture: Option<&mut [Frame]>,
+    ) {
+        if let Some(pages) = pages {
+            self.render_audio_range_with_pages_captured(
+                start_frame,
+                end_frame,
+                output,
+                pages,
+                capture,
+            );
+            return;
+        }
         for clip in &self.clips {
             if !clip.is_streamed() {
-                self.render_resident_clip(clip, start_frame, end_frame, output);
+                self.render_resident_clip(
+                    clip,
+                    start_frame,
+                    end_frame,
+                    output,
+                    capture.as_deref_mut(),
+                );
             }
         }
     }
@@ -1084,9 +1243,26 @@ impl Track {
         output: &mut [Frame],
         pages: &mut (impl MediaPages + ?Sized),
     ) {
+        self.render_audio_range_with_pages_captured(start_frame, end_frame, output, pages, None);
+    }
+
+    fn render_audio_range_with_pages_captured(
+        &self,
+        start_frame: u64,
+        end_frame: u64,
+        output: &mut [Frame],
+        pages: &mut (impl MediaPages + ?Sized),
+        mut capture: Option<&mut [Frame]>,
+    ) {
         for clip in &self.clips {
             if !clip.is_streamed() {
-                self.render_resident_clip(clip, start_frame, end_frame, output);
+                self.render_resident_clip(
+                    clip,
+                    start_frame,
+                    end_frame,
+                    output,
+                    capture.as_deref_mut(),
+                );
                 continue;
             }
             let Some(metadata) = clip.metadata.as_deref() else {
@@ -1132,7 +1308,7 @@ impl Track {
                 };
                 let count = remaining.min(until_wrap);
                 let output_offset = (position - start_frame) as usize;
-                let rendered = render_streamed_page_span(
+                let rendered = render_streamed_page_span_captured(
                     self.source_mix,
                     source,
                     StreamedPageSpan {
@@ -1144,6 +1320,7 @@ impl Track {
                     },
                     output,
                     pages,
+                    capture.as_deref_mut(),
                 );
                 if rendered == 0 {
                     break;
@@ -1159,6 +1336,7 @@ impl Track {
         start_frame: u64,
         end_frame: u64,
         output: &mut [Frame],
+        mut capture: Option<&mut [Frame]>,
     ) {
         let mut span_end = end_frame.min(clip.end);
         if !clip.looping {
@@ -1179,17 +1357,33 @@ impl Track {
                 let gain = fade.gain_at(position - clip.start);
                 sample[0] *= gain;
                 sample[1] *= gain;
-                self.source_mix.add_unmuted(frame, sample);
+                self.source_mix.add_captured(
+                    frame,
+                    sample,
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_start + offset)),
+                );
             }
         } else if source_phase == 0 {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix
-                    .add_unmuted(frame, clip.at(span_start + offset as u64, 0));
+                self.source_mix.add_captured(
+                    frame,
+                    clip.at(span_start + offset as u64, 0),
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_start + offset)),
+                );
             }
         } else {
             for (offset, frame) in output[output_start..output_end].iter_mut().enumerate() {
-                self.source_mix
-                    .add_unmuted(frame, clip.at(span_start + offset as u64, source_phase));
+                self.source_mix.add_captured(
+                    frame,
+                    clip.at(span_start + offset as u64, source_phase),
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_start + offset)),
+                );
             }
         }
     }
@@ -1202,23 +1396,26 @@ impl Track {
         midi_onset_floor_exclusive: Option<u64>,
     ) {
         let _ = self.render_instrument_range_with_suppressions(
-            start_frame,
-            end_frame,
+            (start_frame, end_frame),
             output,
             midi_onset_floor_exclusive,
             0,
             &[],
+            None,
+            &[],
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_instrument_range_with_suppressions(
         &self,
-        start_frame: u64,
-        end_frame: u64,
+        (start_frame, end_frame): (u64, u64),
         output: &mut [Frame],
         midi_onset_floor_exclusive: Option<u64>,
         performance_frame: u64,
         suppressions: &[midi_template::MidiOccurrenceSuppression],
+        mut capture: Option<&mut [Frame]>,
+        continuations: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<(), Invalid> {
         if let Some(instrument) = &self.instrument {
             if instrument.mutable {
@@ -1232,6 +1429,7 @@ impl Track {
                 let chunk_performance_frame = performance_frame
                     .checked_add(chunk_start - start_frame)
                     .ok_or(Invalid("midi performance frame overflow"))?;
+                let mut failure = None;
                 instrument.for_each_intersecting(
                     chunk_start,
                     chunk_end,
@@ -1260,20 +1458,40 @@ impl Track {
                         };
                         for frame_position in start..end {
                             let relative = frame_position - span.start;
-                            if let Some(sample) = voice.sample(
+                            let Some(absolute) =
+                                chunk_performance_frame.checked_add(frame_position - chunk_start)
+                            else {
+                                failure = Some(Invalid("midi performance frame overflow"));
+                                return;
+                            };
+                            match voice.sample_at(
                                 &instrument.shared_contexts,
                                 &[],
+                                continuations,
+                                absolute,
                                 relative,
                                 span.gate_end - span.start,
                             ) {
-                                self.source_mix.add_unmuted(
-                                    &mut target[(frame_position - chunk_start) as usize],
-                                    sample,
-                                );
+                                Ok(sample) => {
+                                    self.source_mix.add_captured(
+                                        &mut target[(frame_position - chunk_start) as usize],
+                                        sample,
+                                        capture.as_deref_mut().and_then(|frames| {
+                                            frames.get_mut((frame_position - start_frame) as usize)
+                                        }),
+                                    );
+                                }
+                                Err(error) => {
+                                    failure = Some(error);
+                                    return;
+                                }
                             }
                         }
                     },
                 );
+                if let Some(error) = failure {
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -1455,6 +1673,32 @@ impl Project {
     /// Exclusive end of all compiled audio and instrument output, if any.
     pub fn audible_end_frame(&self) -> Option<u64> {
         self.audible_end_frame
+    }
+
+    pub fn device_meter(
+        &self,
+        device_id: u64,
+    ) -> Option<&std::sync::Arc<hex_lattice::DeviceMeter>> {
+        for track in &self.tracks {
+            if track
+                .instrument_id
+                .is_some_and(|id| id.value() == device_id)
+            {
+                return Some(&track.instrument_meter);
+            }
+            if let Some(device) = track
+                .device_chain
+                .iter()
+                .find(|device| device.device_id == device_id)
+            {
+                return Some(&device.meter);
+            }
+        }
+        self.return_buses
+            .iter()
+            .flat_map(|bus| bus.device_chain.iter())
+            .find(|device| device.device_id == device_id)
+            .map(|device| &device.meter)
     }
 
     pub fn tracks(&self) -> &[Track] {
@@ -1867,7 +2111,7 @@ impl RendererRuntime {
             return Ok(());
         }
         for (index, track) in project.tracks.iter().enumerate() {
-            let stateful = track.has_stateful_devices();
+            let stateful = track.has_device_chain();
             if stateful || track.requires_ordered_processing() || track.has_gain_automation() {
                 let mut chain = if stateful {
                     Some(
@@ -1917,7 +2161,9 @@ impl RendererRuntime {
                         } else {
                             track.apply_ordered_prefix(target);
                         }
+                        track.apply_instrument_input_gain(target);
                         track.render_instrument_range(start, end, target, None);
+                        track.apply_instrument_output_gain(target);
                         if let Some(chain) = chain.as_deref_mut() {
                             let effect_count = chain.len();
                             chain
@@ -1993,7 +2239,7 @@ impl RendererRuntime {
                 scratch[..count].fill([0.0; 2]);
             }
             for (track_index, track) in project.tracks.iter().enumerate() {
-                let stateful = track.has_stateful_devices();
+                let stateful = track.has_device_chain();
                 let ordered = track.requires_ordered_processing();
                 if !stateful && !ordered && !track.has_gain_automation() && track.sends.is_empty() {
                     if let Some(provider) = pages.as_deref_mut() {
@@ -2033,7 +2279,9 @@ impl RendererRuntime {
                     } else {
                         track.apply_ordered_prefix(rendered);
                     }
+                    track.apply_instrument_input_gain(rendered);
                     track.render_instrument_range(start, end, rendered, None);
+                    track.apply_instrument_output_gain(rendered);
                     if stateful {
                         let chain = self
                             .device_chains
@@ -2141,6 +2389,19 @@ impl<'a> Renderer<'a> {
             position: 0,
             playing: false,
             runtime: RendererRuntime::new(project),
+        }
+    }
+
+    /// Enable effect telemetry explicitly for headless diagnostics. Offline
+    /// exports leave this disabled; native instrument telemetry uses Playback.
+    pub fn set_effect_metering(&mut self, enabled: bool) {
+        for chain in self
+            .runtime
+            .device_chains
+            .iter_mut()
+            .chain(self.runtime.return_chains.iter_mut())
+        {
+            chain.set_metering(enabled);
         }
     }
 
@@ -2401,7 +2662,8 @@ pub use session_inventory::{
 };
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
-    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, SessionHandoffReport, SessionPendingRouteStatus,
-    SessionPlayback, SessionPlaybackCommand, SessionPlaybackError, SessionPlaybackOwner,
-    SessionRouteStatus, SessionRouteTarget,
+    MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
+    OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };

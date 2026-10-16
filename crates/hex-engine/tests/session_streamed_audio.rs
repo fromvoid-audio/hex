@@ -983,3 +983,97 @@ fn streamed_session_source_reuse_compares_metadata_values_not_arc_identity() {
     };
     assert!(!Arc::ptr_eq(equivalent_binding, changed_binding));
 }
+
+#[test]
+fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusal() {
+    use hex_engine::{OutputCapture, OutputCaptureId, SessionPlayback, SessionPlaybackCommand};
+    let mut snapshot = project(0, 8192).snapshot();
+    snapshot.session = SessionSnapshot::default();
+    snapshot.next_id = 11;
+    snapshot.master_gain = 0.25;
+    snapshot.tracks[0].gain = 0.5;
+    snapshot.tracks[0].balance = 0.5;
+    snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        id: 10,
+        asset: STREAM_ASSET,
+        start: 3,
+        duration: 520,
+        source_offset: 4090,
+        source_length: 520,
+        looping: false,
+        source_phase: 0,
+        fade: hex_project::ClipFade::neutral(520).unwrap(),
+    }]);
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let source = metadata(&project, 13, [4; 32]);
+    let revision = prepared(&project, 13, [4; 32]);
+    let mut runtime =
+        SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let ids = project
+        .tracks()
+        .iter()
+        .map(|track| OutputCaptureId::Track(track.id()))
+        .collect::<Vec<_>>();
+    let plan = runtime.output_capture_plan(&ids, 1024).unwrap();
+    let mut main = [[9.0; 2]; 523];
+    let mut streamed = main;
+    let mut bed = main;
+    let mut buffers: [&mut [Frame]; 2] = [&mut streamed, &mut bed];
+    let mut capture = OutputCapture::new(&plan, &mut buffers);
+    assert!(
+        runtime
+            .render_with_capture(&mut main, &mut capture)
+            .is_err()
+    );
+    assert_eq!(runtime.performance_frame(), 0);
+    assert_eq!(capture.valid_frames(), 0);
+    assert!(main.iter().flatten().all(|sample| *sample == 0.0));
+    let mut pages = MemoryPages::with_source(source.key());
+    let mut offset = 0;
+    for frames in [1, 2, 255, 257, 8] {
+        let mut buffers: [&mut [Frame]; 2] = [
+            &mut streamed[offset..offset + frames],
+            &mut bed[offset..offset + frames],
+        ];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime
+            .render_with_pages_and_capture(
+                &mut main[offset..offset + frames],
+                &mut pages,
+                &mut capture,
+            )
+            .unwrap();
+        assert_eq!(capture.valid_frames(), frames);
+        offset += frames;
+    }
+    let mut reference = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 523];
+    reference
+        .render_with_pages(&mut expected, &mut MemoryPages::with_source(source.key()))
+        .unwrap();
+    assert_eq!(main, expected);
+    for (index, frame) in main.iter().enumerate() {
+        let source = if index < 3 {
+            [0.0; 2]
+        } else {
+            let raw = sample(4090 + index as u64 - 3);
+            [raw[0] * 0.25, raw[1] * 0.5]
+        };
+        let resident = if index < 12 {
+            sample(index as u64 + 2)
+        } else {
+            [0.0; 2]
+        };
+        assert_eq!(streamed[index], source);
+        assert_eq!(bed[index], resident);
+        assert_eq!(
+            *frame,
+            [
+                (source[0] + resident[0]) * 0.25,
+                (source[1] + resident[1]) * 0.25
+            ]
+        );
+    }
+}

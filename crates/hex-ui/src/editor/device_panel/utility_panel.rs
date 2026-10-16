@@ -264,7 +264,7 @@ pub(super) fn render_body(
         .child(balance)
         .child(mute_dc);
 
-    div()
+    hex_widgets::device_body(super::device_layout_style())
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
@@ -272,11 +272,11 @@ pub(super) fn render_body(
         .relative()
         .flex()
         .w(px(140.0))
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
+        .h(px(super::DEVICE_FRAME_BODY_HEIGHT))
         .min_h_0()
         .overflow_hidden()
         .gap(px(2.0))
-        .p(px(2.0))
+        .py(px(2.0))
         .child(input)
         .child(
             div()
