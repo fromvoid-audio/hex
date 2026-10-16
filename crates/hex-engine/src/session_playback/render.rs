@@ -119,6 +119,41 @@ impl SessionPlayback {
             }
             return Ok(());
         }
+        let selected = self
+            .live_expression
+            .as_ref()
+            .map(|input| (input.track, input.instrument, input.snapshot()));
+        for (route, runtime) in self.routes.iter().zip(self.mutable_instruments.iter_mut()) {
+            if let Some(runtime) = runtime {
+                runtime.expression = match selected {
+                    Some((track, instrument, snapshot))
+                        if track == route.id && runtime.expression_identity == Some(instrument) =>
+                    {
+                        Some(snapshot)
+                    }
+                    _ => runtime
+                        .expression
+                        .map(|_| crate::live_expression::Snapshot::default()),
+                };
+            }
+        }
+        for tail in self.tail_mutable_instruments.iter_mut().flatten() {
+            tail.runtime.expression = match selected {
+                Some((track, instrument, snapshot))
+                    if track == tail.track_id
+                        && tail.runtime.expression_identity == Some(instrument) =>
+                {
+                    Some(snapshot)
+                }
+                _ => tail
+                    .runtime
+                    .expression
+                    .map(|_| crate::live_expression::Snapshot::default()),
+            };
+        }
+        if let Some(keyboard) = self.computer_keyboard.as_mut() {
+            keyboard.set_expression(selected);
+        }
         let mut observer = observer;
         if let Some(compensation) = self.compensation.as_mut() {
             compensation

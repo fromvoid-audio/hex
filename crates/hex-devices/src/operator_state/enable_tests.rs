@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {
-    let current = OPERATOR_METADATA.default_state().unwrap();
+    let current = tests::legacy_state();
     assert_eq!(current.payload().len(), PAYLOAD_BYTES);
-    assert_eq!(PARAMETER_COUNT, 395);
+    assert_eq!(PARAMETER_COUNT, 424);
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -47,7 +47,7 @@ fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on
 
 #[test]
 fn enable_boolean_edit_is_atomic_and_keeps_the_complete_authored_prefix() {
-    let original = OPERATOR_METADATA.default_state().unwrap();
+    let original = tests::legacy_state();
     let mut changed = original.clone();
     for operator in 1..=4 {
         changed = OPERATOR_METADATA
@@ -93,7 +93,7 @@ fn enable_boolean_edit_is_atomic_and_keeps_the_complete_authored_prefix() {
 
 #[test]
 fn enable_suffix_refuses_nonbinary_flags_wrong_lengths_and_legacy_layout_aliases() {
-    let original = OPERATOR_METADATA.default_state().unwrap();
+    let original = tests::legacy_state();
     for operator in 0..4 {
         for word in [2_u32, u32::MAX, f32::NAN.to_bits()] {
             let mut bytes = original.payload()[..380].to_vec();
@@ -124,5 +124,5 @@ fn enable_suffix_refuses_nonbinary_flags_wrong_lengths_and_legacy_layout_aliases
             .is_err()
         );
     }
-    assert_eq!(original, OPERATOR_METADATA.default_state().unwrap());
+    assert_eq!(original, tests::legacy_state());
 }

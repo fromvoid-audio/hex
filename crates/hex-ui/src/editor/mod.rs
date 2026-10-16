@@ -20,6 +20,7 @@ mod close;
 mod computer_keyboard;
 mod context_menu;
 mod controller;
+mod controller_input;
 mod device_gesture;
 mod device_panel;
 mod device_preset;
@@ -503,6 +504,7 @@ pub(super) struct EditorView {
     status: String,
     pub(in crate::editor) error: Option<String>,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
+    controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
@@ -817,6 +819,7 @@ impl EditorView {
             status,
             error: None,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
+            controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             midi_focus,

@@ -33,6 +33,19 @@ impl Trajectory {
             armed: settings.armed,
         })
     }
+    pub fn oversampled(
+        settings: Settings,
+        host_rate: u32,
+    ) -> Result<Self, hex_lattice_contract::DeviceContractError> {
+        let frame = settings.prepare_oversampled(host_rate)?.frame;
+        Ok(Self {
+            from: frame,
+            target: frame,
+            elapsed: 0,
+            frames: (host_rate * 5 + 500) / 1000,
+            armed: settings.armed,
+        })
+    }
     pub fn frame(self) -> Frame {
         self.from.interpolate(
             self.target,

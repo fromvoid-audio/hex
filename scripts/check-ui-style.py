@@ -8,7 +8,7 @@ errors = []
 # Text children must be normalized centrally; other children are view elements.
 widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
-    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.clip_detail_view(',
+    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
@@ -31,6 +31,8 @@ widgets = (
     'waveform)', 'waveform_preview)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
+    # Algorithm diagrams have no text; global controls normalize captions.
+    'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',

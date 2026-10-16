@@ -6,7 +6,9 @@ Compose the audio backend and GPUI shell; own executable startup and app-level f
 
 ## Dependencies
 
-hex-audio, hex-ui, and GPUI application lifecycle.
+hex-audio, hex-ui, hex-midi, and GPUI application lifecycle. Desktop keeps the
+optional controller worker alive through the application run loop and injects
+its handle into UI; it joins only after the native application ends.
 
 ## Does not own
 

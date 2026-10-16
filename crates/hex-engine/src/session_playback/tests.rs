@@ -425,6 +425,9 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         let mut previous_offset = 0;
         for event in events.iter().copied() {
             let (offset, is_on) = match event {
+                hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                    return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
                     (frame_offset, true)
                 }
@@ -453,6 +456,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {
                 let (offset, is_on) = match event {
+                    hex_lattice::NativeInstrumentEvent::Expression { .. } => return,
                     hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. } => {
                         (frame_offset, true)
                     }
@@ -515,6 +519,7 @@ impl MutableFeedbackRuntime {
         release: u8,
     ) {
         match event {
+            hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
             hex_lattice::NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -709,13 +714,19 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         for event in events.iter().copied() {
             let offset = match event {
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => frame_offset,
+                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::Expression { frame_offset, .. } => {
+                    frame_offset
+                }
             };
             if offset < previous_offset || offset >= frame_count {
                 return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
             }
             Self::advance(&mut voices, offset - previous_offset);
             match event {
+                hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                    return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
                 hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                     if voices
                         .iter()
@@ -751,7 +762,8 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while events.get(event_index).is_some_and(|event| match *event {
                 hex_lattice::NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                | hex_lattice::NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | hex_lattice::NativeInstrumentEvent::Expression { frame_offset, .. } => {
                     frame_offset == frame_index
                 }
             }) {
@@ -3986,7 +3998,8 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
                 pitch,
                 velocity,
             } => Some((frame_offset, occurrence_id, pitch, velocity)),
-            hex_lattice::NativeInstrumentEvent::NoteOff { .. } => None,
+            hex_lattice::NativeInstrumentEvent::NoteOff { .. }
+            | hex_lattice::NativeInstrumentEvent::Expression { .. } => None,
         })
         .collect();
     assert_eq!(

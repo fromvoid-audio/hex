@@ -241,6 +241,13 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
+        if self.live_expression.is_some() {
+            checked_add(
+                &mut total,
+                std::mem::size_of::<crate::live_expression::LiveExpressionInput>()
+                    + 2 * std::mem::size_of::<usize>(),
+            )?;
+        }
         if let Some(keyboard) = &self.computer_keyboard {
             checked_add(&mut total, keyboard.storage_bytes()?)?;
         }

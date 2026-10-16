@@ -4,6 +4,7 @@ pub use hex_devices::SineTable;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
@@ -2943,6 +2944,7 @@ mod tests {
 
 pub mod computer_keyboard;
 pub mod live;
+pub mod live_expression;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;

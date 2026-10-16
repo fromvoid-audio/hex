@@ -279,6 +279,14 @@ impl SineTable {
         self.sample_phase(phase) * amplitude * voice.amplitude
     }
 
+    pub(crate) fn sample_phase_policy(&self, phase: u64, interpolate: bool) -> f32 {
+        if interpolate {
+            self.sample_phase(phase)
+        } else {
+            self.samples[((phase >> (64 - TABLE_BITS)) & TABLE_MASK) as usize]
+        }
+    }
+
     /// Interpolated periodic lookup; the caller supplies a wrapping turn phase.
     pub(crate) fn sample_phase(&self, phase: u64) -> f32 {
         let index = ((phase >> (64 - TABLE_BITS)) & TABLE_MASK) as usize;

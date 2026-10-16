@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
 hex-ui = { path = "../hex-ui" }
 hex-audio = { path = "../hex-audio" }

@@ -56,6 +56,9 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
     ) -> Result<(), NativeInstrumentRuntimeError> {
         let mut gated = self.gated;
         for event in events {
+            if matches!(event, NativeInstrumentEvent::Expression { .. }) {
+                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
             let on = matches!(event, NativeInstrumentEvent::NoteOn { .. });
             if on == gated {
                 return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
@@ -70,7 +73,8 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
             while let Some(event) = events.peek() {
                 let position = match event {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. } => *frame_offset,
+                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                    | NativeInstrumentEvent::Expression { frame_offset, .. } => *frame_offset,
                 };
                 if position != offset {
                     break;
@@ -116,7 +120,7 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
 fn finite_mutable_tail_admission_rejects_above_horizon_before_constructing_twins() {
     for sample_rate in [8_000, 48_000, 192_000] {
         let counter = Arc::new(AtomicUsize::new(0));
-        let limit = u64::from(sample_rate) * 140;
+        let limit = u64::from(sample_rate) * 600;
         let factory = FiniteTailFactory {
             frames: limit,
             constructions: Arc::clone(&counter),

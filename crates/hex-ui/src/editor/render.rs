@@ -1012,6 +1012,7 @@ impl Render for EditorView {
             }))
             .child(self.title_bar(cx))
             .child(self.transport(cx))
+            .child(self.controller_input_row(cx))
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
