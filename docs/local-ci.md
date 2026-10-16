@@ -17,9 +17,10 @@ target/cache configuration, and executes checks sequentially. It does not instal
 tools or hooks, change the machine's Cargo configuration, launch the app, bundle
 an application, or contact a hosted CI service.
 
-The full run executes its runner and native delivery regression tests, the architecture, GPUI patch, UI
-style and device-composition guards, formatting, locked workspace and UI-feature tests,
-the native layout gallery's rendered test harness, audio and stream
+The full run executes its runner and native delivery regression tests, the
+architecture, GPUI patch, dependency patch, UI style and device-composition guards,
+formatting, denied dependency future-lint regressions, locked workspace and
+UI-feature tests, the native layout gallery's rendered test harness, audio and stream
 allocation probes, strict workspace and feature-specific Clippy, and a locked
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
@@ -33,7 +34,7 @@ Git's file listing. If the repository identity changes during execution, the run
 is marked `stale` and returns nonzero even when commands passed. Interrupted and
 missing-tool runs retain a summary, logs and explicit incomplete/skipped steps.
 
-`--quick` runs the four source guards and formatting. Formatting does not
+`--quick` runs the five source guards and formatting. Formatting does not
 use Cargo's target cache, so quick mode neither resolves nor claims/cleans a Cargo
 target. Its summary status is `partial`, and it is never sufficient merge evidence. A full successful summary
 is tied to the recorded unchanged commit and working-tree digest; any source edit
@@ -102,7 +103,9 @@ recorded and stops the run before any build or cleanup.
 Build phases on macOS/Linux use a nonblocking cooperative file lock keyed by that canonical
 target path. It covers cache ownership checks, handoff cleanup and every
 target-using Cargo step in the runner. Formatting and other commands that do not
-use build artifacts stay outside this lock. A second local-CI run targeting the same directory fails
+use build artifacts stay outside this lock. Python wrapper steps that invoke
+Cargo must explicitly declare target use; the dependency future-lint step does
+so and receives the same claimed, pinned target before it can create artifacts. A second local-CI run targeting the same directory fails
 immediately with the current holder when available; it does not wait or remove
 the persistent lock file. The lock is advisory: direct Cargo invocations and
 other tools do not participate. Operators must avoid running raw Cargo commands,
