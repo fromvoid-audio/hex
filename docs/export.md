@@ -36,6 +36,11 @@ plugin-tail support is added.
 
 ## progress and cancellation
 
+Export admission waits for any active device gesture to finalize. If the worker
+rejects that finalization, deferred range/stem exports are cancelled and discarded
+before service submission; pending UI state is cleared and the refusal remains
+visible. No export of the pre-edit state is silently substituted.
+
 Each admitted job owns a fresh `ExportControl`. Progress counts actual rendered
 frames, including discarded preroll when required. The bounded control worker
 checks cancellation before construction, between blocks of at most 256 frames,
