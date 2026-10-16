@@ -17,6 +17,7 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod candidate_storage;
 mod mutable_checkpoint;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{

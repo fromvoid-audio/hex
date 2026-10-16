@@ -102,3 +102,17 @@ Normal completion requires conservation of every fixed pool page before
 destruction. Failed disposal stays incomplete and is never retried. This does
 not change the legacy consuming shutdown API or certify native quiescence,
 complete cost or admission. See [never-installed disposal](../../docs/never-installed-audio-disposal.md).
+
+
+## closed constructor domain custody
+
+`ConstructorStreamDomain` consumes the real control/pages pair only after
+constructor DATA and excess caller-handle checks. It retains its actual source
+lease and disposal capsule without exposing a lease or render endpoint. Listed
+DATA and constructor-bounded opaque resource lifetimes are separate: this never
+assigns zero bytes to std/channel/thread/OS internals or upgrades the public
+borrowed ledger's completeness. Normal worker join, pool conservation and final
+endpoint/channel/metadata destruction precede its report. The native host keeps
+charges until report consumption and must enforce its global two-domain limit.
+Streamed native installation/readiness remains deferred. See
+[constructor publication](../../docs/audio-candidate-publication.md).

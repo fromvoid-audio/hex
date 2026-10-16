@@ -2418,6 +2418,47 @@ impl SessionPlayback {
         let visible_state_changed = self.route_scratch != previous.routes
             || previous.performance_frame != self.performance_frame
             || timing_changed;
+        if let Some(groups) = groups.as_mut() {
+            // This closed class carries only actual Utility chain owners.
+            // Analytic context/instrument/Return-tail moves remain unsupported.
+            if !self.context_lease_plan.is_empty()
+                || previous.mutable_instruments.iter().any(Option::is_some)
+                || previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .any(Option::is_some)
+                || previous
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .any(Option::is_some)
+                || previous.retained_contexts.iter().any(Option::is_some)
+                || self.compensation.is_some()
+                || previous.compensation.is_some()
+            {
+                return Err(SessionPlaybackError::DeviceRuntime);
+            }
+            use crate::audio_candidate::groups::Location as L;
+            for slot in 0..previous.tail_groups.len() {
+                if active_tail_groups.get(slot).copied().unwrap_or(false)
+                    && previous.tail_groups[slot].is_some()
+                {
+                    let chain = previous.tail_groups[slot]
+                        .as_ref()
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    groups.plan(L::TailChain(slot), L::TailChain(slot), chain)?;
+                }
+            }
+            for (index, slot) in old_track_tail_slots.iter().copied().enumerate() {
+                if let Some(slot) = slot {
+                    let chain = previous
+                        .device_chains
+                        .get(index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    groups.plan(L::TrackChain(index), L::TailChain(slot), chain)?;
+                }
+            }
+        }
         // All capacity/timing planning is complete. Runtime inheritance below
         // may partially mutate candidate state before returning an error, so it
         // permanently consumes this candidate's single admission opportunity.
@@ -2570,40 +2611,6 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::Arrangement(
                 "compensated processor tails require stopping transport before changing the chain",
             ));
-        }
-        if let Some(groups) = groups.as_mut() {
-            // This closed class carries only actual Utility chain owners.
-            // Analytic context/instrument/Return-tail moves remain unsupported.
-            if !self.context_lease_plan.is_empty()
-                || previous.mutable_instruments.iter().any(Option::is_some)
-                || previous
-                    .tail_mutable_instruments
-                    .iter()
-                    .any(Option::is_some)
-                || previous
-                    .return_effect_tails
-                    .slots()
-                    .iter()
-                    .any(Option::is_some)
-                || previous.retained_contexts.iter().any(Option::is_some)
-                || self.compensation.is_some()
-                || previous.compensation.is_some()
-            {
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
-            use crate::audio_candidate::groups::Location as L;
-            for slot in 0..previous.tail_groups.len() {
-                if active_tail_groups.get(slot).copied().unwrap_or(false)
-                    && previous.tail_groups[slot].is_some()
-                {
-                    groups.plan(L::TailChain(slot), L::TailChain(slot))?;
-                }
-            }
-            for (index, slot) in old_track_tail_slots.iter().copied().enumerate() {
-                if let Some(slot) = slot {
-                    groups.plan(L::TrackChain(index), L::TailChain(slot))?;
-                }
-            }
         }
         // Stage shared-context leases before moving any owner. The Return plan
         // validates every destination below; owner moves then use only these

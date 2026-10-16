@@ -47,14 +47,50 @@ normal A/B/C destruction closes z/y/x; original bank Vec pointers and capacities
 survive. Primary/scratch roles may swap at a normal DSP block commit, so identity
 checks compare the actual physical pair independently of role.
 
+## constructor runtime split and scoped accounting
+
+The same Runtime Box, origin book and reserved journal move into an opaque
+claimed-runtime handle. The entire original preparation wrapper, source bank,
+token and archive stay in control-owned anchors. No bank is split, no runtime is
+recompiled, and no Playback/Arc escapes. Original234/235 unclaimed disposal-only
+owners remain supported. A borrowed constructor claim requires both actual
+halves, matching prepared-root association and an entirely fresh local origin
+book. After actions/render/handoff it cannot be minted again as a fresh claim.
+
+Fresh-constructor DATA visitors enumerate every actual Session Vec, including
+empty unsupported-family buffers, Return-tail slots, analytic-import scratch,
+metronome Boxes/buffers, Utility entry backing and concrete primary/scratch Boxes.
+All private owning fields are exhaustively matched. Runtime config/meter fields
+must match their actual declared prepared handles; independent handles remain
+separate from shared DATA. Strong/weak counts only refuse undeclared external
+aliases after constructor provenance is already established. Public scalar
+`require_complete` continues to refuse.
+
+The 32 MiB owned-runtime allowance excludes immutable graph DATA. It includes the
+runtime wrappers and origin/journal/archive metadata; the future split wrapper
+and simultaneous ledger construction buffers are reserved before the split.
+At real tail-transfer preflight the actual moved chain backing and concrete twin
+Boxes are added to the destination runtime allowance before any owner moves.
+Their original prepared/config/meter DATA stay charged to the original anchors.
+No copied history receives origin credit.
+
+`ConstructorStreamDomain` consumes only an exact live factory pair without
+external catalog aliases, retains a real lease and pre-reserved disposal capsule,
+and exports no owning lease or page endpoint. Its listed DATA remains distinct
+from excluded opaque std/allocator/OS bytes. Constructor resource bounds cover
+the actual factory/lease/disposal shared fields, kernel handles, one worker,
+one catalog channel and verified source readers. Normal join plus full pool
+conservation and endpoint/channel/metadata destruction are required before its
+physical report. A report is not Root slot reuse; the host must retain its
+reservation until report consumption. Wrong pairs, caller leases/Weak aliases
+and unsupported constructor observations refuse without consuming the pair.
+
 ## admission boundary
 
-This first source checkpoint does not enable native admission. Runtime/anchor
-separation, complete scoped DATA plus bounded opaque-resource custody, native
-install-versus-ACK wiring and Root archive scheduling are still required within
-PR236. Generic public ledgers and Unknown/INCOMPLETE reports grant no capability.
-No opaque OS/std byte estimate, RSS total, new global graph cap or readiness
-receipt is inferred here.
+This intermediate source checkpoint does not enable native admission. Complete
+Root reservations/anchors/domain cells, native install-versus-ACK wiring and
+independent archive scheduling are still required within PR236. No opaque OS/std
+byte estimate, RSS total, new global graph cap or readiness receipt is inferred.
 
 Once the complete eligible claim path is connected, resident candidates may use
 it. Streamed construction, accounting and actual catalog leases must be exercised,

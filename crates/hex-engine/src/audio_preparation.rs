@@ -258,6 +258,16 @@ impl AudioPreparationCustody {
         Ok((self.root, self.incarnation, self.revision.candidate_root()?))
     }
 
+    pub(crate) fn candidate_root_view(
+        &self,
+        token: &AudioPreparationToken,
+    ) -> Result<&std::sync::Arc<crate::PreparedRevision>, AudioStorageError> {
+        if !self.matches(token) || self.phase != AudioPreparationPhase::ArrangementAndSessionSources
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.revision.candidate_root_view()
+    }
     pub fn begin_input_on_control(
         &mut self,
         input: AudioArrangementInput<'_>,

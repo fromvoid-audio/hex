@@ -24,6 +24,10 @@ pub use storage::{
     AudioStreamStorageSummary, OpaqueStreamCost, OpaqueStreamHandleGroup, StreamHandleLocation,
     StreamOwningHandleObligation, StreamSourceDomainObligation,
 };
+mod native_custody;
+pub use native_custody::{
+    ConstructorStreamDomain, StreamDomainConstructorSummary, StreamDomainSealRefusal,
+};
 mod disposal;
 pub use disposal::{PreparedStreamDisposal, StreamDisposalError, StreamDisposalPhase};
 

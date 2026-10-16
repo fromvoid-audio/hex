@@ -112,12 +112,15 @@ impl RevisionAssembly {
     /// Constructor-only control sharing. The returned handle is immediately
     /// secured inside the opaque candidate, never exposed to an application.
     pub(crate) fn candidate_root(&self) -> Result<std::sync::Arc<PreparedRevision>, Error> {
+        Ok(std::sync::Arc::clone(self.candidate_root_view()?))
+    }
+    pub(crate) fn candidate_root_view(&self) -> Result<&std::sync::Arc<PreparedRevision>, Error> {
         self.capacity()?;
         let owner = self.owner.as_ref().ok_or(Error::UnsupportedGraph)?;
         if owner.parts().is_none() {
             return Err(Error::UnknownStorage);
         }
-        Ok(std::sync::Arc::clone(owner.arc()))
+        Ok(owner.arc())
     }
 
     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {

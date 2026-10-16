@@ -127,6 +127,43 @@ struct Domain<'a> {
     pages: &'a StreamCallbackPages,
     opaque: u8,
 }
+pub(super) fn closed_constructor_pair_data(
+    control: &StreamControl,
+    pages: &StreamCallbackPages,
+) -> Result<crate::StreamDataFootprint, AudioStreamStorageError> {
+    if !Arc::ptr_eq(&control.owner, &pages._owner) || !Arc::ptr_eq(&control.pair_id, &pages.pair_id)
+    {
+        return Err(AudioStreamStorageError::PairMismatch);
+    }
+    // Only the actual factory's two halves may exist at sealing. Once both
+    // are consumed, no public lease/owner handle remains available to clone.
+    if Arc::strong_count(&control.owner) != 2
+        || Arc::strong_count(&control.pair_id) != 2
+        || Arc::weak_count(&control.owner) != 0
+        || Arc::weak_count(&control.pair_id) != 0
+        || Arc::weak_count(&control.owner.stop) != 0
+        || Arc::strong_count(&control.owner.stop) != 2
+    {
+        return Err(AudioStreamStorageError::UnregisteredLease);
+    }
+    {
+        let state = lock_unpoisoned(&control.owner.catalog_state);
+        let catalog = state
+            .result
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .ok_or(AudioStreamStorageError::UnknownData)?;
+        if Arc::strong_count(catalog) != 1 || Arc::weak_count(catalog) != 0 {
+            return Err(AudioStreamStorageError::UnregisteredLease);
+        }
+    }
+    Domain {
+        control,
+        pages,
+        opaque: 0,
+    }
+    .footprint()
+}
 impl Domain<'_> {
     fn matches(&self, control: &StreamControl, pages: &StreamCallbackPages) -> bool {
         Arc::ptr_eq(&self.control.owner, &control.owner)

@@ -1,9 +1,16 @@
 //! Constructor-owned runtime custody, independent of cost/admission authority.
 //! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+mod claimed;
+mod storage;
+pub use storage::AudioCandidateConstructorSummary;
 pub(crate) mod groups;
 use crate::{
     AudioPreparationCustody, AudioPreparationPhase, AudioPreparationToken, AudioStorageError,
     OwnedAudioInputs, playback::Playback,
+};
+pub use claimed::{
+    AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateSplitRefusal,
+    ClaimedAudioCandidateRuntime,
 };
 pub use groups::{AudioCandidateRuntimeDisposed, AudioCandidateTransfer};
 use std::{
@@ -221,6 +228,8 @@ mod tests {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioCandidateDisposalPhase {
     Owned,
+    /// The actual runtime is exclusively leased; preparation remains in anchors.
+    Leased,
     RuntimePending,
     RootsCleaning,
     Complete,
@@ -371,49 +380,6 @@ impl AudioCandidateOwner {
     ) -> Result<AudioCandidateDisposed, AudioStorageError> {
         self.inner.finish_disposal_on_control()
     }
-    /// Actual bounded inheritance with paired original origin bookkeeping.
-    /// Every destination must already be vacant; refusals retain all owners.
-    pub fn try_inherit_and_retire_in_place(
-        &mut self,
-        previous: &mut Option<Self>,
-        retired: &mut Option<Self>,
-        manifest: &mut Option<AudioCandidateTransfer>,
-    ) -> Result<(), crate::PlaybackHandoffError> {
-        let invalid =
-            || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
-        if retired.is_some()
-            || manifest.is_some()
-            || previous.is_none()
-            || self.inner.phase != AudioCandidateDisposalPhase::Owned
-        {
-            return Err(invalid());
-        }
-        let old = previous.as_mut().ok_or_else(invalid)?;
-        if old.inner.phase != AudioCandidateDisposalPhase::Owned
-            || old.identity() == self.identity()
-        {
-            return Err(invalid());
-        }
-        self.inner.validate_groups().map_err(|_| invalid())?;
-        old.inner.validate_groups().map_err(|_| invalid())?;
-        let next_runtime = self.inner.runtime.as_mut().ok_or_else(invalid)?;
-        let previous_runtime = old.inner.runtime.as_mut().ok_or_else(invalid)?;
-        let transfer = groups::Transfer::new(
-            &mut self.inner.groups,
-            &mut old.inner.groups,
-            &mut self.inner.journal,
-        );
-        next_runtime
-            .playback
-            .inherit_candidate_groups(&mut previous_runtime.playback, transfer)?;
-        *manifest = Some(AudioCandidateTransfer {
-            predecessor: old.identity(),
-            successor: self.identity(),
-            rows: std::mem::take(&mut self.inner.journal),
-        });
-        *retired = previous.take();
-        Ok(())
-    }
     pub fn recover_inputs_on_control(&mut self) -> Option<OwnedAudioInputs> {
         self.inner.recover_inputs_on_control()
     }
@@ -437,6 +403,7 @@ struct CandidateState {
     recovered_inputs: Option<OwnedAudioInputs>,
     inputs_drop_pending: bool,
     inputs_disposed: bool,
+    constructor_data: Option<AudioCandidateConstructorSummary>,
 }
 impl CandidateState {
     /// Refusals return the same preparation custody and original bank. The
@@ -541,6 +508,7 @@ impl CandidateState {
                 recovered_inputs: None,
                 inputs_drop_pending: false,
                 inputs_disposed: false,
+                constructor_data: None,
             }),
             Err(reason) => Err(Box::new(AudioCandidateRefusal {
                 reason,
@@ -574,30 +542,7 @@ impl CandidateState {
             .runtime
             .as_ref()
             .ok_or(AudioStorageError::SourceMismatch)?;
-        let mut index = 0;
-        runtime
-            .playback
-            .visit_candidate_groups(&mut |kind, member, present| {
-                validate_supported_location(kind, present && kind != 1)?;
-                if kind == 1 && present && self.groups.get(index).is_none_or(|g| g.origin.is_none())
-                {
-                    return Err(AudioStorageError::UnsupportedGraph);
-                }
-                if self.groups.get(index).is_none_or(|g| {
-                    g.location != (kind, member)
-                        || g.present != present
-                        || g.closed
-                        || (kind == 1 && present && g.origin.is_none())
-                }) {
-                    return Err(AudioStorageError::SourceMismatch);
-                }
-                index += 1;
-                Ok(())
-            })?;
-        if index != self.groups.len() {
-            return Err(AudioStorageError::SourceMismatch);
-        }
-        Ok(())
+        validate_runtime_groups(runtime, &self.groups)
     }
 
     /// Borrow persistent storage outside ordinary locks. A destructor failure is
@@ -713,6 +658,35 @@ impl CandidateState {
         self.inputs_disposed = true;
         Ok(())
     }
+}
+
+fn validate_runtime_groups(
+    runtime: &RuntimeOwner,
+    groups: &[Group],
+) -> Result<(), AudioStorageError> {
+    let mut index = 0;
+    runtime
+        .playback
+        .visit_candidate_groups(&mut |kind, member, present| {
+            validate_supported_location(kind, present && kind != 1)?;
+            if kind == 1 && present && groups.get(index).is_none_or(|g| g.origin.is_none()) {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            if groups.get(index).is_none_or(|g| {
+                g.location != (kind, member)
+                    || g.present != present
+                    || g.closed
+                    || (kind == 1 && present && g.origin.is_none())
+            }) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            index += 1;
+            Ok(())
+        })?;
+    if index != groups.len() {
+        return Err(AudioStorageError::SourceMismatch);
+    }
+    Ok(())
 }
 
 // Closed constructor class: no effects/instruments/MIDI, no retained tails or

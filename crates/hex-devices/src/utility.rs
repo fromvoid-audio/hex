@@ -623,6 +623,13 @@ impl NativeDeviceDefinition for UtilityDefinition {
 /// graph construction can retain this exact type's allocation declaration
 /// before erasing the processor trait; this is not a generic provider receipt.
 pub struct PreparedUtilityFilterRuntime(crate::utility_filters::PreparedUtilityFilters);
+impl PreparedUtilityFilterRuntime {
+    fn check_inline_ownership(&self) {
+        let Self(filters) = self;
+        fn inline<T: Copy>(_: &T) {}
+        inline(filters);
+    }
+}
 
 impl UtilityDefinition {
     /// Prepare the same registered filter through its concrete constructor.
@@ -644,7 +651,9 @@ impl UtilityDefinition {
         )
         .map_err(|_| DeviceContractError::MalformedState)?
         .with_output_mute(settings.mute);
-        Ok(Some(PreparedUtilityFilterRuntime(prepared)))
+        let value = PreparedUtilityFilterRuntime(prepared);
+        value.check_inline_ownership();
+        Ok(Some(value))
     }
 }
 

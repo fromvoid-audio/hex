@@ -126,6 +126,10 @@ impl Default for MutableOnsetBuffer {
 }
 
 impl MutableOnsetBuffer {
+    pub(crate) fn candidate_storage_empty(&self) -> bool {
+        let Self { spans, len } = self;
+        *len == 0 && spans.iter().all(Option::is_none)
+    }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
     }

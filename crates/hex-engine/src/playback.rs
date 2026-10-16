@@ -5,6 +5,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod candidate_storage;
 mod metronome;
 use metronome::Metronome;
 

@@ -31,24 +31,31 @@ pub(crate) struct Transfer<'a> {
     candidate: &'a mut [Group],
     previous: &'a mut [Group],
     journal: &'a mut Vec<TransferRow>,
+    runtime_bytes: &'a mut usize,
+    planned_runtime_bytes: usize,
 }
 impl<'a> Transfer<'a> {
     pub(super) fn new(
         candidate: &'a mut [Group],
         previous: &'a mut [Group],
         journal: &'a mut Vec<TransferRow>,
+        runtime_bytes: &'a mut usize,
     ) -> Self {
         journal.clear();
+        let planned_runtime_bytes = *runtime_bytes;
         Self {
             candidate,
             previous,
             journal,
+            runtime_bytes,
+            planned_runtime_bytes,
         }
     }
     pub(crate) fn plan(
         &mut self,
         source: Location,
         destination: Location,
+        actual_chain: &hex_lattice::NativeRuntimeChain,
     ) -> Result<(), crate::SessionPlaybackError> {
         let invalid = crate::SessionPlaybackError::ReleaseBankFull;
         let source = self
@@ -76,11 +83,40 @@ impl<'a> Transfer<'a> {
         {
             return Err(invalid);
         }
+        // Both destination inline slots were reserved at construction. Only
+        // the real moved entry backing and its concrete twin Boxes add to the
+        // current runtime; shared prepared DATA remains in original anchors.
+        let view = actual_chain.storage_view();
+        let mut bytes = view.entry_capacity_bytes().ok_or(invalid)?;
+        for entry in view.entries() {
+            match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
+                (Some(a), Some(b))
+                    if entry
+                        .runtime_types_are::<hex_devices::utility_filters::UtilityFilterProcessor>(
+                        ) =>
+                {
+                    bytes = bytes
+                        .checked_add(a)
+                        .and_then(|n| n.checked_add(b))
+                        .ok_or(invalid)?;
+                }
+                (None, None) => {}
+                _ => return Err(invalid),
+            }
+        }
+        let next_bytes = self
+            .planned_runtime_bytes
+            .checked_add(bytes)
+            .ok_or(invalid)?;
+        if next_bytes > crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(invalid);
+        }
         self.journal.push(TransferRow {
             source,
             destination,
             origin,
         });
+        self.planned_runtime_bytes = next_bytes;
         Ok(())
     }
     pub(crate) fn commit(self) {
@@ -93,6 +129,7 @@ impl<'a> Transfer<'a> {
             // it owns no transferred origin. TailChain's Option becomes vacant.
             source.present = source.location.0 == 0;
         }
+        *self.runtime_bytes = self.planned_runtime_bytes;
     }
 }
 /// A move-only journal from one real coupled handoff. No scalar factory.
@@ -199,6 +236,56 @@ impl AudioCandidateRuntimeDisposed {
     pub fn identity(&self) -> AudioCandidateIdentity {
         self.runtime
     }
+    pub fn record_anchor_cells_on_control(
+        &self,
+        anchors: &mut [Option<super::AudioCandidateAnchors>],
+    ) -> Result<(), AudioStorageError> {
+        self.preflight_archives(anchors.iter().flatten().map(|a| &a.owner.inner.archive))?;
+        for anchor in anchors.iter_mut().flatten() {
+            anchor.owner.inner.archive.commit(self);
+        }
+        Ok(())
+    }
+    fn preflight_archives<'a>(
+        &self,
+        archives: impl Iterator<Item = &'a Archive> + Clone,
+    ) -> Result<(), AudioStorageError> {
+        if archives
+            .clone()
+            .filter(|a| a.runtime == self.runtime)
+            .count()
+            != 1
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (i, archive) in archives.clone().enumerate() {
+            if archives
+                .clone()
+                .take(i)
+                .any(|a| a.runtime == archive.runtime)
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+        }
+        for group in &self.groups {
+            if let Some(origin) = group.origin {
+                if !archives.clone().any(|a| a.runtime == origin.runtime) {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+            }
+        }
+        for archive in archives {
+            if archive.runtime == self.runtime
+                || self
+                    .groups
+                    .iter()
+                    .any(|g| g.origin.is_some_and(|o| o.runtime == archive.runtime))
+            {
+                archive.preflight(self)?;
+            }
+        }
+        Ok(())
+    }
     /// Atomic exact-origin fanout over existing reserved custody cells. No
     /// temporary reference Vec, owner clone or public scalar closure factory.
     pub fn record_fanout_on_control(
@@ -263,7 +350,14 @@ mod tests {
     };
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Command, Created, Editor};
-    fn owner(project: &hex_project::Project) -> (AudioCandidateOwner, usize, usize) {
+    fn owner(
+        project: &hex_project::Project,
+    ) -> (
+        crate::ClaimedAudioCandidateRuntime,
+        crate::AudioCandidateAnchors,
+        usize,
+        usize,
+    ) {
         let asset = project.assets().next().unwrap().id();
         let bank = OwnedAudioInputs::try_new(
             vec![(
@@ -292,13 +386,22 @@ mod tests {
             )
             .ok()
             .unwrap();
-        (
-            AudioCandidateOwner::try_new_on_control(custody, token)
-                .ok()
-                .unwrap(),
-            pointer,
-            capacity,
-        )
+        let mut owner = AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        let summary = owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                data_rows: 4096,
+                handle_rows: 2048,
+                root_rows: 4,
+                max_retained_bytes: 64 * 1024 * 1024,
+                max_construction_peak_bytes: 64 * 1024 * 1024,
+            })
+            .unwrap();
+        assert_eq!(summary.data.unknown_storage, 0);
+        assert!(summary.data.require_complete().is_err());
+        let (runtime, anchors) = owner.split_constructor_on_control().ok().unwrap();
+        (runtime, anchors, pointer, capacity)
     }
     #[test]
     fn real_utility_chains_fan_out_by_actual_tail_lifetime_not_history_copy() {
@@ -367,81 +470,62 @@ mod tests {
         editor.execute(Command::RemoveTrack(ids[1])).unwrap();
         let b_project = editor.project().clone();
         let c_project = b_project.clone();
-        let (mut a, ap, ac) = owner(&a_project);
-        let (mut b, bp, bc) = owner(&b_project);
-        let (mut c, cp, cc) = owner(&c_project);
+        let (mut a, aa, ap, ac) = owner(&a_project);
+        let (mut b, ba, bp, bc) = owner(&b_project);
+        let (mut c, ca, cp, cc) = owner(&c_project);
         let a_identity = a.identity();
         let a_boxes = ids
             .iter()
-            .map(|id| {
-                a.inner
-                    .runtime
-                    .as_ref()
-                    .unwrap()
-                    .playback
-                    .test_track_boxes(*id)
-                    .unwrap()
-            })
+            .map(|id| a.test_track_boxes(*id).unwrap())
             .collect::<Vec<_>>();
         assert!(a_boxes.iter().all(|(primary, scratch)| primary.is_some()
             && scratch.is_some()
             && primary != scratch));
-        a.test_apply_action(crate::PlaybackAction::Transport(
+        a.apply_action(crate::PlaybackAction::Transport(
             crate::PlaybackCommand::Play,
         ))
         .unwrap();
-        a.test_render(&mut [[0.0; 2]; 8]).unwrap();
+        a.render(&mut [[0.0; 2]; 8]).unwrap();
         let mut previous = Some(a);
         let mut retired = None;
         let mut ab = None;
+        // Exhaust the current owned-runtime allowance before the same actual
+        // transfer. Failure must precede every owner/origin move, not merely
+        // suppress a receipt after moving the filters.
+        let original_budget = b
+            .test_set_owned_runtime_reservation(crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .unwrap();
+        assert!(
+            b.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut ab)
+                .is_err()
+        );
+        assert!(retired.is_none() && ab.is_none());
+        assert_eq!(
+            previous.as_ref().unwrap().test_track_boxes(ids[0]),
+            Some(a_boxes[0])
+        );
+        assert_eq!(
+            previous.as_ref().unwrap().test_track_boxes(ids[1]),
+            Some(a_boxes[1])
+        );
+        assert_eq!(b.test_tail_boxes(ids[0]), None);
+        assert_eq!(b.test_tail_boxes(ids[1]), None);
+        b.test_set_owned_runtime_reservation(original_budget);
         b.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut ab)
             .unwrap();
         assert!(previous.is_none());
         assert_eq!(ab.as_ref().unwrap().moved_groups(), 2);
         assert_eq!(ab.as_ref().unwrap().moved_groups_from(a_identity), 2);
         let a = retired.take().unwrap();
-        assert_eq!(
-            a.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_track_boxes(ids[2]),
-            Some(a_boxes[2])
-        );
-        assert_ne!(
-            b.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_track_boxes(ids[2]),
-            Some(a_boxes[2])
-        );
-        assert_eq!(
-            b.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_tail_boxes(ids[0]),
-            Some(a_boxes[0])
-        );
-        assert_eq!(
-            b.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_tail_boxes(ids[1]),
-            Some(a_boxes[1])
-        );
+        assert_eq!(a.test_track_boxes(ids[2]), Some(a_boxes[2]));
+        assert_ne!(b.test_track_boxes(ids[2]), Some(a_boxes[2]));
+        assert_eq!(b.test_tail_boxes(ids[0]), Some(a_boxes[0]));
+        assert_eq!(b.test_tail_boxes(ids[1]), Some(a_boxes[1]));
         // The real fast bass-mono filter drains; the real 5Hz DC filter still
         // owns active history. These flags are read from actual committed DSP.
-        b.test_render(&mut [[0.0; 2]; 4096]).unwrap();
-        let runtime = &b.inner.runtime.as_ref().unwrap().playback;
-        assert_eq!(runtime.test_tail_activity(ids[0]), Some((true, true)));
-        assert_eq!(runtime.test_tail_activity(ids[1]), Some((false, false)));
+        b.render(&mut [[0.0; 2]; 4096]).unwrap();
+        assert_eq!(b.test_tail_activity(ids[0]), Some((true, true)));
+        assert_eq!(b.test_tail_activity(ids[1]), Some((false, false)));
         let mut previous = Some(b);
         let mut bc_manifest = None;
         c.try_inherit_and_retire_in_place(&mut previous, &mut retired, &mut bc_manifest)
@@ -452,85 +536,60 @@ mod tests {
             1
         );
         let b = retired.take().unwrap();
-        assert_eq!(
-            b.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_tail_boxes(ids[1]),
-            Some(a_boxes[1])
-        );
-        assert_eq!(
-            c.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_tail_boxes(ids[0]),
-            Some(a_boxes[0])
-        );
-        assert_eq!(
-            c.inner
-                .runtime
-                .as_ref()
-                .unwrap()
-                .playback
-                .test_tail_boxes(ids[1]),
-            None
-        );
+        assert_eq!(b.test_tail_boxes(ids[1]), Some(a_boxes[1]));
+        assert_eq!(c.test_tail_boxes(ids[0]), Some(a_boxes[0]));
+        assert_eq!(c.test_tail_boxes(ids[1]), None);
         let mut cells = [Some(a), Some(b), Some(c)];
-        let a_proof = cells[0]
-            .as_mut()
-            .unwrap()
-            .dispose_runtime_on_control()
+        let mut anchors = [Some(aa), Some(ba), Some(ca)];
+        let a_proof = cells[0].as_mut().unwrap().dispose_on_control().unwrap();
+        a_proof
+            .record_anchor_cells_on_control(&mut anchors)
             .unwrap();
-        a_proof.record_fanout_on_control(&mut cells).unwrap();
         assert!(
-            cells[0]
+            anchors[0]
                 .as_mut()
                 .unwrap()
                 .finish_disposal_on_control()
                 .is_err()
         );
-        assert!(!cells[0].as_ref().unwrap().inner.archive.all_closed());
-        let b_proof = cells[1]
-            .as_mut()
-            .unwrap()
-            .dispose_runtime_on_control()
+        assert!(!anchors[0].as_ref().unwrap().all_origins_closed());
+        let b_proof = cells[1].as_mut().unwrap().dispose_on_control().unwrap();
+        b_proof
+            .record_anchor_cells_on_control(&mut anchors)
             .unwrap();
-        b_proof.record_fanout_on_control(&mut cells).unwrap();
         assert!(
-            cells[0]
+            anchors[0]
                 .as_mut()
                 .unwrap()
                 .finish_disposal_on_control()
                 .is_err()
         );
-        cells[1]
+        anchors[1]
             .as_mut()
             .unwrap()
             .finish_disposal_on_control()
             .unwrap();
-        let c_proof = cells[2]
-            .as_mut()
-            .unwrap()
-            .dispose_runtime_on_control()
+        let c_proof = cells[2].as_mut().unwrap().dispose_on_control().unwrap();
+        c_proof
+            .record_anchor_cells_on_control(&mut anchors)
             .unwrap();
-        c_proof.record_fanout_on_control(&mut cells).unwrap();
-        assert!(c_proof.record_fanout_on_control(&mut cells).is_err());
-        cells[0]
+        assert!(
+            c_proof
+                .record_anchor_cells_on_control(&mut anchors)
+                .is_err()
+        );
+        anchors[0]
             .as_mut()
             .unwrap()
             .finish_disposal_on_control()
             .unwrap();
-        cells[2]
+        anchors[2]
             .as_mut()
             .unwrap()
             .finish_disposal_on_control()
             .unwrap();
         for (owner, (pointer, capacity)) in
-            cells
+            anchors
                 .iter_mut()
                 .flatten()
                 .zip([(ap, ac), (bp, bc), (cp, cc)])
