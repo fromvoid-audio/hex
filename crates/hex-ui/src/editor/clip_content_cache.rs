@@ -163,22 +163,23 @@ impl EditorView {
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
         };
         let parent = cx.weak_entity();
-        let entity = if let Some(entity) = self.clip_content_cache.entries.get(&track.id()) {
-            let entity = entity.clone();
-            entity.update(cx, |content, cx| {
-                if content.key != key {
-                    content.key = key;
-                    content.snapshot = snapshot;
-                    cx.notify();
-                } else {
-                    super::render_diagnostic::record(
-                        super::render_diagnostic::Kind::ClipContentReuse,
-                        std::time::Duration::ZERO,
-                    );
-                }
-            });
+        let reusable = self
+            .clip_content_cache
+            .entries
+            .get(&track.id())
+            .filter(|entity| entity.read(cx).key == key)
+            .cloned();
+        let entity = if let Some(entity) = reusable {
+            super::render_diagnostic::record(
+                super::render_diagnostic::Kind::ClipContentReuse,
+                std::time::Duration::ZERO,
+            );
             entity
         } else {
+            // Key changes happen during row prepaint, after GPUI drains dirty
+            // notifications. A fresh identity misses the scene cache NOW;
+            // notifying the old child would instead dirty the following frame.
+            // Keep `.cached` on the new view to seed its ranges in this draw.
             let entity = cx.new(|_| ClipContents {
                 parent,
                 snapshot,
@@ -202,6 +203,92 @@ impl EditorView {
 mod tests {
     use super::*;
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+
+    #[gpui::test]
+    fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppContext) {
+        let (project, source, _, clip) = super::super::clip_drag_ui_test::audio_project();
+        let (handle, editor) =
+            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let previous = editor.read_with(cx, |view, _| {
+            view.clip_content_cache
+                .entries
+                .get(&source)
+                .expect("cached source")
+                .clone()
+        });
+        let selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.selected_clip = Some(clip);
+                cx.notify();
+            });
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            visual.rendered_background(selector),
+            Some(gpui::rgb(theme::color(theme::PaletteRole::ClipSelected)).into()),
+            "the first changed-key draw must paint selected content, without an extra frame"
+        );
+        let original_bounds = visual.debug_bounds(selector).expect("selected clip bounds");
+        let current = editor.read_with(cx, |view, _| {
+            view.clip_content_cache
+                .entries
+                .get(&source)
+                .expect("selected source")
+                .clone()
+        });
+        assert_ne!(current.entity_id(), previous.entity_id());
+        let builds = current.read_with(cx, |content, _| content.builds);
+        assert_eq!(builds, 1);
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            current.read_with(cx, |content, _| content.builds),
+            builds,
+            "unchanged following draw must reuse newly seeded cache ranges"
+        );
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.viewport = Some(Viewport {
+                    start: 24_000,
+                    length: 192_000,
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear();
+        });
+        let zoomed_bounds = visual
+            .debug_bounds(selector)
+            .expect("current viewport clip bounds");
+        assert!(
+            (f32::from(zoomed_bounds.size.width) - f32::from(original_bounds.size.width) * 1.5)
+                .abs()
+                <= 1.0,
+            "the first viewport-change draw paints the cropped 72k/192k interval"
+        );
+        let zoomed = editor.read_with(cx, |view, _| {
+            view.clip_content_cache
+                .entries
+                .get(&source)
+                .expect("zoomed source")
+                .clone()
+        });
+        assert_ne!(zoomed.entity_id(), current.entity_id());
+        assert_eq!(zoomed.read_with(cx, |content, _| content.builds), 1);
+        visual.update(|window, cx| {
+            editor.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear();
+        });
+        assert_eq!(
+            zoomed.read_with(cx, |content, _| content.builds),
+            1,
+            "viewport invalidation must not queue a redundant following-frame rebuild"
+        );
+    }
 
     #[gpui::test]
     fn main_selection_reuses_clip_scene_while_overlay_and_lane_epochs_change(

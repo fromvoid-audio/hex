@@ -17,6 +17,12 @@ identity/revision change, releasing offscreen children and their old snapshots.
 Each child's key includes track/index, viewport, musical grid/snap, display scale,
 palette, selected clip and measured lane geometry/drag availability. Time ranges
 and track endpoint focus deliberately stay outside this key.
+On a changed key the map replaces that track's child identity, immediately
+seeding fresh GPUI cached scene ranges in the current draw. It does not enqueue
+a child notification during prepaint: GPUI drains those notifications before
+row construction, which otherwise can replay stale content now and rebuild on
+the next frame. A red/green single-draw regression checks selected color and
+cropped viewport geometry immediately, then confirms the next draw reuses them.
 
 Headers, lane geometry measurement, selection shading/cursors and transient
 previews remain live. Main/track selection updates notify the editor instead of
@@ -27,11 +33,14 @@ original builder handles those states and the first idle frame rebuilds it.
 The prototype regression proves actual clip-scene reuse while successive normal
 input-path selection updates change the live overlay and lane epochs. The
 existing selection persistence regression, strict UI/desktop lint and source
-guards pass. A separate test-support limitation is visible: GPUI's cached
-prepaint replay omits debug-selector bounds, so the existing audio-trim fixture
+guards pass. The first eight-case native child-cache diagnostic at `49e7109`
+still missed the target (100-track selection first paint 18.5–29.2 ms) and exposed
+the delayed child invalidation corrected above; timing of that repair is pending.
+A separate test-support limitation is visible: GPUI's cached
+paint replay omits debug-selector bounds, so the existing audio-trim fixture
 cannot locate its cached handle. That must be resolved without disabling cache
-reuse before final verification. Native timing of this child-view experiment,
-the full lifecycle regression set and the final unchanged 360-sample benchmark
+reuse before final verification. The full lifecycle regression set and the
+final unchanged 360-sample benchmark
 remain pending; the 16.67 ms p95 target is not established by source checks.
 
 Source implemented, 9 October 2026. The user-provided screenshot is the
