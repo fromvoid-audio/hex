@@ -399,6 +399,10 @@ struct PreparedFm4Instrument {
 }
 
 impl PreparedNativeInstrument for PreparedFm4Instrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         pitch: u8,

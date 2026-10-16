@@ -22,6 +22,58 @@ pub enum Command {
         slot: TrackDeviceSlot,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Atomically splice a bounded touch span, preserving the underlying base curve.
+    SpliceGainTouch {
+        track: TrackId,
+        expected_epoch: u64,
+        span: crate::GainTouchSpan,
+    },
+    /// One completed take, including loop passes, commits as one history edit.
+    SpliceGainTouchBatch {
+        track: TrackId,
+        expected_epoch: u64,
+        spans: Vec<crate::GainTouchSpan>,
+    },
+    ReplaceTrackGainEnvelope {
+        track: TrackId,
+        points: Vec<crate::GainPoint>,
+    },
+    UpsertTrackGainPoint {
+        track: TrackId,
+        point: crate::GainPoint,
+    },
+    MoveTrackGainPoint {
+        track: TrackId,
+        from: crate::BeatTime,
+        to: crate::BeatTime,
+    },
+    RemoveTrackGainPoint {
+        track: TrackId,
+        beat: crate::BeatTime,
+    },
+    /// Clear base and recorded overlays, retaining the recording epoch high-water mark.
+    ClearTrackGainEnvelope {
+        track: TrackId,
+    },
+    /// Validate proposed metadata, then refuse non-legacy adoption until playback support.
+    SetRouting(Vec<crate::RoutingEdge>),
+    /// Add/change a post-fader stereo feed to a track input; zero removes it.
+    SetAudioFeed {
+        source: crate::RoutingOwner,
+        destination: TrackId,
+        gain: f32,
+    },
+    /// Select authored MIDI from another track; None restores local MIDI.
+    SetMidiSource {
+        destination: TrackId,
+        source: Option<TrackId>,
+    },
+    /// Adopt or change a bounded additive stereo Return feed; zero removes it.
+    SetReturnFeed {
+        source: ReturnId,
+        destination: ReturnId,
+        gain: f32,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -317,6 +369,28 @@ pub enum Command {
         clip: ClipId,
         fade_in: u64,
         fade_out: u64,
+    },
+    /// Set Arrangement or Session audio clip gain, in -60_000..=24_000 millidecibels.
+    SetAudioClipGain {
+        clip: ClipId,
+        millidb: i32,
+    },
+    /// Integer cents; resampling is root-anchored and preserves placement duration.
+    SetAudioClipPitch {
+        clip: ClipId,
+        cents: i16,
+    },
+    SetAudioClipMusical {
+        clip: ClipId,
+        enabled: bool,
+    },
+    SetAudioClipWarp {
+        clip: ClipId,
+        settings: Option<crate::WarpSettings>,
+    },
+    SetAudioClipSourceGain {
+        clip: ClipId,
+        points: Vec<crate::SourceGainPoint>,
     },
     /// Enable or disable the audio clip's source loop; disabling resets its phase.
     SetClipLooping {
@@ -615,6 +689,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
+            gain_lane: crate::GainLane::default(),
             id,
             name,
             gain: 1.0,
@@ -662,6 +737,9 @@ pub(crate) fn preview_edge_trim(
     frame: u64,
     asset_playback_frames: u64,
 ) -> Result<Clip, Invalid> {
+    if clip.edit.is_some() {
+        return Err(Invalid("musical audio trim requires the project tempo map"));
+    }
     if clip.duration == 0 || clip.source_length == 0 {
         return Err(Invalid("clip and source lengths must be positive"));
     }
@@ -801,6 +879,8 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        gain: clip.gain,
+        edit: clip.edit.clone(),
         id: clip.id,
         asset: clip.asset,
         start,
@@ -818,6 +898,11 @@ pub(crate) fn split_clip_at(
     frame: u64,
     right_id: ClipId,
 ) -> Result<(Clip, Clip), Invalid> {
+    if original.edit.is_some() {
+        return Err(Invalid(
+            "musical audio split requires the project tempo map",
+        ));
+    }
     let end = original
         .start
         .checked_add(original.duration)
@@ -873,8 +958,49 @@ pub(crate) fn split_clip_at(
         source_length: right_source_length,
         looping: original.looping,
         source_phase: right_phase,
+        gain: original.gain,
+        edit: None,
         fade: right_fade,
     };
+    Ok((left, right))
+}
+
+pub(crate) fn split_clip_at_tempo(
+    original: &Clip,
+    frame: u64,
+    right_id: ClipId,
+    tempo: &crate::TempoMap,
+) -> Result<(Clip, Clip), Invalid> {
+    let Some(edit) = &original.edit else {
+        return split_clip_at(original, frame, right_id);
+    };
+    let end = original
+        .start
+        .checked_add(original.duration)
+        .ok_or(Invalid("audio split end overflow"))?;
+    if frame <= original.start || frame >= end {
+        return Err(Invalid("split cursor must be inside the clip"));
+    }
+    let cut = edit.crop_at_frame(original, frame, tempo)?;
+    if cut <= edit.view_start || cut >= edit.view_end {
+        return Err(Invalid("split has no positive musical crop"));
+    }
+    let mut left = original.clone();
+    let mut right = original.clone();
+    left.audio_edit_mut()
+        .ok_or(Invalid("audio domain missing"))?
+        .view_end = cut;
+    let view = right
+        .audio_edit_mut()
+        .ok_or(Invalid("audio domain missing"))?;
+    view.view_start = cut;
+    if view.musical_start.is_some() {
+        view.musical_start = Some(tempo.frame_to_beat(frame)?);
+    }
+    right.id = right_id;
+    right.start = frame;
+    crate::audio_edit::project_clip(&mut left, tempo)?;
+    crate::audio_edit::project_clip(&mut right, tempo)?;
     Ok((left, right))
 }
 
@@ -920,7 +1046,7 @@ pub(crate) fn overwrite_audio_interval(
         let keeps_left = victim.start < start;
         let keeps_right = victim_end > end;
         let left = keeps_left
-            .then(|| split_clip_at(&victim, start, victim.id))
+            .then(|| split_clip_at_tempo(&victim, start, victim.id, project.tempo_map()))
             .transpose()?
             .map(|parts| parts.0);
         let right_id = if keeps_left && keeps_right {
@@ -929,7 +1055,7 @@ pub(crate) fn overwrite_audio_interval(
             victim.id
         };
         let right = keeps_right
-            .then(|| split_clip_at(&victim, end, right_id))
+            .then(|| split_clip_at_tempo(&victim, end, right_id, project.tempo_map()))
             .transpose()?
             .map(|parts| parts.1);
         fragments.push((victim.id, AudioOverwriteFragments { left, right }));
@@ -1018,6 +1144,106 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SpliceGainTouchBatch {
+                track,
+                expected_epoch,
+                spans,
+            } => {
+                if spans.is_empty() || spans.len() > crate::MAX_GAIN_TOUCH_SPANS_PER_TRACK {
+                    return Err(Invalid("gain touch take span count is outside its bound"));
+                }
+                if self
+                    .track(track)
+                    .ok_or(Invalid("track no longer exists"))?
+                    .gain_lane
+                    .recording_epoch
+                    != expected_epoch
+                {
+                    return Err(Invalid("gain touch replacement epoch is stale"));
+                }
+                let mut epoch = expected_epoch;
+                for span in &spans {
+                    span.validate()?;
+                    if span.context.recording_epoch <= epoch {
+                        return Err(Invalid("gain touch take epochs must strictly increase"));
+                    }
+                    if span.context.sample_rate != self.sample_rate {
+                        return Err(Invalid("gain touch sample rate differs from project"));
+                    }
+                    epoch = span.context.recording_epoch;
+                }
+                // Project::apply runs only on Editor's isolated candidate. A
+                // later refusal discards every earlier pass and all its IDs.
+                let mut epoch = expected_epoch;
+                for span in spans {
+                    let next = span.context.recording_epoch;
+                    self.apply(Command::SpliceGainTouch {
+                        track,
+                        expected_epoch: epoch,
+                        span,
+                    })?;
+                    epoch = next;
+                }
+                Ok(Created::None)
+            }
+            Command::SpliceGainTouch {
+                track,
+                expected_epoch,
+                span,
+            } => {
+                let owner = self.track(track).ok_or(Invalid("track no longer exists"))?;
+                if span.context.sample_rate != self.sample_rate {
+                    return Err(Invalid("gain touch sample rate differs from project"));
+                }
+                let proposed_units = owner.gain_lane.touch_units(expected_epoch, &span)?;
+                let other = self
+                    .tracks()
+                    .iter()
+                    .filter(|owner| owner.id() != track)
+                    .try_fold(0_usize, |count, owner| {
+                        count
+                            .checked_add(owner.gain_lane.units()?)
+                            .ok_or(Invalid("gain lane count overflow"))
+                    })?;
+                if other
+                    .checked_add(proposed_units)
+                    .is_none_or(|count| count > crate::MAX_GAIN_POINTS)
+                {
+                    return Err(Invalid("project gain lane limit reached"));
+                }
+                let proposed = owner.gain_lane.with_touch(expected_epoch, span)?;
+                self.track_mut(track)?.gain_lane = proposed;
+                Ok(Created::None)
+            }
+            Command::ReplaceTrackGainEnvelope { track, points } => {
+                self.replace_gain_envelope(track, points)
+            }
+            Command::UpsertTrackGainPoint { track, point } => self.upsert_gain_point(track, point),
+            Command::MoveTrackGainPoint { track, from, to } => {
+                self.move_gain_point(track, from, to)
+            }
+            Command::RemoveTrackGainPoint { track, beat } => self.remove_gain_point(track, beat),
+            Command::ClearTrackGainEnvelope { track } => {
+                let lane = &mut self.track_mut(track)?.gain_lane;
+                lane.base.clear();
+                lane.spans.clear();
+                Ok(Created::None)
+            }
+            Command::SetRouting(edges) => self.adopt_routing(edges),
+            Command::SetAudioFeed {
+                source,
+                destination,
+                gain,
+            } => self.set_audio_feed(source, destination, gain),
+            Command::SetMidiSource {
+                destination,
+                source,
+            } => self.set_midi_source(destination, source),
+            Command::SetReturnFeed {
+                source,
+                destination,
+                gain,
+            } => self.set_return_feed(source, destination, gain),
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
@@ -1126,6 +1352,8 @@ impl Project {
                     .id;
                 let fade = original.fade;
                 let source_phase = original.source_phase;
+                let gain = original.gain;
+                let audio_edit = original.edit.clone();
                 let duplicate = self.apply(Command::PlaceClip {
                     track,
                     asset: original.asset,
@@ -1138,6 +1366,14 @@ impl Project {
                 if let Created::Clip(duplicate_id) = duplicate {
                     self.clip_mut(duplicate_id)?.fade = fade;
                     self.clip_mut(duplicate_id)?.source_phase = source_phase;
+                    self.clip_mut(duplicate_id)?.gain = gain;
+                    let mut duplicated = self
+                        .clip(duplicate_id)
+                        .cloned()
+                        .ok_or(Invalid("duplicate missing"))?;
+                    duplicated.edit = audio_edit;
+                    crate::audio_edit::move_clip(&mut duplicated, start, self.tempo_map())?;
+                    *self.clip_mut(duplicate_id)? = duplicated;
                 }
                 Ok(duplicate)
             }
@@ -1168,7 +1404,8 @@ impl Project {
                     .try_reserve(1)
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
-                let (left, right) = split_clip_at(&original, frame, right_id)?;
+                let (left, right) =
+                    split_clip_at_tempo(&original, frame, right_id, self.tempo_map())?;
                 self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
@@ -1197,7 +1434,7 @@ impl Project {
             }
             Command::TrimClipEndBy { clip, frames } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
-                if original.looping {
+                if original.looping || original.edit.is_some() {
                     let end = original
                         .start
                         .checked_add(original.duration)
@@ -1498,6 +1735,11 @@ impl Project {
                     .position(|t| t.id == id)
                     .ok_or(Invalid("track no longer exists"))?;
                 self.tracks.remove(index);
+                self.audio_feeds.retain(|r| {
+                    r.source() != crate::RoutingOwner::Track(id) && r.destination() != id
+                });
+                self.midi_routes
+                    .retain(|r| r.source() != id && r.destination() != id);
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
             }
@@ -1509,6 +1751,21 @@ impl Project {
             Command::Gain { track, gain } => {
                 if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
                     return Err(Invalid("gain must be finite and within 0..2"));
+                }
+                if !self
+                    .track(track)
+                    .ok_or(Invalid("track no longer exists"))?
+                    .gain_lane()
+                    .base()
+                    .is_empty()
+                    || !self
+                        .track(track)
+                        .ok_or(Invalid("track no longer exists"))?
+                        .gain_lane
+                        .spans
+                        .is_empty()
+                {
+                    return Err(Invalid("track gain is owned by automation"));
                 }
                 self.track_mut(track)?.gain = gain;
                 Ok(Created::None)
@@ -1528,7 +1785,18 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetTempoPoint { beat, tempo } => {
-                self.tempo_map = self.tempo_map.replace_point(TempoPoint::new(beat, tempo))?;
+                let mut candidate = self.clone();
+                candidate.tempo_map = candidate
+                    .tempo_map
+                    .replace_point(TempoPoint::new(beat, tempo))?;
+                let map = candidate.tempo_map.clone();
+                for track in &mut candidate.tracks {
+                    for clip in &mut track.content.audio_clips {
+                        crate::audio_edit::project_clip(clip, &map)?;
+                    }
+                }
+                crate::Project::from_snapshot(candidate.snapshot())?;
+                *self = candidate;
                 Ok(Created::None)
             }
             Command::SetMeterPoint { beat, meter } => {
@@ -1639,6 +1907,8 @@ impl Project {
                     looping,
                     source_phase: 0,
                     fade,
+                    gain: crate::ClipGain::UNITY,
+                    edit: None,
                 });
                 Ok(Created::Clip(id))
             }
@@ -1663,13 +1933,17 @@ impl Project {
                     .position(|c| c.id == clip)
                     .ok_or(Invalid("clip no longer exists"))?;
                 let source_id = self.tracks[source].id;
-                let mut moved = self.audio_clips_mut(source_id)?.remove(index);
-                moved.start = start;
+                let mut moved = self
+                    .clip(clip)
+                    .cloned()
+                    .ok_or(Invalid("audio clip is missing"))?;
+                crate::audio_edit::move_clip(&mut moved, start, self.tempo_map())?;
+                self.audio_clips_mut(source_id)?.remove(index);
                 self.audio_clips_mut(track)?.push(moved);
                 Ok(Created::None)
             }
             Command::MoveClipWithOverwrite { clip, track, start } => {
-                let incoming = self
+                let mut incoming = self
                     .clip(clip)
                     .cloned()
                     .ok_or(Invalid("clip no longer exists"))?;
@@ -1682,6 +1956,7 @@ impl Project {
                 if source_track == track && incoming.start == start {
                     return Ok(Created::None);
                 }
+                crate::audio_edit::move_clip(&mut incoming, start, self.tempo_map())?;
                 let end = start
                     .checked_add(incoming.duration)
                     .ok_or(Invalid("timeline end overflow"))?;
@@ -1730,6 +2005,16 @@ impl Project {
                     .asset(original.asset)
                     .ok_or(Invalid("media no longer exists"))?;
                 interval_valid(start, duration, source_offset, source_length, media)?;
+                if original.edit.is_some() {
+                    return crate::audio_edit::reset_region(
+                        self,
+                        clip,
+                        start,
+                        duration,
+                        source_offset,
+                        source_length,
+                    );
+                }
                 let old_fade = original.fade;
                 let old_source_offset = original.source_offset;
                 let old_source_length = original.source_length;
@@ -1756,8 +2041,37 @@ impl Project {
                     .asset(original.asset)
                     .ok_or(Invalid("media no longer exists"))?
                     .playback_frames;
-                let trimmed = preview_edge_trim(original, edge, frame, asset_frames)?;
+                let trimmed = if original.edit.is_some() {
+                    crate::audio_edit::trim_view(original, edge, frame, self.tempo_map())?
+                } else {
+                    preview_edge_trim(original, edge, frame, asset_frames)?
+                };
                 *self.clip_mut(clip)? = trimmed;
+                Ok(Created::None)
+            }
+            command @ (Command::SetAudioClipPitch { .. }
+            | Command::SetAudioClipMusical { .. }
+            | Command::SetAudioClipWarp { .. }
+            | Command::SetAudioClipSourceGain { .. }) => crate::audio_edit::apply(self, command),
+            Command::SetAudioClipGain { clip, millidb } => {
+                let gain = crate::ClipGain::new(millidb)?;
+                if self.clip(clip).is_some() {
+                    self.clip_mut(clip)?.gain = gain;
+                } else {
+                    let target = self
+                        .session
+                        .cells
+                        .iter_mut()
+                        .find_map(|cell| {
+                            if let crate::SessionCellContent::Audio(audio) = &mut cell.content {
+                                (audio.id == clip).then_some(audio)
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or(Invalid("audio clip no longer exists"))?;
+                    target.gain = gain;
+                }
                 Ok(Created::None)
             }
             Command::SetClipFades {
@@ -1765,6 +2079,9 @@ impl Project {
                 fade_in,
                 fade_out,
             } => {
+                if self.clip(clip).is_some_and(|clip| clip.edit.is_some()) {
+                    return crate::audio_edit::set_fades(self, clip, fade_in, fade_out);
+                }
                 let duration = self
                     .clip(clip)
                     .ok_or(Invalid("clip no longer exists"))?
@@ -1774,6 +2091,9 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetClipLooping { clip, looping } => {
+                if self.clip(clip).is_some_and(|clip| clip.edit.is_some()) {
+                    return crate::audio_edit::source_policy(self, clip, Some(looping), None);
+                }
                 let target = self.clip_mut(clip)?;
                 if target.looping != looping {
                     target.looping = looping;
@@ -1784,6 +2104,9 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetClipSourcePhase { clip, phase } => {
+                if self.clip(clip).is_some_and(|clip| clip.edit.is_some()) {
+                    return crate::audio_edit::source_policy(self, clip, None, Some(phase));
+                }
                 let target = self.clip_mut(clip)?;
                 if !target.looping {
                     return Err(Invalid("source phase can only be set on a looping clip"));
@@ -1911,6 +2234,8 @@ mod overwrite_tests {
                     looping: false,
                     source_phase: 0,
                     fade: ClipFade::neutral(1).expect("neutral fade"),
+                    gain: crate::ClipGain::UNITY,
+                    edit: None,
                 });
         }
         let before = project.clone();
@@ -1970,6 +2295,8 @@ mod overwrite_tests {
                     looping: false,
                     source_phase: 0,
                     fade: ClipFade::neutral(1).expect("neutral fade"),
+                    gain: crate::ClipGain::UNITY,
+                    edit: None,
                 });
         }
         assert_eq!(

@@ -200,7 +200,7 @@ special case or a mutable type-erased escape hatch.
 ## host gain staging
 
 [Native device gain staging](device-gain-staging.md) adds shared input/output
-sample-peak strips and manual host output trim. Memoryless effects retain separate
+sample-peak strips and manual host input/output trim. Memoryless effects retain separate
 runtime entries to expose each boundary. Host trim is neutral envelope metadata,
 independent of opaque device DSP payloads and synthesis/history identity; project
-schema 18 defaults prior documents to unity. Automatic matching is deferred.
+schema 19 defaults prior documents to unity. Automatic matching is deferred.

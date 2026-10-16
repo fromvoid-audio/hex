@@ -207,6 +207,7 @@ pub struct NativeDeviceState {
     type_id: DeviceTypeId,
     state_version: u32,
     payload: Arc<[u8]>,
+    input_gain_millidb: i32,
     output_gain_millidb: i32,
 }
 impl NativeDeviceState {
@@ -226,6 +227,7 @@ impl NativeDeviceState {
             type_id,
             state_version,
             payload: Arc::from(payload),
+            input_gain_millidb: 0,
             output_gain_millidb: 0,
         })
     }
@@ -234,6 +236,26 @@ impl NativeDeviceState {
     }
     pub const fn state_version(&self) -> u32 {
         self.state_version
+    }
+    /// Host-owned input trim, independent of the device's opaque DSP payload.
+    pub const fn input_gain_millidb(&self) -> i32 {
+        self.input_gain_millidb
+    }
+    pub fn input_gain_db(&self) -> f32 {
+        self.input_gain_millidb as f32 / 1000.0
+    }
+    pub fn with_input_gain_millidb(mut self, gain: i32) -> Result<Self, DeviceContractError> {
+        if !(-60_000..=24_000).contains(&gain) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.input_gain_millidb = gain;
+        Ok(self)
+    }
+    pub fn with_input_gain_db(self, gain: f32) -> Result<Self, DeviceContractError> {
+        if !gain.is_finite() || !(-60.0..=24.0).contains(&gain) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.with_input_gain_millidb((gain * 1000.0).round() as i32)
     }
     /// Host-owned output trim, independent of the device's opaque DSP payload.
     pub const fn output_gain_millidb(&self) -> i32 {
@@ -255,7 +277,8 @@ impl NativeDeviceState {
         }
         self.with_output_gain_millidb((gain * 1000.0).round() as i32)
     }
-    pub fn without_output_gain(mut self) -> Self {
+    pub fn without_host_gains(mut self) -> Self {
+        self.input_gain_millidb = 0;
         self.output_gain_millidb = 0;
         self
     }
@@ -264,6 +287,9 @@ impl NativeDeviceState {
         self.type_id == other.type_id
             && self.state_version == other.state_version
             && self.payload == other.payload
+    }
+    pub fn input_gain_linear(&self) -> f32 {
+        10.0_f32.powf(self.input_gain_db() / 20.0)
     }
     pub fn output_gain_linear(&self) -> f32 {
         10.0_f32.powf(self.output_gain_db() / 20.0)

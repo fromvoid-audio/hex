@@ -34,6 +34,17 @@ impl Drop for TestDir {
 
 #[test]
 fn prepared_export_renders_effectful_return_before_master_once() {
+    assert_return_export(false, false);
+}
+#[test]
+fn prepared_export_includes_authored_additive_return_feed_before_master_once() {
+    assert_return_export(true, false);
+}
+#[test]
+fn prepared_export_applies_gain_automation_with_return_feed_and_zero_base_once() {
+    assert_return_export(true, true);
+}
+fn assert_return_export(authored_feed: bool, automation: bool) {
     let samples = [[0.25, -0.5]];
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let asset = match editor
@@ -103,6 +114,36 @@ fn prepared_export_renders_effectful_return_before_master_once() {
         })
         .expect("return effect");
 
+    if authored_feed {
+        let Created::ReturnTrack(destination) = editor
+            .execute(Command::AddReturnTrack {
+                name: "destination".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnFeed {
+                source: return_track,
+                destination,
+                gain: 0.5,
+            })
+            .unwrap();
+    }
+    if automation {
+        editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![hex_project::GainPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    gain: 1.0,
+                    outgoing: hex_project::GainInterpolation::Step,
+                }],
+            })
+            .unwrap();
+    }
     let media = BTreeMap::from([(asset, Audio::new(RATE, samples.to_vec()).expect("audio"))]);
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
@@ -116,9 +157,230 @@ fn prepared_export_renders_effectful_return_before_master_once() {
     let bytes = fs::read(path).expect("read export");
     let left = i16::from_le_bytes([bytes[44], bytes[45]]);
     let right = i16::from_le_bytes([bytes[46], bytes[47]]);
-    let expected = [0.09375_f32, -0.0625_f32];
+    let expected = if automation {
+        [0.21875_f32, -0.0625_f32]
+    } else if authored_feed {
+        [0.109375_f32, -0.03125_f32]
+    } else {
+        [0.09375_f32, -0.0625_f32]
+    };
     for (actual, expected) in [left, right].into_iter().zip(expected) {
         let pcm = (expected * 32_767.0).round() as i16;
         assert!((i32::from(actual) - i32::from(pcm)).abs() <= 1);
+    }
+}
+
+#[test]
+fn transformed_warp_root_gain_lane_and_playable_routing_match_native_linear_and_export() {
+    use hex_project::{
+        BeatTime, GainInterpolation, GainPoint, RoutingOwner, SourceGainPoint, Tempo, WarpMode,
+        default_audio_warp,
+    };
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 32).unwrap();
+    let Created::Imported { clip, asset, track } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "warped".into(),
+            path: "warped.wav".into(),
+            sample_rate: RATE,
+            frames: 256,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: true,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipSourcePhase { clip, phase: 7 })
+        .unwrap();
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 8,
+            fade_out: 16,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip,
+            millidb: -6_000,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Texture {
+            grain_ms: 8,
+            fluctuation: 25,
+            seed: 37,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipSourceGain {
+            clip,
+            points: vec![
+                SourceGainPoint {
+                    frame: 0,
+                    gain_q16: 32_768,
+                },
+                SourceGainPoint {
+                    frame: 256,
+                    gain_q16: 65_536,
+                },
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let Created::Track(target) = editor
+        .execute(Command::AddTrack {
+            name: "input".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::SetAudioFeed {
+            source: RoutingOwner::Track(track),
+            destination: target,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor
+        .execute(Command::Gain {
+            track: target,
+            gain: 0.5,
+        })
+        .unwrap();
+    editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+    editor
+        .execute(Command::ReplaceTrackGainEnvelope {
+            track,
+            points: vec![
+                GainPoint {
+                    beat: BeatTime::ZERO,
+                    gain: 0.25,
+                    outgoing: GainInterpolation::Linear,
+                },
+                GainPoint {
+                    beat: BeatTime::ONE,
+                    gain: 0.75,
+                    outgoing: GainInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    let mut buses = Vec::new();
+    for _ in 0..2 {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack { name: "bus".into() })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        buses.push(bus);
+    }
+    editor
+        .execute(Command::ReturnGain {
+            return_track: buses[0],
+            gain: 0.5,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: buses[0],
+            gain: 0.25,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetReturnFeed {
+            source: buses[0],
+            destination: buses[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..256)
+                .map(|i| {
+                    let x = (i as f32 * 0.173).sin() * 0.25;
+                    [x, -x * 0.75]
+                })
+                .collect(),
+        )
+        .unwrap(),
+    )]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    let view = &revision.arrangement().audio_clip_views()[0];
+    let length = usize::try_from(view.length).unwrap();
+    assert_eq!(length, 512);
+    let clip_gain = editor.project().clip(clip).unwrap().gain().linear();
+    // Main gets source + target(1/4) + first Return(1/8) + second Return(1/16).
+    let expected = view
+        .audio
+        .frames()
+        .iter()
+        .enumerate()
+        .map(|(i, frame)| {
+            let lane = 0.25 + 0.5 * i as f32 / RATE as f32;
+            frame.map(|sample| sample * clip_gain * lane * 1.4375 * 0.5)
+        })
+        .collect::<Vec<_>>();
+    assert!(expected.iter().flatten().any(|sample| sample.abs() > 0.001));
+    let mut native =
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
+            .unwrap();
+    native.apply(hex_engine::playback::PlaybackCommand::Play);
+    let mut actual = vec![[0.; 2]; length];
+    for block in actual.chunks_mut(31) {
+        native.render(block).unwrap();
+    }
+    let mut linear =
+        hex_engine::SessionPlayback::new_linear_arrangement_export(Arc::clone(&revision)).unwrap();
+    linear
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut offline = vec![[0.; 2]; length];
+    for block in offline.chunks_mut(47) {
+        linear.render(block).unwrap();
+    }
+    assert_eq!(actual, offline);
+    for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    }
+    let directory = TestDir::new();
+    let path = directory.0.join("musical-routing.wav");
+    hex_export::render_prepared_new(&path, revision, 0, length as u64).unwrap();
+    let bytes = fs::read(path).unwrap();
+    for (pcm, expected) in bytes[44..].chunks_exact(2).zip(actual.iter().flatten()) {
+        let sample = i16::from_le_bytes([pcm[0], pcm[1]]);
+        let expected = (expected * 32_767.).round() as i16;
+        assert!((i32::from(sample) - i32::from(expected)).abs() <= 1);
     }
 }

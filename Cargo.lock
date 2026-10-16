@@ -2597,6 +2597,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-warp",
 ]
 
 [[package]]
@@ -2658,6 +2659,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "serde_json",
 ]
 
 [[package]]
@@ -2680,6 +2682,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "rtrb",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2697,6 +2700,10 @@ dependencies = [
  "hex-session",
  "hex-widgets",
 ]
+
+[[package]]
+name = "hex-warp"
+version = "0.1.0"
 
 [[package]]
 name = "hex-widgets"

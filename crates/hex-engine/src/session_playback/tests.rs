@@ -142,6 +142,10 @@ impl hex_lattice::NativeInstrumentDefinition for ContinuityInstrumentDefinition 
 }
 
 impl hex_lattice::PreparedNativeInstrument for ContinuityInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -249,6 +253,10 @@ impl hex_lattice::NativeInstrumentDefinition for OversizedSharedContextDefinitio
 }
 
 impl hex_lattice::PreparedNativeInstrument for OversizedSharedContext {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -365,6 +373,8 @@ struct MutableFeedbackRuntime {
     voices: [MutableFeedbackVoice; 64],
     feedback: f32,
     tail_left: u8,
+    // Optional real owned storage exercises variable-sized runtime accounting.
+    storage: Box<[u8]>,
 }
 
 /// Minimal mutable voice used to exercise an instrument with a real declared
@@ -378,6 +388,10 @@ struct ZeroTailMutableRuntime {
 struct ZeroTailMutableFactory;
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for ZeroTailMutableFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -606,6 +620,10 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFeedbackDefinition {
 }
 
 impl hex_lattice::PreparedNativeInstrument for MutableFeedbackPrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         _: u8,
@@ -631,6 +649,10 @@ impl hex_lattice::PreparedNativeInstrument for MutableFeedbackPrepared {
 }
 
 impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -663,6 +685,12 @@ impl hex_lattice::PreparedMutableInstrumentRuntime for MutableFeedbackFactory {
             voices: [MutableFeedbackVoice::default(); 64],
             feedback: 0.0,
             tail_left: 0,
+            storage: vec![
+                0;
+                self.declared_twin_bytes()
+                    .saturating_sub(std::mem::size_of::<MutableFeedbackRuntime>())
+            ]
+            .into_boxed_slice(),
         })
     }
     fn as_any(&self) -> &dyn std::any::Any {
@@ -765,20 +793,22 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         self.voices.iter().all(|voice| !voice.active) && self.tail_left == 0 && self.feedback == 0.0
     }
     fn can_copy_history_from(&self, previous: &dyn hex_lattice::MutableInstrumentRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|old| self.key == old.key && self.release_frames == old.release_frames)
+        previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
+            self.key == old.key
+                && self.release_frames == old.release_frames
+                && self.storage.len() == old.storage.len()
+        })
     }
     fn copy_history_from(&mut self, previous: &dyn hex_lattice::MutableInstrumentRuntime) {
         if let Some(old) = previous.as_any().downcast_ref::<Self>() {
             self.voices = old.voices;
             self.feedback = old.feedback;
             self.tail_left = old.tail_left;
+            self.storage.copy_from_slice(&old.storage);
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        std::mem::size_of::<Self>() + self.storage.len()
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -888,6 +918,10 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 7,
         assets: vec![
@@ -909,6 +943,9 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
             },
         ],
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1,
             name: "audio".into(),
             gain: 1.0,
@@ -930,6 +967,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 track: 1,
                 scene: 2,
                 content: SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                    gain: hex_project::ClipGain::UNITY,
                     id: 3,
                     name: "one shot".into(),
                     asset: asset_id,
@@ -971,6 +1009,9 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
     let mut snapshot = audio_project(source_start, source_end, 4).snapshot();
     snapshot.next_id = 12;
     snapshot.tracks.push(TrackSnapshot {
+        gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: 6,
         name: "keys".into(),
         gain: 1.0,
@@ -1050,6 +1091,9 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         velocity: 100,
     });
     snapshot.tracks.push(TrackSnapshot {
+        gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: 14,
         name: "arrangement bed".into(),
         gain: 1.0,
@@ -1060,6 +1104,8 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: 15,
             asset: 4,
             start: 0,
@@ -1078,10 +1124,17 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 8,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1,
             name: "track".into(),
             gain,
@@ -1722,6 +1775,8 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
         id: 6,
         asset: 4,
         start: 0,
@@ -1922,6 +1977,8 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        edit: None,
+        gain: hex_project::ClipGain::UNITY,
         id: 6,
         asset: 4,
         start: 0,
@@ -3540,6 +3597,8 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     });
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: audio_clip,
             asset,
             start: 0,
@@ -4716,6 +4775,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     });
     source.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            edit: None,
+            gain: hex_project::ClipGain::UNITY,
             id: audio_clip,
             asset,
             start: 0,
@@ -5071,6 +5132,7 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         voices: [MutableFeedbackVoice::default(); 64],
         feedback: 0.0,
         tail_left: 0,
+        storage: Box::default(),
     };
     let note_on = [hex_lattice::NativeInstrumentEvent::NoteOn {
         frame_offset: 0,
@@ -6162,6 +6224,9 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
         let session_clip = 24;
         let session_note = 25;
         snapshot.tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track,
             name: "new mutable track".into(),
             gain: 1.0,
@@ -8142,6 +8207,9 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
     snapshot.next_id = 15;
     for (track_id, clip_id, note_id, gain) in [(7, 9, 14, 0.25), (10, 11, 12, 0.75)] {
         snapshot.tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track_id,
             name: format!("track {track_id}"),
             gain,
@@ -8339,6 +8407,9 @@ fn moving_selected_clip_to_another_track_releases_old_route() {
 
     let mut snapshot = original.snapshot();
     snapshot.tracks.push(TrackSnapshot {
+        gain_envelope: Vec::new(),
+        gain_touch_spans: Vec::new(),
+        gain_touch_epoch: 0,
         id: 7,
         name: "other".into(),
         gain: 1.0,
@@ -8443,6 +8514,10 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
     assert_eq!(playback.release_voice_count(), 1);
+    let old_release_boundaries = (
+        playback.releases[0].voice.gate_end_frame(),
+        playback.releases[0].voice.end_frame(),
+    );
     playback
         .apply(SessionPlaybackCommand::LaunchClip {
             clip,
@@ -8450,6 +8525,35 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         })
         .unwrap();
 
+    // A full bank still permits cancelling an unheard exact-onset occurrence.
+    let unheard_frame = playback.performance_frame();
+    playback
+        .apply(SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    assert_eq!(playback.performance_frame(), unheard_frame);
+    assert_eq!(playback.release_voice_count(), 1);
+    assert_eq!(
+        (
+            playback.releases[0].voice.gate_end_frame(),
+            playback.releases[0].voice.end_frame(),
+        ),
+        old_release_boundaries
+    );
+    assert_eq!(playback.owner(track), Some(SessionPlaybackOwner::Silence));
+    playback
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+
+    // Once that occurrence has sounded, its tail needs another release slot.
+    let mut relaunched = [[0.0; 2]; 1];
+    playback.render(&mut relaunched).unwrap();
+    let cut_frame = playback.performance_frame();
     assert_eq!(
         playback.apply(SessionPlaybackCommand::StopTrack {
             track,
@@ -8457,7 +8561,15 @@ fn reduced_shared_bank_refuses_a_cut_atomically_and_recovers_after_expiry() {
         }),
         Err(SessionPlaybackError::ReleaseBankFull)
     );
+    assert_eq!(playback.performance_frame(), cut_frame);
     assert_eq!(playback.release_voice_count(), 1);
+    assert_eq!(
+        (
+            playback.releases[0].voice.gate_end_frame(),
+            playback.releases[0].voice.end_frame(),
+        ),
+        old_release_boundaries
+    );
     assert_eq!(
         playback.owner(track),
         Some(SessionPlaybackOwner::Session { clip })
@@ -10602,16 +10714,15 @@ fn mutable_checkpoint_refuses_uncommitted_wrong_revision_and_wrong_frame_atomica
 
 #[test]
 fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
-    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
-    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-    playback.apply(SessionPlaybackCommand::Play).unwrap();
-    render_checkpoint_prefix(&mut playback, 1);
-
     let counter = Arc::new(AtomicUsize::new(0));
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&counter)));
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| {
         bytes.set(Some(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES));
     });
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    render_checkpoint_prefix(&mut playback, 1);
     let mut byte_limited = MutableRuntimeCheckpointStore::new();
     let byte_refusal = loop {
         match byte_limited.capture_track(&playback, track) {
@@ -10635,6 +10746,9 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
     assert_eq!(counter.load(Ordering::Relaxed), before_byte_refusal);
 
     MUTABLE_RUNTIME_DECLARED_BYTES_OVERRIDE.with(|bytes| bytes.set(None));
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut count_limited = MutableRuntimeCheckpointStore::new();
     while count_limited.checkpoint_count() < MAX_MUTABLE_RUNTIME_CHECKPOINTS {
         render_checkpoint_prefix(&mut playback, 1);
@@ -10688,54 +10802,74 @@ mod source_loop_tests;
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
 
+#[path = "capture_tests.rs"]
+mod capture_tests;
 #[path = "device_capacity_tests.rs"]
 mod device_capacity_tests;
 
+#[path = "analytic_continuation_tests.rs"]
+mod analytic_continuation_tests;
 #[test]
 fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
-    let project = project(0.758_499_15, 0, 8 << 32);
-    let table = Arc::new(hex_devices::SineTable::new());
-    let prepared = revision(&project, Arc::clone(&table));
-    let device = project.tracks()[0].instrument().unwrap().id();
-    let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
-    let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
-    let mut metered = SessionPlayback::new(prepared).unwrap();
-    metered.set_device_metering(true);
-    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
-    metered.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut a = [[0.0; 2]; 127];
-    let mut b = a;
-    for _ in 0..5 {
+    for input in [true, false] {
+        let project = project(0.758_499_15, 0, 8 << 32);
+        let table = Arc::new(hex_devices::SineTable::new());
+        let prepared = revision(&project, Arc::clone(&table));
+        let device = project.tracks()[0].instrument().unwrap().id();
+        let meter = Arc::clone(prepared.arrangement().device_meter(device.value()).unwrap());
+        let mut ordinary = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let mut metered = SessionPlayback::new(prepared).unwrap();
+        metered.set_device_metering(true);
+        ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+        metered.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut a = [[0.0; 2]; 127];
+        let mut b = a;
+        for _ in 0..5 {
+            ordinary.render(&mut a).unwrap();
+            metered.render(&mut b).unwrap();
+            assert_eq!(a, b, "telemetry must preserve per-voice summation order");
+        }
+        let peaks = meter.take_peaks();
+        assert_eq!(peaks[0], 0.0);
+        assert!(peaks[1] > 0.0);
+        let mut snapshot = project.snapshot();
+        let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
+        instrument.state = if input {
+            instrument.state.clone().with_input_gain_db(-12.0).unwrap()
+        } else {
+            instrument.state.clone().with_output_gain_db(-12.0).unwrap()
+        };
+        let changed = Project::from_snapshot(snapshot).unwrap();
+        let prepared = Arc::new(
+            PreparedRevision::prepare(
+                &changed,
+                &BTreeMap::new(),
+                table,
+                Some(ordinary.revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut trimmed = SessionPlayback::new(prepared).unwrap();
+        trimmed.try_inherit_state_from(&mut ordinary).unwrap();
+        assert!(
+            trimmed.releases.is_empty(),
+            "host trim must not create a duplicate voice release"
+        );
         ordinary.render(&mut a).unwrap();
-        metered.render(&mut b).unwrap();
-        assert_eq!(a, b, "telemetry must preserve per-voice summation order");
-    }
-    let peaks = meter.take_peaks();
-    assert_eq!(peaks[0], 0.0);
-    assert!(peaks[1] > 0.0);
-    let mut snapshot = project.snapshot();
-    let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
-    instrument.state = instrument.state.clone().with_output_gain_db(-12.0).unwrap();
-    let changed = Project::from_snapshot(snapshot).unwrap();
-    let prepared = Arc::new(
-        PreparedRevision::prepare(
-            &changed,
-            &BTreeMap::new(),
-            table,
-            Some(ordinary.revision.session()),
-        )
-        .unwrap(),
-    );
-    let mut trimmed = SessionPlayback::new(prepared).unwrap();
-    trimmed.try_inherit_state_from(&mut ordinary).unwrap();
-    assert!(
-        trimmed.releases.is_empty(),
-        "host trim must not create a duplicate voice release"
-    );
-    ordinary.render(&mut a).unwrap();
-    trimmed.render(&mut b).unwrap();
-    let gain = 10.0_f32.powf(-12.0 / 20.0);
-    for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
-        assert!((a * gain - b).abs() < 1e-7);
+        trimmed.render(&mut b).unwrap();
+        let gain = if input {
+            1.0
+        } else {
+            10.0_f32.powf(-12.0 / 20.0)
+        };
+        for (a, b) in a.iter().flatten().zip(b.iter().flatten()) {
+            assert!((a * gain - b).abs() < 1e-7);
+        }
     }
 }
+
+#[path = "instrument_memory_budget_tests.rs"]
+mod instrument_memory_budget_tests;
+
+#[path = "operator_filter_tests.rs"]
+mod operator_filter_tests;
