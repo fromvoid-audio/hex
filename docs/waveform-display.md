@@ -12,36 +12,55 @@ scheduling and overlap; they are not measurements of thread CPU time.
 An editor-owned map retains at most `hex_project::MAX_TRACKS` GPUI child views
 containing the original audio/MIDI clip elements, shapes, clipping, trim handles,
 drag listeners and tooltips. No decorative geometry realignment or canvas
-batching is retained. The map clears on project generation or immutable snapshot
-identity/revision change, releasing offscreen children and their old snapshots.
-Each child's key includes track/index, viewport, musical grid/snap, display scale,
-palette, selected clip and measured lane geometry/drag availability. Time ranges
-and track endpoint focus deliberately stay outside this key.
-On a changed key the map replaces that track's child identity, immediately
-seeding fresh GPUI cached scene ranges in the current draw. It does not enqueue
-a child notification during prepaint: GPUI drains those notifications before
-row construction, which otherwise can replay stale content now and rebuild on
-the next frame. A red/green single-draw regression checks selected color and
-cropped viewport geometry immediately, then confirms the next draw reuses them.
+batching is retained. Project generation changes clear all children. On each new
+immutable snapshot, one bounded reconciliation prunes removed track IDs and
+updates every retained child to the current Arc, releasing old offscreen snapshot
+ownership while preserving same-project input identity. Pointer-only updates do
+not traverse project tracks.
+
+Each child's key includes track/index, revision, viewport, musical grid/snap,
+display scale, palette, selected clip and measured lane geometry/drag availability.
+Time ranges and track endpoint focus stay outside it. Changed keys advance an
+opaque GPUI cache epoch, rebuilding in the current draw with the same child and
+global element identity. Busy edits, modals and transient drags rebuild the legacy
+child content each draw; the first idle draw rebuilds once before reuse. There
+is no notification queued during prepaint. Replacing a child or temporarily
+removing its view ancestry was rejected after rendered tests proved it could
+lose pending mouse-down capture across otherwise-current state refreshes.
 
 Headers, lane geometry measurement, selection shading/cursors and transient
 previews remain live. Main/track selection updates notify the editor instead of
 globally refreshing the window; other drag/hover refresh behavior is preserved.
-Any edit, modal, project-open or transient drag/pan bypasses the cache. The
-original builder handles those states and the first idle frame rebuilds it.
+A pointer-down alone keeps the child identity and listeners stable until drag
+capture. The read-only same-revision snapshot refresh regression fails with the
+identity-replacing cache, passes with the original direct builder, and passes
+with the epoch implementation. Snapshot history, palette/grid/resize,
+busy-to-idle, pending capture and genuine selection-scene reuse are covered.
 
-The prototype regression proves actual clip-scene reuse while successive normal
-input-path selection updates change the live overlay and lane epochs. The
-existing selection persistence regression, strict UI/desktop lint and source
-guards pass. The first eight-case native child-cache diagnostic at `49e7109`
-still missed the target (100-track selection first paint 18.5–29.2 ms) and exposed
-the delayed child invalidation corrected above; timing of that repair is pending.
-A separate test-support limitation is visible: GPUI's cached
-paint replay omits debug-selector bounds, so the existing audio-trim fixture
-cannot locate its cached handle. That must be resolved without disabling cache
-reuse before final verification. The full lifecycle regression set and the
-final unchanged 360-sample benchmark
-remain pending; the 16.67 ms p95 target is not established by source checks.
+The test-support-only GPUI debug bounds map now replays exact paint-history
+segments for cached scenes. Nested selector reuse, duplicate overwrite order,
+movement and removal pass without disabling caching. The real audio/MIDI trim,
+clip drag and worker Undo/Redo regressions run with this cache enabled. See
+[native boundary decisions](native-input.md) for the epoch and metadata patches.
+
+The first eight-case native child-cache diagnostic at `49e7109` still missed
+the target (100-track selection first paint 18.5–29.2 ms); corrected epoch timing
+and the final unchanged 360-sample native benchmark remain pending. A passing
+source regression does not establish the 16.67 ms native p95 target.
+
+The ignored `headless_time_selection_framework_profile` test opens the existing
+100-track fixture through the normal Session worker with isolated settings and
+no audio. It drives 5 warm-up and 40 measured steady selection updates in a
+1240×760, 2× GPUI test window. Only explicit `Window::draw` wall time is measured;
+input dispatch, setup, worker loading, arena clearing and reporting are outside
+that interval. Each draw must paint the new range and reuse warmed clip children.
+Run with an absolute `HEX_TIME_SELECTION_FIXTURE_DIR`, `--release`, UI test support
+and `--ignored --nocapture`; debug requires the explicit smoke-only flag.
+The test backend uses `NoopTextSystem`, test selector bookkeeping and no native
+font shaping/raster, GPU submission/presentation, physical input/display or audio.
+Its framework timings diagnose cache/replay work; they are not comparable native
+feedback measurements or proof of smoothness. The canonical native harness and
+its six metrics, fixtures and 360-sample protocol remain unchanged.
 
 Source implemented, 9 October 2026. The user-provided screenshot is the
 visual reference: black filled signed waveforms, separate channel bands and

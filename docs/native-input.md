@@ -156,3 +156,44 @@ editing and event delivery are unchanged. Provenance and cumulative diff retain
 the verified 0.2.2 archive and existing patch scope. The optimized native build
 and source guards compile/check this boundary; measured scene paint/submission
 observations do not establish physical input or physical display latency.
+
+## cached scene debug-selector replay — 16 october 2026
+
+Primary-approved narrow test-support decision for #2648 / PR264: preserve debug
+selector bounds when `AnyView.cached` replays paint. `Frame` retains an
+insertion-history map under the existing test/test-support cfg; `PaintIndex`
+records its offsets and `reuse_paint` restores only the cached segment. This
+keeps nested reuse and duplicate overwrite order correct without restoring
+unrelated removed selectors. Existing per-frame clearing remains effective.
+The patch is limited to safe Rust metadata in `src/window.rs`; normal builds
+have no added field, operation, public API, native access or input behavior.
+Published archive identity and original hashes stay pinned; the cumulative
+patch and patched window hash are regenerated from that verified archive.
+
+A rendered nested-cache test proves retained selectors across genuine scene
+reuse with unchanged child render counts, current duplicate overwrite order,
+moved child bounds and selector removal. The previously failing audio-trim
+fixture now finds its cached handle and completes its ordinary drag with cache
+reuse enabled. This test metadata is not physical display or native OS evidence.
+
+## stable cached-view invalidation — 16 october 2026
+
+Primary approved one additional safe GPUI boundary for #2648 after a rendered
+regression proved that replacing the cached child identity on a same-revision
+read-only snapshot refresh lost an otherwise-current clip mouse-down. The same
+gesture passed with the original direct builder. `AnyView::cached_with_epoch`
+adds an opaque `u64` caller epoch to the existing cache key so changed content
+rebuilds in the current draw without replacing view/element identity. Existing
+`cached` callers use zero and keep their behavior. Changing the epoch does not
+schedule a frame; Hex notifies the live editor owner. No dirty notification is
+queued from child emission, and no native/unsafe/event-delivery or bulk replay
+code changes.
+
+Hex retains a child's identity until its track is removed or the project
+generation changes. New immutable snapshots update every retained child to the
+current Arc once and prune removed track IDs; old offscreen snapshots are not
+retained. Keys and transient fresh-render states advance the epoch. Tests prove
+current-frame selected color/viewport geometry, next-frame reuse and preserved
+mouse-down/drag capture across a same-revision snapshot refresh. Original archive
+hashes remain pinned; only the documented `src/view.rs` addition extends the
+provenance guard's approved file scope.

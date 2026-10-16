@@ -36,7 +36,12 @@ pub(super) struct TrackCache {
     entries: HashMap<TrackId, Entity<ClipContents>>,
 }
 impl TrackCache {
-    pub(super) fn reconcile(&mut self, generation: u64, snapshot: Option<&Arc<ViewState>>) {
+    pub(super) fn reconcile(
+        &mut self,
+        generation: u64,
+        snapshot: Option<&Arc<ViewState>>,
+        cx: &mut Context<EditorView>,
+    ) {
         let same_snapshot = self
             .snapshot
             .as_ref()
@@ -44,17 +49,41 @@ impl TrackCache {
             .is_some_and(|(old, current)| {
                 Arc::ptr_eq(old, current) && old.revision == current.revision
             });
-        if self.generation != generation || !same_snapshot {
+        if self.generation != generation || snapshot.is_none() {
             self.entries.clear();
-            self.snapshot = snapshot.cloned();
-            self.generation = generation;
+        } else if !same_snapshot && let Some(snapshot) = snapshot {
+            let indices = snapshot
+                .project
+                .tracks()
+                .iter()
+                .enumerate()
+                .map(|(index, track)| (track.id(), index))
+                .collect::<HashMap<_, _>>();
+            self.entries.retain(|track, entity| {
+                let Some(index) = indices.get(track) else {
+                    return false;
+                };
+                entity.update(cx, |content, _| {
+                    // Retain identity/capture, but never retain older immutable
+                    // snapshots in offscreen children after a worker update.
+                    content.snapshot = Arc::clone(snapshot);
+                    content.key.track_index = *index;
+                    content.key.revision = snapshot.revision;
+                    content.epoch = content.epoch.wrapping_add(1);
+                });
+                true
+            });
         }
+        self.snapshot = snapshot.cloned();
+        self.generation = generation;
     }
 }
 struct ClipContents {
     parent: WeakEntity<EditorView>,
     snapshot: Arc<ViewState>,
     key: ContentKey,
+    epoch: u64,
+    fresh_last: bool,
     #[cfg(test)]
     builds: usize,
 }
@@ -117,7 +146,6 @@ impl EditorView {
             && self.active_midi_trim_drag.is_none()
             && self.time_range_move_gesture.is_none()
             && self.pending_time_range_move.is_none()
-            && self.pointer_down.is_none()
             && self.arrangement_pan.is_none()
             && self.loop_rail_gesture.is_none()
             && !self.theme_settings.open
@@ -135,8 +163,7 @@ impl EditorView {
             .as_ref()
             .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), state))
             .cloned();
-        if !self.clip_content_cache_allowed()
-            || snapshot.is_none()
+        if snapshot.is_none()
             || (!self.clip_content_cache.entries.contains_key(&track.id())
                 && self.clip_content_cache.entries.len() >= hex_project::MAX_TRACKS)
         {
@@ -163,27 +190,29 @@ impl EditorView {
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
         };
         let parent = cx.weak_entity();
-        let reusable = self
-            .clip_content_cache
-            .entries
-            .get(&track.id())
-            .filter(|entity| entity.read(cx).key == key)
-            .cloned();
-        let entity = if let Some(entity) = reusable {
-            super::render_diagnostic::record(
-                super::render_diagnostic::Kind::ClipContentReuse,
-                std::time::Duration::ZERO,
-            );
+        let fresh = !self.clip_content_cache_allowed();
+        let entity = if let Some(entity) = self.clip_content_cache.entries.get(&track.id()).cloned()
+        {
+            entity.update(cx, |content, _| {
+                if content.key != key || fresh || content.fresh_last {
+                    content.key = key;
+                    content.epoch = content.epoch.wrapping_add(1);
+                } else {
+                    super::render_diagnostic::record(
+                        super::render_diagnostic::Kind::ClipContentReuse,
+                        std::time::Duration::ZERO,
+                    );
+                }
+                content.fresh_last = fresh;
+            });
             entity
         } else {
-            // Key changes happen during row prepaint, after GPUI drains dirty
-            // notifications. A fresh identity misses the scene cache NOW;
-            // notifying the old child would instead dirty the following frame.
-            // Keep `.cached` on the new view to seed its ranges in this draw.
             let entity = cx.new(|_| ClipContents {
                 parent,
                 snapshot,
                 key,
+                epoch: 0,
+                fresh_last: fresh,
                 #[cfg(test)]
                 builds: 0,
             });
@@ -192,162 +221,20 @@ impl EditorView {
                 .insert(track.id(), entity.clone());
             entity
         };
+        // The epoch invalidates THIS draw without changing input element identity
+        // or queuing a notification that GPUI would consume on the next frame.
+        let epoch = entity.read(cx).epoch;
         let mut layout = div().absolute().inset_0();
         AnyView::from(entity)
-            .cached(layout.style().clone())
+            .cached_with_epoch(layout.style().clone(), epoch)
             .into_any_element()
     }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
-mod tests {
-    use super::*;
-    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+#[path = "clip_content_cache_ui_test.rs"]
+mod tests;
 
-    #[gpui::test]
-    fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppContext) {
-        let (project, source, _, clip) = super::super::clip_drag_ui_test::audio_project();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let previous = editor.read_with(cx, |view, _| {
-            view.clip_content_cache
-                .entries
-                .get(&source)
-                .expect("cached source")
-                .clone()
-        });
-        let selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
-        visual.update(|window, cx| {
-            editor.update(cx, |view, cx| {
-                view.selected_clip = Some(clip);
-                cx.notify();
-            });
-            window.draw(cx).clear();
-        });
-        assert_eq!(
-            visual.rendered_background(selector),
-            Some(gpui::rgb(theme::color(theme::PaletteRole::ClipSelected)).into()),
-            "the first changed-key draw must paint selected content, without an extra frame"
-        );
-        let original_bounds = visual.debug_bounds(selector).expect("selected clip bounds");
-        let current = editor.read_with(cx, |view, _| {
-            view.clip_content_cache
-                .entries
-                .get(&source)
-                .expect("selected source")
-                .clone()
-        });
-        assert_ne!(current.entity_id(), previous.entity_id());
-        let builds = current.read_with(cx, |content, _| content.builds);
-        assert_eq!(builds, 1);
-        visual.update(|window, cx| {
-            editor.update(cx, |_, cx| cx.notify());
-            window.draw(cx).clear();
-        });
-        assert_eq!(
-            current.read_with(cx, |content, _| content.builds),
-            builds,
-            "unchanged following draw must reuse newly seeded cache ranges"
-        );
-        visual.update(|window, cx| {
-            editor.update(cx, |view, cx| {
-                view.viewport = Some(Viewport {
-                    start: 24_000,
-                    length: 192_000,
-                });
-                cx.notify();
-            });
-            window.draw(cx).clear();
-        });
-        let zoomed_bounds = visual
-            .debug_bounds(selector)
-            .expect("current viewport clip bounds");
-        assert!(
-            (f32::from(zoomed_bounds.size.width) - f32::from(original_bounds.size.width) * 1.5)
-                .abs()
-                <= 1.0,
-            "the first viewport-change draw paints the cropped 72k/192k interval"
-        );
-        let zoomed = editor.read_with(cx, |view, _| {
-            view.clip_content_cache
-                .entries
-                .get(&source)
-                .expect("zoomed source")
-                .clone()
-        });
-        assert_ne!(zoomed.entity_id(), current.entity_id());
-        assert_eq!(zoomed.read_with(cx, |content, _| content.builds), 1);
-        visual.update(|window, cx| {
-            editor.update(cx, |_, cx| cx.notify());
-            window.draw(cx).clear();
-        });
-        assert_eq!(
-            zoomed.read_with(cx, |content, _| content.builds),
-            1,
-            "viewport invalidation must not queue a redundant following-frame rebuild"
-        );
-    }
-
-    #[gpui::test]
-    fn main_selection_reuses_clip_scene_while_overlay_and_lane_epochs_change(
-        cx: &mut TestAppContext,
-    ) {
-        let (project, source, _, _) = super::super::clip_drag_ui_test::audio_project();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let lane = visual.debug_bounds("main-track-lane").expect("main lane");
-        let at = |fraction| point(lane.origin.x + lane.size.width * fraction, lane.center().y);
-        visual.simulate_mouse_down(at(0.2), MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        let content = editor.read_with(cx, |view, _| {
-            view.clip_content_cache
-                .entries
-                .get(&source)
-                .expect("cached source")
-                .clone()
-        });
-        let builds = content.read_with(cx, |content, _| content.builds);
-        assert!(builds > 0, "actual child scene was built");
-        let selector =
-            Box::leak(format!("edit-time-selection-{}", source.value()).into_boxed_str());
-        let mut previous_width = None;
-        for fraction in [0.4, 0.6] {
-            visual.simulate_mouse_move(at(fraction), MouseButton::Left, Modifiers::default());
-            visual.run_until_parked();
-            let overlay = visual
-                .debug_bounds(selector)
-                .expect("live project selection overlay");
-            if let Some(width) = previous_width {
-                assert!(
-                    overlay.size.width > width,
-                    "overlay follows each pointer update"
-                );
-            }
-            previous_width = Some(overlay.size.width);
-            assert_eq!(
-                content.read_with(cx, |content, _| content.builds),
-                builds,
-                "selection changes must reuse the real cached clip scene"
-            );
-            editor.read_with(cx, |view, _| {
-                assert_eq!(
-                    view.drag_lane_epochs.get(&source),
-                    Some(&view.drag_layout_generation),
-                    "lane geometry remains current outside cached content"
-                );
-                assert!(view.time_selection_project_scope);
-            });
-        }
-        visual.simulate_mouse_up(at(0.6), MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        assert!(
-            visual.debug_bounds(selector).is_some(),
-            "completed overlay remains visible"
-        );
-        assert_eq!(content.read_with(cx, |content, _| content.builds), builds);
-    }
-}
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_content_profile.rs"]
+mod profile;

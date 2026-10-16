@@ -3,12 +3,15 @@
 Confirmed the dense visible waveform working set thrashed the 128-entry LRU;
 512 entries retain it with the same 65,536-column aggregate bound. After that
 fix alone missed the timing target, phase probes identified substantial lazy-row
-prepaint and scene-paint work. The current bounded experiment caches unchanged
-legacy clip child views while keeping selection overlays and lane geometry live.
-The actual reuse/overlay regression and selection persistence pass, as do strict
-UI/desktop lint and source guards. Native eight-case timing is next; the full
-lifecycle checks, GPUI cached debug-bounds omission and final 360-sample benchmark
-remain open. See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
+prepaint and scene-paint work. The bounded child cache retains original visuals
+with live selection/geometry. An explicit GPUI epoch repairs same-draw stale
+replay while preserving input identity across state/key/transient changes.
+Read-only snapshot capture has a red/green regression; cache lifecycle, native
+input-path UI fixtures and strict checks are recorded with the final candidate.
+The ignored headless framework diagnostic uses the same loaded fixture and
+explicit draw timing, with test text/renderer limitations disclosed. Corrected
+optimized native timing and the unchanged 360-sample benchmark remain open.
+See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
 
 ## vector B edits and stopped playback recovery — #2643 / PR259, 16 october 2026
 

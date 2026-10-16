@@ -238,10 +238,12 @@ control colors and compact status slot widths remain stable. See
 
 Arrangement rows retain bounded GPUI child views for unchanged legacy clip
 content. Lane geometry, headers, selection overlays and transient previews stay
-live in the editor. Snapshot/project replacement clears all retained children;
-viewport, grid, palette, selected clip and measured lane changes invalidate the
-affected child. Busy edits and drags use the original uncached builder. See
-../../docs/waveform-display.md for the cache contract and pending timing gate.
+live in the editor. Project generation clears cached ownership; snapshot updates
+replace all retained snapshot Arcs and prune removed tracks. View/grid/palette,
+selected-clip and measured-lane changes advance an explicit scene cache epoch,
+preserving input identity. Busy edits and drags rebuild original child content
+each draw. See ../../docs/waveform-display.md for the cache contract, ignored
+headless framework diagnostic and pending native timing gate.
 
 ## arrangement time selection — 9 October 2026
 

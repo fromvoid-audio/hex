@@ -537,19 +537,160 @@
                  .unwrap_or_default()
          }
 
+--- a/src/view.rs
++++ b/src/view.rs
+@@ -23,6 +23,7 @@
+     bounds: Bounds<Pixels>,
+     content_mask: ContentMask<Pixels>,
+     text_style: TextStyle,
++    epoch: u64,
+ }
+
+ impl<V: Render> Element for Entity<V> {
+@@ -84,6 +85,7 @@
+     entity: AnyEntity,
+     render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
+     cached_style: Option<Rc<StyleRefinement>>,
++    cache_epoch: u64,
+ }
+
+ impl<V: Render> From<Entity<V>> for AnyView {
+@@ -92,6 +94,7 @@
+             entity: value.into_any(),
+             render: any_view::render::<V>,
+             cached_style: None,
++            cache_epoch: 0,
+         }
+     }
+ }
+@@ -100,8 +103,16 @@
+     /// Indicate that this view should be cached when using it as an element.
+     /// When using this method, the view's previous layout and paint will be recycled from the previous frame if [Context::notify] has not been called since it was rendered.
+     /// The one exception is when [Window::refresh] is called, in which case caching is ignored.
+-    pub fn cached(mut self, style: StyleRefinement) -> Self {
++    pub fn cached(self, style: StyleRefinement) -> Self {
++        self.cached_with_epoch(style, 0)
++    }
++
++    /// Cache this view, rebuilding in the current draw when the caller's epoch changes.
++    /// The epoch preserves view and element identity, including pending input state.
++    /// Changing it does not schedule a frame; the caller must notify its owner.
++    pub fn cached_with_epoch(mut self, style: StyleRefinement, epoch: u64) -> Self {
+         self.cached_style = Some(style.into());
++        self.cache_epoch = epoch;
+         self
+     }
+
+@@ -122,6 +133,7 @@
+                 entity,
+                 render: self.render,
+                 cached_style: self.cached_style,
++                cache_epoch: self.cache_epoch,
+             }),
+         }
+     }
+@@ -209,6 +221,7 @@
+                         && element_state.cache_key.bounds == bounds
+                         && element_state.cache_key.content_mask == content_mask
+                         && element_state.cache_key.text_style == text_style
++                        && element_state.cache_key.epoch == self.cache_epoch
+                         && !window.dirty_views.contains(&self.entity_id())
+                         && !window.refreshing
+                     {
+@@ -244,6 +257,7 @@
+                                 bounds,
+                                 content_mask,
+                                 text_style,
++                                epoch: self.cache_epoch,
+                             },
+                         },
+                     )
+@@ -323,6 +337,7 @@
+             entity,
+             render: self.render,
+             cached_style: None,
++            cache_epoch: 0,
+         })
+     }
+ }
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -752,6 +752,9 @@
+@@ -679,12 +679,45 @@
+     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
+     #[cfg(any(test, feature = "test-support"))]
+-    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
++    pub(crate) debug_bounds: DebugBounds,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
+     pub(crate) tab_stops: TabStopMap,
++}
++
++// Test selectors follow paint ordering, including cached and nested view replay.
++// Retaining only the final map loses each cached view's insertion range and can
++// incorrectly restore another view's later overwrite of the same selector.
++#[cfg(any(test, feature = "test-support"))]
++#[derive(Default)]
++pub(crate) struct DebugBounds {
++    bounds: FxHashMap<String, Bounds<Pixels>>,
++    insertion_history: Vec<(String, Bounds<Pixels>)>,
++}
++
++#[cfg(any(test, feature = "test-support"))]
++impl DebugBounds {
++    pub(crate) fn insert(&mut self, selector: String, bounds: Bounds<Pixels>) {
++        self.insertion_history.push((selector.clone(), bounds));
++        self.bounds.insert(selector, bounds);
++    }
++
++    pub(crate) fn get(&self, selector: &str) -> Option<&Bounds<Pixels>> {
++        self.bounds.get(selector)
++    }
++
++    fn clear(&mut self) {
++        self.bounds.clear();
++        self.insertion_history.clear();
++    }
++
++    fn replay(&mut self, entries: &[(String, Bounds<Pixels>)]) {
++        for (selector, bounds) in entries {
++            self.insert(selector.clone(), *bounds);
++        }
++    }
+ }
+
+ #[derive(Clone, Default)]
+@@ -706,6 +739,8 @@
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
++    #[cfg(any(test, feature = "test-support"))]
++    debug_bounds_index: usize,
+ }
+
+ impl Frame {
+@@ -726,7 +761,7 @@
+             cursor_styles: Vec::new(),
+
+             #[cfg(any(test, feature = "test-support"))]
+-            debug_bounds: FxHashMap::default(),
++            debug_bounds: DebugBounds::default(),
+
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             next_inspector_instance_ids: FxHashMap::default(),
+@@ -751,6 +786,9 @@
+         self.deferred_draws.clear();
          self.tab_stops.clear();
          self.focus = None;
-
++
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-+
+
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
-             self.next_inspector_instance_ids.clear();
-@@ -815,11 +818,21 @@
+@@ -815,11 +853,21 @@
      }
  }
 
@@ -571,7 +712,7 @@
      pub(crate) platform_window: Box<dyn PlatformWindow>,
      display_id: Option<DisplayId>,
      sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -1095,6 +1108,9 @@
+@@ -1095,6 +1143,9 @@
                  handle
                      .update(&mut cx, |_, window, cx| {
                          window.active.set(active);
@@ -581,7 +722,7 @@
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1208,6 +1224,7 @@
+@@ -1208,6 +1259,7 @@
              handle,
              invalidator,
              removed: false,
@@ -589,7 +730,7 @@
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1371,8 +1388,16 @@
+@@ -1371,8 +1423,16 @@
          }
      }
 
@@ -606,7 +747,25 @@
          self.removed = true;
      }
 
-@@ -3524,14 +3549,27 @@
+@@ -2287,10 +2347,17 @@
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+             line_layout_index: self.text_system.layout_index(),
++            #[cfg(any(test, feature = "test-support"))]
++            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
+         }
+     }
+
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
++        #[cfg(any(test, feature = "test-support"))]
++        self.next_frame.debug_bounds.replay(
++            &self.rendered_frame.debug_bounds.insertion_history
++                [range.start.debug_bounds_index..range.end.debug_bounds_index],
++        );
+         self.next_frame.cursor_styles.extend(
+             self.rendered_frame.cursor_styles
+                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
+@@ -3524,14 +3591,27 @@
          subscription
      }
 
@@ -641,7 +800,7 @@
          }
      }
 
-@@ -3574,6 +3612,12 @@
+@@ -3574,6 +3654,12 @@
                      .join(" ")
              })
              .unwrap_or_else(|| action.name().to_string())

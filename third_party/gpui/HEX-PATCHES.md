@@ -3,7 +3,7 @@
 Published gpui 0.2.2, Apache-2.0; upstream files and LICENSE-APACHE retained.
 See `hex-provenance.json` for verified crates.io archive checksum and original
 file hashes; `hex-patches.diff` records the documented input, cursor, and
-titlebar-control and explicit grid-literal deltas. Upstream's
+titlebar-control, view-cache epoch and explicit grid-literal deltas. Upstream's
 published VCS metadata includes dirty=true, so the archive checksum, not a
 claim of a clean git commit, identifies this baseline.
 
@@ -15,7 +15,8 @@ AppKit access stays inside GPUI's existing native boundary.
 
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
-or grow this patch beyond the documented input, cursor, titlebar, test-support and explicit grid-literal decisions.
+or grow this patch beyond the documented input, cursor, titlebar, test-support,
+view-cache epoch and explicit grid-literal decisions.
 See docs/native-input.md and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
 
@@ -43,6 +44,26 @@ regenerated from the verified published 0.2.2 archive.
 the frame under the existing test/test-support cfg. This keeps visual-test
 selectors aligned with the most recently rendered frame and does not affect
 production layout or input behavior.
+
+16 October cached debug selectors: under the same test/test-support cfg, retain
+each frame's selector insertion history and include its range in `PaintIndex`.
+Cached paint replay restores only that range, preserving nested replay and
+duplicate-selector paint order while frame clearing removes absent selectors.
+Only `src/window.rs` changes; no production runtime, public API, native or unsafe
+boundary changes. Hex's real cached-view regression covers nested reuse without
+extra renders, duplicate overwrite order, movement and removal. The existing
+audio-trim regression locates and drags the cached handle without disabling cache.
+
+16 October view-cache epoch: `AnyView::cached_with_epoch(style, u64)` includes an
+opaque caller epoch in the existing view-cache key. A changed epoch rebuilds in
+the current draw while retaining the entity/global element identity and pending
+input state. Existing `cached(style)` uses epoch zero, preserving its behavior.
+Epoch changes do not schedule a draw or enqueue notifications; the owner does
+that. Default construction and weak upgrades start at zero; cloning and failed
+downcasts retain the supplied epoch. The change is confined to `src/view.rs`,
+with no native, unsafe, scheduling, event-delivery or scene-replay implementation
+change. Hex tests cover same-draw rebuilding, subsequent reuse, and preserved
+mouse-down capture through a same-project immutable snapshot refresh.
 
 11 October compiler compatibility: explicitly type the grid repeat helper's
 zero minimum and one-fraction literals as f32. Pinned Taffy 0.9.0's `length`
