@@ -22,6 +22,18 @@ checks pass. The coordinator owns final exact-source local CI, merge and
 optimized stable-path delivery. Optional native appearance/input acceptance is
 separate; no automated native interaction or listening claim is made.
 
+## simple stable app installation — #2627 / PR246, 16 october 2026
+
+The repository installer stages and validates the optimized app before replacing
+`artifacts/hex.app`. Temporary old-app custody exists only during publication and
+is removed after successful verification; future installs retain no rollback app
+copy. Retry restores or verifies a complete app and cleans interrupted staging.
+Historical bundles, settings, projects and media remain untouched. Running apps
+are refused without force-quit. Source/CI/signing provenance remains bundled;
+Pulse ticket state does not gate builds or installation. Filesystem and native
+signature regression checks pass; full final-source CI is recorded with the PR.
+No actual Hex installation, launch or native interaction acceptance was performed.
+
 ## semantic device theme roles — pulse2471 / PR206, 16 october 2026
 
 `hex-ui::theme::device_style` now resolves common Control/Layout/Display/Readout
