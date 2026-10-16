@@ -3500,3 +3500,25 @@ v14 context admits 426 under the unchanged 2 MiB ceiling; the exact accounting
 fixture and historical README qualification now reflect that size. No
 production admission or budget was changed. Final full CI is rerun after this
 fixture repair.
+## 16 October 2026 — issue14 native timing evidence
+
+Canonical merged PR31 was adopted into live Pulse through supported authenticated
+legacy linkage, without a duplicate feature PR. Supplement258 adds a disposable
+native GPUI timing harness and matched dense hybrid fixtures. Exact optimized
+sourcebc8da487 passed full20-step local CI; the complete129.916second capture
+validated360rows (320measured, zero failures). One/100-track selection paint
+medians are approximately7/33ms and command completion28–35/62–76ms.
+[Full report and raw evidence](docs/evidence/time-selection-2026-10-16/report.md)
+retain build/toolkit/fixture hashes, following-frame bounds and uncontrolled host
+load. Earlier failed runs are excluded. Existing functional native acceptance is
+preserved; no physical-display, constant-work or subjective smoothness claim.
+Dense UI acceptance remains Pulse29. Separate unsnapped cursor projection bug is
+Pulse2647/PR263; measured drags remain unsnapped, untimed paste setup uses snap.
+
+
+16 October merge continuation: the user explicitly requested merge and testing,
+superseding the earlier candidate-confirmation-before-merge hold. Integrated
+main245f8b2b timing evidence, preserving both todo histories. Both prerequisite
+and feature exact candidates require fresh full local CI before merge. Native
+acceptance and dense high-rate/FM deadline validation remain separate open
+test results; no numerical Live parity or deadline safety is inferred.

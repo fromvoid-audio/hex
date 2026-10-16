@@ -55,3 +55,14 @@ pub fn open(cx: &mut App, output: Result<AudioOutput, String>) -> Result<(), Str
     .map_err(|error| format!("could not open hex: {error}"))?;
     Ok(())
 }
+
+/// Open a disposable offline native timing window with settings under the fixture directory.
+/// The caller publishes the bounded final report before requesting application quit.
+pub fn open_time_selection_profile(
+    cx: &mut App,
+    directory: std::path::PathBuf,
+    settings: std::path::PathBuf,
+    result: std::sync::mpsc::SyncSender<Result<String, String>>,
+) -> Result<(), String> {
+    editor::time_selection_profile::open(cx, directory, settings, result)
+}

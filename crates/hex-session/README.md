@@ -219,3 +219,9 @@ introduces no live-input or production playback API. See
 [the finite native checklist](../../docs/operator-enable-retest.md). Fixture tests
 run explicitly with `cargo test -p hex-session --example operator_enable_fixture`;
 they do not establish native listening acceptance.
+
+The `time_selection_fixture` example creates bounded, create-new 1/100-track
+hybrid fixtures with identical per-track audio/MIDI density for the native
+profiler. It uses the canonical snapshot/storage contracts and one shared WAV;
+it adds no production editing or media codec path. See
+../../docs/time-selection-profile.md.
