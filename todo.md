@@ -3551,3 +3551,55 @@ main245f8b2b timing evidence, preserving both todo histories. Both prerequisite
 and feature exact candidates require fresh full local CI before merge. Native
 acceptance and dense high-rate/FM deadline validation remain separate open
 test results; no numerical Live parity or deadline safety is inferred.
+
+## 16 october 2026 — exact streaming demand checkpoint (pulse2542 / pr237)
+
+The pure next-chunk and current-predecessor handoff visitor is adapted from
+published177 source8d444c06, sharing Arrangement clip traversal with rendering.
+The focused page-edge/Play preview/capacity-refusal/repeated-handoff control keeps
+committed transport and routes unchanged. This first layer does not release
+streamed native installation or readiness; final integrated evidence and remaining
+endpoint/transaction controls belong to PR237.
+
+
+PR237 metadata checkpoint: canonical Session worker views now pair the exact
+Project with the existing document generation/editor revision, retained through
+actual preparation and runtime/anchor splitting. Preview views cannot mint that
+capture, and media catalog generation remains separate. Targeted Session92,
+engine candidate8, stream allocation/worker suites, strict affected Clippy and UI
+compatibility checks pass. Protected page borrows expose only installed keys and
+cannot schedule; an insufficient caller DATA allowance refuses before readiness
+backing allocation (negative control retained externally). Native page-loan
+placement, transport/BUFFERING and installation transactions remain unfinished.
+
+PR237 page-custody checkpoint: the single actual domain endpoint now traverses the
+existing native publication/return rings into fixed callback slots. Real pair
+join/report reuse waits for endpoint restoration; terminal custody retains loans
+through both guard releases, completed handle and normal carrier destruction.
+Five focused real-pair/ring/terminal/fault controls and the complete affected
+allocation-feature audio suite pass, including zero total/net callback allocation
+and deallocation on the exercised loan boundaries. Streamed install remains
+refused pending actual demand/prefix/BUFFERING integration.
+
+PR237 workspace checkpoint: optional pre-first-accept configuration reserves actual
+per-runtime demand Vec capacities and temporary construction overlap against the
+existing caller DATA allowances. Real cancellation/return keeps the original
+backing pointers/capacities, with overflow refusing before allocation. Stream
+opt-in staging validates the actual captured owner context and retained loans;
+default resident and disposal-only streamed staging remain unchanged.
+
+
+PR237 integrated readiness checkpoint: actual exact engine chunks now gate real
+worker-backed initial/replacement installation and opt-in rendering. Missing or
+capacity-refused chunks preserve previously committed PCM/clocks and report
+BUFFERING; real Pause/Stop pass pending Play, and grouped Utility transfer Retry
+releases speculative pins so the old active page can progress and the candidate
+can cancel. A real pool-pressure regression exposed unconsumed worker failures;
+bounded receipt consumption now releases their pending keys while retaining the
+last diagnostic. Actual native mutable wrapper/workspace capacity reduces the
+existing 32 MiB runtime allowance before split, in addition to caller DATA/peak
+reservations. Four actual native controls cover first Play/context refusal,
+partial/pressure behavior, observer offsets and Retry/cancel; source inspection
+and zero total/net probes retain their stated limits. Final exact full repository
+CI, PR238 seek/launch, PR239 UI composition and original #24/native acceptance remain
+open. See docs/streamed-native-readiness.md; final CI evidence is recorded externally.

@@ -2,7 +2,9 @@
 //! tokens are associations with retained pairs, never page/readiness authority.
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
+pub(super) mod pages;
 pub(super) mod publication;
+pub(crate) use pages::DomainEnvelope;
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePublicationReservation,
@@ -40,6 +42,9 @@ struct DomainSlot {
     data: usize,
     peak: usize,
     resources: Option<hex_stream::StreamDomainConstructorSummary>,
+    signal: Arc<pages::DomainSignal>,
+    loan_outstanding: bool,
+    returned_pages: Option<DomainEnvelope>,
 }
 impl DomainSlot {
     fn vacant() -> Self {
@@ -53,6 +58,9 @@ impl DomainSlot {
             data: 0,
             peak: 0,
             resources: None,
+            signal: Arc::new(pages::DomainSignal::new()),
+            loan_outstanding: false,
+            returned_pages: None,
         }
     }
     fn matches(&self, token: AudioCandidateDomainToken) -> bool {
@@ -86,6 +94,7 @@ impl Default for NativeBank {
 }
 struct DomainExecution {
     owner: Option<ConstructorStreamDomain>,
+    returned_pages: Option<DomainEnvelope>,
     pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
 }
@@ -182,13 +191,16 @@ impl Custody {
         &self,
         domain: CandidateDomain,
     ) -> Result<AudioCandidateDomainToken, Box<AudioCandidateDomainRefusal>> {
-        self.register_between(domain, || {})
+        self.register_between(domain, None, || {})
+            .map(|(token, _)| token)
     }
     fn register_between(
         &self,
         domain: CandidateDomain,
+        readiness: Option<hex_stream::StreamReadinessReservation>,
         after_reservation: impl FnOnce(),
-    ) -> Result<AudioCandidateDomainToken, Box<AudioCandidateDomainRefusal>> {
+    ) -> Result<(AudioCandidateDomainToken, Option<DomainEnvelope>), Box<AudioCandidateDomainRefusal>>
+    {
         let reservation = (|| {
             let mut guard = lock(&self.bank);
             let bank = &mut *guard;
@@ -210,15 +222,22 @@ impl Custody {
                 .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
                 .and_then(|n| n.checked_add(bank.publication.peak_bytes()?))
                 .ok_or("domain construction overflow")?;
+            let capsule_bytes = if readiness.is_some() {
+                std::mem::size_of::<pages::DomainPages>()
+            } else {
+                0
+            };
             let remaining = bank
                 .reservation
                 .max_retained_data_bytes
                 .checked_sub(used)
+                .and_then(|n| n.checked_sub(capsule_bytes))
                 .ok_or("domain storage reservation exceeded")?;
             let remaining_peak = bank
                 .reservation
                 .max_construction_peak_data_bytes
                 .checked_sub(used_peak)
+                .and_then(|n| n.checked_sub(capsule_bytes))
                 .ok_or("domain construction reservation exceeded")?;
             let remaining_handles = publication::remaining_handle_reservation(bank)
                 .ok_or("constructor handle reservation exceeded")?;
@@ -234,6 +253,7 @@ impl Custody {
                 .ok_or("domain incarnation exhausted")?;
             slot.incarnation = incarnation;
             slot.phase = Phase::Reserved;
+            slot.signal.return_requested.store(false, Ordering::Relaxed);
             Ok((
                 AudioCandidateDomainToken {
                     root: bank.root,
@@ -252,12 +272,13 @@ impl Custody {
         after_reservation();
         // No ordinary bank lock spans allocation, endpoint metadata destruction,
         // or a refused construction's cleanup. Both original endpoints survive.
-        let owner = match ConstructorStreamDomain::try_new_with_limits_on_control(
+        let mut owner = match ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
             domain.0,
             domain.1,
             remaining,
             remaining_peak,
             remaining_handles,
+            readiness,
         ) {
             Ok(owner) => owner,
             Err(refusal) => {
@@ -274,7 +295,21 @@ impl Custody {
         };
         // Actual capsule capacity was checked by the same constructor before
         // consuming the pair. No fallible validation remains after this move.
+        let loan = if readiness.is_some() {
+            owner.loan_pages_on_control()
+        } else {
+            None
+        };
         let summary = owner.summary();
+        // The owning capsule was included in the remaining allowance before
+        // consuming the original pair; no callback allocation is required.
+        let capsule_bytes = if loan.is_some() {
+            std::mem::size_of::<pages::DomainPages>()
+        } else {
+            0
+        };
+        let signal = Arc::clone(&lock(&self.bank).domains[token.slot].signal);
+        let envelope = loan.map(|loan| DomainEnvelope::new(token, loan, signal));
         let mut guard = lock(&self.bank);
         // Configuration is immutable and only this sole Control registers. The
         // worker never removes Reserved cells; closing only marks them retiring.
@@ -284,11 +319,14 @@ impl Custody {
             slot.owner = Some(owner);
             slot.phase = Phase::Accepted;
             slot.retiring = bank.closing;
-            slot.data = summary.retained_data_bytes;
-            slot.peak = summary.construction_peak_data_bytes;
+            // Both additions were preflighted by the remaining-reservation
+            // subtraction and the stream constructor's actual-capacity check.
+            slot.data = summary.retained_data_bytes + capsule_bytes;
+            slot.peak = summary.construction_peak_data_bytes + capsule_bytes;
             slot.resources = Some(summary);
+            slot.loan_outstanding = envelope.is_some();
         }
-        Ok(token)
+        Ok((token, envelope))
     }
     pub(super) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
         let mut guard = lock(&self.bank);
@@ -357,6 +395,9 @@ impl Custody {
                     slot.peak = 0;
                     slot.resources = None;
                 }
+                if slot.retiring && slot.uses == 0 {
+                    slot.signal.return_requested.store(true, Ordering::Release);
+                }
                 if work.domains[index].is_none()
                     && slot.phase == Phase::Accepted
                     && slot.retiring
@@ -364,10 +405,17 @@ impl Custody {
                 {
                     work.domains[index] = Some(DomainExecution {
                         owner: slot.owner.take(),
+                        returned_pages: None,
                         pending: false,
                         first_panic: None,
                     });
                     slot.phase = Phase::Cleaning;
+                }
+            }
+            if let Some(execution) = work.domains[index].as_mut() {
+                let mut bank = lock(&self.bank);
+                if execution.returned_pages.is_none() {
+                    execution.returned_pages = bank.domains[index].returned_pages.take();
                 }
             }
             let Some(execution) = work.domains[index].as_mut() else {
@@ -377,6 +425,20 @@ impl Custody {
                 continue;
             }
             let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Some(envelope) = execution.returned_pages.as_mut() {
+                    execution
+                        .owner
+                        .as_mut()
+                        .ok_or(())?
+                        .return_pages_on_control(&mut envelope.inner.loan)
+                        .map_err(|_| ())?;
+                    // Only scalar signal metadata remains; keep Pending across
+                    // its actual destruction on this lifecycle thread.
+                    execution.pending = true;
+                    drop(execution.returned_pages.take());
+                    execution.pending = false;
+                    lock(&self.bank).domains[index].loan_outstanding = false;
+                }
                 execution
                     .owner
                     .as_mut()
@@ -556,7 +618,11 @@ mod tests {
     #[test]
     fn closing_after_reservation_keeps_successful_pair_in_accepted_persistent_cleanup() {
         let root = configured(4 * 1024 * 1024);
-        let token = root.register_between(pair(), || root.close()).ok().unwrap();
+        let token = root
+            .register_between(pair(), None, || root.close())
+            .ok()
+            .unwrap()
+            .0;
         assert_eq!(root.usage().unwrap().occupied_domains, 1);
         assert!(root.has_work(false));
         assert!(root.recover_domain(token).is_none());

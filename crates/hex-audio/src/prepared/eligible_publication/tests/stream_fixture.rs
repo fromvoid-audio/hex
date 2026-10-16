@@ -1,9 +1,13 @@
 //! Verified real-file catalog and immutable metadata; no synthetic lease.
 use hex_engine::{StreamSourceKey, StreamedSourceMetadata};
 use std::{io::Write, path::PathBuf};
-pub(super) struct Wav(PathBuf);
+pub(super) struct Wav(PathBuf, u64);
 impl Wav {
     pub(super) fn new() -> Self {
+        Self::with_frames(8)
+    }
+    pub(super) fn with_frames(frames: u32) -> Self {
+        let data_bytes = frames.checked_mul(4).unwrap();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -19,7 +23,7 @@ impl Wav {
             .unwrap();
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&68u32.to_le_bytes());
+        bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
         bytes.extend_from_slice(b"WAVEfmt ");
         bytes.extend_from_slice(&16u32.to_le_bytes());
         bytes.extend_from_slice(&1u16.to_le_bytes());
@@ -29,13 +33,13 @@ impl Wav {
         bytes.extend_from_slice(&4u16.to_le_bytes());
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&32u32.to_le_bytes());
-        for _ in 0..16 {
+        bytes.extend_from_slice(&data_bytes.to_le_bytes());
+        for _ in 0..frames * 2 {
             bytes.extend_from_slice(&8192i16.to_le_bytes());
         }
         file.write_all(&bytes).unwrap();
         file.sync_all().unwrap();
-        Self(path)
+        Self(path, u64::from(frames))
     }
     pub(super) fn definition(
         &self,
@@ -43,7 +47,7 @@ impl Wav {
         context: u64,
     ) -> hex_stream::SourceDefinition {
         let limits = hex_media::VerifiedWavReaderLimits::new(
-            hex_media::WavReaderLimits::new(1024 * 1024, 8, 32, 32768),
+            hex_media::WavReaderLimits::new(1024 * 1024, self.1, 32, 32768),
             1024 * 1024,
         );
         let verified = hex_media::VerifiedWavReader::open(&self.0, limits).unwrap();
@@ -51,8 +55,8 @@ impl Wav {
             StreamSourceKey::new(context, asset),
             48000,
             48000,
-            8,
-            8,
+            self.1,
+            self.1,
             hex_project::IDENTITY_CONVERSION,
             *verified.fingerprint(),
         )
@@ -66,9 +70,15 @@ impl Drop for Wav {
     }
 }
 pub(super) fn pair(definition: hex_stream::SourceDefinition) -> crate::CandidateDomain {
+    pair_with_pool(vec![definition], 4)
+}
+pub(super) fn pair_with_pool(
+    definitions: Vec<hex_stream::SourceDefinition>,
+    buffers: usize,
+) -> crate::CandidateDomain {
     let mut runtime = hex_stream::StreamRuntime::new(
-        hex_stream::StreamConfig::with_pool_pages(4),
-        vec![definition],
+        hex_stream::StreamConfig::with_pool_pages(buffers),
+        definitions,
     )
     .unwrap();
     runtime
@@ -80,14 +90,33 @@ pub(super) fn owner(
     project: &hex_project::Project,
     metadata: StreamedSourceMetadata,
 ) -> hex_engine::AudioCandidateOwner {
-    let asset = project.assets().next().unwrap().id();
+    owner_with_context(project, metadata, None)
+}
+pub(super) fn owner_with_context(
+    project: &hex_project::Project,
+    metadata: StreamedSourceMetadata,
+    context: Option<hex_engine::AudioSourceContext>,
+) -> hex_engine::AudioCandidateOwner {
+    owner_sources(project, vec![metadata], context)
+}
+pub(super) fn owner_sources(
+    project: &hex_project::Project,
+    sources: Vec<StreamedSourceMetadata>,
+    context: Option<hex_engine::AudioSourceContext>,
+) -> hex_engine::AudioCandidateOwner {
+    let sources = sources
+        .into_iter()
+        .map(|metadata| {
+            (
+                metadata.key().asset(),
+                hex_engine::OwnedAudioSource::try_streamed(metadata)
+                    .ok()
+                    .unwrap(),
+            )
+        })
+        .collect();
     let bank = hex_engine::OwnedAudioInputs::try_new(
-        vec![(
-            asset,
-            hex_engine::OwnedAudioSource::try_streamed(metadata)
-                .ok()
-                .unwrap(),
-        )],
+        sources,
         hex_engine::AudioStorageReservation {
             allocation_items: 64,
             handle_obligations: 256,
@@ -100,13 +129,12 @@ pub(super) fn owner(
     .ok()
     .unwrap();
     let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
-    let token = custody
-        .begin_input_on_control(
-            hex_engine::AudioArrangementInput::new(project, 11, bank)
-                .with_audio_prepared_revision(),
-        )
-        .ok()
-        .unwrap();
+    let mut input =
+        hex_engine::AudioArrangementInput::new(project, 11, bank).with_audio_prepared_revision();
+    if let Some(context) = context {
+        input = input.with_source_context(context);
+    }
+    let token = custody.begin_input_on_control(input).ok().unwrap();
     hex_engine::AudioCandidateOwner::try_new_on_control(custody, token)
         .ok()
         .unwrap()

@@ -3560,6 +3560,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
     editor.update(cx, |view, cx| {
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -3873,6 +3874,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     editor.update(cx, |view, cx| {
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4032,6 +4034,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             });
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4172,6 +4175,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         );
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -5065,6 +5069,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         })
         .expect("first acknowledged edit");
     let changed_state = Arc::new(ViewState {
+        canonical_audio_source: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),

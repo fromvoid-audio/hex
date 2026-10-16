@@ -243,6 +243,7 @@ mod ui_tests {
             let current = view.state.as_ref().expect("fixture state");
             let filename = format!("{}.HEX", "Long Project Name ".repeat(30));
             view.state = Some(Arc::new(hex_session::service::ViewState {
+                canonical_audio_source: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),

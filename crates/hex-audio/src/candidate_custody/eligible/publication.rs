@@ -20,8 +20,10 @@ pub enum AudioCandidateCancellationResult {
 }
 mod active;
 mod resources;
+mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
+pub(crate) use streaming::{StreamInstall, StreamOutcome, StreamProgress};
 mod disposal;
 pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
@@ -67,6 +69,7 @@ struct RuntimeSlot {
     anchors: Option<AudioCandidateAnchors>,
     domains: Vec<AudioCandidateDomainToken>,
     domain_refs: [Option<AudioCandidateDomainToken>; 2],
+    streaming: Option<streaming::Workspace>,
     summary: Option<AudioCandidateConstructorSummary>,
     context_generation: u64,
     policy: Option<crate::prepared::PublicationPolicy>,
@@ -92,6 +95,7 @@ impl RuntimeSlot {
             anchors: None,
             domains: Vec::new(),
             domain_refs: [None; 2],
+            streaming: None,
             summary: None,
             context_generation: 0,
             policy: None,
@@ -108,6 +112,7 @@ pub(super) struct Bank {
     archives: Vec<bool>,
     reservation: Option<AudioCandidatePublicationReservation>,
     metadata_bytes: usize,
+    stream_extents: Option<usize>,
 }
 struct Execution {
     returned: Returned,
@@ -158,6 +163,8 @@ struct State {
     spare_successor: Option<Claims>,
     covering_successor: Option<Claims>,
     manifest: Option<AudioCandidateTransfer>,
+    domain_refs: [Option<AudioCandidateDomainToken>; 2],
+    streaming: Option<streaming::Workspace>,
 }
 pub(crate) struct Queued {
     state: Box<State>,
@@ -364,13 +371,44 @@ impl super::Custody {
     pub(in crate::candidate_custody) fn seal_for_stage(
         &self,
         owner: &mut AudioCandidateOwner,
+        domain_capacity: usize,
     ) -> Result<AudioCandidateConstructorSummary, &'static str> {
-        let reservation = lock(&self.bank)
-            .publication
-            .reservation
-            .ok_or("constructor publication is not reserved")?;
+        let (reservation, external_runtime_bytes) = {
+            let bank = lock(&self.bank);
+            let reservation = bank
+                .publication
+                .reservation
+                .ok_or("constructor publication is not reserved")?;
+            // Actual Vec capacity, including allocator spare capacity. Choose
+            // the greatest vacant workspace before sealing; subsequent stage
+            // validates the selected slot against that conservative amount.
+            let workspace = bank
+                .publication
+                .slots
+                .iter()
+                .filter(|slot| slot.phase == Phase::Vacant)
+                .try_fold(0usize, |bytes, slot| {
+                    Some(
+                        bytes.max(
+                            slot.streaming
+                                .as_ref()
+                                .map_or(Some(0), |w| w.backing_bytes())?,
+                        ),
+                    )
+                })
+                .ok_or("constructor runtime workspace overflow")?;
+            let external = domain_capacity
+                .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<State>()))
+                .and_then(|bytes| bytes.checked_add(workspace))
+                .ok_or("constructor mutable runtime storage overflow")?;
+            (reservation, external)
+        };
         owner
-            .seal_constructor_on_control(reservation.ledger())
+            .seal_constructor_with_runtime_storage_on_control(
+                reservation.ledger(),
+                external_runtime_bytes,
+            )
             .map_err(|_| "constructor DATA or resource closure refused")
     }
     /// Caller holds the same short publication/terminal bank barrier and a real
@@ -414,6 +452,19 @@ impl super::Custody {
                 {
                     return Err("constructor domain association is unavailable");
                 }
+            }
+            if bank.publication.stream_extents.is_some()
+                && owner.streamed_sources().next().is_some()
+                && (owner
+                    .source_context()
+                    .is_none_or(|context| context.project_generation != context_generation)
+                    || domains
+                        .iter()
+                        .any(|token| !bank.domains[token.slot].loan_outstanding))
+            {
+                return Err(
+                    "streamed constructor requires captured context and reserved actual page loans",
+                );
             }
             let mut used = [false; 2];
             for source in owner.streamed_sources() {
@@ -497,6 +548,15 @@ impl super::Custody {
                 .iter()
                 .position(|slot| slot.phase == Phase::Vacant)
                 .ok_or("constructor runtime cells are full")?;
+            let runtime_storage = bank.publication.slots[index]
+                .streaming
+                .as_ref()
+                .map_or(Some(0), |workspace| workspace.backing_bytes())
+                .and_then(|bytes| bytes.checked_add(metadata))
+                .ok_or("constructor mutable runtime storage overflow")?;
+            if runtime_storage > summary.external_runtime_bytes {
+                return Err("constructor mutable runtime reservation changed");
+            }
             let archive = bank
                 .publication
                 .archives
@@ -542,6 +602,8 @@ impl super::Custody {
             spare_successor: None,
             covering_successor: None,
             manifest: None,
+            domain_refs: std::array::from_fn(|index| domains.get(index).copied()),
+            streaming: None,
         });
         let (runtime, anchors) = match owner.split_constructor_on_control() {
             Ok(parts) => parts,
@@ -570,6 +632,7 @@ impl super::Custody {
         slot.archive = archive;
         slot.domain_refs = std::array::from_fn(|index| domains.get(index).copied());
         slot.domains = domains;
+        state.streaming = slot.streaming.take();
         slot.summary = Some(summary);
         slot.context_generation = context_generation;
         slot.policy = Some(policy);

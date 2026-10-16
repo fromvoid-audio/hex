@@ -2,6 +2,48 @@
 //! seam does not itself grant native installation or page readiness.
 use super::*;
 impl Control {
+    /// Reserve exact-demand rows per retained runtime before accepting any
+    /// source domain or graph. Existing resident callers need not opt in.
+    pub fn configure_audio_candidate_streaming(
+        &mut self,
+        extents_per_domain: usize,
+    ) -> Result<(), &'static str> {
+        if !self.native_custody
+            || self.revision != 0
+            || self.closing.load(Acquire)
+            || self.publication_pending.load(Acquire)
+        {
+            return Err("stream demand requires a vacant native channel");
+        }
+        self.candidate_root.configure_streaming(extents_per_domain)
+    }
+
+    /// Move the one exact page endpoint into this native channel. Queue pressure
+    /// refuses before pair construction; successful late closure stays accepted
+    /// in Root cleanup custody and never publishes behind terminal extraction.
+    pub fn register_audio_candidate_domain_with_readiness(
+        &mut self,
+        domain: crate::candidate_catalog::CandidateDomain,
+        reservation: hex_stream::StreamReadinessReservation,
+    ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
+        if !self.native_custody || self.closing.load(Acquire) {
+            return Err(Box::new(crate::AudioCandidateDomainRefusal {
+                reason: "candidate native custody unavailable",
+                domain,
+            }));
+        }
+        let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
+            return Err(Box::new(crate::AudioCandidateDomainRefusal {
+                reason: "candidate publication queue is full",
+                domain,
+            }));
+        };
+        self.candidate_root
+            .register_domain_pages(domain, reservation, |pages| {
+                chunk.fill_from_iter(std::iter::once(QueuedPublication::Domain(pages)));
+            })
+    }
+
     /// Reserve the opted-in constructor Root before its first accepted owner.
     /// The existing channel must be vacant; legacy publication stays unchanged
     /// on channels that do not opt in.
@@ -92,7 +134,10 @@ impl Control {
                 domains,
             });
         }
-        let summary = match self.candidate_root.seal_publication(&mut owner) {
+        let summary = match self
+            .candidate_root
+            .seal_publication(&mut owner, domains.capacity())
+        {
             Ok(summary) => summary,
             Err(reason) => {
                 return Err(crate::AudioCandidateEligibleStageRefusal {
@@ -149,7 +194,30 @@ impl Control {
 mod tests;
 
 impl Callback {
-    pub(super) fn advance_eligible_publication(&mut self) {
+    pub(super) fn return_requested_domain_pages(&mut self) {
+        for index in 0..self.domain_pages.len() {
+            if self.held_retirement.is_some() || self.retired.is_full() {
+                return;
+            }
+            if self.domain_pages[index]
+                .as_ref()
+                .is_some_and(|pages| pages.return_requested())
+                && let Some(pages) = self.domain_pages[index].take()
+            {
+                self.return_publication(ReturnedPublication::Domain(pages));
+            }
+        }
+    }
+
+    pub(super) fn advance_eligible_publication(&mut self, frames: Option<usize>) {
+        if frames.is_none()
+            && self
+                .deferred_eligible
+                .as_ref()
+                .is_some_and(|next| next.streaming_enabled())
+        {
+            return;
+        }
         use crate::candidate_custody::InstallDecision;
         if self.active.is_some() && self.retired.is_full() {
             return;
@@ -169,20 +237,42 @@ impl Callback {
                 Some(ActivePublication::Eligible(active)) => Some(active),
                 _ => None,
             };
-            next.prepare_install(previous, &self.candidate_root)
+            let mut request = frames.map(|frames| crate::candidate_custody::StreamInstall {
+                domains: &mut self.domain_pages,
+                pending_play: self.stream_pending_play.is_some(),
+                command_prefix: self.stream_prefix,
+                frames,
+            });
+            next.prepare_install(previous, &self.candidate_root, request.as_mut())
         } else {
             return;
         };
         match decision {
-            InstallDecision::Retry => {}
+            InstallDecision::Retry => {
+                if self.active.is_some()
+                    && let Some(next) = self.deferred_eligible.as_mut()
+                {
+                    next.cancel_stream_readiness(&mut self.domain_pages);
+                }
+            }
             InstallDecision::Refused(reason) => {
-                if let Some(value) = self.deferred_eligible.take() {
+                if let Some(mut value) = self.deferred_eligible.take() {
+                    value.cancel_stream_readiness(&mut self.domain_pages);
                     self.status
                         .publish_rejected_revision(value.revision(), reason);
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
                     self.publication_pending.store(false, Release);
+                    if let Some(ticket) = self.stream_pending_play.take() {
+                        self.status.publish_rejected_action(
+                            ticket,
+                            PlaybackActionRejection::SessionNotPrepared,
+                        );
+                        self.status
+                            .stream_applied_command_prefix
+                            .store(self.stream_prefix, Release);
+                    }
                 }
             }
             InstallDecision::Ready => {
@@ -193,11 +283,14 @@ impl Callback {
                     let previous = self
                         .active
                         .replace(ActivePublication::Eligible(next.into_active()));
-                    if let Some(ActivePublication::Eligible(previous)) = previous {
+                    if let Some(ActivePublication::Eligible(mut previous)) = previous {
+                        previous.clear_stream_roles(&mut self.domain_pages);
                         self.return_publication(ReturnedPublication::Eligible(
                             previous.return_replaced(),
                         ));
                     }
+                    self.finish_pending_stream_play();
+                    self.status.stream_buffering.store(false, Release);
                     self.publish_active_routes(true);
                     self.publish_transport();
                     self.status.render_fault_record.clear();

@@ -43,7 +43,11 @@ fn stage(
     mut owner: AudioCandidateOwner,
     domains: Vec<AudioCandidateDomainToken>,
 ) -> Result<(Queued, AudioCandidateTicket), AudioCandidateEligibleStageRefusal> {
-    let summary = root.0.eligible.seal_for_stage(&mut owner).unwrap();
+    let summary = root
+        .0
+        .eligible
+        .seal_for_stage(&mut owner, domains.capacity())
+        .unwrap();
     let _terminal_barrier = lock(&root.0.bank);
     root.0.eligible.stage_sealed(
         root,

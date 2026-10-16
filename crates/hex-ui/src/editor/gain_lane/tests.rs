@@ -148,6 +148,7 @@ mod native {
         entity.update(cx, |view, cx| {
             let old = view.state.as_ref().unwrap();
             view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
                 project: old.project.clone(),
                 waveforms: old.waveforms.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
@@ -470,6 +471,7 @@ mod native {
             let preview = hex_engine::GainAutomationPreview::prepare(&project).unwrap();
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
                 project: project.clone(),
                 gain_preview: Ok(Arc::new(preview)),
                 waveforms: old.waveforms.clone(),
@@ -537,6 +539,7 @@ mod native {
             let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
                 project,
                 gain_preview: Ok(preview),
                 waveforms: old.waveforms.clone(),

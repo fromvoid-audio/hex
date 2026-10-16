@@ -47,6 +47,18 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_post_node_observer(output, observer)
     }
+    /// Borrow exact protected pages through the existing transactional kernel.
+    /// The host must preflight the next chunk; this does not certify readiness.
+    pub fn render_with_pages_and_post_node_observer<P: crate::MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::PostNodeObserver<'_>>,
+    ) -> Result<(), crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("candidate runtime is not current"))?
+            .render_with_pages_and_post_node_observer(output, pages, observer)
+    }
     pub fn set_device_metering(&mut self, enabled: bool) -> bool {
         let Some(playback) = self.current_playback_mut() else {
             return false;

@@ -15,6 +15,7 @@ pub struct AudioCandidateAnchors {
 }
 struct ClaimedState {
     identity: AudioCandidateIdentity,
+    source_context: Option<crate::AudioSourceContext>,
     runtime: Option<Box<RuntimeOwner>>,
     groups: Vec<Group>,
     journal: Vec<groups::TransferRow>,
@@ -26,6 +27,7 @@ impl ClaimedState {
     fn wrapper_storage_bytes(&self) -> usize {
         let Self {
             identity: _,
+            source_context: _,
             runtime: _,
             groups: _,
             journal: _,
@@ -101,6 +103,7 @@ impl AudioCandidateOwner {
         }
         let mut state = Box::new(ClaimedState {
             identity: self.identity(),
+            source_context: self.source_context(),
             runtime: None,
             groups: Vec::new(),
             journal: Vec::new(),
@@ -164,6 +167,7 @@ impl AudioCandidateAnchors {
     }
     pub fn matches_current(&self, runtime: &ClaimedAudioCandidateRuntime) -> bool {
         if self.identity() != runtime.identity()
+            || self.owner.source_context() != runtime.source_context()
             || self.owner.inner.phase != AudioCandidateDisposalPhase::Leased
         {
             return false;
@@ -209,6 +213,10 @@ impl AudioCandidateAnchors {
     }
 }
 impl ClaimedAudioCandidateRuntime {
+    pub fn source_context(&self) -> Option<crate::AudioSourceContext> {
+        self.inner.source_context
+    }
+
     /// Non-default fixture pressure on the real transfer preflight allowance.
     /// This changes no owner/location/activity flag and exposes no runtime.
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -282,6 +290,46 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime unavailable"))?
             .playback
             .render(output)
+    }
+    /// Pure exact next-chunk demand. A proposed Play/Pause flag is speculative;
+    /// neither transport nor page readiness is committed by this observation.
+    pub fn visit_next_stream_chunk(
+        &self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::Invalid("candidate runtime is not current"));
+        }
+        self.inner
+            .runtime
+            .as_ref()
+            .ok_or(crate::Invalid("candidate runtime unavailable"))?
+            .playback
+            .visit_next_stream_chunk(maximum_frames, playing, visit)
+    }
+    /// Runs the real handoff's pure preflight against the actual predecessor.
+    /// Scratch planning may change; committed owners/history/routes do not.
+    pub fn preview_stream_handoff(
+        &mut self,
+        previous: &mut Self,
+        maximum_frames: usize,
+        playing: Option<bool>,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<crate::StreamChunkWindow, crate::PlaybackHandoffError> {
+        let invalid =
+            || crate::PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
+        if self.inner.phase != ClaimedPhase::Current
+            || previous.inner.phase != ClaimedPhase::Current
+            || self.identity() == previous.identity()
+        {
+            return Err(invalid());
+        }
+        let next = self.inner.runtime.as_mut().ok_or_else(invalid)?;
+        let old = previous.inner.runtime.as_mut().ok_or_else(invalid)?;
+        next.playback
+            .preview_stream_handoff(&mut old.playback, maximum_frames, playing, visit)
     }
     /// The current covering graph is actually borrowed through this runtime's
     /// own original prepared-root handle. There is no detached report accessor.

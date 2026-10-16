@@ -11,13 +11,16 @@ mod types;
 mod worker;
 
 pub use endpoint::EndpointStats;
+pub use hex_engine::StreamPageExtent;
 pub use runtime::{
     AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
-    AudioStreamStorageSummary, CatalogLease, ConstructorStreamDomain, OpaqueStreamCost,
-    OpaqueStreamHandleGroup, PagePoolReport, PreparedStreamDisposal, ShutdownError, StreamBusy,
-    StreamCallbackPages, StreamControl, StreamDisposalError, StreamDisposalPhase,
-    StreamDomainConstructorSummary, StreamDomainSealRefusal, StreamHandleLocation,
-    StreamOwningHandleObligation, StreamPairMismatch, StreamRuntime, StreamSourceDomainObligation,
+    AudioStreamStorageSummary, CatalogLease, ConstructorPageLoan, ConstructorStreamDomain,
+    OpaqueStreamCost, OpaqueStreamHandleGroup, PagePoolReport, PreparedRolePromotion,
+    PreparedStreamDisposal, ProtectedStreamPages, ProtectionRole, ReadinessProgress,
+    ReadinessRefusal, ReadinessStamp, ShutdownError, StreamBusy, StreamCallbackPages,
+    StreamControl, StreamDisposalError, StreamDisposalPhase, StreamDomainConstructorSummary,
+    StreamDomainSealRefusal, StreamHandleLocation, StreamOwningHandleObligation,
+    StreamPairMismatch, StreamReadinessReservation, StreamRuntime, StreamSourceDomainObligation,
 };
 pub use types::{
     CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure, StreamFailureKind,

@@ -41,7 +41,7 @@ pub(crate) fn finish(retirement: &mut NativeRetirement) {
     }
 }
 
-pub(super) fn recover(
+pub(crate) fn recover(
     control: &mut Control,
     ticket: &crate::AudioCandidateTicket,
 ) -> crate::AudioCandidateRecovery {

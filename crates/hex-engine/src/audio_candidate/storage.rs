@@ -11,6 +11,9 @@ use crate::{
 pub struct AudioCandidateConstructorSummary {
     pub data: AudioRootStorageSummary,
     pub owned_runtime_bytes: usize,
+    /// Conservative mutable storage retained by the embedding native runtime.
+    /// It reduces this runtime's allowance; it is not a DATA/custody proof.
+    pub external_runtime_bytes: usize,
     pub reserved_split_bytes: usize,
     pub shared_resource_groups: usize,
     pub shared_resource_handles: usize,
@@ -29,6 +32,17 @@ impl AudioCandidateOwner {
         &mut self,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
+        self.seal_constructor_with_runtime_storage_on_control(reservation, 0)
+    }
+    /// Add the embedding owner's measured mutable wrapper/workspace capacity to
+    /// the same 32 MiB runtime allowance before any split. The embedding owner
+    /// must also account that actual DATA/peak storage in its own ledger. This
+    /// conservative input grants no provenance or completeness authority.
+    pub fn seal_constructor_with_runtime_storage_on_control(
+        &mut self,
+        reservation: AudioStorageLedgerReservation,
+        external_runtime_bytes: usize,
+    ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
         self.inner.constructor_data = None;
         if self.inner.phase != AudioCandidateDisposalPhase::Owned
             || self.inner.runtime_receipt.is_some()
@@ -42,13 +56,14 @@ impl AudioCandidateOwner {
         }
         self.inner.validate_groups()?;
         self.inner.validate_fresh_origins()?;
-        let summary = self.inspect_constructor_storage(reservation)?;
+        let summary = self.inspect_constructor_storage(reservation, external_runtime_bytes)?;
         self.inner.constructor_data = Some(summary);
         Ok(summary)
     }
     fn inspect_constructor_storage(
         &self,
         reservation: AudioStorageLedgerReservation,
+        external_runtime_bytes: usize,
     ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
         let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
         ledger.mutate(|l| {
@@ -69,6 +84,7 @@ impl AudioCandidateOwner {
         let reserved_split_bytes = claimed::reserved_state_bytes();
         let owned_runtime_bytes = owned_runtime_bytes
             .checked_add(reserved_split_bytes)
+            .and_then(|bytes| bytes.checked_add(external_runtime_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         if owned_runtime_bytes > crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
             return Err(AudioStorageError::ReservationExceeded);
@@ -92,6 +108,7 @@ impl AudioCandidateOwner {
         Ok(AudioCandidateConstructorSummary {
             data,
             owned_runtime_bytes,
+            external_runtime_bytes,
             reserved_split_bytes,
             shared_resource_groups,
             shared_resource_handles,
@@ -243,6 +260,27 @@ mod tests {
         );
         assert_eq!(data.data.unknown_storage, 0);
         assert!(data.data.require_complete().is_err());
+        // Embedding runtime metadata reduces the existing allowance, without
+        // changing graph DATA or turning the scalar ledger into authority.
+        let remaining = crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES - data.owned_runtime_bytes;
+        let capped = owner
+            .seal_constructor_with_runtime_storage_on_control(reservation(), remaining)
+            .unwrap();
+        assert_eq!(
+            capped.owned_runtime_bytes,
+            crate::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+        );
+        assert_eq!(capped.external_runtime_bytes, remaining);
+        assert_eq!(capped.data, data.data);
+        assert_eq!(
+            owner.seal_constructor_with_runtime_storage_on_control(reservation(), remaining + 1),
+            Err(AudioStorageError::ReservationExceeded)
+        );
+        assert_eq!(
+            owner.seal_constructor_with_runtime_storage_on_control(reservation(), usize::MAX),
+            Err(AudioStorageError::Overflow)
+        );
+        assert_eq!(owner.phase(), AudioCandidateDisposalPhase::Owned);
         let mut too_small = reservation();
         too_small.max_retained_bytes = data.data.retained_bytes;
         assert_eq!(

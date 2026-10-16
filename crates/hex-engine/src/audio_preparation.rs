@@ -86,6 +86,14 @@ struct Stages {
     assemble_project: bool,
     assemble_revision: bool,
 }
+/// Canonical source correlation captured with the actual control-side project.
+/// These numbers are not ownership or publication authority. Source-catalog
+/// generation is a separate identity and may differ from document generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioSourceContext {
+    pub project_generation: u64,
+    pub editor_revision: u64,
+}
 /// Borrowed canonical metadata plus consumed bank; no audio/stream dependency
 /// enters the engine. A host need not depend on hex-project to accept this input.
 pub struct AudioArrangementInput<'a> {
@@ -93,6 +101,7 @@ pub struct AudioArrangementInput<'a> {
     generation: u64,
     inputs: OwnedAudioInputs,
     stages: Stages,
+    source_context: Option<AudioSourceContext>,
 }
 impl<'a> AudioArrangementInput<'a> {
     pub fn sample_rate(&self) -> u32 {
@@ -108,7 +117,15 @@ impl<'a> AudioArrangementInput<'a> {
             generation,
             inputs,
             stages: Stages::default(),
+            source_context: None,
         }
+    }
+    /// Low-level correlation bridge. Prefer a Session-owned immutable snapshot
+    /// that derives the Project and these counters together; this grants no
+    /// constructor, source lease, readiness or native ownership authority.
+    pub fn with_source_context(mut self, context: AudioSourceContext) -> Self {
+        self.source_context = Some(context);
+        self
     }
     /// Explicitly add the new persistent Session audio source/name stage.
     /// Previous legacy inventories are never adopted; cache aliases originate
@@ -223,6 +240,7 @@ impl Drop for DropProbe {
 /// callers must not detach it to a UI handle. No public raw owner getter exists.
 pub struct AudioPreparationCustody {
     root: u64,
+    source_context: Option<AudioSourceContext>,
     incarnation: u64,
     phase: AudioPreparationPhase,
     bank: Option<OwnedAudioInputs>,
@@ -272,11 +290,24 @@ impl AudioPreparationCustody {
         &mut self,
         input: AudioArrangementInput<'_>,
     ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
-        self.begin_stages_on_control(input.project, input.generation, input.inputs, input.stages)
+        let result = self.begin_stages_on_control(
+            input.project,
+            input.generation,
+            input.inputs,
+            input.stages,
+        );
+        if result.is_ok() {
+            self.source_context = input.source_context;
+        }
+        result
+    }
+    pub(crate) fn source_context(&self) -> Option<AudioSourceContext> {
+        self.source_context
     }
     pub fn try_new_on_control() -> Result<Self, AudioStorageError> {
         Ok(Self {
             root: handle()?,
+            source_context: None,
             incarnation: 0,
             phase: AudioPreparationPhase::Vacant,
             bank: None,
@@ -355,6 +386,7 @@ impl AudioPreparationCustody {
                 }));
             }
         };
+        self.source_context = None;
         if include_session {
             let previous_session_bytes = capacity.session.bytes().and_then(|n| {
                 capacity
