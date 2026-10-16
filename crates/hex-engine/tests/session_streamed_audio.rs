@@ -22,6 +22,10 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: RATE,
         next_id: 10,
         assets: vec![
@@ -52,6 +56,9 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: SESSION_TRACK,
                 name: "session audio".into(),
                 gain: 1.0,
@@ -65,6 +72,9 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                gain_envelope: Vec::new(),
+                gain_touch_spans: Vec::new(),
+                gain_touch_epoch: 0,
                 id: BED_TRACK,
                 name: "resident bed".into(),
                 gain: 1.0,

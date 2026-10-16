@@ -47,6 +47,9 @@ fn fixture(
         let track = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: track,
             name: format!("audio {index}"),
             gain: 1.0 / 512.0,
@@ -81,6 +84,10 @@ fn fixture(
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: RATE,
         next_id,
         assets: vec![AssetSnapshot {

@@ -178,7 +178,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                     }
                     for (channel, sample) in frame.iter_mut().enumerate() {
                         let value = if channels == 1 {
-                            (stereo[0] + stereo[1]) * 0.5
+                            mono_sample(*stereo)
                         } else if channel < 2 {
                             stereo[channel]
                         } else {
@@ -187,6 +187,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                         *sample = T::from_sample(value);
                     }
                 }
+                callback.finish_gain_recording_quantum(render_valid);
             }
             status.peak_left.store(peaks[0].to_bits(), Relaxed);
             status.peak_right.store(peaks[1].to_bits(), Relaxed);
@@ -204,9 +205,22 @@ fn build<T: SizedSample + FromSample<f32>>(
     )
 }
 
+// Halve before summing so finite stereo output remains finite in a mono sink.
+fn mono_sample(stereo: Frame) -> f32 {
+    stereo[0] * 0.5 + stereo[1] * 0.5
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_expected_rate;
+    use super::{mono_sample, validate_expected_rate};
+
+    #[test]
+    fn mono_conversion_cannot_overflow_after_stereo_delivery_validation() {
+        for level in [f32::MAX, -f32::MAX, 1.0, -1.0, 0.0] {
+            assert_eq!(mono_sample([level, level]), level);
+        }
+        assert_eq!(mono_sample([f32::MAX, -f32::MAX]), 0.0);
+    }
 
     #[test]
     fn recovery_rate_mismatch_is_rejected_before_stream_construction() {

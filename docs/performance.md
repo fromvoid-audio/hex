@@ -2589,3 +2589,40 @@ in these runs. Raw logs are retained in `artifacts/device-gain-meters/` (ignored
 This does not cover dense memoryless chains, native UI workload, instrument tap
 normalization, physical audio deadlines or Apple Silicon timing. The demo render
 profile also completed; native deadline/listening acceptance remains open.
+
+
+## routing and compensation — 16 october 2026 (pulse28 / pr184)
+
+Optimized source `8a6194072161755132208f9888e6ad623516abb3`, Apple M5 Pro,
+24 GiB, macOS26.6.2 arm64, rustc1.98.1. The guarded release owner identifies the
+Cargo-reported profile executable and checks unchanged clean source. No other
+Cargo build or benchmark ran concurrently; ordinary OS activity was uncontrolled.
+Logs: `artifacts/local-ci/issue28-profile-guarded-3/{summary.json,graph-profiles.log,demo-profile.log}`.
+
+The original sustained fixtures use48 kHz,256-frame blocks,8192 warm-up frames
+and101 samples of16 blocks each. Construction/admission is outside timing. The
+audio fixture loops500000 original PCM frames; the MIDI fixture has three tracks,
+two instrument destinations (sine/fm4), and two notes per512-frame source loop.
+The same functions measure the dry/local reference and production routed runtime.
+
+| runtime | median ns/frame | p99 ns/frame | median frames/second |
+| --- | ---: | ---: | ---: |
+| local MIDI |293.33|418.74|3409072|
+| routed MIDI, known zero latency |293.49|414.92|3407300|
+| dry stereo audio |6.65|16.76|150311927|
+| compensated stereo audio,7-frame processor |383.03|584.50|2610788|
+| routed stereo audio,3-frame prefix/7-frame source |393.70|518.11|2540023|
+
+The first implementation (`f7c73dd0a6b54fa79bc28706815fccd22989d4ed`, guarded
+run `issue28-profile-guarded-2`) forced MIDI-only routes through the per-sample
+graph: local424.63 versus routed5558.37 median ns/frame. The final block-path
+repair removes that avoidable cost. Between-run OS/load variation prevents
+attributing the faster absolute reference timing to the repair. Positive latency
+and authored audio inputs retain the more expensive transactional graph; these
+small fixtures do not establish near-capacity graph performance.
+
+The original demo profile also ran at64/128/256/512 frames: p50
+0.5/0.9/2.6/4.6 microseconds and p99 0.6/2.3/8.8/12.3 microseconds respectively.
+These are headless throughput measurements, separate from allocation probes,
+CoreAudio device stress, listening, Windows native validation and Live parity.
+Compensation does not remove causal or physical latency.

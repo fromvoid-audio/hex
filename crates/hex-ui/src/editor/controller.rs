@@ -45,6 +45,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.tick_gain_recording();
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
@@ -82,7 +83,7 @@ impl EditorView {
                         self.saving_project = false;
                     }
                     visible_change |= replace_error(&mut self.error, "project worker stopped");
-                    if matches!(request, Request::Open(_) | Request::OpenWith { .. }) {
+                    if request.is_project_open() {
                         self.opening_project = false;
                     }
                     clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
@@ -173,6 +174,12 @@ impl EditorView {
                 pending.project_generation,
             ) {
                 Ok(audio_revision) => {
+                    self.gain_recorder.published(
+                        prepared_revision
+                            .as_ref()
+                            .and_then(|prepared| prepared.gain_recording_track()),
+                        audio_revision,
+                    );
                     let project_revision = super::audio_admission::ProjectRevision {
                         generation: pending.project_generation,
                         revision: pending.project_revision,
@@ -627,6 +634,9 @@ impl EditorView {
     }
 
     fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+        if event.request_complete && event.error.is_some() && event.playback.is_none() {
+            self.gain_recorder.arm_failed();
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -708,6 +718,12 @@ impl EditorView {
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
+        self.gain_lane.reconcile(
+            self.project_generation,
+            revision,
+            &event.state.project,
+            event.project_replaced,
+        );
         self.state = Some(event.state);
         if event.project_replaced {
             self.loop_rail_gesture = None;
@@ -1072,6 +1088,11 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        if self.gain_recorder.blocks_edits() {
+            self.error =
+                Some("finish or cancel gain recording before another project action".into());
+            return false;
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
@@ -1179,6 +1200,7 @@ impl EditorView {
                 | Request::ImportToSession { .. }
                 | Request::Open(_)
                 | Request::OpenWith { .. }
+                | Request::GainLane { .. }
                 | Request::Edit(_)
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
@@ -2286,6 +2308,7 @@ mod tests {
                 project,
                 waveforms: Default::default(),
                 midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: 0,
                 can_undo: false,
                 can_redo: false,

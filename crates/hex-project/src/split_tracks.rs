@@ -27,6 +27,7 @@ pub(crate) fn apply(
         }
     }
 
+    project.refuse_automation_transform(tracks)?;
     let beat = project.tempo_map().frame_to_beat(frame)?;
     let mut commands = Vec::new();
     let clip_capacity = tracks

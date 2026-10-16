@@ -61,3 +61,14 @@ musical state. See [enable continuation](../../docs/operator-enable-continuation
 This crate does not own device algorithms, graph scheduling, project state,
 audio I/O, plugin hosting, UI, sample storage, authored musical event generation,
 or discontinuity chase policy.
+
+
+Prepared analytic instruments and mutable factories declare known algorithmic
+latency or explicitly unknown, using the same fixed-buffering definition as
+effects. `NativeInstrumentClock` can expose exact performance beats, arrangement
+frame and loop pass at the node's delayed input. Clock-aware effect range methods
+preserve older processors' default behavior, including their bespoke bypass
+handling. `zero_input_drain_for_range` charges checked intrinsic latency plus
+residual tail; `output_tail_for_range` continues to report residual tail alone.
+Graph timing, transport history, compensation buffers and handoff policy remain
+engine responsibilities.

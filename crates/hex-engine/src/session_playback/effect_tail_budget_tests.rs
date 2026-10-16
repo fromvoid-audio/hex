@@ -14,6 +14,10 @@ struct HoldRuntime {
     held: [f32; 2],
 }
 impl PreparedNativeProcessor for FiniteHold {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn runtime_version(&self) -> u32 {
         1
     }

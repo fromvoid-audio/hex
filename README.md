@@ -31,8 +31,11 @@ clip/scene launch-and-play, ticketed rapid launch/toggle intent, ordered priorit
 Stop, and accepted-revision active/queued route indicators. Native Session
 interaction remains unverified.
 
-This is an early working foundation. Recording, MIDI I/O/expression, warp, routing, device
-selection, plugin hosting and Live-set compatibility remain planned. A bounded
+This is an early working foundation. Audio input recording, MIDI hardware I/O/expression,
+warp, device selection, plugin hosting and Live-set compatibility remain planned.
+Typed stereo/MIDI routing, track-gain editing/touch recording and declared-latency
+compensation are described in [routing](docs/routing.md); native interaction and
+physical device acceptance remain separate. A bounded
 fade-controller callback/target has been decompiled into private research storage;
 its types/control-flow warnings remain unresolved and no audio behavior is matched. Project-open validation and
 schema migration pass source tests; final native replacement acceptance remains open.
@@ -292,8 +295,9 @@ Schema-17 return buses render regular-track post-fader sends through registered
 zero-algorithmic-latency effects before the Main master gain in Arrangement,
 SessionPlayback and prepared export. Fixed return scratch and effect runtimes
 are built on control; compatible history survives prepared revision handoff,
-with callback allocation probes. General latency compensation, feedback, native
-pinned return rows and physical listening/deadline acceptance remain open. See
+with callback allocation probes. Typed track inputs and cumulative latency alignment
+extend this topology; feedback remains refused. Native pinned return rows and
+physical listening/deadline acceptance remain separate. See
 [return tracks](docs/return-tracks.md).
 
 ## Source repository
