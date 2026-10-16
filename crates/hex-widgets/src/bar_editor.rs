@@ -1,8 +1,8 @@
 //! Bounded normalized bar editor. Domain values and stroke interpolation belong to the owner.
 use crate::ControlStyle;
 use gpui::{
-    App, Bounds, Context, Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
-    GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    App, Bounds, ContentMask, Context, Element, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription, Window, canvas,
     div, point, prelude::*, px, rgb,
 };
@@ -199,26 +199,44 @@ impl gpui::Render for BarEditor {
                     |_, _, _| (),
                     move |bounds, _, window, app| {
                         entity.update(app, |editor, _| editor.bounds = Some(bounds));
-                        let width = bounds.size.width / count as f32;
-                        for (index, value) in values[..count].iter().enumerate() {
-                            let x = bounds.origin.x + width * (index as f32 + 0.5);
-                            let mut path = PathBuilder::stroke((width - px(1.0)).max(px(1.0)));
-                            path.move_to(point(x, bounds.origin.y + bounds.size.height));
-                            path.line_to(point(
-                                x,
-                                bounds.origin.y + bounds.size.height * (1.0 - value.max(0.01)),
-                            ));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(
-                                    path,
-                                    rgb(if focused && index == selected {
-                                        style.focus_marker
-                                    } else {
-                                        style.accent
-                                    }),
-                                );
-                            }
+                        if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+                            return;
                         }
+                        let width = bounds.size.width / count as f32;
+                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                            // Keep every visible harmonic legible even in an empty bank.
+                            // One-pixel guides sit behind the filled amplitude strokes.
+                            let mut guides = PathBuilder::stroke(px(1.0));
+                            for index in 1..count {
+                                let x = bounds.origin.x + width * index as f32;
+                                guides.move_to(point(x, bounds.origin.y));
+                                guides.line_to(point(x, bounds.origin.y + bounds.size.height));
+                            }
+                            if let Ok(guides) = guides.build() {
+                                let mut guide_color = rgb(style.muted);
+                                guide_color.a = 0.35;
+                                window.paint_path(guides, guide_color);
+                            }
+                            for (index, value) in values[..count].iter().enumerate() {
+                                let x = bounds.origin.x + width * (index as f32 + 0.5);
+                                let mut path = PathBuilder::stroke((width - px(1.0)).max(px(1.0)));
+                                path.move_to(point(x, bounds.origin.y + bounds.size.height));
+                                path.line_to(point(
+                                    x,
+                                    bounds.origin.y + bounds.size.height * (1.0 - value.max(0.01)),
+                                ));
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(
+                                        path,
+                                        rgb(if focused && index == selected {
+                                            style.focus_marker
+                                        } else {
+                                            style.accent
+                                        }),
+                                    );
+                                }
+                            }
+                        });
                     },
                 )
                 .absolute()

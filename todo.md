@@ -3447,3 +3447,25 @@ Follow-up integration removes the synthetic keyboard preparation clock and uses
 both twins' immutable event-only preflight instead. A clock-required provider
 reproduces the old preparation refusal and checks that actual rendering still
 refuses absent/unknown clocks without PCM or committed-history mutation.
+
+
+## 16 October 2026 — Operator harmonic inspector companions (#2342 / PR158)
+
+Added harmonic-column separators and the supplied Wave catalog, including saw 6,
+quantized sine and original noise sources. The compact inspector now exposes
+Time<Vel, envelope Vel, Key, Loop with conditional timing, phase R and Osc<Vel/Q.
+All/odd/even/Normalize implementation remains dormant in the interface. Hex theme,
+existing range buttons and outer controls are retained. State v14 preserves the
+complete legacy prefix and stable waveform/parameter identities. The host clock
+and finite-tail prerequisite is #2646 / PR261.
+
+Focused evidence: five rendered UI tests, complete preset Undo/Redo round trips,
+260 device unit tests plus 26 integration tests (two existing ignored), strict
+device Clippy, 64-note Loop/Sync/Trigger zero-allocation callback probes, and
+compensated Sync PCM partition equality pass. Runtime twins remain within the
+existing memory budgets with voice/partial counts and precision unchanged. Final
+full CI and optimized stable-path delivery require exact-candidate evidence.
+Native confirmation and dense high-rate/FM CPU acceptance remain open; exact
+Live transfer laws, noise algorithms and active companion-law history changes
+are not claimed as parity. The user's explicit candidate confirmation remains
+a merge requirement for both PRs.

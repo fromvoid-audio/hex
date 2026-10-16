@@ -28,6 +28,7 @@ pub(super) struct Factory {
     rate: u32,
     parameters: [f64; 12],
     filter: FilterTrajectory,
+    companion_active: bool,
 }
 impl Factory {
     pub fn new(
@@ -49,6 +50,7 @@ impl Factory {
                 .map_err(|_| DeviceContractError::MalformedState)?,
             target: Spectrum::prepare(&settings),
             filter: FilterTrajectory::new(settings.filter, rate)?,
+            companion_active: settings.companion.requires_runtime(),
             settings,
             table,
             phase_table: harmonic_phase_table()?,
@@ -65,7 +67,9 @@ impl Factory {
         }
     }
     fn compatible(&self, other: &Self) -> bool {
-        self.rate == other.rate && compatible_base(&self.base, &other.base)
+        self.rate == other.rate
+            && self.settings.companion == other.settings.companion
+            && compatible_base(&self.base, &other.base)
     }
     fn parameters(&self) -> [f64; 12] {
         self.parameters
@@ -95,6 +99,7 @@ pub(super) struct Voice {
     pub filters: [crate::operator_filter::Carrier; 4],
     pub lfo_fraction: f64,
     pub lfo_cycle: u64,
+    pub machines: [Option<companion::Machine>; 4],
 }
 #[derive(Clone, Copy)]
 pub(super) struct ParameterRamp {
@@ -124,6 +129,7 @@ pub(super) struct Runtime {
     parameters: Option<ParameterRamp>,
     filter: FilterTrajectory,
     phase: (f64, u64),
+    local_frame: u64,
 }
 #[derive(Clone, Copy)]
 struct Target(u64);
@@ -155,7 +161,11 @@ impl PreparedMutableInstrumentRuntime for Factory {
         self.capacity()
     }
     fn max_release_tail_frames(&self) -> u64 {
-        self.configuration.release_frames()
+        if self.settings.companion.requires_runtime() {
+            140 * u64::from(self.rate)
+        } else {
+            self.configuration.release_frames()
+        }
     }
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
         Box::new(Runtime {
@@ -167,6 +177,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
             parameters: None,
             filter: self.filter,
             phase: (0.0, 0),
+            local_frame: 0,
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -197,16 +208,27 @@ impl Runtime {
     fn expire(&mut self) {
         let release = self.factory.configuration.release_frames();
         for voice in &mut self.voices {
-            if voice.id != 0
-                && voice
+            let finished = if self.factory.companion_active {
+                voice.machines.iter().all(|machine| {
+                    machine
+                        .as_ref()
+                        .is_some_and(|machine| machine.finished(voice.age))
+                })
+            } else {
+                voice
                     .gate
                     .is_some_and(|gate| voice.age >= gate.saturating_add(release))
-            {
+            };
+            if voice.id != 0 && voice.gate.is_some() && finished {
                 *voice = Voice::default();
             }
         }
     }
     fn advance(&mut self, n: usize) -> Result<(), Error> {
+        self.local_frame = self
+            .local_frame
+            .checked_add(n as u64)
+            .ok_or(Error::InvalidEventBatch)?;
         for voice in &mut self.voices {
             if voice.id != 0 {
                 voice.age = voice
@@ -218,7 +240,13 @@ impl Runtime {
         self.expire();
         Ok(())
     }
-    fn apply(&mut self, event: NativeInstrumentEvent) -> Result<(), Error> {
+    fn apply(
+        &mut self,
+        event: NativeInstrumentEvent,
+        origin: u64,
+        beat: Option<u64>,
+        running: Option<bool>,
+    ) -> Result<(), Error> {
         match event {
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -235,6 +263,37 @@ impl Runtime {
                     self.factory.configuration.prepare_note(pitch, velocity)
                 }
                 .map_err(|_| Error::InvalidEventBatch)?;
+                let settings = self.factory.settings;
+                let machines = if settings.companion.requires_runtime() {
+                    let envelopes = settings
+                        .companion
+                        .envelopes(&settings.fields, velocity)
+                        .map_err(|_| Error::InvalidEventBatch)?;
+                    let machines = std::array::from_fn(|i| {
+                        let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
+                        companion::Machine::prepare(
+                            settings.companion,
+                            i,
+                            envelopes[i],
+                            std::array::from_fn(|j| f64::from(settings.fields[base + j])),
+                            self.factory.rate,
+                            beat,
+                            running,
+                        )
+                        .map(Some)
+                    });
+                    let [a, b, c, d] = machines;
+                    [a?, b?, c?, d?]
+                } else {
+                    [None; 4]
+                };
+                let phases = std::array::from_fn(|i| {
+                    if settings.companion.words[i][0] == 0 {
+                        PreparedOperatorConfiguration::lfo_steps(&note)[i].wrapping_mul(origin)
+                    } else {
+                        0
+                    }
+                });
                 let capacity = self.factory.capacity();
                 let voice = self.voices[..capacity]
                     .iter_mut()
@@ -242,6 +301,8 @@ impl Runtime {
                     .ok_or(Error::EventCapacityExceeded)?;
                 *voice = Voice {
                     note,
+                    phases,
+                    machines,
                     id: occurrence_id,
                     ..Voice::default()
                 };
@@ -256,6 +317,9 @@ impl Runtime {
                     return Err(Error::InvalidEventBatch);
                 }
                 voice.gate = Some(voice.age);
+                for machine in voice.machines.iter_mut().flatten() {
+                    machine.note_off(voice.age);
+                }
                 self.expire();
             }
         }
@@ -282,7 +346,8 @@ impl MutableInstrumentRuntime for Runtime {
         ) else {
             return false;
         };
-        if !compatible_base(&self.factory.base, base)
+        if (!history.voices.is_empty() && self.factory.settings.companion != source.companion)
+            || !compatible_base(&self.factory.base, base)
             || !std::ptr::eq(self.factory.table, source.sine_table)
             || history.voices.len() > self.factory.capacity()
         {
@@ -341,6 +406,7 @@ impl MutableInstrumentRuntime for Runtime {
             return;
         };
         self.voices = [Voice::default(); VOICES];
+        self.local_frame = history.performance_frame;
         for (target, voice) in self.voices.iter_mut().zip(history.voices) {
             let Ok(note) = source.continuation_note(&voice.note) else {
                 return;
@@ -417,7 +483,9 @@ impl MutableInstrumentRuntime for Runtime {
                 return Err(Error::InvalidEventBatch);
             }
             proof.advance(at - offset)?;
-            proof.apply(*event)?;
+            // Event-only admission proves identity/capacity using a private
+            // clone; actual musical clock observations are validated separately.
+            proof.apply(*event, proof.local_frame, Some(0), Some(false))?;
             offset = at;
         }
         proof.advance(frames - offset)
@@ -427,18 +495,40 @@ impl MutableInstrumentRuntime for Runtime {
         clock: Option<&dyn NativeInstrumentClock>,
         frames: usize,
     ) -> Result<(), Error> {
-        if !self.factory.settings.lfo.active() || !self.factory.settings.lfo.sync() {
-            return Ok(());
+        let companion = self.factory.settings.companion;
+        let beat_required = companion.needs_clock()
+            || (self.factory.settings.lfo.active() && self.factory.settings.lfo.sync());
+        if companion.needs_running()
+            && clock
+                .and_then(|clock| clock.transport_is_running())
+                .is_none()
+        {
+            return Err(Error::InvalidEventBatch);
         }
-        let c = clock.ok_or(Error::InvalidEventBatch)?;
-        let mut before = c.beat_at_offset(0).ok_or(Error::InvalidEventBatch)?;
-        for offset in 1..=frames {
-            let next = c.beat_at_offset(offset).ok_or(Error::InvalidEventBatch)?;
-            if next < before {
-                return Err(Error::InvalidEventBatch);
+        if beat_required {
+            let clock = clock.ok_or(Error::InvalidEventBatch)?;
+            let mut before = clock.beat_at_offset(0).ok_or(Error::InvalidEventBatch)?;
+            let observations =
+                if self.factory.settings.lfo.active() && self.factory.settings.lfo.sync() {
+                    frames.checked_add(1).ok_or(Error::InvalidEventBatch)?
+                } else {
+                    frames
+                };
+            for offset in 0..observations {
+                let next = clock
+                    .beat_at_offset(offset)
+                    .ok_or(Error::InvalidEventBatch)?;
+                // Reserve a full maximum interval plus sixteenth rounding;
+                // every machine's next-beat arithmetic is then safe before PCM mutation.
+                if next < before || next > u64::MAX - (17u64 << 32) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                before = next;
             }
-            before = next;
         }
+        self.local_frame
+            .checked_add(frames as u64)
+            .ok_or(Error::InvalidEventBatch)?;
         Ok(())
     }
     fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
@@ -452,6 +542,15 @@ impl MutableInstrumentRuntime for Runtime {
     ) {
         let mut cursor = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {
+            let beat = clock.and_then(|clock| clock.beat_at_offset(offset));
+            let running = clock.and_then(|clock| clock.transport_is_running());
+            for voice in &mut self.voices {
+                if voice.id != 0 {
+                    for machine in voice.machines.iter_mut().flatten() {
+                        let _ = machine.observe(voice.age, beat, running);
+                    }
+                }
+            }
             while let Some(event) = events.get(cursor) {
                 let at = match *event {
                     NativeInstrumentEvent::NoteOn { frame_offset, .. }
@@ -460,7 +559,10 @@ impl MutableInstrumentRuntime for Runtime {
                 if at != offset {
                     break;
                 }
-                let _ = self.apply(*event);
+                let origin = clock
+                    .and_then(|clock| clock.performance_frame_at_offset(offset))
+                    .unwrap_or(self.local_frame);
+                let _ = self.apply(*event, origin, beat, running);
                 cursor += 1;
             }
             let transition = (self.elapsed < self.frames).then(|| self.spectrum());
@@ -497,6 +599,13 @@ impl MutableInstrumentRuntime for Runtime {
                     &voice.note,
                     voice.age,
                     voice.gate.unwrap_or(u64::MAX),
+                    self.factory.companion_active.then(|| {
+                        std::array::from_fn(|i| {
+                            voice.machines[i]
+                                .as_ref()
+                                .map_or(0.0, |machine| machine.level(voice.age))
+                        })
+                    }),
                     &voice.phases,
                     voice.previous,
                     std::array::from_fn(|i| parameters[i]),
@@ -512,6 +621,8 @@ impl MutableInstrumentRuntime for Runtime {
                             } else {
                                 step
                             },
+                            voice.age,
+                            PreparedOperatorConfiguration::lfo_steps(&voice.note)[operator],
                             self.factory.table,
                             self.factory.bank,
                             self.factory.phase_table,
@@ -552,6 +663,7 @@ impl MutableInstrumentRuntime for Runtime {
                 }
             }
             self.filter.advance();
+            self.local_frame = self.local_frame.saturating_add(1);
             self.expire();
         }
     }
@@ -563,6 +675,7 @@ impl MutableInstrumentRuntime for Runtime {
         self.parameters = None;
         self.filter = self.factory.filter;
         self.phase = (0.0, 0);
+        self.local_frame = 0;
     }
     fn is_quiescent(&self) -> bool {
         self.voices.iter().all(|v| v.id == 0)
@@ -583,6 +696,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.parameters = p.parameters;
             self.filter = p.filter;
             self.phase = p.phase;
+            self.local_frame = p.local_frame;
         }
     }
     fn can_retarget_history_from(
@@ -595,7 +709,9 @@ impl MutableInstrumentRuntime for Runtime {
             .downcast_ref::<Target>()
             .is_some_and(|t| t.0 == self.factory.configuration.configuration_id())
             && Legacy::read(previous).is_some_and(|p| {
-                compatible_base(&self.factory.base, &p.base)
+                (p.voices.iter().all(|voice| voice.id == 0)
+                    || self.factory.settings.companion == p.companion)
+                    && compatible_base(&self.factory.base, &p.base)
                     && p.voices.iter().filter(|v| v.id != 0).count() <= self.factory.capacity()
                     && (!self.factory.settings.lfo.active()
                         || p.voices.iter().filter(|v| v.id != 0).all(|v| {
@@ -622,6 +738,7 @@ impl MutableInstrumentRuntime for Runtime {
                 *target = *source;
             }
             self.phase = p.phase;
+            self.local_frame = p.local_frame;
             self.filter = p.filter;
             self.filter.retarget(self.factory.filter);
             if self.factory.target == p.target {
@@ -667,17 +784,22 @@ pub(super) struct Legacy {
     pub elapsed: u32,
     pub frames: u32,
     pub filter: FilterTrajectory,
+    pub companion: companion::Settings,
+    pub local_frame: u64,
 }
 pub(super) fn builtin_spectrum(base: &[u8; ENABLE_PAYLOAD_BYTES]) -> Option<Spectrum> {
     let mut out = Spectrum {
         coefficients: [[0.0; 64]; 4],
-        builtin: [[0.0; 4]; 4],
+        builtin: [[0.0; crate::operator_waveform::BUILTIN_CHOICE_COUNT]; 4],
+        builtin_active: [0; 4],
     };
     for operator in 0..4 {
         let offset = LEGACY_PAYLOAD_BYTES + operator * 4;
         let shape = u32::from_le_bytes(base[offset..offset + 4].try_into().ok()?);
+        OperatorWaveform::from_choice(shape)?;
         let weight = out.builtin[operator].get_mut(shape as usize)?;
         *weight = 1.0;
+        out.builtin_active[operator] = 1 << shape;
     }
     Some(out)
 }
@@ -702,6 +824,8 @@ impl Legacy {
                 elapsed: p.elapsed,
                 frames: p.frames,
                 filter: p.filter,
+                companion: p.factory.settings.companion,
+                local_frame: p.local_frame,
             });
         }
         super::lfo_runtime::export_harmonic_history(previous)

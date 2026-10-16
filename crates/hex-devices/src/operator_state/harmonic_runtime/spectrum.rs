@@ -1,5 +1,6 @@
 //! Original bounded additive evaluation and immutable process-lifetime phase basis.
 use super::*;
+use crate::operator_waveform::BUILTIN_CHOICE_COUNT;
 
 const PHASE_BITS: u32 = 17;
 pub(super) struct HarmonicPhaseTable {
@@ -68,17 +69,21 @@ fn phase_basis_reservation_failure_is_returned_and_cached() {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::operator_state) struct Spectrum {
     pub(super) coefficients: [[f64; 64]; 4],
-    pub(super) builtin: [[f64; 4]; 4],
+    pub(super) builtin: [[f64; BUILTIN_CHOICE_COUNT]; 4],
+    pub(super) builtin_active: [u32; 4],
 }
 impl Spectrum {
     pub(super) fn prepare(settings: &OperatorSettings) -> Self {
         let mut out = Self {
             coefficients: [[0.0; 64]; 4],
-            builtin: [[0.0; 4]; 4],
+            builtin: [[0.0; BUILTIN_CHOICE_COUNT]; 4],
+            builtin_active: [0; 4],
         };
         for operator in 0..4 {
             if !settings.harmonics.custom[operator] {
-                out.builtin[operator][settings.waveforms[operator].choice() as usize] = 1.0;
+                let choice = settings.waveforms[operator].choice();
+                out.builtin[operator][choice as usize] = 1.0;
+                out.builtin_active[operator] = 1 << choice;
                 continue;
             }
             let count = settings.harmonics.active_count(operator);
@@ -119,31 +124,43 @@ impl Spectrum {
                     source.builtin[i][j] + (target.builtin[i][j] - source.builtin[i][j]) * amount
                 })
             }),
+            builtin_active: std::array::from_fn(|i| {
+                source.builtin_active[i] | target.builtin_active[i]
+            }),
         }
     }
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)] // Explicit absolute age keeps white noise partition-independent.
     pub(super) fn sample(
         &self,
         operator: usize,
         phase: u64,
         step: u64,
+        age: u64,
+        base_step: u64,
         sine: &SineTable,
         bank: &OperatorWaveformBank,
         phase_table: &HarmonicPhaseTable,
     ) -> f32 {
         let mut value = 0.0;
         // Keep the original full builtin bank, including its 512-partial caps.
-        for (shape, weight) in self.builtin[operator].iter().copied().enumerate() {
+        let mut active = self.builtin_active[operator];
+        while active != 0 {
+            let shape = active.trailing_zeros() as usize;
+            active &= active - 1;
+            let weight = self.builtin[operator][shape];
             if weight == 0.0 {
                 continue;
             }
             let sample = if shape == 0 {
                 sine.sample_phase(phase)
             } else {
-                bank.sample_phase(
+                bank.sample_frame(
                     OperatorWaveform::from_choice(shape as u32).unwrap_or(OperatorWaveform::Sine),
                     harmonic_cap_index(step).unwrap_or(0),
                     phase,
+                    age,
+                    crate::operator_waveform::noise_stream(base_step, operator),
                 )
             };
             value += f64::from(sample) * weight;

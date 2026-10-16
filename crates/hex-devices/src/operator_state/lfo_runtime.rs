@@ -37,6 +37,9 @@ pub(super) fn prepare_factory(
     rate: u32,
     table: &'static SineTable,
 ) -> Result<Option<OperatorLfoFactory>, DeviceContractError> {
+    if settings.companion.requires_runtime() {
+        return Ok(None);
+    }
     if !settings.lfo.active() && !settings.filter.armed {
         return Ok(None);
     }
@@ -859,10 +862,13 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
                 }),
             lfo_fraction: old.lfo.fraction,
             lfo_cycle: old.lfo.cycle,
+            machines: [None; 4],
         };
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        companion: super::companion::Settings::default(),
+        local_frame: 0,
         base,
         voices,
         parameters,

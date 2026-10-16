@@ -32,6 +32,9 @@ pub(super) fn prepare_factory(
     sample_rate: u32,
     sine_table: &'static SineTable,
 ) -> Result<Option<OperatorFeedbackFactory>, DeviceContractError> {
+    if settings.companion.requires_runtime() {
+        return Ok(None);
+    }
     let effective = settings.effective_feedback();
     if effective == [0.0; FEEDBACK_COUNT] {
         return Ok(None);
@@ -738,6 +741,8 @@ pub(super) fn export_harmonic_history(
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        companion: super::companion::Settings::default(),
+        local_frame: 0,
         base,
         voices,
         parameters,
@@ -860,13 +865,13 @@ mod tests {
         let factory = factory(0.4);
         let declared = factory.declared_twin_bytes();
         assert_eq!(declared, size_of::<OperatorFeedbackRuntime>());
-        assert_eq!(declared, 4_032, "actual twin storage {declared}");
+        assert_eq!(declared, 4_072, "actual twin storage {declared}");
         assert!(
             2 * declared <= 8_192,
             "paired runtime storage {}",
             2 * declared
         );
-        assert_eq!(2 * declared, 8_064, "actual paired runtime storage");
+        assert_eq!(2 * declared, 8_144, "actual paired runtime storage");
         let pair = NativeInstrumentRuntimePair::new(
             &factory,
             NativeInstrumentRuntimeLimits {
@@ -877,7 +882,7 @@ mod tests {
             },
         )
         .expect("actual prepared pair remains within the fixed ceiling");
-        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_064));
+        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_144));
         let runtime = factory.create_runtime();
         let mut events = Vec::with_capacity(17);
         for occurrence_id in 1..=17 {

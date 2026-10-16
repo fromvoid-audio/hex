@@ -131,7 +131,7 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
 fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     for sync in [false, true] {
-        operator_modulation_allocations(Some(sync), false, false, true, false)?;
+        operator_modulation_allocations(Some(sync), false, false, true, false, None)?;
     }
     Ok(())
 }
@@ -139,14 +139,14 @@ fn registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback()
 #[test]
 fn registered_operator_feedback_voice_and_release_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, false, false, true, false)
+    operator_modulation_allocations(None, false, false, true, false, None)
 }
 
 #[test]
 fn registered_operator_filter_render_retarget_and_shutdown_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
     for sync in [None, Some(false), Some(true)] {
-        operator_modulation_allocations(sync, true, false, true, false)?;
+        operator_modulation_allocations(sync, true, false, true, false, None)?;
     }
     Ok(())
 }
@@ -160,7 +160,7 @@ fn operator_filter_first_activation_import_allocates_and_deallocates_nothing()
         (Some(false), true),
         (Some(true), true),
     ] {
-        operator_modulation_allocations(sync, true, true, feedback, false)?;
+        operator_modulation_allocations(sync, true, true, feedback, false, None)?;
     }
     Ok(())
 }
@@ -168,7 +168,7 @@ fn operator_filter_first_activation_import_allocates_and_deallocates_nothing()
 #[test]
 fn registered_operator_analytic_enable_reversals_allocate_nothing_on_callback()
 -> Result<(), Box<dyn Error>> {
-    operator_modulation_allocations(None, false, false, false, false)
+    operator_modulation_allocations(None, false, false, false, false, None)
 }
 
 fn operator_modulation_allocations(
@@ -177,6 +177,7 @@ fn operator_modulation_allocations(
     activate_later: bool,
     feedback: bool,
     harmonics: bool,
+    companion: Option<u32>,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 16)?;
     let Created::Track(track) = editor.execute(Command::AddMidiTrack {
@@ -212,6 +213,25 @@ fn operator_modulation_allocations(
             ParameterId::from_static(id),
             value,
         )?;
+    }
+    if let Some(mode) = companion {
+        for (id, value) in [
+            (357, ParameterValue::Bool(false)),
+            (358, ParameterValue::Float(0.125)),
+            (359, ParameterValue::Bool(true)),
+            (360, ParameterValue::Float(0.5)),
+            (361, ParameterValue::Float(0.25)),
+            (362, ParameterValue::Choice(mode)),
+            (363, ParameterValue::Float(0.001)),
+            (364, ParameterValue::Choice(0)),
+        ] {
+            state = hex_engine::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )?;
+        }
     }
     if filter && !activate_later {
         for (id, value) in [
@@ -253,14 +273,17 @@ fn operator_modulation_allocations(
     else {
         return Err("clip missing".into());
     };
-    editor.execute(Command::AddMidiNote {
-        clip,
-        start: BeatTime::ZERO,
-        duration: BeatTime::from_ratio(1, 4)?,
-        pitch: 60,
-        channel: 0,
-        velocity: 100,
-    })?;
+    let notes = if companion.is_some() { 64 } else { 1 };
+    for index in 0..notes {
+        editor.execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_ratio(1, 4)?,
+            pitch: if companion.is_some() { 40 + index } else { 60 },
+            channel: 0,
+            velocity: 100,
+        })?;
+    }
 
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
@@ -656,9 +679,20 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
 fn harmonic_first_paint_range_cache_builtin_reversal_and_release_allocate_nothing()
 -> Result<(), Box<dyn Error>> {
     for filter in [false, true] {
-        operator_modulation_allocations(None, filter, false, false, true)?;
-        operator_modulation_allocations(None, filter, false, true, true)?;
-        operator_modulation_allocations(Some(false), filter, false, true, true)?;
+        operator_modulation_allocations(None, filter, false, false, true, None)?;
+        operator_modulation_allocations(None, filter, false, true, true, None)?;
+        operator_modulation_allocations(Some(false), filter, false, true, true, None)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn advanced_operator_companions_keep_sixty_four_voice_callbacks_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    // Covers held loop/sync, early Trigger completion followed by physical NoteOff,
+    // free-running phase, all note modifiers, live spectrum reversals and release.
+    for mode in [1, 3, 4] {
+        operator_modulation_allocations(None, false, false, false, true, Some(mode))?;
     }
     Ok(())
 }

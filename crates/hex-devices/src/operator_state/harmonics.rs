@@ -4,7 +4,7 @@ use super::*;
 pub const PARTIALS: usize = 64;
 pub(super) const BYTES: usize = 4 * (PARTIALS * 4 + 12);
 pub(super) const COUNT: usize = 4 * PARTIALS + 8;
-pub(super) const WAVE_LABELS: [&str; 5] = ["sine", "saw", "square", "triangle", "user"];
+pub(super) const WAVE_LABELS: [&str; 23] = crate::operator_waveform::WAVEFORM_LABELS;
 const RANGES: [&str; 3] = ["16", "32", "64"];
 const REPEATS: [&str; 4] = ["off", "2", "4", "8"];
 
@@ -156,14 +156,14 @@ impl Harmonics {
         &self,
         id: ParameterId,
         waveforms: [OperatorWaveform; 4],
-    ) -> Option<ParameterValue> {
-        match id.value() {
+    ) -> Result<Option<ParameterValue>, DeviceContractError> {
+        Ok(match id.value() {
             93..=348 => {
                 let i = (id.value() - 93) as usize;
                 Some(ParameterValue::Float(if self.custom[i / 64] {
                     self.amplitudes[i / 64][i % 64]
                 } else {
-                    Self::seed_value(waveforms[i / 64], i % 64 + 1)
+                    Self::seed_value(waveforms[i / 64], i % 64 + 1)?
                 }))
             }
             349..=352 => Some(ParameterValue::Choice(
@@ -173,10 +173,10 @@ impl Harmonics {
                 self.repeat[(id.value() - 353) as usize],
             )),
             _ => None,
-        }
+        })
     }
-    fn seed_value(waveform: OperatorWaveform, n: usize) -> f32 {
-        match waveform {
+    fn seed_value(waveform: OperatorWaveform, n: usize) -> Result<f32, DeviceContractError> {
+        Ok(match waveform {
             OperatorWaveform::Sine => {
                 if n == 1 {
                     1.0
@@ -199,26 +199,45 @@ impl Harmonics {
                     0.0
                 }
             }
-        }
+            OperatorWaveform::NoiseWhite => 1.0,
+            _ => {
+                if let Some((square, cap)) = waveform.named_cap() {
+                    if n <= usize::from(cap) && (!square || n % 2 == 1) {
+                        1.0 / n as f32
+                    } else {
+                        0.0
+                    }
+                } else {
+                    crate::operator_waveform::prepared_bank()
+                        .map_err(|_| DeviceContractError::RuntimeAllocation)?
+                        .authoring_amplitude(waveform, n)
+                }
+            }
+        })
     }
-    pub fn seed(&mut self, operator: usize, waveform: OperatorWaveform) {
+    pub fn seed(
+        &mut self,
+        operator: usize,
+        waveform: OperatorWaveform,
+    ) -> Result<(), DeviceContractError> {
         for (index, value) in self.amplitudes[operator].iter_mut().enumerate() {
-            *value = Self::seed_value(waveform, index + 1);
+            *value = Self::seed_value(waveform, index + 1)?;
         }
         self.authored[operator] = true;
+        Ok(())
     }
     pub fn patch(
         &mut self,
         id: ParameterId,
         value: ParameterValue,
         waveforms: [OperatorWaveform; 4],
-    ) -> bool {
+    ) -> Result<bool, DeviceContractError> {
         match (id.value(), value) {
             (93..=348, ParameterValue::Float(value)) => {
                 let i = (id.value() - 93) as usize;
                 let operator = i / 64;
                 if !self.custom[operator] {
-                    self.seed(operator, waveforms[operator]);
+                    self.seed(operator, waveforms[operator])?;
                 }
                 self.custom[operator] = true;
                 self.authored[operator] = true;
@@ -227,7 +246,7 @@ impl Harmonics {
             (349..=352, ParameterValue::Choice(value)) => {
                 let operator = (id.value() - 349) as usize;
                 if !self.authored[operator] {
-                    self.seed(operator, waveforms[operator]);
+                    self.seed(operator, waveforms[operator])?;
                 }
                 self.custom[operator] = true;
                 self.range[operator] = value;
@@ -235,14 +254,14 @@ impl Harmonics {
             (353..=356, ParameterValue::Choice(value)) => {
                 let operator = (id.value() - 353) as usize;
                 if !self.authored[operator] {
-                    self.seed(operator, waveforms[operator]);
+                    self.seed(operator, waveforms[operator])?;
                 }
                 self.custom[operator] = true;
                 self.repeat[operator] = value;
             }
-            _ => return false,
+            _ => return Ok(false),
         }
-        true
+        Ok(true)
     }
 }
 
@@ -252,7 +271,7 @@ mod tests {
     #[test]
     fn version_twelve_preserves_all_legacy_prefixes_and_strictly_validates_banks() {
         let current = OPERATOR_METADATA.default_state().unwrap();
-        assert_eq!(current.payload().len(), 1488);
+        assert_eq!(current.payload().len(), PAYLOAD_BYTES);
         for (version, len) in [
             (1, 224),
             (2, 240),
@@ -263,6 +282,8 @@ mod tests {
             (7, 364),
             (8, 380),
             (11, 416),
+            (12, 1488),
+            (13, 1488),
         ] {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,
@@ -334,5 +355,99 @@ mod tests {
             (-0.0_f32).to_bits()
         );
         assert_eq!(settings.to_state().unwrap(), state);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn expanded_catalog_round_trips_preserves_user_cache_and_rejects_legacy_reinterpretation() {
+    let original = OPERATOR_METADATA.default_state().unwrap();
+    let authored = OPERATOR_METADATA
+        .patch_parameter(&original, partial(1, 64), ParameterValue::Float(0.73125))
+        .unwrap();
+    for choice in 0..23 {
+        let builtin = OPERATOR_METADATA
+            .patch_parameter(
+                &authored,
+                parameter::waveform(1),
+                ParameterValue::Choice(choice),
+            )
+            .unwrap();
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&builtin, parameter::waveform(1))
+                .unwrap(),
+            ParameterValue::Choice(choice)
+        );
+        assert_eq!(
+            OperatorSettings::from_state(&builtin)
+                .unwrap()
+                .to_state()
+                .unwrap(),
+            builtin
+        );
+        let user = OPERATOR_METADATA
+            .patch_parameter(&builtin, parameter::waveform(1), ParameterValue::Choice(4))
+            .unwrap();
+        assert_eq!(
+            &user.payload()[FILTER_PAYLOAD_BYTES..],
+            &authored.payload()[FILTER_PAYLOAD_BYTES..]
+        );
+        assert_eq!(
+            OPERATOR_METADATA
+                .read_parameter(&user, partial(1, 64))
+                .unwrap(),
+            ParameterValue::Float(0.73125)
+        );
+    }
+    for choice in [23, u32::MAX] {
+        assert!(
+            OPERATOR_METADATA
+                .patch_parameter(
+                    &original,
+                    parameter::waveform(1),
+                    ParameterValue::Choice(choice)
+                )
+                .is_err()
+        );
+    }
+    for version in [2, 12, 13] {
+        for choice in [4_u32, 5, 22, 23] {
+            let mut bytes = original.payload().to_vec();
+            if version == 2 {
+                bytes.truncate(WAVEFORM_PAYLOAD_BYTES);
+            } else {
+                bytes.truncate(HARMONIC_PAYLOAD_BYTES);
+            }
+            bytes[LEGACY_PAYLOAD_BYTES..LEGACY_PAYLOAD_BYTES + 4]
+                .copy_from_slice(&choice.to_le_bytes());
+            let state = NativeDeviceState::new(OPERATOR_TYPE_ID, version, bytes).unwrap();
+            assert_eq!(
+                OperatorSettings::from_state(&state).is_ok(),
+                version == 13 && matches!(choice, 5 | 22)
+            );
+        }
+    }
+    for choice in 5..23 {
+        let preset = OPERATOR_METADATA
+            .patch_parameter(
+                &original,
+                parameter::waveform(1),
+                ParameterValue::Choice(choice),
+            )
+            .unwrap();
+        let user = OPERATOR_METADATA
+            .patch_parameter(&preset, parameter::waveform(1), ParameterValue::Choice(4))
+            .unwrap();
+        let amplitudes = OperatorSettings::from_state(&user)
+            .unwrap()
+            .harmonics
+            .amplitudes[0];
+        assert!(
+            amplitudes
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        );
+        assert!(amplitudes.iter().any(|v| *v > 0.0));
     }
 }

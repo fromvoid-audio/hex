@@ -78,7 +78,8 @@ impl SessionPlayback {
                         )?;
                         for release in &self.release_scratch {
                             if release.location.track_index() == index
-                                && release.location.tail_group().is_none() {
+                                && release.location.tail_group().is_none()
+                            {
                                 render_release_raw(
                                     release,
                                     self.revision.session().sine_table(),

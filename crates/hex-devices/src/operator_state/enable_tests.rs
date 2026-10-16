@@ -4,7 +4,7 @@ use super::*;
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {
     let current = OPERATOR_METADATA.default_state().unwrap();
     assert_eq!(current.payload().len(), PAYLOAD_BYTES);
-    assert_eq!(PARAMETER_COUNT, 363);
+    assert_eq!(PARAMETER_COUNT, 395);
     for (version, length) in [
         (1, 224),
         (2, 240),

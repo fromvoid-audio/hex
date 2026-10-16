@@ -101,3 +101,87 @@ fn computer_keyboard_positive_latency_refusal_preserves_authored_runtime() {
     oracle.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partitions() {
+    use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
+    use hex_project::{BeatTime, Command, Created};
+    let frames = 16_000;
+    let configure = |delay: u32| {
+        let mut f = fixture(&[&[delay]], frames);
+        let class = crate::NativeDeviceClass::Instrument;
+        let mut state = crate::default_native_device_state_for_class(
+            class,
+            DeviceTypeId::from_static("hex.instrument.operator"),
+        )
+        .unwrap();
+        for (id, value) in [
+            (357, ParameterValue::Bool(false)),
+            (360, ParameterValue::Float(0.5)),
+            (362, ParameterValue::Choice(3)),
+            (364, ParameterValue::Choice(0)),
+        ] {
+            state = crate::patch_native_device_parameter_for_class(
+                class,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )
+            .unwrap();
+        }
+        f.editor
+            .execute(Command::RemoveInstrument { track: f.tracks[0] })
+            .unwrap();
+        f.editor
+            .execute(Command::InsertInstrument {
+                track: f.tracks[0],
+                state,
+            })
+            .unwrap();
+        let Created::Clip(clip) = f
+            .editor
+            .execute(Command::PlaceMidiClip {
+                track: f.tracks[0],
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(8).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("midi clip")
+        };
+        f.editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        prepare(&f).unwrap()
+    };
+    let dry = configure(0);
+    let delayed = configure(7);
+    assert_eq!(delayed.arrangement().main_latency_frames(), 7);
+    let render = |revision, length, partition| {
+        let mut runtime = SessionPlayback::new(revision).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pcm = vec![[0.0; 2]; length];
+        for chunk in pcm.chunks_mut(partition) {
+            runtime.render(chunk).unwrap();
+        }
+        pcm
+    };
+    let expected = render(dry, frames, 127);
+    assert!(
+        expected[512..1024]
+            .iter()
+            .any(|frame| frame[0].abs() > 1e-6)
+    );
+    for partition in [1, 257] {
+        let actual = render(Arc::clone(&delayed), frames + 7, partition);
+        assert_eq!(actual[..7], [[0.0; 2]; 7]);
+        assert_eq!(actual[7..], expected);
+    }
+}

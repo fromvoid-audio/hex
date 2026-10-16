@@ -4,6 +4,7 @@ pub use hex_devices::SineTable;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };

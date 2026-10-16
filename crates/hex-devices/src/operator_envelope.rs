@@ -115,6 +115,20 @@ pub struct PreparedOperatorEnvelope {
 }
 
 impl PreparedOperatorEnvelope {
+    /// Restart a prepared attack from an already bounded envelope level.
+    pub(crate) fn with_initial(mut self, level: f64) -> Self {
+        self.initial = level;
+        self
+    }
+
+    /// Release a separately latched, bounded level using the prepared curve rate.
+    pub(crate) fn released_level(&self, initial: f64, elapsed: u64) -> f64 {
+        if elapsed >= self.release {
+            0.0
+        } else {
+            initial * (-(elapsed as f64) * self.release_rate).exp()
+        }
+    }
     pub const fn attack_frames(&self) -> u64 {
         self.attack
     }

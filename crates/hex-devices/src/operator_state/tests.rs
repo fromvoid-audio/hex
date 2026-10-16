@@ -776,7 +776,7 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
     for id in [
         ParameterId::from_static(0),
         ParameterId::from_static(13),
-        ParameterId::from_static(357),
+        ParameterId::from_static(389),
         parameter::envelope(5, EnvelopeField::Attack),
     ] {
         assert!(OPERATOR_METADATA.read_parameter(&original, id).is_err());

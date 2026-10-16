@@ -18,6 +18,8 @@ pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_W
 // Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
 const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
+// Retain the implementation while these additional harmonic tools are dormant.
+const SHOW_HARMONIC_TOOLS: bool = false;
 
 gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 
@@ -516,16 +518,37 @@ fn oscillator_envelope_detail(
         Some("phase"),
         Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
-    let velocity = compact_control_with_codec(
+    let companion_base = 357 + operator as u32 * 8;
+    let oscillator_velocity = compact_control_with_codec(
         view,
         cx,
         device,
         identity,
         parameters,
-        id(74 + operator as u32),
+        id(companion_base + 1),
         ControlPresentation::InlineValue,
-        Some("velocity"),
+        Some("osc<vel"),
         Some(super::numeric_display::NumericDisplayCodec::Percent),
+    );
+    let restart = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion_base),
+        ControlPresentation::CompactButton,
+        Some("r"),
+    );
+    let quantize = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion_base + 2),
+        ControlPresentation::CompactButton,
+        Some("q"),
     );
     let feedback = compact_control_with_codec(
         view,
@@ -555,7 +578,6 @@ fn oscillator_envelope_detail(
         )
     });
     let (graph, waveform_preview) = harmonics::graph(view, cx, device, operator, parameters);
-    let harmonic_tools = harmonics::tools(view, cx, device, operator);
     let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
     let harmonic_repeat_control = compact_control(
         view,
@@ -567,28 +589,11 @@ fn oscillator_envelope_detail(
         ControlPresentation::CompactSelector,
         Some("repeat"),
     );
-    let envelope_fields = envelope_fields(view, cx, device, identity, parameters, operator);
-    let mut tools = div()
-        .id("operator-harmonic-tools")
-        .debug_selector(|| "operator-harmonic-tools".into())
-        .w_full()
-        .h(px(14.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(px(2.0))
-        .child(harmonic_tools);
-    if let Some(multiplier) = multiplier {
-        tools = tools.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(1.0))
-                .child(detail_caption("multi"))
-                .child(multiplier),
-        );
-    }
+    let envelope_fields =
+        envelope_fields(view, cx, device, identity, parameters, operator, multiplier)
+            .when(SHOW_HARMONIC_TOOLS, |fields| {
+                fields.child(harmonics::tools(view, cx, device, operator))
+            });
     let oscillator_fields = div()
         .id("operator-oscillator-fields")
         .debug_selector(|| "operator-oscillator-fields".into())
@@ -654,14 +659,22 @@ fn oscillator_envelope_detail(
                     id(operator as u32 * 3 + 3),
                     "phase",
                     58.0,
-                    phase,
+                    div()
+                        .flex()
+                        .gap(px(2.0))
+                        .child(div().w(px(42.0)).child(phase))
+                        .child(restart),
                 ))
                 .child(detail_field(
                     device,
-                    id(74 + operator as u32),
-                    "velocity",
+                    id(companion_base + 1),
+                    "osc<vel",
                     58.0,
-                    velocity,
+                    div()
+                        .flex()
+                        .gap(px(2.0))
+                        .child(div().w(px(42.0)).child(oscillator_velocity))
+                        .child(quantize),
                 )),
         );
     let upper_display = if page == OperatorPage::Envelope {
@@ -717,34 +730,41 @@ fn oscillator_envelope_detail(
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(envelope_fields)
-                        .child(tools),
+                        .child(envelope_fields),
                 )
                 .child(oscillator_fields),
         )
 }
 
-fn waveform_cycle(choice: u32) -> Option<[[f32; 2]; 32]> {
-    if choice > 3 {
-        return None;
+// Display order is independent of stable serialized parameter choices.
+pub(super) fn choice_order(
+    identity: DeviceControlIdentity,
+    parameter: ParameterId,
+    count: usize,
+) -> Vec<u32> {
+    if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && (57..=60).contains(&parameter.value())
+        && count == 23
+    {
+        vec![
+            0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 1, 14, 15, 16, 17, 18, 19, 20, 2, 3, 21, 22, 4,
+        ]
+    } else {
+        (0..count as u32).collect()
     }
-    Some(std::array::from_fn(|index| {
-        let phase = index as f32 / 31.0;
-        let level = match choice {
-            0 => (std::f32::consts::TAU * phase).sin() * 0.5 + 0.5,
-            1 => 1.0 - phase,
-            2 => {
-                if phase < 0.5 {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            _ if phase <= 0.5 => phase * 2.0,
-            _ => (1.0 - phase) * 2.0,
-        };
-        [phase, level]
-    }))
+}
+
+fn waveform_cycle(choice: u32) -> Result<[[f32; 2]; 256], hex_engine::Invalid> {
+    hex_engine::native_operator_waveform_preview(choice)
+        .map_err(|_| hex_engine::Invalid("could not prepare oscillator waveform preview"))
+        .map(|samples| {
+            std::array::from_fn(|index| {
+                [
+                    index as f32 / 255.0,
+                    (samples[index] * 0.5 + 0.5).clamp(0.0, 1.0),
+                ]
+            })
+        })
 }
 
 fn detail_caption(label: &'static str) -> Div {
@@ -791,6 +811,7 @@ fn detail_field(
         )
 }
 
+#[allow(clippy::too_many_arguments)] // Fixed multiplier shares the third inspector row.
 fn envelope_fields(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -798,11 +819,17 @@ fn envelope_fields(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
+    multiplier: Option<Div>,
 ) -> Div {
+    use super::numeric_display::NumericDisplayCodec as Codec;
     let base = 33 + operator as u32 * 6;
+    let companion = 357 + operator as u32 * 8;
     let labels = ["initial", "peak", "sustain", "attack", "decay", "release"];
     let mut fields = div().w_full().flex().flex_col();
-    for indices in [[3, 4, 5], [0, 1, 2]] {
+    for (indices, extra, label) in [
+        ([3, 4, 5], companion + 3, "time<vel"),
+        ([0, 1, 2], 74 + operator as u32, "vel"),
+    ] {
         let mut row = div()
             .w_full()
             .h(px(21.0))
@@ -821,9 +848,9 @@ fn envelope_fields(
                 ControlPresentation::InlineValue,
                 None,
                 Some(if field < 3 {
-                    super::numeric_display::NumericDisplayCodec::AmplitudeDb
+                    Codec::AmplitudeDb
                 } else {
-                    super::numeric_display::NumericDisplayCodec::Seconds
+                    Codec::Seconds
                 }),
             );
             row = row.child(detail_field(
@@ -834,9 +861,100 @@ fn envelope_fields(
                 control,
             ));
         }
-        fields = fields.child(row);
+        let control = compact_control_with_codec(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(extra),
+            ControlPresentation::InlineValue,
+            None,
+            Some(Codec::Percent),
+        );
+        fields = fields.child(row.child(detail_field(device, id(extra), label, 46.0, control)));
     }
-    fields
+    let loop_mode = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion + 5),
+        ControlPresentation::CompactSelector,
+        Some("loop"),
+    );
+    let loop_choice = value(view, device, parameters, id(companion + 5));
+    let loop_parameter = match loop_choice {
+        Some(ParameterValue::Choice(1)) => Some((
+            companion + 6,
+            "time",
+            ControlPresentation::InlineValue,
+            Some(Codec::Seconds),
+        )),
+        Some(ParameterValue::Choice(2 | 3)) => Some((
+            companion + 7,
+            "repeat",
+            ControlPresentation::CompactSelector,
+            None,
+        )),
+        _ => None,
+    };
+    let mut loop_cell = div()
+        .w(px(100.0))
+        .flex_shrink_0()
+        .flex()
+        .gap(px(4.0))
+        .child(detail_field(
+            device,
+            id(companion + 5),
+            "loop",
+            52.0,
+            loop_mode,
+        ));
+    if let Some((parameter, label, presentation, codec)) = loop_parameter {
+        let control = compact_control_with_codec(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(parameter),
+            presentation,
+            None,
+            codec,
+        );
+        loop_cell = loop_cell.child(detail_field(device, id(parameter), label, 44.0, control));
+    }
+    let key = compact_control_with_codec(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion + 4),
+        ControlPresentation::InlineValue,
+        None,
+        Some(Codec::Percent),
+    );
+    let mut row = div()
+        .w_full()
+        .h(px(21.0))
+        .flex_shrink_0()
+        .flex()
+        .gap(px(4.0))
+        .child(loop_cell)
+        .child(detail_field(device, id(companion + 4), "key", 46.0, key));
+    if let Some(multiplier) = multiplier {
+        row = row.child(detail_field(
+            device,
+            id(64 + operator as u32 * 3),
+            "multi",
+            46.0,
+            multiplier,
+        ));
+    }
+    fields.child(row)
 }
 
 fn routing_detail(
@@ -1449,7 +1567,7 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
-        exposed.extend(82..=356);
+        exposed.extend(82..=388);
         exposed.extend(20_001..=20_007);
         exposed.extend(513..=516);
         for source in 0..4_u32 {
@@ -1477,7 +1595,7 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 363);
+        assert_eq!(exposed.len(), 395);
         assert_eq!(exposed.first(), Some(&1));
         assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
@@ -1486,21 +1604,17 @@ mod tests {
     }
 
     #[test]
-    fn waveform_cycle_preview_matches_selected_fundamental_shape() {
-        let sine = waveform_cycle(0).expect("sine preview");
-        let saw = waveform_cycle(1).expect("saw preview");
-        let square = waveform_cycle(2).expect("square preview");
-        let triangle = waveform_cycle(3).expect("triangle preview");
-        assert_eq!(sine.len(), 32);
-        assert_eq!(saw[0], [0.0, 1.0]);
-        assert_eq!(saw[31], [1.0, 0.0]);
-        assert_eq!(square[0][1], 1.0);
-        assert_eq!(square[31][1], 0.0);
-        assert!(
-            triangle
-                .iter()
-                .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
-        );
-        assert!(waveform_cycle(4).is_none());
+    fn waveform_previews_cover_the_catalog_and_reject_user_without_a_bank() {
+        for choice in (0..23).filter(|choice| *choice != 4) {
+            let points = waveform_cycle(choice).expect("builtin preview");
+            assert_eq!(points.len(), 256);
+            assert!(
+                points
+                    .iter()
+                    .all(|[x, y]| x.is_finite() && y.is_finite() && (0.0..=1.0).contains(y))
+            );
+        }
+        assert!(waveform_cycle(4).is_err());
+        assert!(waveform_cycle(23).is_err());
     }
 }

@@ -9,7 +9,7 @@ pub(in crate::editor::device_panel) struct Control {
     entity: Entity<BarEditor>,
     _subscription: Subscription,
     mask: usize,
-    focus: [gpui::FocusHandle; 4],
+    focus: Option<[gpui::FocusHandle; 4]>,
     range_focus: [gpui::FocusHandle; 3],
     stroke: Option<Stroke>,
     overview: OverviewCache,
@@ -60,7 +60,8 @@ struct OverviewCache {
 impl OverviewInput {
     fn key(self) -> OverviewKey {
         let builtin_choice = if !self.preview_owned
-            && let Some(choice @ 0..=3) = self.waveform
+            && let Some(choice) = self.waveform
+            && choice != 4
         {
             Some(choice)
         } else {
@@ -88,14 +89,14 @@ impl OverviewInput {
     }
 }
 impl OverviewCache {
-    fn update(&mut self, input: OverviewInput) -> bool {
+    fn update(&mut self, input: OverviewInput) -> Result<bool, hex_engine::Invalid> {
         let key = input.key();
         if self.key == Some(key) {
-            return false;
+            return Ok(false);
         }
-        self.points = Some(overview_points(input));
+        self.points = Some(overview_points(input)?);
         self.key = Some(key);
-        true
+        Ok(true)
     }
 }
 fn partial(operator: usize, index: usize) -> hex_lattice_contract::ParameterId {
@@ -234,17 +235,15 @@ fn effective_overview_input(
         preview_owned,
     })
 }
-fn overview_points(input: OverviewInput) -> OverviewPoints {
+fn overview_points(input: OverviewInput) -> Result<OverviewPoints, hex_engine::Invalid> {
     if !input.preview_owned
-        && let Some(choice @ 0..=3) = input.waveform
-        && let Some(points) = super::waveform_cycle(choice)
+        && let Some(choice) = input.waveform
+        && choice != 4
     {
-        let mut cached = [[0.0; 2]; 256];
-        cached[..points.len()].copy_from_slice(&points);
-        return OverviewPoints {
-            points: cached,
+        return Ok(OverviewPoints {
+            points: super::waveform_cycle(choice)?,
             builtin: true,
-        };
+        });
     }
     let pattern = input.count / input.repeat;
     let coefficients: [f32; 64] = std::array::from_fn(|i| {
@@ -255,7 +254,7 @@ fn overview_points(input: OverviewInput) -> OverviewPoints {
         }
     });
     let normalization = coefficients.iter().sum::<f32>().max(1.0);
-    OverviewPoints {
+    Ok(OverviewPoints {
         points: std::array::from_fn(|i| {
             let phase = i as f32 / 255.0;
             let sample = coefficients
@@ -267,7 +266,7 @@ fn overview_points(input: OverviewInput) -> OverviewPoints {
             [phase, (sample * 0.5 + 0.5).clamp(0.0, 1.0)]
         }),
         builtin: false,
-    }
+    })
 }
 fn values(view: &mut EditorView, key: Key) -> Option<([f32; 64], usize)> {
     let input = overview_input(view, key)?;
@@ -299,7 +298,7 @@ pub(super) fn graph(
                 entity,
                 _subscription: subscription,
                 mask: 0,
-                focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true)),
+                focus: None,
                 range_focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true)),
                 stroke: None,
                 overview: OverviewCache::default(),
@@ -327,19 +326,19 @@ fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
     let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
         return div();
     };
-    control.overview.update(input);
+    if let Err(error) = control.overview.update(input) {
+        view.error = Some(error.0.into());
+        return div();
+    }
     let mut style = super::display_style();
     style.border = style.background;
     style.rail = style.background;
     match control.overview.points {
-        Some(points) if points.builtin => {
-            let short: [[f32; 2]; 32] = std::array::from_fn(|i| points.points[i]);
-            hex_widgets::curve_plot(short, style).unwrap_or_else(div)
-        }
         Some(points) => hex_widgets::curve_plot(points.points, style).unwrap_or_else(div),
         None => div(),
     }
 }
+
 pub(super) fn ranges(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -448,20 +447,28 @@ pub(super) fn tools(
     operator: usize,
 ) -> Div {
     let key = (device, operator);
-    let mask = view
-        .device_panel
-        .operator_harmonics
-        .get(&key)
-        .map_or(0, |c| c.mask);
+    let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
+        return div();
+    };
+    let mask = control.mask;
+    let focuses = control
+        .focus
+        .get_or_insert_with(|| {
+            std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true))
+        })
+        .clone();
     let mut row = div().flex().items_center().gap(px(2.0));
     for (index, label) in ["all", "odd", "even", "normalize"].into_iter().enumerate() {
-        let focus = view.device_panel.operator_harmonics[&key].focus[index].clone();
+        let focus = focuses[index].clone();
         let pointer_focus = focus.clone();
         row = row.child(
             div()
                 .id(ElementId::Name(
                     format!("harmonic-tool-{}-{operator}-{index}", device.value()).into(),
                 ))
+                .debug_selector(move || {
+                    format!("harmonic-tool-{}-{operator}-{index}", device.value())
+                })
                 .track_focus(&focus)
                 .cursor(gpui::CursorStyle::PointingHand)
                 .text_size(px(7.0))
@@ -700,16 +707,16 @@ mod tests {
     fn overview_cache_reuses_and_invalidates_visible_waveform_data() {
         let mut cache = OverviewCache::default();
         let input = overview_input();
-        assert!(cache.update(input));
+        assert!(cache.update(input).unwrap());
         let Some(first) = cache.points.filter(|points| !points.builtin) else {
             panic!("owned harmonic preview should use the custom waveform");
         };
-        assert!(!cache.update(input));
+        assert!(!cache.update(input).unwrap());
         assert_eq!(cache.points, Some(first));
 
         let mut changed_amplitude = input;
         changed_amplitude.amplitudes[0] += 0.25;
-        assert!(cache.update(changed_amplitude));
+        assert!(cache.update(changed_amplitude).unwrap());
         assert_ne!(cache.points, Some(first));
         let Some(amplitude_changed) = cache.points.filter(|points| !points.builtin) else {
             panic!("custom waveform changed mode unexpectedly");
@@ -717,7 +724,7 @@ mod tests {
 
         let mut changed_range = changed_amplitude;
         changed_range.count = 64;
-        assert!(cache.update(changed_range));
+        assert!(cache.update(changed_range).unwrap());
         assert_ne!(cache.points, Some(amplitude_changed));
         let Some(range_changed) = cache.points.filter(|points| !points.builtin) else {
             panic!("custom waveform changed mode unexpectedly");
@@ -725,30 +732,27 @@ mod tests {
 
         let mut changed_repeat = changed_range;
         changed_repeat.repeat = 2;
-        assert!(cache.update(changed_repeat));
+        assert!(cache.update(changed_repeat).unwrap());
         assert_ne!(cache.points, Some(range_changed));
 
         let mut builtin = changed_repeat;
         builtin.preview_owned = false;
         builtin.waveform = Some(1);
-        assert!(cache.update(builtin));
+        assert!(cache.update(builtin).unwrap());
         let Some(points) = cache.points.filter(|points| points.builtin) else {
             panic!("unowned builtin waveform should retain builtin geometry");
         };
-        assert_eq!(
-            points.points[..32],
-            super::super::waveform_cycle(1).unwrap()
-        );
+        assert_eq!(points.points, super::super::waveform_cycle(1).unwrap());
 
         let mut another_builtin = builtin;
         another_builtin.waveform = Some(2);
-        assert!(cache.update(another_builtin));
+        assert!(cache.update(another_builtin).unwrap());
         assert_ne!(cache.points, Some(points));
         assert!(cache.points.is_some_and(|points| points.builtin));
 
         let mut preview_owned_builtin = another_builtin;
         preview_owned_builtin.preview_owned = true;
-        assert!(cache.update(preview_owned_builtin));
+        assert!(cache.update(preview_owned_builtin).unwrap());
         assert!(cache.points.is_some_and(|points| !points.builtin));
     }
 

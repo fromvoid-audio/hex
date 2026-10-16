@@ -130,3 +130,29 @@ amplitudes (0 silent, 1 full authored amplitude), with an explicitly documented
 normalization and Repeat law before production integration. Do not claim those
 numerical laws were measured in Live. Native appearance/listening checks remain
 separate from that authorization.
+
+### 16 October: scoped companion-control inventory
+
+User supplied another side-by-side crop and the Wave menu. Their explicit scope
+is the harmonic display and adjacent inspector, preserving Hex theme and current
+16/32/64 controls. Whole-device side-pane compaction is cancelled. Vertical
+harmonic guides are required. The all/odd/even/normalize implementation remains
+in source but is inactive in the rendered interface, including keyboard focus.
+
+The official [Live 12 instrument reference](https://www.ableton.com/en/live-manual/12/live-instrument-reference/)
+was checked for parameter meaning. This is documentation evidence, not a new
+installed-12.4.6 measurement. Oscillator R controls note phase restart; Osc<Vel
+controls frequency response to velocity and Q quantizes that response to integer
+ratios. Envelope Vel, Key and Time<Vel are separate controls. Loop requires
+actual envelope lifecycle and clock behavior. Menu labels alone do not establish
+sound parity. Exact transfer functions, quantized-sine/noise construction,
+free-running origin and boundary behavior remain unmeasured.
+
+Implementation requirements: preserve existing patches and saved choice IDs;
+map presentation order separately; generate original waveforms without reference
+samples; retain cached User harmonics; show actual-law waveform previews;
+validate malformed state and strict Nyquist boundaries; maintain callback
+allocation, voice/partial/precision and aggregate memory limits. New helper
+#2646 / PR261 covers explicit host clock observations and bounded long-tail
+admission required by complete companion behavior. Native and listening
+acceptance remains open.

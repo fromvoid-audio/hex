@@ -104,6 +104,7 @@ enum ParameterControl {
         class: NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         descriptor: &'static ParameterDescriptor,
+        values: Vec<u32>,
     },
 }
 
@@ -2471,6 +2472,7 @@ fn parameter_control_with_presentation(
                     Some("bass mono audition") => 14.0,
                     Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") => 18.0,
                     Some("on" | "fix" | "") => 18.0,
+                    Some("r" | "q") => 14.0,
                     Some("ø l" | "ø r" | "mute" | "dc") => 31.0,
                     _ => 40.0,
                 };
@@ -2480,7 +2482,7 @@ fn parameter_control_with_presentation(
             };
             div().w(px(width)).h(px(height)).child(entity.clone())
         }
-        Some(ParameterControl::Choice { entity, .. }) => {
+        Some(ParameterControl::Choice { entity, values, .. }) => {
             if let ParameterValue::Choice(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
@@ -2491,7 +2493,9 @@ fn parameter_control_with_presentation(
                             && descriptor.id != hex_engine::DEVICE_INPUT_GAIN.id,
                         cx,
                     );
-                    let _ = control.set_selected(value as usize, cx);
+                    if let Some(index) = values.iter().position(|candidate| *candidate == value) {
+                        let _ = control.set_selected(index, cx);
+                    }
                 });
             } else {
                 entity.update(cx, |control, cx| {
@@ -2718,7 +2722,12 @@ fn create_parameter_control(
             Some(())
         }
         (ParameterKind::Choice { labels }, ParameterValue::Choice(value)) => {
-            let choices = labels.iter().copied().map(theme::text);
+            let values: Vec<u32> =
+                operator_panel::choice_order(identity, descriptor.id, labels.len());
+            let selected = values.iter().position(|candidate| *candidate == value)?;
+            let choices = values
+                .iter()
+                .map(|index| theme::text(labels[*index as usize]));
             let appearance = if matches!(
                 presentation,
                 ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
@@ -2727,14 +2736,15 @@ fn create_parameter_control(
             } else {
                 DiscreteControlAppearance::Standard
             };
-            let config = SelectorConfig::new(id, choices, value as usize, style)
+            let config = SelectorConfig::new(id, choices, selected, style)
                 .ok()?
                 .with_appearance(appearance);
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;
+            let event_values = values.clone();
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
-                    let Ok(value) = u32::try_from(event.index) else {
+                    let Some(&value) = event_values.get(event.index) else {
                         return;
                     };
                     if !finalize_controls(view, cx) {
@@ -2759,6 +2769,7 @@ fn create_parameter_control(
                     class: identity.class,
                     type_id: identity.type_id,
                     descriptor,
+                    values,
                 },
             );
             Some(())

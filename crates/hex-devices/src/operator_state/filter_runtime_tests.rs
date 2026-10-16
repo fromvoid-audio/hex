@@ -159,7 +159,7 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
         NativeDeviceState::new(OPERATOR_TYPE_ID, 8, current.payload()[..380].to_vec()).unwrap();
     let migrated_v8 = OPERATOR_METADATA.migrate_state(&v8).unwrap();
     assert_eq!(&migrated_v8.payload()[..380], v8.payload());
-    for version in [9, 10, 13] {
+    for version in [9, 10, OPERATOR_STATE_VERSION + 1] {
         assert!(
             OperatorSettings::from_state(
                 &NativeDeviceState::new(OPERATOR_TYPE_ID, version, migrated.payload().to_vec())
@@ -172,7 +172,7 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
         OPERATOR_METADATA
             .descriptors()
             .iter()
-            .all(|d| d.id.value() <= 356
+            .all(|d| d.id.value() <= 388
                 || (513..=516).contains(&d.id.value())
                 || d.id.value() >= 20001)
     );

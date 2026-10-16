@@ -29,8 +29,16 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
                 .enumerate()
                 .map(|(i, c)| c * ((i + 1) as f64 * angle).sin())
                 .sum::<f64>();
-            let actual =
-                spectrum.sample(0, phase, step, table, bank, harmonic_phase_table().unwrap());
+            let actual = spectrum.sample(
+                0,
+                phase,
+                step,
+                0,
+                step,
+                table,
+                bank,
+                harmonic_phase_table().unwrap(),
+            );
             assert!(
                 (f64::from(actual) - expected).abs() < 2e-6,
                 "cap={cap} phase={phase}"
@@ -46,6 +54,8 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
             0,
             1 << 58,
             1 << 57,
+            0,
+            1 << 57,
             table,
             bank,
             harmonic_phase_table().unwrap()
@@ -58,6 +68,8 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
             .sample(
                 0,
                 1 << 56,
+                (1 << 57) - 1,
+                0,
                 (1 << 57) - 1,
                 table,
                 bank,
@@ -246,4 +258,69 @@ fn fast_harmonic_cap_matches_wide_oracle_at_every_nyquist_boundary() {
     {
         assert_eq!(super::spectrum::harmonic_cap(step), oracle(step));
     }
+}
+
+#[test]
+fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
+    for waveform in [OperatorWaveform::NoiseLooped, OperatorWaveform::NoiseWhite] {
+        let mut settings = OperatorSettings::defaults();
+        settings.waveforms[0] = waveform;
+        let configuration = settings.prepare_configuration(48000).unwrap();
+        let factory = Factory::new(
+            settings,
+            configuration.clone(),
+            crate::shared_sine_table(),
+            48000,
+        )
+        .unwrap();
+        let event = NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 127,
+        };
+        let mut whole = factory.create_runtime();
+        let mut partitioned = factory.create_runtime();
+        let mut expected = vec![[0.0; 2]; 4096];
+        whole.preflight_events(&[event], expected.len()).unwrap();
+        whole.process_block(&[event], &mut expected);
+        let mut actual = Vec::new();
+        for count in [1, 31, 128, 7, 512, 3417] {
+            let mut block = vec![[0.0; 2]; count];
+            let events = if actual.is_empty() {
+                &[event][..]
+            } else {
+                &[][..]
+            };
+            partitioned.preflight_events(events, count).unwrap();
+            partitioned.process_block(events, &mut block);
+            actual.extend(block);
+        }
+        assert_eq!(expected, actual, "{waveform:?}");
+        assert!(actual.iter().any(|sample| sample[0].abs() > 0.01));
+        if waveform == OperatorWaveform::NoiseWhite {
+            let note_a = configuration.prepare_note(60, 127).unwrap();
+            let note_b = configuration.prepare_note(61, 127).unwrap();
+            assert!((256..512).any(|age| configuration.sample(
+                crate::shared_sine_table(),
+                &note_a,
+                age,
+                u64::MAX
+            ) != configuration.sample(
+                crate::shared_sine_table(),
+                &note_b,
+                age,
+                u64::MAX
+            )));
+        }
+        let note = configuration.prepare_note(60, 127).unwrap();
+        for age in [0, 1, 511, 2047, 4095] {
+            assert_eq!(
+                actual[age][0],
+                configuration.sample(crate::shared_sine_table(), &note, age as u64, u64::MAX),
+                "{waveform:?} age{age}"
+            );
+        }
+    }
+    assert_eq!(size_of::<Spectrum>(), 2_800);
 }

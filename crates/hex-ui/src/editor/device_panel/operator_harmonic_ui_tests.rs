@@ -39,11 +39,14 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
         .expect("64-column painter is visible");
     assert!(bounds.size.height >= px(80.0));
     assert!(bounds.size.width >= px(200.0));
-    // The painter owns the upper display; its tools live below stationary tabs.
-    let tools = visual.debug_bounds("operator-harmonic-tools").unwrap();
+    // The painter owns the upper display; optional tools stay inactive.
+    for index in 0..4 {
+        let tool =
+            Box::leak(format!("harmonic-tool-{}-0-{index}", device.value()).into_boxed_str());
+        assert!(visual.debug_bounds(tool).is_none());
+    }
     let tab_bounds = visual.debug_bounds(tab).unwrap();
     assert!(bounds.bottom() <= tab_bounds.top());
-    assert!(tools.top() >= tab_bounds.bottom());
     let preview = visual.debug_bounds("operator-waveform-preview").unwrap();
     assert!(preview.top() >= tab_bounds.bottom());
     assert!(preview.size.width >= px(48.0));
@@ -60,10 +63,23 @@ fn rendered_harmonic_stroke_is_atomic_and_shift_preserves_other_columns(cx: &mut
     let phase = visual.debug_bounds(field(3)).unwrap();
     let velocity = visual.debug_bounds(field(74)).unwrap();
     assert!(
-        phase.right() <= velocity.left(),
-        "phase and velocity cells must not collide"
+        velocity.right() <= phase.left(),
+        "envelope velocity and oscillator phase cells must not collide"
     );
-    for parameter in [3, 74, 78] {
+    for parameter in [33, 34, 35, 36, 37, 38, 74, 360, 361, 362] {
+        let cell = visual
+            .debug_bounds(field(parameter))
+            .expect("envelope inspector field");
+        assert!(cell.left() >= envelope.left() && cell.right() <= envelope.right());
+        assert!(cell.top() >= envelope.top() && cell.bottom() <= envelope.bottom());
+    }
+    for parameter in [357, 359] {
+        let control =
+            Box::leak(format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str());
+        let bounds = visual.debug_bounds(control).expect("oscillator toggle");
+        assert!(bounds.left() >= oscillator.left() && bounds.right() <= oscillator.right());
+    }
+    for parameter in [3, 74, 78, 358, 360, 361] {
         let text = editor.read_with(cx, |view, app| {
             let ParameterControl::Float { entity, .. } = &view.device_panel.controls
                 [&ParameterKey {
@@ -386,4 +402,119 @@ fn hiding_harmonic_field_cancels_stroke_and_keeps_the_preview(cx: &mut TestAppCo
                 .as_ref()
                 .is_some_and(|state| state.project.device(device).unwrap().state() == &original)
     });
+}
+
+#[gpui::test]
+fn waveform_menu_order_preserves_saved_choices_and_undo(cx: &mut TestAppContext) {
+    let (service, initial, track, device) = operator_navigation_tests::operator_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, initial, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("device-{}-parameter-57", device.value()).into_boxed_str());
+    // The reference menu starts sine, sine 4 bit; the latter's stable ID is 5.
+    let bounds = visual.debug_bounds(selector).unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    let popup = Box::leak(format!("device-{}-parameter-57-popup", device.value()).into_boxed_str());
+    let popup_bounds = visual.debug_bounds(popup).expect("wave menu");
+    let label_width = visual.update(|window, _| {
+        window
+            .text_system()
+            .shape_line(
+                "noise looped".into(),
+                px(control_style().font_size),
+                &[gpui::TextRun {
+                    len: "noise looped".len(),
+                    font: gpui::font(theme::FONT_FAMILY),
+                    color: gpui::rgb(0xffffff).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+    });
+    assert!(popup_bounds.size.width >= label_width + px(10.0));
+    visual.simulate_keystrokes("down");
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            operator_parameter_value(state, track, device, 57) == ParameterValue::Choice(5)
+        })
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, app| {
+        let ParameterControl::Choice { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(57),
+        }] else {
+            panic!("wave selector")
+        };
+        assert_eq!(entity.read(app).selected(), 1);
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            operator_parameter_value(state, track, device, 57) == ParameterValue::Choice(0)
+        })
+    });
+    visual.run_until_parked();
+    // Up from sine wraps to User, which remains saved choice 4.
+    let bounds = visual.debug_bounds(selector).unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.simulate_keystrokes("up");
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            operator_parameter_value(state, track, device, 57) == ParameterValue::Choice(4)
+        })
+    });
+}
+
+#[gpui::test]
+fn companion_toggles_and_loop_are_canonical_with_undo(cx: &mut TestAppContext) {
+    let (service, initial, track, device) = operator_navigation_tests::operator_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, initial, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (parameter, expected) in [
+        (357, ParameterValue::Bool(false)),
+        (359, ParameterValue::Bool(true)),
+    ] {
+        let selector =
+            Box::leak(format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str());
+        let bounds = visual.debug_bounds(selector).unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, parameter) == expected
+            })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, parameter) != expected
+            })
+        });
+        visual.run_until_parked();
+    }
+    let selector = Box::leak(format!("device-{}-parameter-362", device.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).unwrap();
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.simulate_keystrokes("down");
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            operator_parameter_value(state, track, device, 362) == ParameterValue::Choice(1)
+        })
+    });
+    visual.run_until_parked();
+    let time = Box::leak(format!("operator-field-{}-363", device.value()).into_boxed_str());
+    assert!(visual.debug_bounds(time).is_some());
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state.as_ref().is_some_and(|state| {
+            operator_parameter_value(state, track, device, 362) == ParameterValue::Choice(0)
+        })
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(time).is_none());
 }
