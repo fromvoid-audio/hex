@@ -23,8 +23,10 @@ pub(super) enum Kind {
     LeadingToTrailingPaint,
     RowBuild,
     AudioBuild,
+    ClipContentBuild,
+    ClipContentReuse,
 }
-const KINDS: [Kind; 18] = [
+const KINDS: [Kind; 20] = [
     Kind::RenderBuild,
     Kind::OverviewLookup,
     Kind::OverviewBuild,
@@ -43,6 +45,8 @@ const KINDS: [Kind; 18] = [
     Kind::LeadingToTrailingPaint,
     Kind::RowBuild,
     Kind::AudioBuild,
+    Kind::ClipContentBuild,
+    Kind::ClipContentReuse,
 ];
 #[derive(Clone, Copy, Default)]
 struct Metric {
@@ -51,7 +55,7 @@ struct Metric {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Stats {
-    metrics: [Metric; 18],
+    metrics: [Metric; 20],
 }
 thread_local! { static ACTIVE: RefCell<Option<Stats>> = const { RefCell::new(None) }; }
 pub(super) fn begin() {

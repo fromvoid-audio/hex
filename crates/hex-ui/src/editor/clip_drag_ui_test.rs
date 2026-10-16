@@ -674,8 +674,27 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         .expect("source lane");
     assert_eq!(original_bounds.origin.y, lane.origin.y);
     assert_eq!(original_bounds.size.height, lane.size.height);
-    // Batched grid colors and bounded decorative edge alignment after resize
-    // are checked by clip_paint::tests; this fixture retains the live trim path.
+    assert!(visual.debug_bounds("clip-musical-grid").is_some());
+    let grid_frame = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().expect("project state");
+        let viewport = view.visible_viewport(state.timeline_frames);
+        let width = view
+            .arrangement_bounds
+            .map(|bounds| bounds.width - super::tracks::TRACK_HEADER_WIDTH)
+            .unwrap_or(400.0);
+        super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid)
+            .into_iter()
+            .find(|line| line.frame > 0 && line.frame < 96_000)
+            .map(|line| line.frame)
+    });
+    let grid_frame = grid_frame.expect("adaptive grid has an interior line in the audio clip");
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("clip-grid-line-{grid_frame}").into_boxed_str()
+            ))
+            .is_some()
+    );
     let down = point(
         handle_bounds.origin.x + handle_bounds.size.width / 2.0,
         handle_bounds.origin.y + handle_bounds.size.height / 2.0,
@@ -871,6 +890,7 @@ fn rendered_midi_trim_previews_note_geometry_and_commits_release_snap(cx: &mut T
         .expect("MIDI source lane");
     assert_eq!(original_bounds.origin.y, lane.origin.y);
     assert_eq!(original_bounds.size.height, lane.size.height);
+    assert!(visual.debug_bounds("clip-musical-grid").is_some());
     let down = point(
         handle_bounds.origin.x + handle_bounds.size.width / 2.0,
         handle_bounds.origin.y + handle_bounds.size.height / 2.0,

@@ -1,3 +1,15 @@
+## dense selection feedback experiment — #2648 / PR264, 16 october 2026
+
+Confirmed the dense visible waveform working set thrashed the 128-entry LRU;
+512 entries retain it with the same 65,536-column aggregate bound. After that
+fix alone missed the timing target, phase probes identified substantial lazy-row
+prepaint and scene-paint work. The current bounded experiment caches unchanged
+legacy clip child views while keeping selection overlays and lane geometry live.
+The actual reuse/overlay regression and selection persistence pass, as do strict
+UI/desktop lint and source guards. Native eight-case timing is next; the full
+lifecycle checks, GPUI cached debug-bounds omission and final 360-sample benchmark
+remain open. See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
+
 ## vector B edits and stopped playback recovery — #2643 / PR259, 16 october 2026
 
 Reproduced the user's compile error with an above-Nyquist B ratio and a separate
@@ -3367,16 +3379,3 @@ load. Earlier failed runs are excluded. Existing functional native acceptance is
 preserved; no physical-display, constant-work or subjective smoothness claim.
 Dense UI acceptance remains Pulse29. Separate unsnapped cursor projection bug is
 Pulse2647/PR263; measured drags remain unsnapped, untimed paste setup uses snap.
-
-
-## 16 October 2026 — Pulse2648 dense selection rendering candidate
-
-Scoped diagnostics found 350 misses/evictions per dense selection repaint under
-128 waveform entries despite low column use. The candidate retains up to512
-entries under the unchanged65536-column budget and batches passive grid/note
-painting, omitting empty layers. Clip interactions, note-preview limits and count
-badges remain; a primary-approved maximum one-physical-pixel decorative edge
-realignment is documented in [waveform display](docs/waveform-display.md).
-The working-set regression reproduces the former rebuild; final native timing,
-full exact-source CI and the16.67ms p95 target remain pending. Historical baseline
-evidence is preserved; no performance target is claimed from source checks.

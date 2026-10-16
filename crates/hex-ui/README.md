@@ -235,13 +235,13 @@ redraws reuse unchanged geometry; live trims omit invisible original paint
 children and suppress notifications for identical snapped candidates. Pending
 control colors and compact status slot widths remain stable. See
 ../../docs/clip-edit-performance.md for measurement scope and native checks.
-Passive clip grid stripes and sampled MIDI note rectangles use one canvas batch
-per nonempty layer. Empty layers allocate no layout element. The existing clip
-containers, borders, hover/selection, tooltips, trim handles and drag targets are
-retained; the 128-note row limit and omitted-note count badges are unchanged.
-Paint quads align from rounded clip bounds, with at most one physical pixel of
-decorative edge realignment, and inherit clip masks/opacity.
-See ../../docs/waveform-display.md for the dense selection optimization scope.
+
+Arrangement rows retain bounded GPUI child views for unchanged legacy clip
+content. Lane geometry, headers, selection overlays and transient previews stay
+live in the editor. Snapshot/project replacement clears all retained children;
+viewport, grid, palette, selected clip and measured lane changes invalidate the
+affected child. Busy edits and drags use the original uncached builder. See
+../../docs/waveform-display.md for the cache contract and pending timing gate.
 
 ## arrangement time selection — 9 October 2026
 
