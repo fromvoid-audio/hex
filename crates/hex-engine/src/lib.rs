@@ -20,7 +20,7 @@ mod audio_storage;
 pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
     AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateDraft,
-    AudioCandidateIdentity, AudioCandidateOwner, AudioCandidateRefusal,
+    AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation, AudioCandidateRefusal,
     AudioCandidateRuntimeDisposed, AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal,
     AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
 };

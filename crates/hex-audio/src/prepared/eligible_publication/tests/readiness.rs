@@ -28,6 +28,7 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
         .configure_audio_candidate_publication(limits)
         .unwrap();
     control.configure_audio_candidate_streaming(3).unwrap();
+    let source_metadata = definition.metadata.clone();
     let domain = control
         .begin_audio_candidate_domain_preparation(
             hex_stream::StreamConfig::with_pool_pages(4),
@@ -57,6 +58,10 @@ fn real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_work
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
+    assert!(control.audio_candidate_domain_covers_source(domain, &source_metadata));
+    assert!(
+        !control.audio_candidate_domain_covers_source(domain, &wav.definition(asset, 12).metadata)
+    );
     assert_eq!(
         control.poll_audio_candidate_domain_preparation(domain),
         Err("candidate publication queue is full")

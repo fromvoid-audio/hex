@@ -114,6 +114,9 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
             .collect::<Vec<_>>(),
         vec![262144, 131072]
     );
+    let captured =
+        CanonicalAudioSourceSnapshot::capture(&Arc::new(session.project().clone()), 0, 1, &session);
+    assert_eq!(captured.required_sources().count(), 2);
     assert_ne!(session.semantic_source_epoch, initial_epoch);
     let epoch = session.semantic_source_epoch;
     let undone = session
@@ -122,6 +125,11 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
         .unwrap();
     assert!(session.project().assets().next().is_none());
     assert_eq!(session.verified_sources.len(), 2);
+    let undone_capture =
+        CanonicalAudioSourceSnapshot::capture(&Arc::new(session.project().clone()), 0, 2, &session);
+    assert_eq!(undone_capture.sources().len(), 0); // history facts are not the current Project
+    assert_eq!(undone_capture.required_sources().count(), 0);
+    assert_eq!(captured.required_sources().count(), 2); // frozen old projection
     assert_eq!(session.semantic_source_epoch, epoch);
     let redone = session
         .redo_prepared_revision(Some(&undone))
@@ -130,6 +138,24 @@ fn verified_batch_exceeds_resident_budget_without_pcm_and_undo_retains_source_ep
     assert!(redone.arrangement().contains_streamed_sources());
     assert_eq!(session.semantic_source_epoch, epoch);
     assert!(session.compile().is_err());
+    let clips: Vec<_> = session
+        .project()
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips().iter().map(|clip| clip.id()))
+        .collect();
+    let mut previous = redone;
+    for clip in clips {
+        previous = session
+            .command_prepared_revision(Command::RemoveClip(clip), Some(&previous))
+            .unwrap()
+            .1;
+    }
+    assert_eq!(session.project().assets().count(), 2);
+    let source_free =
+        CanonicalAudioSourceSnapshot::capture(&Arc::new(session.project().clone()), 0, 3, &session);
+    assert_eq!(source_free.sources().len(), 2); // actual unused current asset records
+    assert_eq!(source_free.required_sources().count(), 0);
     assert!(
         session
             .verify_import(files.wav("third.wav", 48000, 16, 1))

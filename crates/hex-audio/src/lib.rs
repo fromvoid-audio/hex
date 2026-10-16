@@ -18,6 +18,8 @@ pub use candidate_custody::{
     AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
     AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainStartError,
     AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation, AudioCandidateRecovery, AudioCandidateReturnKind,
     AudioCandidateStageRefusal, AudioCandidateTicket,
 };

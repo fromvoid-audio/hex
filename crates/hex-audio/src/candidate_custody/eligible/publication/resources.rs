@@ -55,6 +55,9 @@ fn occupied_handles(bank: &NativeBank) -> Option<usize> {
         }
     }
     for slot in &bank.publication.slots {
+        if let Some(reservation) = slot.preparation_reservation {
+            handles = handles.checked_add(reservation.handle_rows)?;
+        }
         if let Some(summary) = slot.summary {
             handles = handles.checked_add(summary.shared_resource_handles)?;
         }

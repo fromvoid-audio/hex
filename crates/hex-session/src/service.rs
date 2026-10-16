@@ -235,6 +235,12 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Reopen the worker-owned output for this canonical document generation.
+    /// This does not edit the Project or replay transport/publication state.
+    RestartAudio {
+        project_generation: u64,
+        request_id: u64,
+    },
     /// Ephemeral same-revision audition graph; no project/history mutation.
     PrepareComputerKeyboard {
         project_generation: u64,
@@ -1061,6 +1067,19 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                Request::RestartAudio {
+                    project_generation: expected,
+                    request_id,
+                } => {
+                    if expected != project_generation || request_id == 0 {
+                        error = Some("audio restart request is stale".into());
+                    } else {
+                        match events.restart_audio(project_generation, request_id) {
+                            Ok(()) => status = Some("restarting audio".into()),
+                            Err(reason) => error = Some(reason),
+                        }
+                    }
+                }
                 Request::DeviceGesture(gesture) => {
                     gesture_request = true;
                     gesture_protocol_ack = true;

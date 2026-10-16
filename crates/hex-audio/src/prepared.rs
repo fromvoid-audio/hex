@@ -254,6 +254,8 @@ pub enum FreshRuntimeCancellationResult {
     Applying,
     /// The callback has already returned or installed this candidate.
     Complete,
+    /// The nonblocking Client view is contended; retain and retry the request.
+    Busy,
     /// There is no currently retained cancellation decision for this revision.
     UnknownRevision,
 }
@@ -1140,6 +1142,7 @@ impl PublicationControl {
         self.revision = revision;
         self.status.submitted_revision.store(revision, Release);
         self.latest_fresh_runtime_cancellation = cancellation;
+        self.update_resident_cancellation();
         Ok(revision)
     }
 

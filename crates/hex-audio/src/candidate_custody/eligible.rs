@@ -12,6 +12,8 @@ pub(super) mod publication;
 pub(crate) use pages::DomainEnvelope;
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
 };
 
@@ -354,6 +356,35 @@ impl Custody {
         }
         Ok((token, envelope))
     }
+    pub(super) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && bank.root == token.root
+            && bank.domains.get(token.slot).is_some_and(|slot| {
+                slot.matches(token)
+                    && slot.phase == Phase::Accepted
+                    && !slot.retiring
+                    && slot.owner.is_some()
+                    && slot.resources.is_some()
+            })
+    }
+    pub(super) fn domain_covers_source(
+        &self,
+        token: AudioCandidateDomainToken,
+        source: &hex_engine::StreamedSourceMetadata,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        bank.root == token.root
+            && bank.domains.get(token.slot).is_some_and(|slot| {
+                slot.matches(token)
+                    && slot.phase == Phase::Accepted
+                    && !slot.retiring
+                    && slot
+                        .owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.covers_source(source))
+            })
+    }
     pub(super) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
         let mut guard = lock(&self.bank);
         let bank = &mut *guard;
@@ -387,7 +418,7 @@ impl Custody {
     }
     pub(super) fn has_work(&self, abandoned: bool) -> bool {
         let guard = lock(&self.bank);
-        guard.publication.has_work(abandoned)
+        guard.publication.has_work(abandoned || guard.closing)
             || guard.domains.iter().any(|s| {
                 s.phase == Phase::Failed
                     || s.phase == Phase::Cleaning

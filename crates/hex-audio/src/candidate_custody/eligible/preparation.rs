@@ -318,6 +318,7 @@ mod tests {
     fn pending_root_uses_same_n2_slot_until_loan_and_actual_report_complete() {
         let root = configured(8 * 1024 * 1024);
         let a = start(&root);
+        assert!(!root.domain_is_sealed(a));
         let reserved = root.usage().unwrap();
         assert_eq!(reserved.occupied_domains, 1);
         assert!(reserved.retained_data_reservation > 128);
@@ -328,6 +329,15 @@ mod tests {
             ))
         ));
         let pages_a = ready(&root, a);
+        assert!(root.domain_is_sealed(a)); // valid even for this source-empty catalog
+        assert!(!root.domain_is_sealed(AudioCandidateDomainToken {
+            root: a.root + 1,
+            ..a
+        }));
+        assert!(!root.domain_is_sealed(AudioCandidateDomainToken {
+            incarnation: a.incarnation + 1,
+            ..a
+        }));
         assert_eq!(pages_a.inner.token, a);
         let b = start(&root);
         assert_ne!(a.slot, b.slot);
@@ -343,6 +353,7 @@ mod tests {
             ..a
         }));
         assert!(root.retire_domain(a));
+        assert!(!root.domain_is_sealed(a));
         for _ in 0..4 {
             root.advance_on_control(false);
         }
@@ -358,6 +369,7 @@ mod tests {
         let next = start(&root);
         assert_eq!(next.slot, a.slot);
         assert_ne!(next.incarnation, a.incarnation);
+        assert!(!root.domain_is_sealed(a));
         assert!(root.poll_preparation(a).is_err());
         assert!(root.retire_domain(next));
         assert!(report(&root, next).accounting_complete);

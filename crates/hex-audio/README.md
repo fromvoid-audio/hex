@@ -255,3 +255,23 @@ at most one request/result and is charged as its actual payload plus a paired
 opaque Arc/Mutex resource. Verified constructor configuration requires its
 virgin state and seals owning Playback admission before Client exposure. It
 never becomes a fallback for a Verified generation.
+
+PR239's worker preparation reserves one existing opted-in runtime/archive cell
+before collecting a native input bank. The checked preparation token is not a
+publication ticket. Source rows, original bank, preparation custody, draft and
+completed unpublished owner stay in that cell under dedicated work custody;
+no ordinary bank or terminal lock spans source copies, compilation or cleanup.
+The caller's finite DATA/peak, member/transfer and handle reservations remain
+occupied through cancellation, close, refusal and sticky failures. Normal
+lifecycle cleanup destroys the original sources and emptied wrappers before
+vacancy; it never fabricates a NeverInstalled receipt for unpublished work.
+Same-cell queue staging and the Desktop adapter are subsequent PR239 integration
+work, not established by the construction/cleanup checkpoint alone.
+
+The split Client also exposes Resident conditional-runtime cancellation through
+the existing one-slot forwarding cell. It borrows the exact submitted revision's
+atomic decision without cloning an owner into UI custody. Contention is Busy;
+stale/no-longer-retained revisions are UnknownRevision, and callback Applying or
+Complete remains distinct from cancellation. Mirror replacement/destruction is
+worker-side outside the slot mutex. Verified opt-in still requires the virgin
+empty cell and never admits these owning Resident requests.

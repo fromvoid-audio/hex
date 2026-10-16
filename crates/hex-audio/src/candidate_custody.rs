@@ -24,6 +24,8 @@ pub use eligible::{
     AudioCandidateDomainPreparationProgress, AudioCandidateDomainRefusal,
     AudioCandidateDomainReservation, AudioCandidateDomainStartError, AudioCandidateDomainToken,
     AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -412,6 +414,43 @@ impl CandidateRoot {
     pub(crate) fn eligible_claims_open(&self) -> bool {
         self.0.eligible.claims_open()
     }
+    pub(crate) fn reserve_runtime_preparation(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+        domains: Vec<AudioCandidateDomainToken>,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        {
+            let bank = lock(&self.0.bank);
+            if bank.closing || bank.retiring {
+                return Err(AudioCandidatePreparationRefusal {
+                    reason: "candidate Root is closing",
+                    domains,
+                });
+            }
+        }
+        let result = self
+            .0
+            .eligible
+            .reserve_runtime_preparation(reservation, domains);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn with_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<AudioCandidatePreparationProgress, &'static str> {
+        let result = self.0.eligible.with_runtime_preparation(token, prepare);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn cancel_runtime_preparation(&self, token: AudioCandidatePreparationToken) -> bool {
+        let result = self.0.eligible.cancel_runtime_preparation(token);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
     pub(crate) fn seal_publication(
         &self,
         owner: &mut AudioCandidateOwner,
@@ -551,6 +590,16 @@ impl CandidateRoot {
     }
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)
+    }
+    pub(crate) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.domain_is_sealed(token)
+    }
+    pub(crate) fn domain_covers_source(
+        &self,
+        token: AudioCandidateDomainToken,
+        source: &hex_engine::StreamedSourceMetadata,
+    ) -> bool {
+        self.0.eligible.domain_covers_source(token, source)
     }
     pub(crate) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
         let result = self.0.eligible.retire_domain(token);

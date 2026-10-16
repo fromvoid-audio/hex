@@ -259,3 +259,11 @@ without copying their source-plan maps; the sink observes generation changes
 before the corresponding event can wait for UI delivery. Idle request waits and
 full event delivery continue bounded sink polling, and ordinary worker exit calls
 its idempotent close. Default constructors retain the existing Resident path.
+
+`Request::RestartAudio` is a generation-checked, non-editing worker request.
+The injected `WorkerAudioSink::restart_audio` starts an asynchronous reopen;
+canonical generation replacement already notifies `canonical_changed` and does
+not require a duplicate restart request. Readiness/failure is correlated by the
+Desktop adapter, not a new Session-owned device endpoint. Snapshot preparation
+can target the native host's already-rooted construction cell without extracting
+its source bank, draft or runtime into Session ownership.

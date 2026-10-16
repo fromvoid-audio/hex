@@ -32,8 +32,48 @@ impl CanonicalAudioSourceSnapshot {
     pub fn sources(&self) -> &BTreeMap<hex_project::AssetId, crate::AudioSourceBinding> {
         &self.sources
     }
+    /// Current musical references only, excluding bindings retained solely for
+    /// Undo/Redo or unused asset records. This is a projection of the captured
+    /// Project, not a second editable model or native source authority.
+    pub fn required_sources(
+        &self,
+    ) -> impl Iterator<Item = (hex_project::AssetId, &crate::AudioSourceBinding)> {
+        self.sources.iter().filter_map(|(id, binding)| {
+            let arrangement = self.project.tracks().iter()
+                .any(|track| track.clips().iter().any(|clip| clip.asset() == *id));
+            let session = self.project.session_cells().iter().any(|cell| {
+                matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == *id)
+            });
+            (arrangement || session).then_some((*id, binding))
+        })
+    }
     pub fn context(&self) -> hex_engine::AudioSourceContext {
         self.context
+    }
+    /// Prepare inside the native host's reserved cell without extracting its
+    /// bank, draft or completed owner into the Session/Desktop adapter.
+    pub fn prepare_candidate_on_control(
+        &self,
+        source_catalog_generation: u64,
+        destination: &mut hex_engine::AudioCandidatePreparation,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        destination.prepare_on_control(&self.project, source_catalog_generation, self.context)
+    }
+    /// Keep a host's already-rooted input bank in place during all fallible
+    /// preparation. Native custody still comes only from the actual constructor.
+    pub fn begin_prepared_revision_in_place(
+        &self,
+        source_catalog_generation: u64,
+        custody: &mut hex_engine::AudioPreparationCustody,
+        inputs: &mut Option<hex_engine::OwnedAudioInputs>,
+    ) -> Result<hex_engine::AudioPreparationToken, Box<hex_engine::AudioArrangementStartRefusal>>
+    {
+        custody.begin_prepared_revision_in_place_on_control(
+            &self.project,
+            source_catalog_generation,
+            self.context,
+            inputs,
+        )
     }
     /// Borrow the exact captured Project and copy its paired canonical context.
     /// Catalog generation validates media keys and is not document generation.

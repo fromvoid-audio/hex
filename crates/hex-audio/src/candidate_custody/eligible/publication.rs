@@ -24,6 +24,12 @@ mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
+mod preparation;
+use preparation::PreparationExecution;
+pub use preparation::{
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
+};
 mod disposal;
 pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
@@ -63,6 +69,8 @@ struct Life {
 struct RuntimeSlot {
     incarnation: u64,
     identity: Option<AudioCandidateIdentity>,
+    preparation_reservation: Option<AudioCandidatePreparationReservation>,
+    preparation_retiring: bool,
     phase: Phase,
     archive: usize,
     life: Arc<Life>,
@@ -83,6 +91,8 @@ impl RuntimeSlot {
         Self {
             incarnation: 0,
             identity: None,
+            preparation_reservation: None,
+            preparation_retiring: false,
             phase: Phase::Vacant,
             archive: 0,
             life: Arc::new(Life {
@@ -133,6 +143,7 @@ struct BankDrop {
 }
 #[derive(Default)]
 pub(super) struct Work {
+    preparations: Vec<Option<PreparationExecution>>,
     anchors: Vec<Option<AudioCandidateAnchors>>,
     executions: Vec<Option<Execution>>,
     failed_payloads: Vec<Option<Box<dyn Any + Send>>>,
@@ -237,6 +248,9 @@ impl Bank {
         let declared = [
             reservation
                 .runtime_slots
+                .checked_mul(std::mem::size_of::<Option<PreparationExecution>>()),
+            reservation
+                .runtime_slots
                 .checked_mul(std::mem::size_of::<RuntimeSlot>()),
             reservation
                 .archive_slots
@@ -282,6 +296,11 @@ impl Bank {
         work.failed_payloads
             .try_reserve_exact(reservation.receipt_rows)
             .map_err(|_| "could not reserve failure custody")?;
+        work.preparations
+            .try_reserve_exact(reservation.runtime_slots)
+            .map_err(|_| "could not reserve preparation cells")?;
+        work.preparations
+            .resize_with(reservation.runtime_slots, || None);
         work.banks
             .try_reserve_exact(reservation.runtime_slots)
             .map_err(|_| "could not reserve abandoned bank custody")?;
@@ -295,6 +314,9 @@ impl Bank {
         work.failed_payloads
             .resize_with(reservation.receipt_rows, || None);
         bank.metadata_bytes = [
+            work.preparations
+                .capacity()
+                .checked_mul(std::mem::size_of::<Option<PreparationExecution>>()),
             bank.slots
                 .capacity()
                 .checked_mul(std::mem::size_of::<RuntimeSlot>()),
@@ -518,6 +540,14 @@ impl super::Custody {
                 peak_total = peak_total
                     .checked_add(slot.peak)
                     .ok_or("constructor construction DATA overflow")?;
+                if let Some(pending) = slot.preparation_reservation {
+                    members = members
+                        .checked_add(pending.member_rows)
+                        .ok_or("constructor pending member reservation overflow")?;
+                    transfers = transfers
+                        .checked_add(pending.transfer_rows)
+                        .ok_or("constructor pending transfer reservation overflow")?;
+                }
                 if let Some(summary) = slot.summary {
                     members = members
                         .checked_add(summary.member_rows)
@@ -700,7 +730,12 @@ impl Bank {
             matches!(
                 slot.phase,
                 Phase::Returned | Phase::Cleaning | Phase::Failed
-            ) || (abandoned && matches!(slot.phase, Phase::Accepted | Phase::Complete))
+            ) || (slot.phase == Phase::Reserved && slot.preparation_retiring)
+                || (abandoned
+                    && matches!(
+                        slot.phase,
+                        Phase::Accepted | Phase::Complete | Phase::Reserved
+                    ))
         })
     }
     pub(super) fn complete(&self) -> bool {

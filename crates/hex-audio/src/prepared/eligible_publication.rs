@@ -77,6 +77,25 @@ impl PublicationControl {
         })
     }
 
+    /// Exact accepted, nonretiring sealed catalog association. This remains
+    /// meaningful for source-free successors; it is not page readiness.
+    pub fn audio_candidate_domain_is_sealed(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.domain_is_sealed(token)
+    }
+    /// Borrowed worker-side coverage check against the actual retained sealed
+    /// catalog and exact Root slot/incarnation. Neutral file facts alone cannot
+    /// make an unrelated or already-retiring token cover a source.
+    pub fn audio_candidate_domain_covers_source(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+        source: &hex_engine::StreamedSourceMetadata,
+    ) -> bool {
+        self.candidate_root.domain_covers_source(token, source)
+    }
+
     /// Reserve the opted-in constructor Root before its first accepted owner.
     /// The existing channel must be vacant; legacy publication stays unchanged
     /// on channels that do not opt in.
@@ -129,6 +148,41 @@ impl PublicationControl {
         self.status.constructor_mode.store(true, Release);
 
         Ok(())
+    }
+    /// Reserve persistent graph construction in one existing runtime/archive
+    /// cell before copying source rows or constructing a bank. The returned
+    /// scalar token grants neither publication nor a no-install receipt.
+    pub fn reserve_audio_candidate_preparation(
+        &mut self,
+        reservation: crate::AudioCandidatePreparationReservation,
+        domains: Vec<crate::AudioCandidateDomainToken>,
+    ) -> Result<crate::AudioCandidatePreparationToken, crate::AudioCandidatePreparationRefusal>
+    {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidatePreparationRefusal {
+                reason: "candidate native custody unavailable",
+                domains,
+            });
+        }
+        self.candidate_root
+            .reserve_runtime_preparation(reservation, domains)
+    }
+    /// The closure executes on the worker while dedicated construction custody
+    /// remains rooted. No ordinary bank/terminal lock spans copies or compilation.
+    pub fn prepare_audio_candidate_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
+        self.candidate_root.with_runtime_preparation(token, prepare)
+    }
+    pub fn cancel_audio_candidate_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+    ) -> bool {
+        self.candidate_root.cancel_runtime_preparation(token)
     }
     /// Cancel this exact retained slot/incarnation before its callback apply
     /// decision. No owning handle or per-call allocation escapes the Root.

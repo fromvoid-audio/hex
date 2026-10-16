@@ -22,6 +22,7 @@ struct Slot {
     ever_used: bool,
     request: Option<Request>,
     response: Option<ResidentPublicationResponse>,
+    cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
 pub(super) struct ResidentForwarding {
     slot: Mutex<Slot>,
@@ -37,7 +38,11 @@ impl ResidentForwarding {
     }
     fn virgin(&self) -> bool {
         self.slot.try_lock().is_ok_and(|slot| {
-            !slot.ever_used && !slot.busy && slot.request.is_none() && slot.response.is_none()
+            !slot.ever_used
+                && !slot.busy
+                && slot.request.is_none()
+                && slot.response.is_none()
+                && slot.cancellation.is_none()
         })
     }
     pub(super) fn storage(
@@ -119,6 +124,27 @@ impl Client {
         });
         Ok(token)
     }
+    /// Resident conditional-seek cancellation borrows the worker's actual
+    /// cancellation object through the same finite compatibility cell. It never
+    /// clones an owner into the UI. Contention is Busy, not a no-match result;
+    /// callers retain/retry until cancellation or an actual terminal observation.
+    pub fn cancel_fresh_runtime_publication(
+        &self,
+        revision: u64,
+    ) -> FreshRuntimeCancellationResult {
+        let Some(endpoint) = self.owner_ref() else {
+            return FreshRuntimeCancellationResult::UnknownRevision;
+        };
+        let Ok(slot) = endpoint.resident_forwarding.slot.try_lock() else {
+            return FreshRuntimeCancellationResult::Busy;
+        };
+        slot.cancellation
+            .as_ref()
+            .filter(|c| c.revision == revision)
+            .map_or(FreshRuntimeCancellationResult::UnknownRevision, |c| {
+                c.request_cancel()
+            })
+    }
     /// Nonblocking; a contended slot remains pending. The accepted revision is
     /// still distinct from Status.applied_revision produced by the callback.
     pub fn try_resident_publication_response(&mut self) -> Option<ResidentPublicationResponse> {
@@ -129,6 +155,26 @@ impl Client {
     }
 }
 impl PublicationControl {
+    pub(super) fn update_resident_cancellation(&self) {
+        let Some(bridge) = &self.resident_forwarding else {
+            return;
+        };
+        let previous = {
+            let mut slot = match bridge.slot.lock() {
+                Ok(slot) => slot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::replace(
+                &mut slot.cancellation,
+                self.latest_fresh_runtime_cancellation
+                    .as_ref()
+                    .map(Arc::clone),
+            )
+        };
+        // A possibly final cancellation handle never drops under the cell lock
+        // or on the Client thread. Verified construction requires virgin None.
+        drop(previous);
+    }
     pub(super) fn resident_forwarding_virgin(&self) -> bool {
         self.resident_forwarding
             .as_ref()
@@ -249,6 +295,69 @@ mod tests {
         }
         assert_eq!(client.status().unwrap().applied_revision.load(Acquire), 1);
         assert!(client.try_resident_publication_response().is_none());
+        let fence = client.capture_fresh_runtime_fence().unwrap();
+        assert_eq!(
+            worker.control().unwrap().capture_fresh_runtime_fence(),
+            Some(fence)
+        );
+        let request = client
+            .forward_resident_publication(
+                playback(),
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                7,
+            )
+            .unwrap();
+        worker.control().unwrap().poll_resident_publication();
+        let response = client.try_resident_publication_response().unwrap();
+        assert_eq!(response.token, request);
+        let submitted = response.result.unwrap();
+        assert_eq!(
+            client.cancel_fresh_runtime_publication(submitted + 1),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        assert_eq!(
+            client.cancel_fresh_runtime_publication(submitted),
+            FreshRuntimeCancellationResult::Cancelled
+        );
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(client.status().unwrap().applied_revision.load(Acquire), 1);
+        assert_eq!(
+            client.status().unwrap().rejected_revision(),
+            Some((submitted, PlaybackHandoffRejection::FreshRuntimeCancelled))
+        );
+        worker.control().unwrap().reclaim();
+        let fence = client.capture_fresh_runtime_fence().unwrap();
+        client
+            .forward_resident_publication(
+                playback(),
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                7,
+            )
+            .unwrap();
+        worker.control().unwrap().poll_resident_publication();
+        let successor = client
+            .try_resident_publication_response()
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(
+            client.cancel_fresh_runtime_publication(submitted),
+            FreshRuntimeCancellationResult::UnknownRevision
+        );
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(
+            client.status().unwrap().applied_revision.load(Acquire),
+            successor
+        );
+        assert_eq!(
+            client.cancel_fresh_runtime_publication(successor),
+            FreshRuntimeCancellationResult::Complete
+        );
+        worker.control().unwrap().reclaim();
         client.close();
         worker.close();
         drop(data);
@@ -284,6 +393,10 @@ mod tests {
             &identity
         ));
         assert!(client.try_resident_publication_response().is_none());
+        assert_eq!(
+            client.cancel_fresh_runtime_publication(1),
+            FreshRuntimeCancellationResult::Busy
+        );
         drop(held);
         client.close();
         worker.close();

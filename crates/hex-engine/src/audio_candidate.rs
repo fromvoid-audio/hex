@@ -2,7 +2,9 @@
 //! Teardown follows original177 claims_teardown's Pending-before-take protocol.
 mod claimed;
 mod draft;
+mod preparation;
 pub use draft::AudioCandidateDraft;
+pub use preparation::AudioCandidatePreparation;
 mod storage;
 pub use storage::AudioCandidateConstructorSummary;
 pub(crate) mod groups;

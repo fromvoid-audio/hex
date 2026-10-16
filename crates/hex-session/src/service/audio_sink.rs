@@ -18,6 +18,12 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
+    /// Start a correlated reopen on the existing lifecycle lane. Implementations
+    /// must relinquish the old output before returning; readiness is reported
+    /// separately without waiting for a Client or UI event delivery.
+    fn restart_audio(&mut self, _project_generation: u64, _request_id: u64) -> Result<(), String> {
+        Err("audio restart is unavailable".into())
+    }
     /// Relinquish output/publication custody without waiting for UI collection.
     /// Idempotent; called on the Session worker on every ordinary exit.
     fn close(&mut self);
@@ -63,6 +69,16 @@ impl WorkerEvents {
     }
     pub(super) fn take_startup_error(&mut self) -> Option<String> {
         self.startup_error.take()
+    }
+    pub(super) fn restart_audio(
+        &mut self,
+        project_generation: u64,
+        request_id: u64,
+    ) -> Result<(), String> {
+        self.audio
+            .as_mut()
+            .ok_or_else(|| "audio adapter unavailable".to_owned())?
+            .restart_audio(project_generation, request_id)
     }
     fn poll(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
@@ -128,6 +144,7 @@ mod tests {
         sources: Mutex<Vec<(u64, u64, thread::ThreadId)>>,
         polls: AtomicUsize,
         closed: Mutex<Option<thread::ThreadId>>,
+        restarts: Mutex<Vec<(u64, u64, thread::ThreadId)>>,
     }
     struct Sink {
         observed: Arc<Observation>,
@@ -148,6 +165,14 @@ mod tests {
                 context.editor_revision,
                 thread::current().id(),
             ));
+        }
+        fn restart_audio(&mut self, generation: u64, request_id: u64) -> Result<(), String> {
+            self.observed.restarts.lock().unwrap().push((
+                generation,
+                request_id,
+                thread::current().id(),
+            ));
+            Ok(())
         }
         fn poll(&mut self) {
             self.observed.polls.fetch_add(1, Ordering::SeqCst);
@@ -208,6 +233,53 @@ mod tests {
         drop(service);
         wait(|| observed.closed.lock().unwrap().is_some());
         assert_ne!(observed.closed.lock().unwrap().unwrap(), caller);
+    }
+    #[test]
+    fn restart_is_generation_checked_worker_only_and_does_not_edit_canonical_state() {
+        let observed = Arc::new(Observation::default());
+        let service = Service::with_audio_sink(
+            16,
+            0,
+            None,
+            Box::new(Sink {
+                observed: observed.clone(),
+                fail: false,
+            }),
+        )
+        .unwrap();
+        let initial = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        for (generation, id, valid) in [(1, 1, false), (0, 0, false), (0, 2, true)] {
+            service
+                .submit(Request::RestartAudio {
+                    project_generation: generation,
+                    request_id: id,
+                })
+                .unwrap();
+            let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(event.state.revision, initial.state.revision);
+            assert_eq!(
+                event
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .context()
+                    .project_generation,
+                initial
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .context()
+                    .project_generation
+            );
+            assert_eq!(event.error.is_none(), valid);
+            assert!(event.playback.is_none());
+        }
+        let rows = observed.restarts.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].0, rows[0].1), (0, 2));
+        assert_ne!(rows[0].2, thread::current().id());
     }
     #[test]
     fn failed_device_initialization_keeps_offline_canonical_edits_available() {
