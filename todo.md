@@ -3122,6 +3122,13 @@ remain outstanding. Native interaction/listening and Windows evidence remain
 separate from automated source checks.
 # 16 October 2026 — lfo assignment #2383 / pr173
 
+The strengthened rendered regression reproduced the depth caption overlapping
+navigation in synced mode at 880 px. Shared destination-caption rows and tighter
+vertical spacing repair the layout without replacing controls or focus owners.
+Free/synced modes at 880/1440 px now check caption boundaries against the actual
+navigation rail. Final integrated exact-source CI supersedes earlier-head evidence;
+native pixel/input/listening and reference acceptance remain separate.
+
 Recovered the existing canonical PR and preserved its commit history while
 integrating current main. The resulting change is limited to discoverable
 oscillator pitch mapping, selected-destination/depth readback and focused
@@ -3131,4 +3138,16 @@ See docs/operator-lfo-assignment.md for scope, reference limitations and the fin
 native checklist. Exact-source full CI and optimized delivery evidence are
 recorded separately with the PR/build; native/listening/reference review remains
 open, including deferred #2384 acceptance.
+
+## 16 October 2026 — deterministic stream shutdown fixture (#2636 / PR252)
+
+Moved the undrained-ready-queue shutdown fixture to its owning runtime unit tests
+with test-only real-worker barriers/publication observations. A deliberately
+delayed worker reproduced the old 30 ms setup assumption: zero queued pages were
+correctly reclaimed, so the expected-one assertion failed. The repaired fixture
+waits for one actual queued page and one actual worker-held page before shutdown;
+the negative control retains complete join/pool accounting with zero publication.
+Normal and allocation-probe stream suites pass. Final exact-source CI is recorded
+with PR252. Production shutdown, queue bounds and native streaming admission are
+unchanged; no new native-device or physical-deadline acceptance is claimed.
 
