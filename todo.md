@@ -1,3 +1,13 @@
+## eq8 response measurement tooling — PR198 / #2251, 16 october 2026
+
+Reviewed actual prepared-response export and the bounded uncertainty comparator.
+Reproduced/fixed parser-recursion traceback and wrong-caller-checkout source
+attribution. All14 comparator and4 exporter tests pass, plus direct wrong-checkout
+provenance probes. Full exact-source checks are recorded with PR198. No measured
+Live dataset, adaptive-Q law/toggle or reference/native acceptance is claimed;
+parent acceptance remains open. Pulse requires reauthentication here; no ticket
+completion is claimed.
+
 ## isolated eq8 oversampling study — PR191 / #2252, 16 october 2026
 
 Private test-only halfband processing, independent response/convolution oracles,

@@ -29,7 +29,10 @@ is explicit. LR/MS outputs are working lanes, not physical L/R measurements.
 The example calls the actual EQ definition/state preparation and
 PreparedNativeProcessor::frequency_response_at_hz for every query. No filter math
 is reproduced. The current API consumes/returns f32, while existing coefficient
-preparation is f64. Metadata records state version, Git source/dirty status and
+preparation is f64. Git metadata resolves from the checkout used to compile the helper, independently
+of the caller's working directory. It is source metadata, not binary attestation;
+use the documented locked Cargo invocation in the exact clean checkout for evidence.
+Metadata records state version, Git source/dirty status and
 actual f32-authored configuration (including signed zero). The CSV contains
 query_hz,lane0_linear,lane1_linear. These are steady-state magnitudes, not phase,
 latency, impulse, runtime automation, listening or hardware acceptance. Preserve
@@ -99,5 +102,14 @@ grid/count/hash/missing/malformed/provenance/schema/path failures, dirty source
 and unsupported adaptive comparison. Strict affected Clippy and required full
 local CI must pass on final exact source. These checks prove tooling only; no
 callback/native/reference acceptance is inferred. Native staged review artifacts
-and actual correctness/listening review remain separate, with no Hex deployment,
-merge, release or Done authorization.
+and actual correctness/listening review remain separate, without completing adaptive-Q/reference acceptance. Source merge follows the
+standing exact-source policy in AGENTS.md; deployment and native acceptance are
+separate.
+
+16 October 2026 integration review reproduced two tooling defects: deeply nested
+JSON escaped as a traceback, and invocation from another clean Git checkout
+misattributed the source SHA/dirty flag. The comparator now returns its explicit
+refusal status for parser recursion; the exporter uses its compiled source
+checkout for Git metadata. Direct wrong-checkout probes passed after repair.
+Current full local-CI evidence is recorded with PR198. No measured reference
+dataset or adaptive-Q law is added.

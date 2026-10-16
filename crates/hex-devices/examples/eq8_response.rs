@@ -142,7 +142,12 @@ impl Query {
     }
 }
 fn git(args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).output()?;
+    // Attribute data to this helper's source checkout, even when invoked from
+    // another repository. This is source metadata, not binary attestation.
+    let output = Command::new("git")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(args)
+        .output()?;
     if !output.status.success() {
         return Err("source provenance unavailable; run inside canonical checkout".into());
     }

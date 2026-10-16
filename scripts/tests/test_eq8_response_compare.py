@@ -70,7 +70,8 @@ class ComparisonTests(unittest.TestCase):
 
     def test_unknown_duplicate_and_nonfinite_json(self):
         paths = self.write()
-        for content in ['{"schema":1,"schema":1}', '{"schema":NaN}', '{"schema":1,"extra":0}']:
+        for content in ['{"schema":1,"schema":1}', '{"schema":NaN}', '{"schema":1,"extra":0}',
+                        '[' * 10000 + '0' + ']' * 10000]:
             paths[0].write_text(content)
             with self.assertRaises(MODULE.DatasetError):
                 MODULE.compare(*paths)
@@ -127,6 +128,12 @@ class ComparisonTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(SPEC.origin), *map(str, paths)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 2)
         self.assertIn('missing/unreadable', result.stderr)
+        paths = self.write()
+        paths[0].write_text('[' * 10000 + '0' + ']' * 10000)
+        result = subprocess.run([sys.executable, str(SPEC.origin), *map(str, paths)], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('comparison refused:', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
 
     def test_size_and_point_bounds_are_enforced(self):
         path = self.root / 'oversized'

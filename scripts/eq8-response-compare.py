@@ -69,7 +69,7 @@ def decode_json(data):
     try:
         return json.loads(data, object_pairs_hook=unique_object,
                           parse_constant=lambda _: (_ for _ in ()).throw(DatasetError('nonfinite JSON')))
-    except (ValueError, UnicodeError) as error:
+    except (ValueError, UnicodeError, RecursionError) as error:
         raise DatasetError(f'malformed JSON: {error}') from error
 
 
