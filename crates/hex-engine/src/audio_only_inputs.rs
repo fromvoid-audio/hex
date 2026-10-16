@@ -193,6 +193,16 @@ pub struct AudioInputsRefusal {
     pub capacity: AudioPreparationCapacity,
 }
 impl OwnedAudioInputs {
+    /// Scalar conservation observation only; no source/vector/owner escapes.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_bank_identity(&self) -> (usize, usize, u64, u64) {
+        (
+            self.sources.as_ptr() as usize,
+            self.sources.capacity(),
+            self.bank,
+            self.custodian,
+        )
+    }
     pub fn try_new(
         sources: Vec<(AssetId, OwnedAudioSource)>,
         reservation: AudioStorageReservation,

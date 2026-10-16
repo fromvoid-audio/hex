@@ -414,7 +414,7 @@ impl SessionPlayback {
         }
         Ok(())
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_track_boxes(
         &self,
         track: hex_project::TrackId,
@@ -430,7 +430,7 @@ impl SessionPlayback {
                 if a > b { (b, a) } else { (a, b) }
             })
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_tail_boxes(
         &self,
         track: hex_project::TrackId,
@@ -450,7 +450,7 @@ impl SessionPlayback {
                 if a > b { (b, a) } else { (a, b) }
             })
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
         let slot = self
             .tail_track_ids

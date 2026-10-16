@@ -383,6 +383,12 @@ impl Default for Status {
 }
 
 impl Status {
+    pub(crate) fn candidate_boundary_data_bytes(&self) -> Option<usize> {
+        self.route_slots
+            .len()
+            .checked_mul(std::mem::size_of::<AtomicRouteSlot>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(self)))
+    }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
             device_fault: AtomicBool::new(false),
@@ -736,6 +742,8 @@ pub struct Callback {
     route_slot_visits: usize,
     #[cfg(test)]
     test_transient_handoff_refusals: usize,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    test_eligible_transfer_allowance: Option<usize>,
     #[cfg(test)]
     test_after_fresh_fence_validation: Option<std::sync::Arc<std::sync::Barrier>>,
     #[cfg(test)]
@@ -827,6 +835,8 @@ pub fn channel_with_spectrum(
             route_slot_visits: 0,
             #[cfg(test)]
             test_transient_handoff_refusals: 0,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            test_eligible_transfer_allowance: None,
             #[cfg(test)]
             test_after_fresh_fence_validation: None,
             #[cfg(test)]
@@ -1271,6 +1281,14 @@ impl Callback {
         self.active = Some(ActivePublication::Candidate(active));
         self.publication_pending.store(false, Release);
         Ok(())
+    }
+    pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
+        Arc::ptr_eq(&self.status, status)
+    }
+    pub(crate) fn candidate_root_for_native_boundary(
+        &self,
+    ) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
     }
     pub(crate) fn belongs_to_candidate_root(
         &self,
@@ -2229,6 +2247,9 @@ impl Callback {
         }
 
         let capability = playback.session_capability_status();
+        self.status
+            .session_capability
+            .store(capability as u32, Relaxed);
         let count = if capability == SessionCapabilityStatus::Available {
             playback.session_route_count()
         } else {

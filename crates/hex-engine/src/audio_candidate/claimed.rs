@@ -209,30 +209,48 @@ impl AudioCandidateAnchors {
     }
 }
 impl ClaimedAudioCandidateRuntime {
-    #[cfg(test)]
-    pub(super) fn test_set_owned_runtime_reservation(&mut self, bytes: usize) -> Option<usize> {
+    /// Non-default fixture pressure on the real transfer preflight allowance.
+    /// This changes no owner/location/activity flag and exposes no runtime.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_set_owned_runtime_reservation(&mut self, bytes: usize) -> Option<usize> {
         self.inner.owned_runtime_bytes.replace(bytes)
     }
-    #[cfg(test)]
-    pub(super) fn test_track_boxes(
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_track_boxes(
         &self,
         id: hex_project::TrackId,
     ) -> Option<(Option<usize>, Option<usize>)> {
         self.inner.runtime.as_ref()?.playback.test_track_boxes(id)
     }
-    #[cfg(test)]
-    pub(super) fn test_tail_boxes(
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_tail_boxes(
         &self,
         id: hex_project::TrackId,
     ) -> Option<(Option<usize>, Option<usize>)> {
         self.inner.runtime.as_ref()?.playback.test_tail_boxes(id)
     }
-    #[cfg(test)]
-    pub(super) fn test_tail_activity(&self, id: hex_project::TrackId) -> Option<(bool, bool)> {
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_tail_activity(&self, id: hex_project::TrackId) -> Option<(bool, bool)> {
         self.inner.runtime.as_ref()?.playback.test_tail_activity(id)
     }
     pub fn identity(&self) -> AudioCandidateIdentity {
         self.inner.identity
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_prepared_strong_count(&self) -> Option<usize> {
+        self.inner
+            .runtime
+            .as_ref()?
+            .playback
+            .prepared_revision()
+            .map(std::sync::Arc::strong_count)
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_runtime_address(&self) -> Option<usize> {
+        self.inner
+            .runtime
+            .as_ref()
+            .map(|r| r.as_ref() as *const RuntimeOwner as usize)
     }
     pub fn sample_rate(&self) -> Option<u32> {
         self.inner

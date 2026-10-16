@@ -3257,8 +3257,11 @@ admission, OS-stop success, deadline, listening or complete-cost claim is made.
 - Connected actual ring reservation and terminal-serialized split/fill to callback
   preinstall rejection, held-return pressure and original-bank lifecycle recovery.
   Control-first terminal draining completes autonomous cleanup; no install ACK is
-  issued on rejection. The same-owner active slot now has headless real install,
-  applied ACK, handoff, PCM/Stop and coupled terminal-return controls; all139 audio
-  allocation-feature lib tests pass. Production native witness gating/cancellation
-  and remaining native controls are unfinished within PR236. Production admission remains
-  refused; streamed readiness and full24/177 acceptance remain open.
+  issued on rejection. The same-owner active slot now uses actual sealed native
+  resources for resident install/ACK, PCM/Stop, real Utility A→B→C subset transfer
+  and coupled terminal return. Verified streamed domains reuse the actual pair,
+  refuse wrong context and retain report barriers; installation remains readiness-
+  refused. Exact cancellation, actual transfer-pressure Retry, both release orders,
+  missing carrier/resource pressure and post-extraction destructor panic have
+  focused controls. Final integrated local-CI evidence will be recorded with PR236;
+  fresh-runtime policies, readiness and full24/177/native acceptance remain open.

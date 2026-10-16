@@ -6,13 +6,73 @@ impl Claims {
         root: &CandidateRoot,
         runtime: &ClaimedAudioCandidateRuntime,
     ) -> bool {
+        root.eligible_claims_open() && self.matches_custody(root, runtime)
+    }
+    // Revoking installation never revokes the original physical return owner.
+    fn matches_custody(
+        &self,
+        root: &CandidateRoot,
+        runtime: &ClaimedAudioCandidateRuntime,
+    ) -> bool {
         self.root.same_root(root)
+            && self.resources.covers(self.stamp.root)
             && self.stamp.owner == runtime.identity()
             && self.life.live.load(Ordering::Acquire)
             && self.life.incarnation.load(Ordering::Relaxed) == self.stamp.incarnation
     }
 }
 impl Custody {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(in crate::candidate_custody) fn test_return_metadata_dropped(
+        &self,
+        ticket: &AudioCandidateTicket,
+    ) -> bool {
+        let Ok(work) = self.work.try_lock() else {
+            return false;
+        };
+        work.publication
+            .executions
+            .get(ticket.stamp.slot)
+            .and_then(Option::as_ref)
+            .is_some_and(|execution| {
+                execution.returned.stamp == ticket.stamp
+                    && execution.proof_recorded
+                    && execution.returned.state.is_none()
+                    && !execution.failed
+                    && !execution.pending
+            })
+    }
+
+    pub(in crate::candidate_custody) fn cancel_publication(
+        &self,
+        ticket: &AudioCandidateTicket,
+    ) -> AudioCandidateCancellationResult {
+        let Ok(bank) = self.bank.try_lock() else {
+            return AudioCandidateCancellationResult::Unavailable;
+        };
+        let stamp = ticket.stamp;
+        let Some(slot) = bank.publication.slots.get(stamp.slot) else {
+            return AudioCandidateCancellationResult::Unavailable;
+        };
+        if bank.root != stamp.root
+            || slot.incarnation != stamp.incarnation
+            || slot.identity != Some(stamp.owner)
+            || slot.phase == Phase::Vacant
+        {
+            return AudioCandidateCancellationResult::Unavailable;
+        }
+        match slot.life.cancellation.compare_exchange(
+            PENDING,
+            CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(CANCELLED) => AudioCandidateCancellationResult::Cancelled,
+            Err(APPLYING) => AudioCandidateCancellationResult::Applying,
+            _ => AudioCandidateCancellationResult::Complete,
+        }
+    }
+
     pub(in crate::candidate_custody) fn ingest_publication(
         &self,
         root: &CandidateRoot,
@@ -35,7 +95,7 @@ impl Custody {
                         && state
                             .claims
                             .as_ref()
-                            .is_none_or(|c| c.matches(root, runtime))
+                            .is_none_or(|c| c.matches_custody(root, runtime))
                 })
                 && state.revision == slot.life.revision.load(Ordering::Acquire)
                 && state.retired_runtime.is_none()
@@ -119,7 +179,7 @@ impl Custody {
                 }
             }
             if failed {
-                bank_guard.closing = true;
+                self.mark_closing(&mut bank_guard);
             }
         }
         let Work {
@@ -208,7 +268,7 @@ impl Custody {
             };
             if execution.failed {
                 let mut bank = lock(&self.bank);
-                bank.closing = true;
+                self.mark_closing(&mut bank);
                 bank.publication.slots[stamp.slot].phase = Phase::Failed;
                 continue;
             }
@@ -226,7 +286,7 @@ impl Custody {
                 {
                     execution.failed = true;
                     slot.phase = Phase::Failed;
-                    bank.closing = true;
+                    self.mark_closing(&mut bank);
                     continue;
                 }
                 if let (Some(inputs), Some(disposed)) =
@@ -250,7 +310,7 @@ impl Custody {
                 Err(payload) => {
                     failed_payloads[index] = Some(payload);
                     let mut bank = lock(&self.bank);
-                    bank.closing = true;
+                    self.mark_closing(&mut bank);
                     bank.publication.slots[stamp.slot].phase = Phase::Failed;
                 }
             }
@@ -291,14 +351,14 @@ impl Custody {
                 {
                     drop_work.first_panic = Some(payload);
                     let mut bank = lock(&self.bank);
-                    bank.closing = true;
+                    self.mark_closing(&mut bank);
                     bank.publication.slots[index].phase = Phase::Failed;
                     continue;
                 }
                 let stamp = drop_work.stamp;
                 let mut bank = lock(&self.bank);
                 if !release_slot(&mut bank, stamp, Phase::Cleaning) {
-                    bank.closing = true;
+                    self.mark_closing(&mut bank);
                     bank.publication.slots[index].phase = Phase::Failed;
                     continue;
                 }

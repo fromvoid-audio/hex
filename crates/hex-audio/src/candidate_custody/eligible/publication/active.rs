@@ -9,7 +9,7 @@ pub(crate) struct FinalReturn(Returned);
 pub(crate) enum InstallDecision {
     Ready,
     Retry,
-    Refused,
+    Refused(hex_engine::PlaybackHandoffRejection),
 }
 impl Claims {
     fn matches_state(&self, state: &State, root: &CandidateRoot) -> bool {
@@ -31,6 +31,13 @@ impl Drop for Claims {
     }
 }
 impl Queued {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_set_transfer_allowance(&mut self, bytes: usize) -> Option<usize> {
+        self.state
+            .runtime
+            .as_mut()?
+            .test_set_owned_runtime_reservation(bytes)
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.state.revision
     }
@@ -47,16 +54,58 @@ impl Queued {
             || next.retired_runtime.is_some()
             || next.manifest.is_some()
             || next.covering_successor.is_some()
-            || next
-                .runtime
-                .as_ref()
-                .is_none_or(|r| r.contains_streamed_sources())
             || next.policy != crate::prepared::PublicationPolicy::InheritRuntime
         {
-            return InstallDecision::Refused;
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
+        }
+        if next
+            .runtime
+            .as_ref()
+            .is_none_or(|r| r.contains_streamed_sources())
+        {
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
+            );
+        }
+        let decision = next.claims.as_ref().map(|claims| &claims.life.cancellation);
+        let Some(decision) = decision else {
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
+        };
+        if decision.load(Ordering::Acquire) == CANCELLED {
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
+            );
         }
         let Some(previous) = previous else {
-            return InstallDecision::Ready;
+            // Admission linearizes at this final open observation for an apply
+            // that wins its CAS. Closure observed before it refuses; a decision
+            // already in flight may finish under ordinary shutdown semantics.
+            if !root.eligible_claims_open() {
+                return InstallDecision::Refused(
+                    hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+                );
+            }
+            return match decision.compare_exchange(
+                PENDING,
+                APPLYING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) | Err(APPLYING) => {
+                    decision.store(FINISHED, Ordering::Release);
+                    InstallDecision::Ready
+                }
+                Err(CANCELLED) => InstallDecision::Refused(
+                    hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
+                ),
+                _ => InstallDecision::Refused(
+                    hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+                ),
+            };
         };
         let old = &mut previous.state;
         if !old
@@ -67,10 +116,14 @@ impl Queued {
             || old.covering_successor.is_some()
             || old.retired_runtime.is_some()
         {
-            return InstallDecision::Refused;
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
         }
         let Some(successor) = next.spare_successor.as_mut() else {
-            return InstallDecision::Refused;
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
         };
         if successor.stamp != next.stamp
             || successor.successor_dependency
@@ -80,9 +133,34 @@ impl Queued {
                 .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {
-            return InstallDecision::Refused;
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
         }
         successor.successor_dependency = true;
+        if !root.eligible_claims_open() {
+            successor.successor_dependency = false;
+            successor
+                .life
+                .successor_dependencies
+                .store(0, Ordering::Release);
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+            );
+        }
+        if !matches!(
+            decision.compare_exchange(PENDING, APPLYING, Ordering::AcqRel, Ordering::Acquire),
+            Ok(_) | Err(APPLYING)
+        ) {
+            successor.successor_dependency = false;
+            successor
+                .life
+                .successor_dependencies
+                .store(0, Ordering::Release);
+            return InstallDecision::Refused(
+                hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
+            );
+        }
         let result = next.runtime.as_mut().map(|runtime| {
             runtime.try_inherit_and_retire_in_place(
                 &mut old.runtime,
@@ -99,14 +177,25 @@ impl Queued {
                 .successor_dependencies
                 .store(0, Ordering::Release);
             return if result.is_some_and(|r| r.is_err_and(|e| e.is_transient())) {
+                // No owner/history/origin move occurred. Restore cancellable
+                // deferred custody; a racing cancellation can now win Pending.
+                let _ = decision.compare_exchange(
+                    APPLYING,
+                    PENDING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
                 InstallDecision::Retry
             } else {
-                InstallDecision::Refused
+                InstallDecision::Refused(
+                    hex_engine::PlaybackHandoffRejection::ConstructorClaimsUnavailable,
+                )
             };
         }
         old.runtime = next.retired_runtime.take();
         old.manifest = next.manifest.take();
         old.covering_successor = next.spare_successor.take();
+        decision.store(FINISHED, Ordering::Release);
         InstallDecision::Ready
     }
     /// Only called after prepare_install succeeds while both owners stay in

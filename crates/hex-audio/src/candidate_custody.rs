@@ -18,8 +18,8 @@ pub(crate) use eligible::publication::{
     Queued as QueuedEligibleCandidate, Returned as ReturnedEligibleCandidate,
 };
 pub use eligible::{
-    AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainToken,
-    AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,
+    AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
     AudioCandidatePublicationReservation,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -357,6 +357,23 @@ impl CandidateRoot {
             .eligible
             .configure(self.root_id(), reservation, bytes)
     }
+    pub(crate) fn record_native_boundary(
+        &self,
+        boundary: crate::native_callback_owner::NativeCandidateBoundary,
+    ) {
+        self.0.eligible.record_native_boundary(boundary);
+    }
+    pub(crate) fn anchor_native_boundary(
+        &self,
+        terminals: &crate::native_callback_owner::NativeTerminals,
+    ) {
+        self.0
+            .eligible
+            .anchor_native_boundary(self.root_id(), terminals);
+    }
+    pub(crate) fn native_boundary_bytes(&self) -> Option<usize> {
+        self.0.eligible.native_boundary_bytes(self.root_id())
+    }
     pub(crate) fn configure_publications(
         &self,
         reservation: AudioCandidatePublicationReservation,
@@ -376,6 +393,9 @@ impl CandidateRoot {
         self.0
             .eligible
             .configure_publications(self.root_id(), reservation, bytes)
+    }
+    pub(crate) fn eligible_claims_open(&self) -> bool {
+        self.0.eligible.claims_open()
     }
     pub(crate) fn seal_publication(
         &self,
@@ -415,6 +435,12 @@ impl CandidateRoot {
         )?;
         enqueue(queued);
         Ok(ticket)
+    }
+    pub(crate) fn cancel_eligible(
+        &self,
+        ticket: &AudioCandidateTicket,
+    ) -> AudioCandidateCancellationResult {
+        self.0.eligible.cancel_publication(ticket)
     }
     pub(crate) fn ingest_eligible(
         &self,
@@ -759,6 +785,14 @@ impl CandidateRoot {
         slot.domain_count = 0;
         Some(ready)
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_return_metadata_dropped(&self, ticket: &AudioCandidateTicket) -> bool {
+        self.0.eligible.test_return_metadata_dropped(ticket)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_strong_count(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
     #[cfg(test)]
     pub(crate) fn test_eligible_complete(&self) -> bool {
         self.0.eligible.complete()
@@ -849,6 +883,15 @@ impl CandidateRoot {
         )
     }
     pub(crate) fn report(&self) -> AudioCandidateCustodyReport {
+        if let Some(occupied_slots) = self.0.eligible.occupied_publications() {
+            // This public legacy scalar is never a complete native witness.
+            // Exact private DATA/resource custody does not resolve opaque bytes.
+            return AudioCandidateCustodyReport {
+                occupied_slots,
+                metadata_bytes: None,
+                runtime_and_shared_overhead_unknown: true,
+            };
+        }
         let execution = self.0.execution.try_lock().ok();
         let bank = lock(&self.0.bank);
         let mut bytes = bank

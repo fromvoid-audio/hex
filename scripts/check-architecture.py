@@ -32,7 +32,7 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
 }
 BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},

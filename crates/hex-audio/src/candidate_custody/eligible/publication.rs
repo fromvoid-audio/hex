@@ -7,7 +7,21 @@ use hex_engine::{
     AudioCandidateTransfer, AudioStorageLedgerReservation, ClaimedAudioCandidateRuntime,
 };
 use std::sync::atomic::{AtomicU32, AtomicUsize};
+const PENDING: u32 = 0;
+const APPLYING: u32 = 1;
+const CANCELLED: u32 = 2;
+const FINISHED: u32 = 3;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioCandidateCancellationResult {
+    Cancelled,
+    Applying,
+    Complete,
+    Unavailable,
+}
 mod active;
+mod resources;
+use resources::RootResourceWitness;
+pub(super) use resources::remaining_handle_reservation;
 mod disposal;
 pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
@@ -126,6 +140,7 @@ struct Claims {
     life: Arc<Life>,
     stamp: Stamp,
     successor_dependency: bool,
+    resources: RootResourceWitness,
 }
 pub(in crate::candidate_custody) struct Header {
     pub(in crate::candidate_custody) revision: u64,
@@ -152,9 +167,41 @@ pub(crate) struct Returned {
     stamp: Stamp,
     kind: AudioCandidateReturnKind,
 }
+impl Returned {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_runtime_address(&self) -> Option<usize> {
+        self.state
+            .as_ref()?
+            .runtime
+            .as_ref()?
+            .test_runtime_address()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_track_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        self.state
+            .as_ref()?
+            .runtime
+            .as_ref()?
+            .test_track_boxes(track)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_manifest_counts(
+        &self,
+        origin: AudioCandidateIdentity,
+    ) -> Option<(usize, usize)> {
+        let manifest = self.state.as_ref()?.manifest.as_ref()?;
+        Some((manifest.moved_groups(), manifest.moved_groups_from(origin)))
+    }
+}
 impl Queued {
     /// Called at the actual queue rejection frontier, never at staging time.
     pub(crate) fn reject_before_install(self) -> Returned {
+        if let Some(claims) = self.state.claims.as_ref() {
+            claims.life.cancellation.store(FINISHED, Ordering::Release);
+        }
         Returned {
             stamp: self.state.stamp,
             state: Some(self.state),
@@ -410,6 +457,7 @@ impl super::Custody {
                 .iter()
                 .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
                 .ok_or("constructor domain construction overflow")?;
+            let resources = resources::for_candidate(&bank, summary)?;
             let mut members = summary.member_rows;
             let mut transfers = summary.transfer_rows;
             for slot in &bank.publication.slots {
@@ -469,9 +517,10 @@ impl super::Custody {
                 archive,
                 retained,
                 peak,
+                resources,
             ))
         })();
-        let (stamp, archive, retained, peak) = match preflight {
+        let (stamp, archive, retained, peak, resources) = match preflight {
             Ok(value) => value,
             Err(reason) => {
                 return Err(AudioCandidateEligibleStageRefusal {
@@ -536,20 +585,27 @@ impl super::Custody {
         // A missing actual both-half proof cannot gain installation authority.
         // It still enters accepted persistent custody and the actual callback
         // rejection/normal disposal path, never a fake original-owner refusal.
-        if matched {
+        if matched
+            && self.claims_open()
+            && let Some(resources) = resources
+        {
             state.claims = Some(Claims {
                 root: root.clone(),
                 life: Arc::clone(&slot.life),
                 stamp,
                 successor_dependency: false,
+                resources,
             });
             state.spare_successor = Some(Claims {
                 root: root.clone(),
                 life: Arc::clone(&slot.life),
                 stamp,
                 successor_dependency: false,
+                resources,
             });
         }
+        let mut runtime = runtime;
+        let _ = runtime.set_device_metering(true);
         state.runtime = Some(runtime);
         slot.life.live.store(true, Ordering::Release);
         Ok((Queued { state }, AudioCandidateTicket { stamp }))
@@ -557,6 +613,15 @@ impl super::Custody {
 }
 
 impl Bank {
+    pub(super) fn occupied(&self) -> Option<usize> {
+        self.reservation?;
+        Some(
+            self.slots
+                .iter()
+                .filter(|slot| slot.phase != Phase::Vacant)
+                .count(),
+        )
+    }
     pub(super) fn retained_bytes(&self) -> Option<usize> {
         self.slots
             .iter()

@@ -65,6 +65,23 @@ impl ConstructorStreamDomain {
         max_retained_data_bytes: usize,
         max_construction_peak_data_bytes: usize,
     ) -> Result<Self, Box<StreamDomainSealRefusal>> {
+        Self::try_new_with_limits_on_control(
+            control,
+            pages,
+            max_retained_data_bytes,
+            max_construction_peak_data_bytes,
+            usize::MAX,
+        )
+    }
+    /// A host may additionally bound actual constructor shared/kernel handle
+    /// obligations. This is a resource count, never an opaque byte estimate.
+    pub fn try_new_with_limits_on_control(
+        control: StreamControl,
+        pages: StreamCallbackPages,
+        max_retained_data_bytes: usize,
+        max_construction_peak_data_bytes: usize,
+        max_shared_handle_bound: usize,
+    ) -> Result<Self, Box<StreamDomainSealRefusal>> {
         let result = (|| {
             let data = storage::closed_constructor_pair_data(&control, &pages)?;
             let listed_data_bytes = data
@@ -83,6 +100,12 @@ impl ConstructorStreamDomain {
                 .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
                 .ok_or(AudioStreamStorageError::Overflow)?;
             if pool_pcm_bytes > 32 * 1024 * 1024 {
+                return Err(AudioStreamStorageError::ReservationExceeded);
+            }
+            let shared_handle_bound = 19usize
+                .checked_add(data.worker.kernel_handles)
+                .ok_or(AudioStreamStorageError::Overflow)?;
+            if shared_handle_bound > max_shared_handle_bound {
                 return Err(AudioStreamStorageError::ReservationExceeded);
             }
             let disposal = PreparedStreamDisposal::try_prepare_on_control(&control, &pages)
@@ -119,9 +142,7 @@ impl ConstructorStreamDomain {
                 pool_pcm_bytes,
                 retained_data_bytes,
                 construction_peak_data_bytes,
-                shared_handle_bound: 19usize
-                    .checked_add(data.worker.kernel_handles)
-                    .ok_or(AudioStreamStorageError::Overflow)?,
+                shared_handle_bound,
                 kernel_handle_bound: data.worker.kernel_handles,
                 worker_lifetimes: 1,
                 catalog_channel_lifetimes: 1,

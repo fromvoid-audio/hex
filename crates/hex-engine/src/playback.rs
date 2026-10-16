@@ -194,6 +194,8 @@ pub enum PlaybackHandoffRejection {
     ActiveArrangementStateCannotBeDropped = 5,
     RuntimeFenceChanged = 6,
     FreshRuntimeCancelled = 7,
+    ConstructorClaimsUnavailable = 8,
+    StreamedPagesNotReady = 9,
 }
 
 impl PlaybackHandoffRejection {
@@ -227,6 +229,8 @@ impl PlaybackHandoffRejection {
             5 => Some(Self::ActiveArrangementStateCannotBeDropped),
             6 => Some(Self::RuntimeFenceChanged),
             7 => Some(Self::FreshRuntimeCancelled),
+            8 => Some(Self::ConstructorClaimsUnavailable),
+            9 => Some(Self::StreamedPagesNotReady),
             _ => None,
         }
     }
@@ -251,7 +255,9 @@ impl PlaybackHandoffRejection {
             Self::RuntimeFenceChanged => {
                 "fresh playback was rejected because the active runtime changed"
             }
-            Self::FreshRuntimeCancelled => "fresh playback was cancelled before it became active",
+            Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
+            Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
+            Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
         }
     }
 }
@@ -302,21 +308,21 @@ impl Playback {
             .ok_or(crate::AudioStorageError::UnsupportedGraph)?
             .validate_candidate_runtime_storage(metadata)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_track_boxes(
         &self,
         track: hex_project::TrackId,
     ) -> Option<(Option<usize>, Option<usize>)> {
         self.session_runtime.as_ref()?.test_track_boxes(track)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_tail_boxes(
         &self,
         track: hex_project::TrackId,
     ) -> Option<(Option<usize>, Option<usize>)> {
         self.session_runtime.as_ref()?.test_tail_boxes(track)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "instrument-test-support"))]
     pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
         self.session_runtime.as_ref()?.test_tail_activity(track)
     }

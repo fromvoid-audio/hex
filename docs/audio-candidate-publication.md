@@ -113,7 +113,9 @@ The private Root layer reserves actual runtime, archive, receipt and failure-cus
 backings before accepting an owner. Caller-selected finite DATA limits cover those
 capacities, lifecycle payloads and split overlap; impossible metadata requests
 refuse before per-cell allocation. Actual member/journal capacities, not nominal
-fixture counts, determine pressure. A synchronous refusal preserves the original
+fixture counts, determine pressure. The same finite handle-row reservation also
+bounds participating constructor handle obligations across occupied runtimes and
+domains, including failed and unconsumed reports. A synchronous refusal preserves the original
 owner and domain-token Vec.
 
 A successful split retains the original anchors and source-bound domain uses in
@@ -143,21 +145,63 @@ while remaining descendant origins continue holding their original archive.
 
 The private borrowed Legacy/Claimed operation view preserves bounded commands,
 priority Stop, route/transport status, gain, auditions and observed rendering on
-one musical owner. It provides no public Playback or owning handle. A headless
-actual-slot override exercises real queue installation, applied ACK, PCM, full
-command pressure and zero total/net allocation. The final actual owner still
+one musical owner. It provides no public Playback or owning handle. The production sealed-claim path is exercised headlessly with real queue
+installation, applied ACK, PCM, full command pressure and zero total/net allocation.
+Stable net Root-handle observations complement source inspection; they are not
+universal clone instrumentation. The final actual owner still
 requires the coupled data/error release and completed stream-handle frontier;
-ordinary preinstall rejection cannot create that terminal fact. This checkpoint
-keeps production admission refused until the remaining native witness controls.
+ordinary preinstall rejection cannot create that terminal fact. A carrier
+destructor panic after actual extraction keeps the original eligible owner pinned,
+retains the first payload and refuses retry/READY. Both final guard orders are
+covered separately from OS stop/disposal, device deadlines or listening.
 
-## admission boundary
+## sealed native resources and admission boundary
 
-This intermediate source checkpoint does not enable native admission. Complete native resource-witness gating and resident installation/handoff
-with applied ACK remain within PR236. No opaque OS/std byte estimate,
-RSS total, new global graph cap or readiness receipt is inferred.
+`reserve_native` declares the actual two carrier Box payloads, two constructor
+cell payloads and Status/route backing. Only the exact matching terminal cells
+retained by `NativeRetirement` anchor that boundary. A native flag without those
+actual carriers cannot configure claims. Existing ring payloads/backings, Root
+and reserved slot/anchor/receipt/failure metadata are charged before the first
+accepted owner; runtime State Boxes and token Vec capacities are charged before
+splitting. No guessed Arc header or allocator rounding is reported as DATA.
 
-Once the complete eligible claim path is connected, resident candidates may use
-it. Streamed construction, accounting and actual catalog leases must be exercised,
-but streamed installation stays explicitly readiness-refused until PR237. Page
-readiness, physical device deadlines and OS AudioUnit disposal success are not
-released by this work.
+The private move-only claim retains this actual Root and its reserved slot Life.
+It derives its DATA declaration from the closed engine constructor and actual
+native boundary. Opaque std control blocks, mutex implementation storage, the
+existing serialized lifecycle worker/channel, one safe CPAL output context and
+source workers/readers/kernel handles are separate constructor-bounded RESOURCE
+groups. Counts remain with occupied slots/domains through failure and report
+consumption; only actual normal worker join, pool conservation and endpoint/
+metadata destruction permit source-cell reuse. There is no claim about process
+RSS, opaque OS bytes, OS AudioUnit Dispose success, or unrelated preview/spectrum/
+typing/control subsystems and independent generic Stream factory users. Public
+scalar `require_complete` still refuses, and the public legacy custody report
+retains Unknown bytes while reporting actual eligible occupancy.
+
+A vacant native channel explicitly reserves and opts into this closed constructor
+path; resident candidates with its actual sealed claims may install. Legacy
+channels and unclaimed disposal-only paths retain their established behavior;
+legacy mixing refuses without adopting arbitrary owners. Submission, installation,
+applied ACK, physical runtime destruction, original-bank recovery and report
+consumption remain distinct facts. Exact pending-incarnation cancellation may win
+before the callback apply boundary. A genuine transient preflight refusal returns
+that decision to Pending before Retry, preserving cancellation; permanent refusal
+returns the actual NeverInstalled owner. A centralized negative closing/fault
+latch revokes queued installation claims without revoking their physical return
+identity. Admission linearizes at the final open observation for an apply that
+wins its cancellation CAS; a decision already in flight may finish under normal
+shutdown semantics. A real queued-owner closure control verifies no install/ACK,
+zero total/net allocation and exact original-bank recovery. Fresh-runtime seek/launch policies refuse
+original inputs here and remain separate PR238 work.
+
+The real native A-to-B-to-C fixture observes physical Utility Box pairs and actual
+move-only manifests (two groups, then only x after y's real decay). B's original
+bank recovers while A still waits for C; all original bank pointer/capacity/token
+identities survive. Other DSP/instruments/MIDI/compensation and broader original
+#24/#177 acceptance remain open.
+
+Streamed construction/accounting, actual verified-file catalog associations,
+wrong-context refusal and reuse of the same actual domain cell are exercised.
+Streamed installation still returns `StreamedPagesNotReady` until PR237. No page
+endpoint moves to this callback and no readiness release is inferred. Native UI,
+listening and physical-deadline acceptance remain separate.

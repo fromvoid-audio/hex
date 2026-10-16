@@ -18,6 +18,10 @@ impl Control {
         {
             return Err("constructor publication requires a vacant native channel");
         }
+        let native_bytes = self
+            .candidate_root
+            .native_boundary_bytes()
+            .ok_or("constructor native carriers lack exact retained terminal custody")?;
         let returned = self
             .retired
             .as_ref()
@@ -42,10 +46,18 @@ impl Control {
                 .and_then(|n| n.checked_add(std::mem::size_of_val(self.commands.buffer()))),
         ]
         .into_iter()
-        .try_fold(0usize, |n, value| n.checked_add(value?))
+        .try_fold(native_bytes, |n, value| n.checked_add(value?))
         .ok_or("constructor queue DATA overflow")?;
         self.candidate_root
             .configure_publications(reservation, queue_bytes)
+    }
+    /// Cancel this exact retained slot/incarnation before its callback apply
+    /// decision. No owning handle or per-call allocation escapes the Root.
+    pub fn cancel_audio_candidate(
+        &self,
+        ticket: &crate::AudioCandidateTicket,
+    ) -> crate::AudioCandidateCancellationResult {
+        self.candidate_root.cancel_eligible(ticket)
     }
     /// Queue acceptance is distinct from installation and its applied ACK.
     /// Every synchronous refusal returns the original owner and domain Vec;
@@ -64,6 +76,8 @@ impl Control {
             || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
         {
             Some("candidate constructor rate or phase differs")
+        } else if policy != PublicationPolicy::InheritRuntime {
+            Some("constructor fresh-runtime policy is not supported")
         } else if self.gain_recording.target().is_some() {
             Some("finish gain recording before replacing playback")
         } else if self.revision == u64::MAX {
@@ -140,18 +154,17 @@ impl Callback {
         if self.active.is_some() && self.retired.is_full() {
             return;
         }
-        #[cfg(test)]
-        let allowed = self.test_admit_candidate;
-        #[cfg(not(test))]
-        let allowed = false;
-        let decision = if !allowed
-            || self
-                .active
-                .as_ref()
-                .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
+        let decision = if self
+            .active
+            .as_ref()
+            .is_some_and(|active| !matches!(active, ActivePublication::Eligible(_)))
         {
-            InstallDecision::Refused
+            InstallDecision::Refused(PlaybackHandoffRejection::ConstructorClaimsUnavailable)
         } else if let Some(next) = self.deferred_eligible.as_mut() {
+            #[cfg(all(test, feature = "allocation-probe"))]
+            if let Some(bytes) = self.test_eligible_transfer_allowance.take() {
+                let _ = next.test_set_transfer_allowance(bytes);
+            }
             let previous = match self.active.as_mut() {
                 Some(ActivePublication::Eligible(active)) => Some(active),
                 _ => None,
@@ -162,8 +175,10 @@ impl Callback {
         };
         match decision {
             InstallDecision::Retry => {}
-            InstallDecision::Refused => {
+            InstallDecision::Refused(reason) => {
                 if let Some(value) = self.deferred_eligible.take() {
+                    self.status
+                        .publish_rejected_revision(value.revision(), reason);
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));

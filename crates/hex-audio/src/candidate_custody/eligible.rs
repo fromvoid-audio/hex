@@ -3,7 +3,10 @@
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
 pub(super) mod publication;
-pub use publication::{AudioCandidateEligibleStageRefusal, AudioCandidatePublicationReservation};
+pub use publication::{
+    AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePublicationReservation,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateDomainReservation {
@@ -36,6 +39,7 @@ struct DomainSlot {
     ready: Option<PagePoolReport>,
     data: usize,
     peak: usize,
+    resources: Option<hex_stream::StreamDomainConstructorSummary>,
 }
 impl DomainSlot {
     fn vacant() -> Self {
@@ -48,6 +52,7 @@ impl DomainSlot {
             ready: None,
             data: 0,
             peak: 0,
+            resources: None,
         }
     }
     fn matches(&self, token: AudioCandidateDomainToken) -> bool {
@@ -61,6 +66,7 @@ struct NativeBank {
     metadata_bytes: usize,
     closing: bool,
     publication: publication::Bank,
+    native: Option<crate::native_callback_owner::NativeCandidateBoundary>,
 }
 impl Default for NativeBank {
     fn default() -> Self {
@@ -74,6 +80,7 @@ impl Default for NativeBank {
             metadata_bytes: 0,
             closing: false,
             publication: publication::Bank::default(),
+            native: None,
         }
     }
 }
@@ -90,10 +97,43 @@ struct NativeWork {
 #[derive(Default)]
 pub(super) struct Custody {
     enabled: AtomicBool,
+    closed: AtomicBool,
     bank: Mutex<NativeBank>,
     work: Mutex<NativeWork>,
 }
 impl Custody {
+    fn mark_closing(&self, bank: &mut NativeBank) {
+        self.closed.store(true, Ordering::Release);
+        bank.closing = true;
+    }
+    pub(super) fn claims_open(&self) -> bool {
+        self.enabled() && !self.closed.load(Ordering::Acquire)
+    }
+    pub(super) fn record_native_boundary(
+        &self,
+        boundary: crate::native_callback_owner::NativeCandidateBoundary,
+    ) {
+        let mut bank = lock(&self.bank);
+        if !self.enabled() && !self.closed.load(Ordering::Acquire) && bank.native.is_none() {
+            bank.native = Some(boundary);
+        }
+    }
+    pub(super) fn anchor_native_boundary(
+        &self,
+        root: u64,
+        terminals: &crate::native_callback_owner::NativeTerminals,
+    ) {
+        let mut bank = lock(&self.bank);
+        if let Some(native) = bank.native.as_mut() {
+            let _ = native.anchor(root, terminals);
+        }
+    }
+    pub(super) fn native_boundary_bytes(&self, root: u64) -> Option<usize> {
+        let bank = lock(&self.bank);
+        let native = bank.native.as_ref()?;
+        native.matches(root).then_some(())?;
+        native.data_bytes()
+    }
     pub(super) fn prewarm_on_control(&self) {
         drop(lock(&self.bank));
         drop(lock(&self.work));
@@ -123,6 +163,7 @@ impl Custody {
         if bank.root != 0 || bank.closing {
             return Err("constructor custody already configured");
         }
+        let native = bank.native.take();
         *bank = NativeBank {
             root,
             reservation,
@@ -130,6 +171,7 @@ impl Custody {
             metadata_bytes: base_bytes,
             closing: false,
             publication: publication::Bank::default(),
+            native,
         };
         self.enabled.store(true, Ordering::Release);
         Ok(())
@@ -178,6 +220,8 @@ impl Custody {
                 .max_construction_peak_data_bytes
                 .checked_sub(used_peak)
                 .ok_or("domain construction reservation exceeded")?;
+            let remaining_handles = publication::remaining_handle_reservation(bank)
+                .ok_or("constructor handle reservation exceeded")?;
             let index = bank
                 .domains
                 .iter()
@@ -198,20 +242,22 @@ impl Custody {
                 },
                 remaining,
                 remaining_peak,
+                remaining_handles,
             ))
         })();
-        let (token, remaining, remaining_peak) = match reservation {
+        let (token, remaining, remaining_peak, remaining_handles) = match reservation {
             Ok(value) => value,
             Err(reason) => return Err(Box::new(AudioCandidateDomainRefusal { reason, domain })),
         };
         after_reservation();
         // No ordinary bank lock spans allocation, endpoint metadata destruction,
         // or a refused construction's cleanup. Both original endpoints survive.
-        let owner = match ConstructorStreamDomain::try_new_with_data_limits_on_control(
+        let owner = match ConstructorStreamDomain::try_new_with_limits_on_control(
             domain.0,
             domain.1,
             remaining,
             remaining_peak,
+            remaining_handles,
         ) {
             Ok(owner) => owner,
             Err(refusal) => {
@@ -240,6 +286,7 @@ impl Custody {
             slot.retiring = bank.closing;
             slot.data = summary.retained_data_bytes;
             slot.peak = summary.construction_peak_data_bytes;
+            slot.resources = Some(summary);
         }
         Ok(token)
     }
@@ -266,7 +313,7 @@ impl Custody {
         let mut guard = lock(&self.bank);
         {
             let bank = &mut *guard;
-            bank.closing = true;
+            self.mark_closing(bank);
             for slot in &mut bank.domains {
                 if slot.phase != Phase::Vacant {
                     slot.retiring = true;
@@ -283,6 +330,10 @@ impl Custody {
                     || (abandoned && s.phase == Phase::Complete)
                     || (s.phase == Phase::Accepted && s.retiring && s.uses == 0)
             })
+    }
+    pub(super) fn occupied_publications(&self) -> Option<usize> {
+        let bank = lock(&self.bank);
+        bank.publication.occupied()
     }
     pub(super) fn complete(&self) -> bool {
         let guard = lock(&self.bank);
@@ -304,6 +355,7 @@ impl Custody {
                     slot.phase = Phase::Vacant;
                     slot.data = 0;
                     slot.peak = 0;
+                    slot.resources = None;
                 }
                 if work.domains[index].is_none()
                     && slot.phase == Phase::Accepted
@@ -364,7 +416,7 @@ impl Custody {
     }
     fn fail(&self, index: usize) {
         let mut guard = lock(&self.bank);
-        guard.closing = true;
+        self.mark_closing(&mut guard);
         guard.domains[index].phase = Phase::Failed;
     }
     pub(super) fn recover_domain(
@@ -384,6 +436,7 @@ impl Custody {
         slot.phase = Phase::Vacant;
         slot.data = 0;
         slot.peak = 0;
+        slot.resources = None;
         Some(report)
     }
     pub(super) fn usage(&self) -> Option<AudioCandidateDomainUsage> {

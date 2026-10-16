@@ -1,4 +1,12 @@
 use super::*;
+#[cfg(feature = "allocation-probe")]
+mod fanout;
+#[cfg(feature = "allocation-probe")]
+mod native_resources;
+#[cfg(feature = "allocation-probe")]
+mod stream_fixture;
+#[cfg(feature = "allocation-probe")]
+mod utility_fixture;
 use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
 fn reservation(
     owner: &mut hex_engine::AudioCandidateOwner,
@@ -59,6 +67,10 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
         (ptr, cap)
     );
     assert_eq!(control.revision, 1);
+    assert_eq!(
+        control.cancel_audio_candidate(&first_ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block());
@@ -72,6 +84,10 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
         )
         .ok()
         .unwrap();
+    assert_eq!(
+        control.cancel_audio_candidate(&second_ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block());
@@ -81,6 +97,10 @@ fn actual_queue_rejection_and_return_pressure_recover_original_owners_without_in
         .stage_eligible_audio_candidate(third, vec![], PublicationPolicy::InheritRuntime, 43)
         .ok()
         .unwrap();
+    assert_eq!(
+        control.cancel_audio_candidate(&third_ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
     // The real return ring is full: the actual rejected owner must remain in
     // callback held custody, with no callback-side destruction or allocation.
     #[cfg(feature = "allocation-probe")]
@@ -177,9 +197,6 @@ fn actual_eligible_active_slot_installs_then_acks_renders_commands_and_returns_a
     control
         .configure_audio_candidate_publication(reservation)
         .unwrap();
-    data.owner_mut()
-        .unwrap()
-        .run(|callback, _| callback.test_admit_candidate = true);
     let first_ticket = control
         .stage_eligible_audio_candidate(first, vec![], PublicationPolicy::InheritRuntime, 71)
         .ok()
@@ -304,5 +321,299 @@ fn actual_eligible_active_slot_installs_then_acks_renders_commands_and_returns_a
     );
     drop(final_bank);
     drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+fn cancellation_is_exact_to_pending_incarnation_and_fresh_policy_refuses_original_owner() {
+    let _serial = serial();
+    let Some(mut first) = candidate() else { return };
+    let reservation = reservation(&mut first);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(reservation)
+        .unwrap();
+    let identity = first.identity();
+    let ticket = control
+        .stage_eligible_audio_candidate(first, vec![], PublicationPolicy::InheritRuntime, 1)
+        .ok()
+        .unwrap();
+    assert_eq!(
+        control.cancel_audio_candidate(&ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((1, PlaybackHandoffRejection::FreshRuntimeCancelled))
+    );
+    let recovered = recover(&mut control, &ticket);
+    assert_eq!(recovered.disposed.identity(), identity);
+    assert_eq!(
+        recovered.return_kind,
+        crate::AudioCandidateReturnKind::NeverInstalled
+    );
+    drop(recovered);
+    let owner = candidate().unwrap();
+    let identity = owner.identity();
+    let domains = Vec::with_capacity(5);
+    let ptr = domains.as_ptr();
+    let cap = domains.capacity();
+    let refused = control
+        .stage_eligible_audio_candidate(owner, domains, PublicationPolicy::InstallFreshRuntime, 2)
+        .err()
+        .unwrap();
+    assert_eq!(refused.owner.identity(), identity);
+    assert_eq!(
+        refused.owner.phase(),
+        hex_engine::AudioCandidateDisposalPhase::Owned
+    );
+    assert_eq!(
+        (refused.domains.as_ptr(), refused.domains.capacity()),
+        (ptr, cap)
+    );
+    assert_eq!(control.revision, 1);
+    let next = control
+        .stage_eligible_audio_candidate(
+            refused.owner,
+            refused.domains,
+            PublicationPolicy::InheritRuntime,
+            2,
+        )
+        .ok()
+        .unwrap();
+    assert_eq!(
+        control.cancel_audio_candidate(&ticket),
+        crate::AudioCandidateCancellationResult::Unavailable
+    );
+    assert!(control.recover_audio_candidate(&ticket).is_none());
+    // Cancel this distinct next incarnation too, leaving no test-only active
+    // owner that would require a fabricated completed backend handle.
+    assert_eq!(
+        control.cancel_audio_candidate(&next),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    drop(recover(&mut control, &next));
+    drop(control);
+    drop(data);
+    drop(errors);
+    finish(&mut retirement);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn real_utility_transfer_pressure_retry_restores_cancellation_without_changing_active_ack() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let (a_project, track) = utility_fixture::project();
+    let mut edit = hex_project::Editor::new(a_project.clone(), 4).unwrap();
+    edit.execute(hex_project::Command::RemoveTrack(track))
+        .unwrap();
+    let b_project = edit.project();
+    let mut a = utility_fixture::owner(&a_project);
+    let b = utility_fixture::owner(b_project);
+    let b_id = b.identity();
+    let reservation = reservation(&mut a);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(reservation)
+        .unwrap();
+    let _a_ticket = control
+        .stage_eligible_audio_candidate(a, vec![], PublicationPolicy::InheritRuntime, 8)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    data.owner_mut().unwrap().run(|c, _| {
+        c.begin_block();
+        c.render(&mut [[0.0; 2]; 8]).unwrap();
+    });
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    let b_ticket = control
+        .stage_eligible_audio_candidate(b, vec![], PublicationPolicy::InheritRuntime, 8)
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| {
+        // Real Group::plan checks the actual moved Utility chain Boxes against
+        // its destination allowance. No synthetic Retry/activity/owner flag.
+        c.test_eligible_transfer_allowance =
+            Some(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
+        c.begin_block();
+        assert!(c.deferred_eligible.is_some());
+        assert!(matches!(c.active, Some(ActivePublication::Eligible(_))));
+    });
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert!(control.publication_pending.load(Acquire));
+    assert_eq!(
+        control.cancel_audio_candidate(&b_ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((2, PlaybackHandoffRejection::FreshRuntimeCancelled))
+    );
+    let bank = recover(&mut control, &b_ticket);
+    assert_eq!(bank.disposed.identity(), b_id);
+    assert_eq!(
+        bank.return_kind,
+        crate::AudioCandidateReturnKind::NeverInstalled
+    );
+    drop(bank);
+    // Actual backend-handle completion, never a fabricated terminal token.
+    drop(control);
+    drop(data);
+    drop(errors);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    let mut retirement = std::thread::spawn(move || {
+        let _ = crate::lifecycle::test_dispose_backend(
+            &mut backend,
+            &mut pending,
+            &mut disposed,
+            &mut retirement,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(backend.is_none() && disposed);
+        retirement
+    })
+    .join()
+    .unwrap();
+    finish(&mut retirement);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pair_until_reports() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let (project, _) = utility_fixture::project();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::new();
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let mut a = stream_fixture::owner(&project, metadata.clone());
+    let reservation = reservation(&mut a);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(reservation)
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain(stream_fixture::pair(definition))
+        .ok()
+        .unwrap();
+    let wrong = control
+        .register_audio_candidate_domain(stream_fixture::pair(wav.definition(asset, 12)))
+        .ok()
+        .unwrap();
+    assert_ne!(domain, wrong);
+    assert_eq!(
+        control
+            .audio_candidate_domain_usage()
+            .unwrap()
+            .occupied_domains,
+        2
+    );
+    let identity = a.identity();
+    let wrong_tokens = vec![wrong];
+    let ptr = wrong_tokens.as_ptr();
+    let cap = wrong_tokens.capacity();
+    let refused = control
+        .stage_eligible_audio_candidate(a, wrong_tokens, PublicationPolicy::InheritRuntime, 11)
+        .err()
+        .unwrap();
+    assert_eq!(refused.owner.identity(), identity);
+    assert_eq!(
+        refused.owner.phase(),
+        hex_engine::AudioCandidateDisposalPhase::Owned
+    );
+    assert_eq!(
+        (refused.domains.as_ptr(), refused.domains.capacity()),
+        (ptr, cap)
+    );
+    let a_ticket = control
+        .stage_eligible_audio_candidate(
+            refused.owner,
+            vec![domain],
+            PublicationPolicy::InheritRuntime,
+            11,
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((1, PlaybackHandoffRejection::StreamedPagesNotReady))
+    );
+    let b = stream_fixture::owner(&project, metadata);
+    let b_ticket = control
+        .stage_eligible_audio_candidate(b, vec![domain], PublicationPolicy::InheritRuntime, 11)
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| {
+        c.begin_block();
+        let mut out = [[1.0; 2]; 8];
+        c.render(&mut out).unwrap();
+        assert_eq!(out, [[0.0; 2]; 8]);
+    });
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((2, PlaybackHandoffRejection::StreamedPagesNotReady))
+    );
+    assert_eq!(
+        control
+            .audio_candidate_domain_usage()
+            .unwrap()
+            .occupied_domains,
+        2
+    ); // same actual pair reused, no N3
+    assert!(control.retire_audio_candidate_domain(domain));
+    assert!(control.recover_audio_candidate_domain(domain).is_none());
+    let a_bank = recover(&mut control, &a_ticket);
+    assert_eq!(a_bank.disposed.identity(), identity);
+    assert!(control.recover_audio_candidate_domain(domain).is_none()); // B still holds its original use
+    let b_bank = recover(&mut control, &b_ticket);
+    assert!(control.retire_audio_candidate_domain(wrong));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    for token in [domain, wrong] {
+        loop {
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(token) {
+                assert!(report.accounting_complete);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual domain join/report did not finish"
+            );
+            std::thread::yield_now();
+        }
+        assert!(control.recover_audio_candidate_domain(token).is_none());
+    }
+    assert_eq!(
+        control
+            .audio_candidate_domain_usage()
+            .unwrap()
+            .occupied_domains,
+        0
+    );
+    drop(a_bank);
+    drop(b_bank);
+    drop(control);
+    drop(data);
+    drop(errors);
     finish(&mut retirement);
 }
