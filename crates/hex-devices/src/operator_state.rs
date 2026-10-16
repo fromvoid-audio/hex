@@ -21,10 +21,24 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 7;
+pub const OPERATOR_STATE_VERSION: u32 = 14;
+const CATALOG_STATE_VERSION: u32 = 13;
+const HARMONIC_STATE_VERSION: u32 = 12;
+const LFO_STATE_VERSION: u32 = 7;
+const FILTER_PARAMETERS: usize = crate::operator_filter::COUNT - 1;
+const ENABLE_STATE_VERSION: u32 = 8;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
+mod companion;
+mod enable;
+mod harmonic_runtime;
+mod harmonics;
+pub use harmonics::{
+    partial as harmonic_parameter, range as harmonic_range_parameter,
+    repeat as harmonic_repeat_parameter,
+};
+mod enable_continuation;
 mod feedback_runtime;
 mod lfo;
 mod lfo_runtime;
@@ -42,7 +56,11 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + OPERATORS * 3
     + VELOCITY_SENSITIVITY_COUNT
     + FEEDBACK_COUNT
-    + lfo::COUNT;
+    + lfo::COUNT
+    + enable::COUNT
+    + FILTER_PARAMETERS
+    + harmonics::COUNT
+    + companion::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -50,7 +68,11 @@ const VELOCITY_PAYLOAD_BYTES: usize =
     TUNING_PAYLOAD_BYTES + VELOCITY_SENSITIVITY_COUNT * size_of::<f32>();
 const FEEDBACK_COUNT: usize = OPERATORS;
 const FEEDBACK_PAYLOAD_BYTES: usize = VELOCITY_PAYLOAD_BYTES + FEEDBACK_COUNT * size_of::<f32>();
-const PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
+const ENABLE_PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
+const FILTER_PAYLOAD_BYTES: usize = ENABLE_PAYLOAD_BYTES + crate::operator_filter::BYTES;
+const HARMONIC_PAYLOAD_BYTES: usize = FILTER_PAYLOAD_BYTES + harmonics::BYTES;
+const PAYLOAD_BYTES: usize = HARMONIC_PAYLOAD_BYTES + companion::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -58,6 +80,11 @@ pub mod parameter {
         carrier, modulation, oscillator_level, oscillator_phase, oscillator_ratio,
     };
     use hex_lattice_contract::ParameterId;
+
+    /// Stable independently persisted enable switch; operators are one-based.
+    pub const fn enabled(operator: u32) -> ParameterId {
+        super::enable::parameter(operator)
+    }
 
     /// Stable per-operator envelope field order in the opaque state.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,7 +293,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
             id: ParameterId::from_static((57 + operator) as u32),
             label: waveforms[operator],
             kind: ParameterKind::Choice {
-                labels: OperatorWaveform::labels(),
+                labels: &harmonics::WAVE_LABELS,
             },
             default: ParameterValue::Choice(0),
             presentation: ParameterPresentation::Linear,
@@ -336,9 +363,49 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT - lfo::COUNT + offset] = lfo[offset];
+        result[PARAMETER_COUNT
+            - companion::COUNT
+            - harmonics::COUNT
+            - FILTER_PARAMETERS
+            - lfo::COUNT
+            - enable::COUNT
+            + offset] = lfo[offset];
         offset += 1;
     }
+    let enabled = enable::descriptors();
+    let mut offset = 0;
+    while offset < enable::COUNT {
+        result[PARAMETER_COUNT
+            - companion::COUNT
+            - harmonics::COUNT
+            - FILTER_PARAMETERS
+            - enable::COUNT
+            + offset] = enabled[offset];
+        offset += 1;
+    }
+    let filter = crate::operator_filter::descriptors();
+    let mut offset = 0;
+    while offset < FILTER_PARAMETERS {
+        result
+            [PARAMETER_COUNT - companion::COUNT - harmonics::COUNT - FILTER_PARAMETERS + offset] =
+            filter[offset];
+        offset += 1;
+    }
+    index = PARAMETER_COUNT - companion::COUNT - harmonics::COUNT;
+    let harmonic = harmonics::descriptors();
+    let mut extra = 0;
+    while extra < harmonics::COUNT {
+        result[index] = harmonic[extra];
+        index += 1;
+        extra += 1;
+    }
+    let companion = companion::descriptors();
+    let mut offset = 0;
+    while offset < companion::COUNT {
+        result[PARAMETER_COUNT - companion::COUNT + offset] = companion[offset];
+        offset += 1;
+    }
+
     result
 }
 
@@ -353,6 +420,10 @@ pub struct OperatorSettings {
     amplitude_velocity: [f32; OPERATORS],
     feedback: [f32; OPERATORS],
     lfo: lfo::LfoSettings,
+    enabled: enable::EnableSettings,
+    harmonics: harmonics::Harmonics,
+    filter: crate::operator_filter::Settings,
+    companion: companion::Settings,
 }
 
 impl OperatorSettings {
@@ -371,6 +442,10 @@ impl OperatorSettings {
             amplitude_velocity: [0.0; OPERATORS],
             feedback: [0.0; OPERATORS],
             lfo: lfo::LfoSettings::default(),
+            enabled: enable::EnableSettings::default(),
+            harmonics: harmonics::Harmonics::default(),
+            filter: crate::operator_filter::Settings::default(),
+            companion: companion::Settings::default(),
         }
     }
 
@@ -384,6 +459,10 @@ impl OperatorSettings {
             TUNING_STATE_VERSION => TUNING_PAYLOAD_BYTES,
             4 => VELOCITY_PAYLOAD_BYTES,
             FEEDBACK_STATE_VERSION | 6 => FEEDBACK_PAYLOAD_BYTES,
+            LFO_STATE_VERSION => LFO_PAYLOAD_BYTES,
+            ENABLE_STATE_VERSION => ENABLE_PAYLOAD_BYTES,
+            11 => FILTER_PAYLOAD_BYTES,
+            HARMONIC_STATE_VERSION | CATALOG_STATE_VERSION => HARMONIC_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -430,6 +509,9 @@ impl OperatorSettings {
                     .try_into()
                     .map_err(|_| DeviceContractError::MalformedState)?;
                 let choice = u32::from_le_bytes(bytes);
+                if state.state_version() < CATALOG_STATE_VERSION && choice > 3 {
+                    return Err(DeviceContractError::MalformedState);
+                }
                 waveforms[index] = OperatorWaveform::from_choice(choice)
                     .ok_or(DeviceContractError::MalformedState)?;
             }
@@ -465,18 +547,48 @@ impl OperatorSettings {
                 feedback[index] = f32::from_le_bytes(bytes);
             }
         }
-        let lfo = if state.state_version() >= OPERATOR_STATE_VERSION {
-            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..])?
+        let lfo = if state.state_version() >= LFO_STATE_VERSION {
+            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES])?
         } else {
             lfo::LfoSettings::default()
         };
+        let enabled = if state.state_version() >= ENABLE_STATE_VERSION {
+            enable::EnableSettings::decode(
+                &state.payload()[LFO_PAYLOAD_BYTES..ENABLE_PAYLOAD_BYTES],
+            )?
+        } else {
+            enable::EnableSettings::default()
+        };
+        let harmonics = if state.state_version() >= HARMONIC_STATE_VERSION {
+            harmonics::Harmonics::decode(
+                &state.payload()[FILTER_PAYLOAD_BYTES..HARMONIC_PAYLOAD_BYTES],
+            )?
+        } else {
+            harmonics::Harmonics::default()
+        };
+        let filter = if state.state_version() >= 11 {
+            crate::operator_filter::Settings::decode(
+                &state.payload()[ENABLE_PAYLOAD_BYTES..FILTER_PAYLOAD_BYTES],
+            )?
+        } else {
+            crate::operator_filter::Settings::default()
+        };
+        let companion = if state.state_version() >= OPERATOR_STATE_VERSION {
+            companion::Settings::decode(&state.payload()[HARMONIC_PAYLOAD_BYTES..])?
+        } else {
+            companion::Settings::default()
+        };
         let result = Self {
+            companion,
+            filter,
             fields,
             waveforms,
             tuning,
             amplitude_velocity,
             feedback,
             lfo,
+            enabled,
+            harmonics,
         };
         result.kernel_parts()?;
         Ok(result)
@@ -502,7 +614,26 @@ impl OperatorSettings {
             payload.extend_from_slice(&amount.to_le_bytes());
         }
         self.lfo.append(&mut payload);
+        self.enabled.append(&mut payload);
+        self.filter.append(&mut payload);
+        self.harmonics.append(&mut payload);
+        self.companion.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
+    }
+
+    // Control preparation still runs the canonical encoder and preserves its
+    // error ordering. Reuse only the exact validated type/version/byte owner;
+    // migration or normalization must retain the newly encoded allocation.
+    fn prepared_authored_state(
+        &self,
+        input: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let canonical = self.to_state()?;
+        Ok(if input == &canonical {
+            input.clone()
+        } else {
+            canonical
+        })
     }
 
     /// Decode validated original oscillator, graph and envelope laws on control.
@@ -518,17 +649,25 @@ impl OperatorSettings {
     > {
         self.tuning.modes()?;
         self.lfo.validate()?;
+        self.filter.validate()?;
+        self.companion.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
             ))?;
         }
         for (index, amount) in self.amplitude_velocity.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - OPERATORS - FEEDBACK_COUNT + index]
+            PARAMETERS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter::amplitude_velocity(index as u32 + 1))
+                .ok_or(DeviceContractError::UnknownParameter)?
                 .validate(ParameterValue::Float(*amount))?;
         }
         for (index, amount) in self.feedback.iter().enumerate() {
-            PARAMETERS[PARAMETER_COUNT - lfo::COUNT - FEEDBACK_COUNT + index]
+            PARAMETERS
+                .iter()
+                .find(|descriptor| descriptor.id == parameter::feedback(index as u32 + 1))
+                .ok_or(DeviceContractError::UnknownParameter)?
                 .validate(ParameterValue::Float(*amount))?;
         }
         if (0..OPERATORS).any(|operator| self.fields[12 + operator * OPERATORS + operator] != 0.0) {
@@ -538,7 +677,11 @@ impl OperatorSettings {
             let offset = operator * 3;
             Oscillator::new(
                 f64::from(self.fields[offset]),
-                f64::from(self.fields[offset + 1]),
+                if self.enabled.flags()[operator] {
+                    f64::from(self.fields[offset + 1])
+                } else {
+                    0.0
+                },
                 f64::from(self.fields[offset + 2]),
             )
             .map_err(|_| DeviceContractError::InvalidParameterValue)
@@ -632,30 +775,41 @@ impl OperatorSettings {
             self.tuning.modes()?,
             self.amplitude_velocity,
         )
+        .and_then(|configuration| {
+            configuration.with_note_modifiers(
+                std::array::from_fn(|i| self.companion.float(i, 4) as f32),
+                std::array::from_fn(|i| self.companion.float(i, 1) as f32),
+                std::array::from_fn(|i| self.companion.words[i][2] != 0),
+            )
+        })
         .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
 
-    /// Standalone control preparation only; no native sampler/registry admission.
+    /// Standalone control preparation only. Free-run and loops require native runtime clocks.
     pub fn prepare_note(
         &self,
         sample_rate: u32,
         pitch: u8,
         velocity: u8,
     ) -> Result<PreparedOperatorFm4, DeviceContractError> {
-        let (oscillators, routing, envelopes) = self.kernel_parts()?;
-        PreparedOperatorFm4::new_with_tuning_and_amplitude_velocity(
-            sample_rate,
-            pitch,
-            velocity,
-            oscillators,
-            routing,
-            envelopes,
-            self.waveforms,
-            self.tuning.modes()?,
-            self.amplitude_velocity,
-        )
-        .map_err(|_| DeviceContractError::InvalidParameterValue)
+        if !self.companion.standalone_supported() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let configuration = self.prepare_configuration(sample_rate)?;
+        let envelopes = self.companion.envelopes(&self.fields, velocity)?;
+        configuration
+            .standalone_note(pitch, velocity, envelopes)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FilterVoiceSeed {
+    note: PreparedOperatorNote,
+    age: u64,
+    gate: Option<u64>,
+    previous: [f64; 4],
+    id: u64,
 }
 
 /// Generic Operator control metadata and shared analytic instrument definition.
@@ -692,6 +846,18 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.companion.read(parameter) {
+            return Ok(value);
+        }
+        if let Some(value) = settings.filter.read(parameter) {
+            return Ok(value);
+        }
+        if let Some(value) = settings.harmonics.read(parameter, settings.waveforms)? {
+            return Ok(value);
+        }
+        if let Some(value) = settings.enabled.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.lfo.read(parameter) {
             return Ok(value);
         }
@@ -722,7 +888,13 @@ impl NativeDeviceMetadata for OperatorMetadata {
                 .waveforms
                 .get(index)
                 .copied()
-                .map(|waveform| ParameterValue::Choice(waveform.choice()))
+                .map(|waveform| {
+                    ParameterValue::Choice(if settings.harmonics.custom[index] {
+                        4
+                    } else {
+                        waveform.choice()
+                    })
+                })
                 .ok_or(DeviceContractError::UnknownParameter);
         }
         settings
@@ -760,6 +932,21 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.companion.patch(parameter, value) {
+            return settings.to_state();
+        }
+        if settings.filter.patch(parameter, value)? {
+            return settings.to_state();
+        }
+        if settings
+            .harmonics
+            .patch(parameter, value, settings.waveforms)?
+        {
+            return settings.to_state();
+        }
+        if settings.enabled.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.lfo.patch(parameter, value) {
             return settings.to_state();
         }
@@ -801,8 +988,17 @@ impl NativeDeviceMetadata for OperatorMetadata {
             let ParameterValue::Choice(value) = value else {
                 return Err(DeviceContractError::InvalidParameterValue);
             };
-            settings.waveforms[index] = OperatorWaveform::from_choice(value)
-                .ok_or(DeviceContractError::InvalidParameterValue)?;
+            if value == 4 {
+                if !settings.harmonics.authored[index] {
+                    settings.harmonics.seed(index, settings.waveforms[index])?;
+                }
+                settings.harmonics.custom[index] = true;
+                settings.harmonics.authored[index] = true;
+            } else {
+                settings.waveforms[index] = OperatorWaveform::from_choice(value)
+                    .ok_or(DeviceContractError::InvalidParameterValue)?;
+                settings.harmonics.custom[index] = false;
+            }
             return settings.to_state();
         }
         let ParameterValue::Float(value) = value else {
@@ -825,6 +1021,13 @@ impl NativeInstrumentDefinition for OperatorMetadata {
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
         let configuration = settings.prepare_configuration(sample_rate)?;
+        let authored_state = settings.prepared_authored_state(state)?;
+        let effective_levels = *configuration
+            .feedback_parameters([0.0; OPERATORS])
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?
+            .oscillator_levels();
+        let continuation_format =
+            hex_lattice::AnalyticContinuationFormat::new(OPERATOR_TYPE_ID, 1)?;
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
@@ -841,26 +1044,66 @@ impl NativeInstrumentDefinition for OperatorMetadata {
             sine_table,
         )?;
         Ok(Box::new(PreparedOperatorInstrument {
-            configuration,
+            configuration: configuration.clone(),
+            authored_state,
+            effective_levels,
+            continuation_format,
             sine_table,
             feedback_runtime,
             lfo_runtime,
+            harmonic_runtime: harmonic_runtime::Factory::new(
+                settings,
+                configuration.clone(),
+                sine_table,
+                sample_rate,
+            )?,
         }))
     }
 }
 
 struct PreparedOperatorInstrument {
     configuration: PreparedOperatorConfiguration,
+    authored_state: NativeDeviceState,
+    effective_levels: [f64; OPERATORS],
+    continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
     feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
     lfo_runtime: Option<lfo_runtime::OperatorLfoFactory>,
+    harmonic_runtime: harmonic_runtime::Factory,
 }
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
+    fn prefers_mutable_continuation(&self) -> bool {
+        self.harmonic_runtime
+            .settings
+            .harmonics
+            .custom
+            .iter()
+            .any(|v| *v)
+            || self.harmonic_runtime.settings.companion.requires_runtime()
+    }
+    fn prepare_mutable_continuation_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
+    {
+        Ok(Some(Box::new(self.harmonic_runtime.clone())))
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
-        if self.lfo_runtime.is_some() {
+        if let Some(factory) = self.lfo_runtime.as_ref() {
+            factory
+                .prepare_note_for_runtime(pitch, velocity)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        } else if self.harmonic_runtime.settings.lfo.active() {
             self.configuration
                 .prepare_lfo_note(pitch, velocity)
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        } else {
+            self.configuration
+                .prepare_note(pitch, velocity)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         }
         Ok(())
@@ -873,7 +1116,10 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prepare_shared_analytic_context(
         &self,
     ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
-        if self.feedback_runtime.is_some() || self.lfo_runtime.is_some() {
+        if self.prefers_mutable_continuation()
+            || self.feedback_runtime.is_some()
+            || self.lfo_runtime.is_some()
+        {
             // Mutable feedback must never be silently rendered through the
             // legacy analytic sampler. Event-source compilation owns this
             // instrument through `prepare_mutable_runtime` instead.
@@ -881,7 +1127,11 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         }
         Ok(Some(Box::new(PreparedOperatorContext {
             configuration: self.configuration.clone(),
+            authored_state: self.authored_state.clone(),
+            effective_levels: self.effective_levels,
+            continuation_format: self.continuation_format,
             sine_table: self.sine_table,
+            companion: self.harmonic_runtime.settings.companion,
         })))
     }
 
@@ -889,6 +1139,9 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         &self,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
     {
+        if self.prefers_mutable_continuation() {
+            return self.prepare_mutable_continuation_runtime();
+        }
         if let Some(factory) = self.lfo_runtime.as_ref() {
             return Ok(Some(
                 Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>
@@ -900,14 +1153,27 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     }
 }
 
-struct PreparedOperatorContext {
+pub(super) struct PreparedOperatorContext {
+    companion: companion::Settings,
     configuration: PreparedOperatorConfiguration,
+    authored_state: NativeDeviceState,
+    effective_levels: [f64; OPERATORS],
+    continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
 }
 
 impl PreparedSharedAnalyticContext for PreparedOperatorContext {
+    fn analytic_continuation(&self) -> Option<&dyn hex_lattice::PreparedAnalyticContinuation> {
+        Some(self)
+    }
+
+    fn import_identity(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn declared_context_bytes(&self) -> usize {
-        size_of::<Self>()
+        // Charge the canonical payload even while the control factory shares
+        // its Arc. The allocation includes the two reference-count words.
+        size_of::<Self>() + self.authored_state.payload().len() + 2 * size_of::<usize>()
     }
 
     fn prepare_note(
@@ -967,6 +1233,17 @@ fn waveform_index(parameter: ParameterId) -> Option<usize> {
 }
 
 #[cfg(test)]
+mod canonical_reuse_tests;
+#[cfg(test)]
+mod capture_proof;
+#[cfg(test)]
+mod enable_continuation_tests;
+#[cfg(test)]
+mod enable_tests;
+#[cfg(test)]
 mod fixed_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod filter_runtime_tests;

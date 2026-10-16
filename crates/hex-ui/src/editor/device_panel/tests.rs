@@ -8,10 +8,16 @@ use std::sync::Arc;
 
 mod auto_pan_ui_tests;
 mod compressor_ui_tests;
+mod device_preset_ui_tests;
 mod device_reorder_tests;
+mod device_theme_tests;
 mod gate_ui_tests;
 mod navigation_ui_tests;
+mod operator_enable_ui_tests;
+#[path = "operator_harmonic_ui_tests.rs"]
+mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
+mod operator_preview_navigation_tests;
 mod operator_tab_tests;
 
 mod operator_routing_readout_tests;
@@ -223,6 +229,20 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let bodies: Vec<_> = [instrument, effect]
+        .into_iter()
+        .map(|device| {
+            let selector: &'static str =
+                Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+            (
+                selector,
+                visual.debug_bounds(selector).expect("device body"),
+                visual
+                    .rendered_background(selector)
+                    .expect("device body paint"),
+            )
+        })
+        .collect();
     for (prefix, device) in [("instrument-device", instrument), ("effect-device", effect)] {
         let bounds = visual
             .debug_bounds(Box::leak(
@@ -237,6 +257,10 @@ fn device_card_selection_follows_clicks_and_retires_removed_devices(cx: &mut Tes
             assert_eq!(view.state.as_ref().expect("state").revision, revision);
             assert_eq!(view.worker_requests_pending, 0);
         });
+        for (selector, bounds, paint) in &bodies {
+            assert_eq!(visual.debug_bounds(selector), Some(*bounds));
+            assert_eq!(visual.rendered_background(selector), Some(*paint));
+        }
     }
     // Right-clicking a different card must not change the left-click selection.
     let bounds = visual
@@ -285,6 +309,11 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let body: &'static str = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
+    let body_bounds = visual.debug_bounds(body).expect("return device body");
+    let body_paint = visual
+        .rendered_background(body)
+        .expect("return device body paint");
     let knob = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
@@ -299,6 +328,14 @@ fn return_device_control_click_selects_without_stealing_its_gesture(cx: &mut Tes
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert_eq!(visual.debug_bounds(body), Some(body_bounds));
+    assert_eq!(visual.rendered_background(body), Some(body_paint));
+    assert_eq!(
+        visual.rendered_background("device-frame-header"),
+        Some(gpui::Background::from(gpui::rgb(
+            device_layout_style().accent
+        )))
+    );
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device))
     });
@@ -946,6 +983,35 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
         visual.debug_bounds(regular_body).is_some(),
         "regular EQ8 body"
     );
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry("device-plot-section")
+            .expect("shared rounded EQ8 graph")
+            .0
+            .top_left,
+        px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+    );
+    let eq_body = visual.debug_bounds(regular_body).unwrap();
+    for id in [3, 4, 5, 202] {
+        let bounds = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{id}", regular_device.value()).into_boxed_str(),
+            ))
+            .expect("selected-band control");
+        assert_eq!(
+            bounds.size,
+            size(
+                px(hex_widgets::MICRO_DIAL_WIDTH),
+                px(hex_widgets::MICRO_DIAL_HEIGHT)
+            )
+        );
+        assert!(bounds.origin.x >= eq_body.origin.x && bounds.right() <= eq_body.right());
+        assert!(
+            bounds.origin.y >= eq_body.origin.y
+                && bounds.bottom_left().y <= eq_body.bottom_left().y
+        );
+    }
     editor.update(cx, |view, cx| {
         view.focused_return = Some(return_track);
         cx.notify();
@@ -1104,7 +1170,8 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(row.origin.x >= preview.origin.x);
         assert!(row.origin.x + row.size.width <= preview.origin.x + preview.size.width);
     }
-    for field in 0..12 {
+    for field in operator_panel::preview::Field::ALL {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -1115,7 +1182,11 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     }
     // Three-dial sections start beside the narrow switch/icon column,
     // rather than inheriting the LFO/filter selector column.
-    for field in [2, 5] {
+    for field in [
+        operator_panel::preview::Field::PitchEnvelope,
+        operator_panel::preview::Field::Time,
+    ] {
+        let field = field as usize;
         let control = visual
             .debug_bounds(Box::leak(
                 format!("operator-preview-{}-{field}", instrument_id.value()).into_boxed_str(),
@@ -1124,12 +1195,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(control.origin.x - preview.origin.x >= px(40.0));
         assert!(control.origin.x - preview.origin.x < px(54.0));
     }
+    // Keep the narrow-window geometry checks above, then expose the right rail
+    // before testing a mouse click on the wider companion inspector.
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),
     );
     let route_bounds = visual
         .debug_bounds(route_link)
         .expect("global routing link");
+    assert!(route_bounds.origin.x + route_bounds.size.width <= px(1440.0));
     visual.simulate_click(route_bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -1147,178 +1223,29 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let revision = editor.read_with(cx, |view, _| {
         view.state.as_ref().expect("project state").revision
     });
-    let lfo_toggle =
+    let pitch_toggle =
         Box::leak(format!("operator-preview-{}-toggle-0", instrument_id.value()).into_boxed_str());
-    let toggle_bounds = visual
-        .debug_bounds(lfo_toggle)
-        .expect("local filter toggle");
-    visual.simulate_click(toggle_bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert!(!state.enabled[0], "right-shell toggle updates its UI state");
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-        assert!(view.device_panel.pending_values.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
-        let selector = &state.selectors[&operator_panel::preview::Choice::FilterMode];
-        selector
-            .entity
-            .read_with(cx, |selector, _| assert!(!selector.is_open()));
-    });
-    // Keep the compact-width layout assertions above, then expose the full
-    // horizontal device rail before interacting with the far-right controls.
-    visual.simulate_resize(size(px(1440.0), px(540.0)));
-    visual.run_until_parked();
-    let wave_selector = Box::leak(
-        format!("operator-preview-{}-selector-0", instrument_id.value()).into_boxed_str(),
-    );
-    let wave_bounds = visual
-        .debug_bounds(wave_selector)
-        .expect("local filter waveform selector");
-    assert!(wave_bounds.origin.x >= px(0.0));
-    assert!(wave_bounds.origin.x + wave_bounds.size.width <= px(1440.0));
-    visual.simulate_click(
-        point(
-            wave_bounds.origin.x + px(5.0),
-            wave_bounds.origin.y + px(4.0),
-        ),
-        Modifiers::default(),
-    );
-    visual.run_until_parked();
-    let wave_option = Box::leak(
-        format!(
-            "operator-preview-{}-selector-0-option-0",
-            instrument_id.value()
-        )
-        .into_boxed_str(),
-    );
-    let option_bounds = visual
-        .debug_bounds(wave_option)
-        .expect("filter waveform option");
-    visual.simulate_click(option_bounds.center(), Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert_eq!(state.selected[0], 0, "selector changes its local selection");
-        state.selectors[&operator_panel::preview::Choice::FilterMode]
-            .entity
-            .read_with(cx, |selector, _| assert!(!selector.is_open()));
-    });
-    let rate_knob =
-        Box::leak(format!("operator-preview-{}-0-knob", instrument_id.value()).into_boxed_str());
-    let rate_value =
-        Box::leak(format!("operator-preview-{}-0-value", instrument_id.value()).into_boxed_str());
-    let rate_bounds = visual
-        .debug_bounds(rate_value)
-        .expect("local filter rate value");
-    let rate_knob_bounds = visual.debug_bounds(rate_knob).expect("local rate knob");
-    assert!(rate_bounds.origin.x + rate_bounds.size.width <= px(1440.0));
-    assert!(rate_knob_bounds.origin.x + rate_knob_bounds.size.width <= px(1440.0));
-    let rate_click = point(
-        rate_bounds.origin.x + rate_bounds.size.width / 2.0,
-        rate_bounds.origin.y + rate_bounds.size.height / 2.0,
-    );
-    visual.simulate_mouse_down(rate_click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(rate_click, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, cx| {
-        assert!(
-            view.device_panel.operator_previews[&instrument_id].controls
-                [&operator_panel::preview::Field::FilterFrequency]
-                .entity
-                .read_with(cx, |control, _| control.is_editing())
-        );
-    });
-    visual.simulate_keystrokes("cmd-a");
-    visual.simulate_input("250");
-    visual.simulate_keystrokes("enter");
+    let bounds = visual
+        .debug_bounds(pitch_toggle)
+        .expect("local pitch toggle");
+    visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        let rendered_rate = view.device_panel.operator_previews[&instrument_id].controls
-            [&operator_panel::preview::Field::FilterFrequency]
-            .entity
-            .read_with(cx, |control, _| control.value());
-        assert_ne!(rendered_rate, 198.0, "micro dial receives keyboard input");
-        assert_ne!(
-            view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::FilterFrequency as usize],
-            198.0,
-            "local numeric edit updates its view value"
-        );
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-        assert!(view.device_panel.pending_values.is_empty());
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(!view.device_panel.operator_previews[&instrument_id].enabled[0]);
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
     });
-    let committed_local_rate = editor.read_with(cx, |view, _| {
-        view.device_panel.operator_previews[&instrument_id].values
-            [operator_panel::preview::Field::FilterFrequency as usize]
-    });
-    let wave_bounds = visual.debug_bounds(wave_selector).expect("wave selector");
-    visual.simulate_click(
-        point(
-            wave_bounds.origin.x + px(5.0),
-            wave_bounds.origin.y + px(4.0),
-        ),
-        Modifiers::default(),
-    );
-    visual.run_until_parked();
-    let rate_bounds = visual
-        .debug_bounds(rate_knob)
-        .expect("local filter rate knob");
-    let rate_start = rate_bounds.center();
-    let rate_moved = point(rate_start.x, rate_start.y - px(12.0));
-    visual.simulate_mouse_down(rate_start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(rate_moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
         view.selected_track = Some(second_track);
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(cx, |view, cx| {
-        assert_eq!(
-            view.device_panel.owner,
-            Some(DevicePanelOwner::Track(second_track))
-        );
-        let state = &view.device_panel.operator_previews[&instrument_id];
-        assert_eq!(
-            state.values[operator_panel::preview::Field::FilterFrequency as usize],
-            committed_local_rate,
-            "owner changes preserve completed local values"
-        );
-        assert!(
-            !state.controls[&operator_panel::preview::Field::FilterFrequency]
-                .entity
-                .read_with(cx, |control, _| control.is_interacting())
-        );
-        assert!(
-            !state.selectors[&operator_panel::preview::Choice::FilterMode]
-                .entity
-                .read_with(cx, |selector, _| selector.is_open())
-        );
-        assert_eq!(
-            view.state.as_ref().expect("project state").revision,
-            revision
-        );
-    });
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         cx.notify();
     });
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.device_panel.operator_previews[&instrument_id].values
-                [operator_panel::preview::Field::FilterFrequency as usize],
-            committed_local_rate,
-            "local preview state remains available after returning to its owner"
-        );
-    });
     for operator in 0..4 {
         let row = Box::leak(
             format!("operator-row-{}-{operator}", instrument_id.value()).into_boxed_str(),
@@ -2511,11 +2438,25 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 control.origin.x + control.size.width <= lfo.origin.x + lfo.size.width - px(4.0)
             );
         }
-        for (title, fields) in [
-            ("filter", vec![0, 1]),
-            ("pitch env", vec![2, 3, 4]),
-            ("global", vec![5, 6, 7]),
-        ] {
+        let filter = visual
+            .debug_bounds(Box::leak(
+                format!("operator-preview-row-{}-filter", instrument_id.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        for parameter in [20001, 20002, 20005, 20006] {
+            let control = visual
+                .debug_bounds(Box::leak(
+                    format!("device-{}-parameter-{parameter}", instrument_id.value())
+                        .into_boxed_str(),
+                ))
+                .unwrap();
+            assert!(control.origin.x >= filter.origin.x + px(4.0));
+            assert!(
+                control.origin.x + control.size.width
+                    <= filter.origin.x + filter.size.width - px(4.0)
+            );
+        }
+        for (title, fields) in [("pitch env", vec![0, 1, 2]), ("global", vec![3, 4, 5])] {
             let row = visual
                 .debug_bounds(Box::leak(
                     format!("operator-preview-row-{}-{title}", instrument_id.value())
@@ -2523,6 +2464,7 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 ))
                 .expect("preview row");
             for field in fields {
+                let field = field as usize;
                 let control = visual
                     .debug_bounds(Box::leak(
                         format!("operator-preview-{}-{field}", instrument_id.value())
@@ -2537,6 +2479,24 @@ fn operator_shell_fixed_rows_fit_without_shrinking_controls(cx: &mut TestAppCont
                 );
             }
         }
+    }
+    // LFO uses canonical controls after PR154, with the same accepted row inset.
+    let lfo_row = visual
+        .debug_bounds(Box::leak(
+            format!("operator-preview-row-{}-lfo", instrument_id.value()).into_boxed_str(),
+        ))
+        .expect("canonical LFO row");
+    for parameter in [82, 85, 87] {
+        let control = visual
+            .debug_bounds(Box::leak(
+                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+            ))
+            .expect("canonical LFO control");
+        assert!(control.origin.x >= lfo_row.origin.x + px(4.0));
+        assert!(
+            control.origin.x + control.size.width
+                <= lfo_row.origin.x + lfo_row.size.width - px(4.0)
+        );
     }
     // Fixed frequency and multiplier have distinct IDs from ratio controls.
     // A keyboard edit must follow the focused fixed-frequency field too.
@@ -2634,6 +2594,29 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     let output = visual.debug_bounds(output_selector).expect("output column");
     assert_eq!(input.size.width, px(64.0));
     assert_eq!(output.size.width, px(64.0));
+    let scale = visual.update(|window, _| window.scale_factor());
+    for section in ["device-input-section", "device-output-section"] {
+        let bounds = visual
+            .debug_bounds(section)
+            .expect("shared rounded Utility section");
+        assert_eq!(
+            bounds.size.width,
+            px(64.0),
+            "rounded sections preserve control width"
+        );
+        let corners = visual
+            .rendered_surface_geometry(section)
+            .expect("painted rounded section")
+            .0;
+        assert_eq!(
+            corners.top_left,
+            px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+        );
+        assert_eq!(
+            visual.rendered_background(section),
+            Some(gpui::Background::from(rgb(device_layout_style().rail)))
+        );
+    }
     let body_selector = Box::leak(format!("device-body-{}", device.value()).into_boxed_str());
     let body = visual.debug_bounds(body_selector).expect("Utility body");
     assert_eq!(body.size.width, px(140.0));
@@ -3577,9 +3560,12 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
     editor.update(cx, |view, cx| {
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -3888,9 +3874,12 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
     editor.update(cx, |view, cx| {
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -4045,9 +4034,12 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             });
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -4183,9 +4175,12 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         );
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -5074,9 +5069,12 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         })
         .expect("first acknowledged edit");
     let changed_state = Arc::new(ViewState {
+        canonical_audio_source: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
+        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
         timeline_frames: state.timeline_frames,
         can_undo: project_editor.can_undo(),
         can_redo: project_editor.can_redo(),
@@ -5153,4 +5151,40 @@ fn clipped_device_card_bounds_cannot_claim_offscreen_pointer() {
         &clipped_card,
         Some(&viewport),
     ));
+}
+
+#[gpui::test]
+fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .expect("track")
+        .instrument()
+        .expect("sine")
+        .id();
+    let (handle, _) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [1280.0, 880.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        visual.run_until_parked();
+        for device in [instrument, effect] {
+            let title = visual
+                .debug_bounds(Box::leak(
+                    format!("device-drag-title-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("title");
+            let body = visual
+                .debug_bounds(Box::leak(
+                    format!("device-body-{}", device.value()).into_boxed_str(),
+                ))
+                .expect("body");
+            assert_eq!(
+                title.size.height,
+                px(hex_widgets::DEVICE_FRAME_HEADER_HEIGHT)
+            );
+            assert_eq!(body.origin.y, title.bottom_left().y);
+            assert_eq!(body.size.height, px(DEVICE_FRAME_BODY_HEIGHT));
+        }
+    }
 }

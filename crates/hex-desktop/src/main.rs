@@ -1,7 +1,22 @@
 //! Desktop composition only: create backend, open the GPUI shell, run lifecycle.
 use gpui::{App, Application};
+use std::io::Write;
+
+mod time_selection_profile;
 
 fn main() {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments
+        .next()
+        .is_some_and(|argument| argument == "--profile-time-selection")
+    {
+        if let Err(error) = time_selection_profile::run(arguments) {
+            let _ = writeln!(std::io::stderr().lock(), "{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let mut session_log =
         hex_diagnostics::default_directory().and_then(hex_diagnostics::SessionLog::start);
     let log_handle = session_log
