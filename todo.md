@@ -1,3 +1,14 @@
+## native superseded preparation cleanup — pulse2656 / PR272, 17 october 2026
+
+- Adapter retirement intent now survives actual Root Cleaning/Complete and
+  verification failure before its first explicit request. Exact report recovery
+  remains the only removal/reuse frontier; transient work contention retains the
+  cancelled preparation token instead of treating Busy as completion.
+- An actual Root/pair control fails before repair in0.03s, then covers repeated
+  retirement, verification failure, exact recovery and incarnation reuse. Rapid
+  New→Import before empty ACK exercises actual successor PCM with callback probes.
+  No Root policy, queue/capacity, native deadline or listening claim is added.
+
 ## native downsample reader window — pulse2655 / PR271, 17 october 2026
 
 - Native verified reader limits now use the already reserved source-scratch
