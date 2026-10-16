@@ -13,32 +13,17 @@ pub(super) mod context;
 pub(super) mod envelope;
 pub(super) mod preview;
 
-pub(super) const OPERATOR_FRAME_WIDTH: f32 =
-    SHELL_WIDTH + DETAIL_WIDTH + preview::PANEL_WIDTH + 30.0;
-const BODY_HEIGHT: f32 = 168.0;
+pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
-const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
-const DETAIL_WIDTH: f32 = 292.0;
+const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
-// Neutral colors based on the user-supplied Operator reference crops.
-const DISPLAY_BACKGROUND: u32 = 0x191919;
-const RAIL_BACKGROUND: u32 = 0x363636;
-const RAIL_GUTTER: u32 = 0x474747;
 
-pub(super) fn frame_style() -> hex_widgets::ControlStyle {
-    hex_widgets::ControlStyle {
-        background: RAIL_GUTTER,
-        surface: RAIL_GUTTER,
-        raised: RAIL_GUTTER,
-        border: RAIL_GUTTER,
-        ..super::control_style()
-    }
-}
-
-gpui::actions!(hex_operator, [ActivateRouting]);
+gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 
 pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
+        gpui::KeyBinding::new("enter", ActivateSection, Some("hex_operator_section")),
+        gpui::KeyBinding::new("space", ActivateSection, Some("hex_operator_section")),
         gpui::KeyBinding::new("enter", ActivateRouting, Some("hex_operator_routing")),
         gpui::KeyBinding::new("space", ActivateRouting, Some("hex_operator_routing")),
     ]);
@@ -50,13 +35,40 @@ pub(super) struct OperatorPanelState {
     pub(super) page: OperatorPage,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum OperatorPage {
     Oscillator,
     #[default]
     Envelope,
     Routing,
     Lfo,
+    Filter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum NavigationTarget {
+    Oscillator(usize),
+    Page(OperatorPage),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Section {
+    Oscillator(usize),
+    Preview(&'static str),
+    Detail,
+}
+
+fn navigation_focus(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    target: NavigationTarget,
+) -> gpui::FocusHandle {
+    view.device_panel
+        .operator_navigation_focus
+        .entry((device, target))
+        .or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
+        .clone()
 }
 
 const fn id(value: u32) -> ParameterId {
@@ -85,7 +97,7 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Instrument,
         type_id: device_view.type_id,
     };
-    let mut shell = div()
+    let mut shell = hex_widgets::device_rail(super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-shell-{}", device.value()).into(),
         ))
@@ -93,10 +105,6 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(RAIL_GUTTER))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
         .pr(px(4.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
@@ -135,67 +143,39 @@ pub(super) fn render_body(
         ),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
+        OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
-    div()
+    let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
+    let detail =
+        crate::device_composition::tabbed_detail(detail, page_tabs(view, cx, device, owner, state))
+            .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
+            .id(ElementId::Name(
+                format!("operator-detail-{}", device.value()).into(),
+            ))
+            .debug_selector(move || format!("operator-detail-{}", device.value()))
+            .track_focus(&detail_focus);
+    let preview = preview::render(view, cx, device, device_view);
+    crate::device_composition::three_pane(shell, detail, preview)
+        .tab_group()
         .on_children_prepainted(context::focus_listener(view, cx, device))
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-body-{}", device.value()))
-        .w_full()
-        .h(px(BODY_HEIGHT))
-        .min_h_0()
-        .overflow_hidden()
-        .flex()
-        .gap(px(4.0))
-        .bg(rgb(RAIL_GUTTER))
-        .px(px(3.0))
-        .py(px(1.0))
-        .child(shell)
-        .child(
-            div()
-                .id(ElementId::Name(
-                    format!("operator-detail-{}", device.value()).into(),
-                ))
-                .debug_selector(move || format!("operator-detail-{}", device.value()))
-                .flex_1()
-                .w(px(DETAIL_WIDTH))
-                .min_w_0()
-                .bg(rgb(DISPLAY_BACKGROUND))
-                .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-                .overflow_hidden()
-                .relative()
-                .px(px(4.0))
-                .h_full()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
-                .child(detail)
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(86.0))
-                        .left_0()
-                        .w_full()
-                        .px(px(4.0))
-                        .child(page_tabs(cx, device, owner, state)),
-                ),
-        )
-        .child(preview::render(view, cx, device, device_view))
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "tab"
-                    && !event.keystroke.modifiers.shift
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.platform
                     && owner.is_some_and(|owner| owner.is_current(view))
                 {
-                    if finalize_controls(view, cx)
-                        && let Some(focus) = view
-                            .device_panel
-                            .operator_previews
-                            .get(&device)
-                            .and_then(|state| state.routing_focus.as_ref())
-                    {
-                        focus.focus(window);
+                    if preview::finalize_controls(view, cx, device) && finalize_controls(view, cx) {
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev();
+                        } else {
+                            window.focus_next();
+                        }
                     }
                     cx.stop_propagation();
                 }
@@ -204,11 +184,25 @@ pub(super) fn render_body(
 }
 
 fn page_tabs(
+    view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     owner: Option<context::Owner>,
     state: OperatorPanelState,
 ) -> Div {
+    let envelope_focus = navigation_focus(
+        view,
+        cx,
+        device,
+        NavigationTarget::Page(OperatorPage::Envelope),
+    );
+    let lfo_focus = navigation_focus(view, cx, device, NavigationTarget::Page(OperatorPage::Lfo));
+    let oscillator_focus = navigation_focus(
+        view,
+        cx,
+        device,
+        NavigationTarget::Page(OperatorPage::Oscillator),
+    );
     div()
         .flex()
         .w_full()
@@ -222,6 +216,7 @@ fn page_tabs(
             OperatorPage::Envelope,
             "envelope",
             state.page,
+            envelope_focus,
         ))
         .child(page_tab(
             cx,
@@ -230,6 +225,7 @@ fn page_tabs(
             OperatorPage::Lfo,
             "lfo",
             state.page,
+            lfo_focus,
         ))
         .child(page_tab(
             cx,
@@ -238,6 +234,7 @@ fn page_tabs(
             OperatorPage::Oscillator,
             "oscillator",
             state.page,
+            oscillator_focus,
         ))
 }
 
@@ -288,7 +285,15 @@ fn operator_row(
         ControlPresentation::MicroDial,
         Some("level"),
     );
-    let mut row = div()
+    let (section_focus, focused) =
+        context::section_focus(view, cx, device, Section::Oscillator(operator));
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
+        .on_children_prepainted(context::section_listener(
+            view,
+            cx,
+            device,
+            Section::Oscillator(operator),
+        ))
         .id(ElementId::Name(
             format!("operator-row-{}-{operator}", device.value()).into(),
         ))
@@ -299,13 +304,9 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .px(px(4.0))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .bg(rgb(if selected {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
+        .pr(px(14.0))
+        .relative()
+        .track_focus(&section_focus)
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -330,45 +331,57 @@ fn operator_row(
             .child(section_title("fixed"))
             .child(fixed_control),
     );
-    row = row
-        .child(level)
-        .child(operator_label(view, cx, device, operator, selected));
+    row = row.child(level).child(
+        operator_label(view, cx, device, parameters, operator, selected)
+            .absolute()
+            .right(px(4.0))
+            .top(px(14.0)),
+    );
     row
 }
 
 fn operator_label(
-    view: &EditorView,
+    view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    parameters: &[NativeDeviceParameterView],
     operator: usize,
     selected: bool,
 ) -> Stateful<Div> {
     let owner = context::Owner::capture(view, device);
-    div()
-        .id(ElementId::Name(
-            format!("operator-select-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
-        .w(px(12.0))
-        .h(px(12.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(8.0))
-        .rounded(px(1.0))
-        .border_1()
-        .border_color(rgb(theme::color(if selected {
-            theme::PaletteRole::Text
-        } else {
-            theme::PaletteRole::Border
-        })))
-        .bg(rgb([0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]))
-        .text_color(rgb(0x15171b))
-        .cursor(gpui::CursorStyle::PointingHand)
-        .child(theme::text(["a", "b", "c", "d"][operator]))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
-                view.focus.focus(window);
+    let enabled = matches!(
+        value(view, device, parameters, id(513 + operator as u32)),
+        Some(ParameterValue::Bool(true))
+    );
+    let focus = navigation_focus(view, cx, device, NavigationTarget::Oscillator(operator));
+    hex_widgets::device_badge(
+        theme::text(["a", "b", "c", "d"][operator]),
+        theme::device_identity_style(operator, enabled, selected),
+    )
+    .id(ElementId::Name(
+        format!("operator-select-{}-{operator}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
+    .track_focus(&focus)
+    .key_context("hex_operator_section")
+    .cursor(gpui::CursorStyle::PointingHand)
+    .on_click(cx.listener(move |view, _, window, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view))
+            && finalize_controls(view, cx)
+            && toggle_enable(view, device, operator)
+        {
+            focus.focus(window);
+            let state = view.device_panel.operator_pages.entry(device).or_default();
+            state.selected_operator = operator;
+            if state.page != OperatorPage::Envelope {
+                state.page = OperatorPage::Oscillator;
+            }
+            cx.notify();
+        }
+    }))
+    .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view)) {
+            if finalize_controls(view, cx) {
                 let state = view.device_panel.operator_pages.entry(device).or_default();
                 state.selected_operator = operator;
                 if state.page != OperatorPage::Envelope {
@@ -376,7 +389,54 @@ fn operator_label(
                 }
                 cx.notify();
             }
-        }))
+            cx.stop_propagation();
+        }
+    }))
+}
+
+/// One ordinary canonical Boolean edit, with pending state retained on queue
+/// refusal. Rapid clicks read the latest queued value rather than a render's
+/// captured flag. Project history and audio publication remain session-owned.
+pub(super) fn toggle_enable(view: &mut EditorView, device: DeviceId, operator: usize) -> bool {
+    if operator >= 4 {
+        return false;
+    }
+    let key = ParameterKey {
+        device,
+        parameter: id(513 + operator as u32),
+    };
+    let canonical = view
+        .device_panel
+        .views
+        .get(&device)
+        .and_then(|(_, _, device_view)| device_view.as_ref().ok())
+        .and_then(|device_view| {
+            device_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == key.parameter)
+        })
+        .map(|parameter| parameter.value);
+    let previous_pending = view.device_panel.pending_values.get(&key).copied();
+    let Some(ParameterValue::Bool(previous)) = previous_pending.or(canonical) else {
+        view.error = Some("oscillator enable control is unavailable".into());
+        return false;
+    };
+    let value = ParameterValue::Bool(!previous);
+    view.device_panel.pending_values.insert(key, value);
+    if !view.enqueue_device_barrier(hex_session::service::Request::SetDeviceParameter {
+        device,
+        parameter: key.parameter,
+        value,
+    }) {
+        if let Some(previous) = previous_pending {
+            view.device_panel.pending_values.insert(key, previous);
+        } else {
+            view.device_panel.pending_values.remove(&key);
+        }
+        return false;
+    }
+    true
 }
 
 fn page_tab(
@@ -386,6 +446,7 @@ fn page_tab(
     page: OperatorPage,
     label: &'static str,
     active: OperatorPage,
+    focus: gpui::FocusHandle,
 ) -> Stateful<Div> {
     hex_widgets::panel_tab(theme::text(label), page == active, display_style())
         .w(px(90.0))
@@ -395,16 +456,31 @@ fn page_tab(
             format!("operator-page-{}-{label}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-page-{}-{label}", device.value()))
+        .track_focus(&focus)
+        .key_context("hex_operator_section")
         .cursor(gpui::CursorStyle::PointingHand)
         .on_click(cx.listener(move |view, _, window, cx| {
             if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
-                view.focus.focus(window);
+                focus.focus(window);
                 view.device_panel
                     .operator_pages
                     .entry(device)
                     .or_default()
                     .page = page;
                 cx.notify();
+            }
+        }))
+        .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+            if owner.is_some_and(|owner| owner.is_current(view)) {
+                if finalize_controls(view, cx) {
+                    view.device_panel
+                        .operator_pages
+                        .entry(device)
+                        .or_default()
+                        .page = page;
+                    cx.notify();
+                }
+                cx.stop_propagation();
             }
         }))
 }
@@ -922,17 +998,11 @@ fn value(
 }
 
 pub(super) fn display_style() -> hex_widgets::ControlStyle {
-    let mut style = super::control_style();
-    style.background = DISPLAY_BACKGROUND;
-    style.rail = 0x242424;
-    style
+    theme::device_style(theme::DeviceStyleRole::Display)
 }
 
-fn section_title(label: &'static str) -> Div {
-    div()
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text(label))
+fn section_title(label: impl AsRef<str>) -> Div {
+    hex_widgets::device_inline_caption(theme::text(label), super::control_style())
 }
 
 fn lfo_detail(
@@ -942,12 +1012,49 @@ fn lfo_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(1.0));
+    let sync = matches!(
+        value(view, device, parameters, id(84)),
+        Some(ParameterValue::Bool(true))
+    );
+    // Shared widget entities must have exactly one rendered focus parent.
+    // On/wave/active-rate/amount live in the summary; detail owns the remainder.
     for ids in [
-        &[82, 83, 84][..],
-        &[85, 86, 87][..],
-        &[88, 89, 90, 91, 92][..],
+        &[84, if sync { 85 } else { 86 }, 88][..],
+        &[89, 90, 91, 92][..],
     ] {
+        if ids[0] == 89 {
+            let selected = ["a", "b", "c", "d"]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, label)| {
+                    (value(view, device, parameters, id(89 + index as u32))
+                        == Some(ParameterValue::Bool(true)))
+                    .then_some(label)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            content = content.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(section_title("pitch destinations").debug_selector(move || {
+                        format!("operator-lfo-destinations-{}", device.value())
+                    }))
+                    .child(
+                        section_title(if selected.is_empty() {
+                            "selected: none".to_owned()
+                        } else {
+                            format!("selected: {selected}")
+                        })
+                        .debug_selector(move || {
+                            format!("operator-lfo-selected-{}-{selected}", device.value())
+                        }),
+                    ),
+            );
+        }
         let mut row = div().w_full().flex().items_center().gap(px(3.0));
         for parameter in ids {
             row = row.child(compact_control(
@@ -979,6 +1086,10 @@ fn lfo_detail(
         }
         content = content.child(row);
     }
+    content = content.child(
+        section_title("100% = +/-12 st; pitch only")
+            .debug_selector(move || format!("operator-lfo-depth-{}", device.value())),
+    );
     content.id(ElementId::Name(
         format!("operator-lfo-detail-{}", device.value()).into(),
     ))
@@ -999,15 +1110,16 @@ pub(super) fn lfo_summary(
         value(view, device, parameters, id(84)),
         Some(ParameterValue::Bool(true))
     );
-    let mut row = div()
+    let section = Section::Preview("lfo");
+    let (focus, focused) = context::section_focus(view, cx, device, section);
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
+        .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-lfo", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
-        .px(px(4.0))
-        .bg(rgb(RAIL_BACKGROUND))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
+        .track_focus(&focus)
         .h(px(40.0))
         .flex()
         .items_center()
@@ -1045,6 +1157,103 @@ pub(super) fn lfo_summary(
     row
 }
 
+fn filter_detail(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let mut detail = div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_title("filter"));
+    for fields in [
+        &[(20_003, "slope"), (20_004, "circuit")][..],
+        &[(20_007, "morph")][..],
+    ] {
+        let mut row = div()
+            .w_full()
+            .h(px(48.0))
+            .flex()
+            .items_center()
+            .gap(px(3.0));
+        for &(parameter, label) in fields {
+            row = row.child(compact_control(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                id(parameter),
+                if parameter < 20_005 {
+                    ControlPresentation::CompactSelector
+                } else {
+                    ControlPresentation::MicroDial
+                },
+                Some(label),
+            ));
+        }
+        detail = detail.child(row);
+    }
+    detail.id(ElementId::Name(
+        format!("operator-filter-detail-{}", device.value()).into(),
+    ))
+}
+
+pub(super) fn filter_summary(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    device_view: &NativeDeviceView,
+) -> Stateful<Div> {
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: device_view.type_id,
+    };
+    let section = Section::Preview("filter");
+    let (focus, focused) = context::section_focus(view, cx, device, section);
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
+        .on_children_prepainted(context::section_listener(view, cx, device, section))
+        .id(ElementId::Name(
+            format!("operator-preview-row-{}-filter", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-preview-row-{}-filter", device.value()))
+        .track_focus(&focus)
+        .w_full()
+        .h(px(40.0))
+        .flex()
+        .items_center()
+        .gap(px(2.0));
+    for (parameter, label) in [
+        (20_001, "filter"),
+        (20_002, "type"),
+        (20_005, "freq"),
+        (20_006, "res"),
+    ] {
+        row = row.child(compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            &device_view.parameters,
+            id(parameter),
+            if parameter == 20_001 {
+                ControlPresentation::CompactButton
+            } else if parameter < 20_005 {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::MicroDial
+            },
+            Some(label),
+        ));
+    }
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,6 +1275,8 @@ mod tests {
         }
         exposed.extend([61]);
         exposed.extend(82..=92);
+        exposed.extend(20_001..=20_007);
+        exposed.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
                 if source != target {
@@ -1091,9 +1302,9 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 88);
+        assert_eq!(exposed.len(), 99);
         assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&92));
+        assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
             assert!(!exposed.contains(&diagonal));
         }
