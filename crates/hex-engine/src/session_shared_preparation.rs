@@ -390,6 +390,13 @@ impl SessionSharedConstruction {
                 probes: _,
         } = self;
         if let Some(owner) = sine {
+            if owner.control_storage_declaration()
+                != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                    bytes: std::mem::size_of::<SineTable>(),
+                })
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
             l.shared(
                 owner.arc(),
                 owner.parts(),
@@ -399,6 +406,13 @@ impl SessionSharedConstruction {
             )?;
         }
         if let Some((owner, declaration)) = inventory.sine {
+            if owner.control_storage_declaration()
+                != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                    bytes: std::mem::size_of::<SineTable>(),
+                })
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
             l.shared(
                 owner,
                 declaration.parts(owner),

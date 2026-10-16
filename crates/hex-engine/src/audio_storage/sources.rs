@@ -37,13 +37,16 @@ impl<'a> AudioRootStorageLedger<'a> {
             SourceKind::Resident(audio) => {
                 self.resident(audio, Owner::exclusive(source), source.handle)
             }
-            SourceKind::Streamed(owner) => self.shared(
-                owner.arc(),
-                owner.parts(),
-                Owner::exclusive(source),
-                source.handle,
-                Some(owner.as_ref()),
-            ),
+            SourceKind::Streamed(owner) => {
+                owner.inspect_scalar_owned_storage();
+                self.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(source),
+                    source.handle,
+                    Some(owner.as_ref()),
+                )
+            }
         }
     }
     pub(crate) fn resident(

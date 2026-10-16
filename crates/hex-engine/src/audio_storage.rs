@@ -105,6 +105,13 @@ struct Root<'a> {
     owner: Owner<'a>,
     _role: AudioStorageRole,
 }
+/// One actual metadata allocation's unresolved source-domain relation. Equal
+/// metadata in two rows is still two owners; every physical handle is conserved.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamedSourceBindingObligation<'a> {
+    pub metadata: &'a StreamedSourceMetadata,
+    pub owning_handles: usize,
+}
 /// A lifetime-bound inventory of the selected actual custodies. Internal rows
 /// cannot be manufactured, edited, or used to obtain an owning graph reference.
 /// Mutation/cleanup is statically unavailable while this borrow remains alive.
@@ -121,6 +128,18 @@ impl<'a> AudioRootStorageLedger<'a> {
     pub fn try_new_on_control(
         reservation: AudioStorageLedgerReservation,
     ) -> Result<Self, AudioStorageError> {
+        reservation
+            .data_rows
+            .checked_mul(std::mem::size_of::<Data<'_>>())
+            .ok_or(AudioStorageError::Overflow)?;
+        reservation
+            .handle_rows
+            .checked_mul(std::mem::size_of::<Handle<'_>>())
+            .ok_or(AudioStorageError::Overflow)?;
+        reservation
+            .root_rows
+            .checked_mul(std::mem::size_of::<Root<'_>>())
+            .ok_or(AudioStorageError::Overflow)?;
         let mut result = Self {
             data: Vec::new(),
             handles: Vec::new(),
@@ -246,6 +265,33 @@ impl<'a> AudioRootStorageLedger<'a> {
     /// Equal values from distinct allocations deliberately remain distinct rows.
     pub fn streamed_sources(&self) -> impl Iterator<Item = &'a StreamedSourceMetadata> + '_ {
         self.data.iter().filter_map(|row| row.streamed)
+    }
+    pub fn source_domain_obligations(
+        &self,
+    ) -> impl Iterator<Item = StreamedSourceBindingObligation<'a>> + '_ {
+        self.data.iter().filter_map(|row| {
+            row.streamed
+                .map(|metadata| StreamedSourceBindingObligation {
+                    metadata,
+                    owning_handles: self
+                        .handles
+                        .iter()
+                        .filter(|handle| handle.owner.same(row.owner))
+                        .count(),
+                })
+        })
+    }
+    /// Every independent streamed-metadata owning handle remains a separate
+    /// source/domain lifetime-binding obligation, even when DATA deduplicates.
+    pub fn streamed_handle_obligations(&self) -> usize {
+        self.handles
+            .iter()
+            .filter(|handle| {
+                self.data
+                    .iter()
+                    .any(|row| row.streamed.is_some() && row.owner.same(handle.owner))
+            })
+            .count()
     }
     /// Actual ledger buffers remain observable even after a refused partial
     /// addition. These are metadata capacities, never a valid graph total.

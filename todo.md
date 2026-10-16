@@ -1,3 +1,19 @@
+## borrowed typed DATA and unresolved obligations — #2538 / PR233
+
+The audio-only ledger borrows actual private PreparedRevision/root and caller-bank
+custodies. DATA deduplicates only by anchored owner, charge location and equal
+constructor declaration; independent physical handles remain separate obligations.
+The concrete stream façade checks actual control/pages/catalog identity and full
+metadata coverage, captures listed constructor capacities and charges each whole
+actual domain once. Metadata equality does not establish a lease or owner identity.
+
+The named DATA contract preserves original177 exclusions as explicit opaque-cost
+obligations; retirement, handles and source-domain lifetime bindings remain open.
+`require_complete` refuses, with no publication/admission or native cap change.
+See [the bounded manifest](docs/audio-only-storage-accounting.md). Exact-source
+full local CI and source negative controls are recorded with PR233; this does not
+close original24 native/performance acceptance or downstream2541 aggregate costs.
+
 ## private streaming roots integrated with current main — #2537 / PR232
 
 Current routing, gain recording, transforms, UI and schema25 behavior remain intact.

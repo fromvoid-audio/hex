@@ -7,6 +7,7 @@ use crate::{
     worker::{WorkerQueues, run_worker},
 };
 use hex_engine::{MediaPages, StreamSourceKey};
+mod storage;
 use rtrb::RingBuffer;
 use std::{
     fmt,
@@ -17,6 +18,11 @@ use std::{
     },
     thread::{self, JoinHandle, Thread},
     time::Duration,
+};
+pub use storage::{
+    AudioStreamStorageError, AudioStreamStorageLedger, AudioStreamStorageReservation,
+    AudioStreamStorageSummary, OpaqueStreamCost, OpaqueStreamHandleGroup, StreamHandleLocation,
+    StreamOwningHandleObligation, StreamSourceDomainObligation,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +58,7 @@ pub struct StreamCallbackPages {
 }
 
 struct CatalogOwner {
+    transport_data: crate::TransportData,
     config: StreamConfig,
     stop: Arc<AtomicBool>,
     worker_wake: Thread,
@@ -228,13 +235,71 @@ impl StreamRuntime {
         free_pages
             .try_reserve_exact(config.page_buffers)
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        let mut transport_data = crate::TransportData::default();
         for _ in 0..config.page_buffers {
-            free_pages.push(PageBuffer::new().map_err(|_| StreamRuntimeError::AllocationFailed)?);
+            let (page, old_capacity) = PageBuffer::new_with_capacity()
+                .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+            transport_data.page_objects = crate::footprint::add(
+                transport_data.page_objects,
+                std::mem::size_of_val(page.as_ref()),
+            )?;
+            let PageBuffer {
+                key: _,
+                frames,
+                valid_frames: _,
+            } = page.as_ref();
+            transport_data.pcm_boxes = crate::footprint::add(
+                transport_data.pcm_boxes,
+                frames
+                    .len()
+                    .checked_mul(std::mem::size_of::<hex_engine::Frame>())
+                    .ok_or(StreamRuntimeError::AllocationFailed)?,
+            )?;
+            transport_data.page_boxing_overlap = transport_data.page_boxing_overlap.max(
+                old_capacity
+                    .checked_mul(std::mem::size_of::<hex_engine::Frame>())
+                    .ok_or(StreamRuntimeError::AllocationFailed)?,
+            );
+            free_pages.push(page);
         }
         let (request_tx, request_rx) = RingBuffer::new(config.request_capacity);
         let (ready_tx, ready_rx) = RingBuffer::new(config.ready_capacity);
         let (return_tx, return_rx) = RingBuffer::new(config.return_capacity);
         let (failure_tx, failure_rx) = RingBuffer::new(config.failure_capacity);
+        transport_data.queue_slot_data_declared = crate::footprint::sum([
+            request_tx
+                .buffer()
+                .capacity()
+                .checked_mul(std::mem::size_of::<crate::endpoint::PageRequest>())
+                .ok_or(StreamRuntimeError::AllocationFailed)?,
+            ready_tx
+                .buffer()
+                .capacity()
+                .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
+                .ok_or(StreamRuntimeError::AllocationFailed)?,
+            return_tx
+                .buffer()
+                .capacity()
+                .checked_mul(std::mem::size_of::<Box<PageBuffer>>())
+                .ok_or(StreamRuntimeError::AllocationFailed)?,
+            failure_tx
+                .buffer()
+                .capacity()
+                .checked_mul(std::mem::size_of::<StreamFailure>())
+                .ok_or(StreamRuntimeError::AllocationFailed)?,
+        ])
+        .ok_or(StreamRuntimeError::AllocationFailed)?;
+        transport_data.queue_object_data = crate::footprint::sum([
+            std::mem::size_of_val(request_tx.buffer()),
+            std::mem::size_of_val(ready_tx.buffer()),
+            std::mem::size_of_val(return_tx.buffer()),
+            std::mem::size_of_val(failure_tx.buffer()),
+        ])
+        .ok_or(StreamRuntimeError::AllocationFailed)?;
+        transport_data.queue_constructor_supported = crate::footprint::queue_family_supported();
+        transport_data.catalog_owner_data = std::mem::size_of::<CatalogOwner>();
+        transport_data.stop_flag_data = std::mem::size_of::<AtomicBool>();
+        transport_data.pair_owner_data = std::mem::size_of::<()>();
         let (catalog_sender, catalog_result) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -286,6 +351,7 @@ impl StreamRuntime {
             }
         };
         let owner = Arc::new(CatalogOwner {
+            transport_data,
             config,
             stop,
             worker_wake,

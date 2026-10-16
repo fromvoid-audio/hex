@@ -17,7 +17,8 @@ use std::{fmt, sync::Arc};
 mod audio_storage;
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
-    AudioStorageLedgerReservation, AudioStorageRole, audio_storage_constructor_layout_supported,
+    AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
+    audio_storage_constructor_layout_supported,
 };
 mod audio_input_storage;
 mod audio_only_inputs;

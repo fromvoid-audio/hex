@@ -56,25 +56,116 @@ charges, raw constructors, unexpected Weak observers and invalid associations
 refuse. Stack placement, allocator rounding and RSS are not established by an
 inline DATA charge. No public mutable graph/Arc/Weak owner escapes.
 
-## remaining stream composition
+## concrete stream DATA composition
 
-The next checkpoint composes this sealed engine inventory in `hex-stream`, which
-already owns actual control/pages/catalog identity. Catalog membership validates
-full metadata including fingerprints; equal metadata is not a lease or owner
-identity. The stream producer must capture actual listed DATA capacities and
-retain opaque-cost, handle, source-binding and retirement obligations separately.
-A missing/unsupported constructor or unsampled component remains Unknown.
+`AudioStreamStorageLedger` in `hex-stream` borrows the sealed engine ledger and
+actual `StreamControl`/`StreamCallbackPages` pairs. There is no generic provider
+or trusted-producer mint. Pairing validates actual owner and pair Arc identity.
+Repeating the same actual domain charges it once; equal metadata/content from two
+independent domains never collapses either allocation. Each explicitly selected
+caller CatalogLease contributes its three physical handle fields independently.
+The query does not create a lease or clone any owner.
 
-The exact parent DATA boundary is original PR177 source
+Catalog coverage compares the complete source metadata, including its fingerprint.
+It is a coverage fact, not source/catalog owner identity or lifetime custody.
+The typed source-domain view retains an unresolved binding for every independent
+streamed handle, even if DATA deduplicates or two catalogs contain equal metadata.
+No actual source-to-catalog lease exists in the private root API yet.
+
+The concrete factory accepts owned source definitions, not provider buffers or
+shared kernels. It creates fresh page/endpoint/queue buffers and fresh per-domain
+kernel owners; moved PathBuf/Vec fields remain exclusively owned. Catalog
+metadata is a separate inline-value Vec; root streamed metadata is a separately
+constructed Arc allocation. Full metadata equality establishes no shared backing.
+Thus the whole factory domain reservation is disjoint from sealed root DATA,
+selected caller banks and query metadata. No cached lease/component sum is
+subtracted to make the combination appear disjoint.
+
+The constructor-collected manifest is disjoint:
+
+| owner | listed DATA |
+| --- | --- |
+| page endpoint | actual cache, pending-key, source-key and held-return Vec capacities |
+| shared page pool | each actual PageBuffer object and final PCM Box slice once, regardless of queue/cache/worker position |
+| four rtrb queues | actual public RingBuffer object payloads and separately declared slot backings under the pinned constructor gate |
+| fixed shared owners | actual CatalogOwner, stop-flag, pair and verified-catalog object payloads; opaque Arc control blocks stay excluded |
+| worker sources | actual Source Vec capacity, including inline reader objects/fixed64KiB scratch; separate actual definition/reader PathBuf capacities and digest Vec capacities |
+| kernel owners | actual kernel object payload and weight Vec capacity once per actual shared allocation; one independent kernel handle per source plan |
+| worker buffers | actual source scratch, free-page handle, held-page handle and held-failure Vec capacities |
+| verified catalog | its independent metadata Vec capacity and actual fixed object payload |
+| query metadata | actual domain/lease vector capacities and inline ledger header once |
+
+The worker emits its fixed receipt only after complete verified construction.
+Source plans validate actual kernel allocation identity against the captured
+cache while those owners coexist. Only scalar totals leave the worker for this report; no worker address can later deduplicate against a new allocation. These
+are conservative fixed-domain constructor DATA reservations and unresolved
+constructor handle observations, not live worker-field or lifetime receipts.
+An unsampled, failed, stopping, finished or otherwise incomplete worker remains
+Unknown when observed. Completion/panic racing the query may release storage and
+overcount the reservation; it cannot grow this fixed domain or close an obligation.
+Borrowing both halves prevents ordinary shutdown/last-owner stop during reporting.
+Catalog and join-handle guards remain local to each query; results retain no guard.
+The existing loop consumes no further request while a held result is
+pending; its held vectors remain within their preallocated capacities. The
+complete fixed pool bounds the free/held page-handle vectors. No handoff,
+shutdown, thread or callback protocol changed to obtain these observations.
+
+Construction extras contain actual original definition-vector slots, kernel-cache
+slots and observed old-cache growth backings, and the largest observed pre-boxing
+page Vec capacity once. Definition paths transfer into sources and are not added
+again. Kernel tables reserve once and retain that same Vec; no duplicate payload
+conversion is invented. The conservative bound adds these disjoint extra
+backings to the entire retained DATA domain. It subtracts no cached component or
+lease report and does not claim simultaneous process peak.
+
+Queue slot bytes are a **declaration**, not a falsely observed private Vec capacity.
+The supported-construction declaration checks rtrb0.3.4 Cargo.lock checksum,
+observed registry lib.rs, cache_padded.rs and chunks.rs SHA256, and the supported
+compiler/std family. It applies only to the repository's fixed Cargo invocation
+and exact required local CI, with the pinned compiler and Cargo.lock. Ambiguous
+registry observations, observed configuration/source replacement and unsupported
+compiler evidence keep DATA Unknown. A build script cannot establish resolved
+source identity for every Cargo invocation: arbitrary custom `--config` or source
+replacement is outside this supported class, even if not visible to build.rs.
+This is not cryptographic/runtime source attestation or a trusted-producer mint.
+The local runner and bundler's fixed argv supply the supported build provenance.
+
+The actual public RingBuffer type supplies payload size/alignment; no mirror
+struct is used. The 24 allocation-counter controls exercise all four real message
+types at capacities 1,3,6,1024,2048 and8192: exactly two requested allocations,
+exact requested bytes, and balanced signed-net destruction. Build-only sha2
+checks observed files; architecture policy forbids it as a stream runtime edge.
+
+## explicit outstanding obligations
+
+The exact inherited DATA boundary is original PR177 source
 `8d444c06c295e52a8aa0dde275a89ecec6f454e2`, `docs/page-delivery.md` (actual
-allocation-capacity reporting), `crates/hex-stream/src/footprint.rs` and its README.
-It excludes allocator rounding/headers, opaque std Arc control blocks,
-catalog-channel/thread/OS bookkeeping, stack/thread-local storage and caller
-handles from the listed stream DATA report. These exclusions must be explicit
-unresolved obligations in the aggregate; they are not free storage. No complete
-whole-process/domain/aggregate storage or admission claim follows.
+allocation-capacity reporting), `crates/hex-stream/src/footprint.rs` and README.
+Its exclusions remain: allocator rounding/headers, opaque standard-library Arc
+control blocks, catalog-channel/thread/OS bookkeeping, stack/thread-local storage,
+caller-owned handles and prepared graph/history/export storage. The engine ledger
+accounts the explicitly selected graph roots separately; the stream façade does
+not silently add those roots twice.
+
+The aggregate explicitly enumerates six opaque-cost obligations per actual domain:
+allocator metadata, shared control blocks, catalog channel, worker thread,
+operating-system state, and stack/thread-local storage. A missing opaque obligation
+invalidates the report. These are **unresolved costs**, not zero-byte allocations.
+Typed individual constructor handle observations remain unresolved, as do opaque
+channel/thread internals, unregistered caller aliases, every source-domain binding,
+root retirement and domain retirement. Unobserved constructor handles add an
+explicit Unknown group; reference counts never close or deduplicate handles.
+
+Only `require_listed_data` can succeed for the named DATA-capacity subreport.
+`require_complete` remains refused. No whole-process/domain/aggregate storage,
+allocator/RSS, lifetime closure, publication or budget-admission claim follows.
+Unknown producer/layout/worker state cannot produce a listed bound. Arithmetic
+and caller reservation pressure refuse without consuming owners; failed additions
+poison their ledger while metadata capacities remain inspectable.
 
 Existing integrated-main caps remain unchanged. Parent-only runtime32MiB/domainN2
 terminology does not introduce a new policy here. Aggregate-cost resolution stays
 with downstream Pulse2541 / PR236 before publication/admission. Original Pulse24 /
-PR177 native, performance and full review acceptance remains open.
+PR177 native, performance and full review acceptance remains open. Exact-source
+full local CI and negative-control evidence are recorded with PR233; targeted
+checkpoint tests alone are not merge or native acceptance evidence.

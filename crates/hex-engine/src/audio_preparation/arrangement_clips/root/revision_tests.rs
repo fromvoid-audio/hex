@@ -719,3 +719,88 @@ fn borrowed_storage_pressure_refuses_without_consuming_original_owners() {
     c.cleanup_on_control();
     assert!(c.recover_on_control(&token).is_some());
 }
+
+#[test]
+fn borrowed_storage_retained_roles_and_failure_custody_never_drop_or_close_owners() {
+    if !supported("borrowed_storage_retained_failure") {
+        return;
+    }
+    let (project, a) = fixture(false);
+    let (_, b) = fixture(false);
+    let mut current = AudioPreparationCustody::try_new_on_control().unwrap();
+    let mut previous = AudioPreparationCustody::try_new_on_control().unwrap();
+    let a = begin(&mut current, &project, a).ok().unwrap();
+    let b = begin(&mut previous, &project, b).ok().unwrap();
+    let mut one = crate::AudioRootStorageLedger::try_new_on_control(storage_reservation()).unwrap();
+    one.borrow_custody_on_control(&current, crate::AudioStorageRole::Current)
+        .unwrap();
+    let mut two = crate::AudioRootStorageLedger::try_new_on_control(storage_reservation()).unwrap();
+    two.borrow_custody_on_control(&previous, crate::AudioStorageRole::Predecessor)
+        .unwrap();
+    let expected = one.summary().unwrap().data_bytes + two.summary().unwrap().data_bytes;
+    for role in [
+        crate::AudioStorageRole::Predecessor,
+        crate::AudioStorageRole::Archive,
+        crate::AudioStorageRole::PendingReclaim,
+    ] {
+        let mut ledger =
+            crate::AudioRootStorageLedger::try_new_on_control(storage_reservation()).unwrap();
+        ledger
+            .borrow_custody_on_control(&current, crate::AudioStorageRole::Current)
+            .unwrap();
+        ledger.borrow_custody_on_control(&previous, role).unwrap();
+        let sum = ledger.summary().unwrap();
+        assert_eq!(sum.data_bytes, expected);
+        assert_eq!(sum.unresolved_retirements, 2);
+        assert!(sum.require_complete().is_err());
+    }
+    drop(one);
+    drop(two);
+    current.cancel(&a);
+    previous.cancel(&b);
+    current.cleanup_on_control();
+    previous.cleanup_on_control();
+    assert!(current.recover_on_control(&a).is_some());
+    assert!(previous.recover_on_control(&b).is_some());
+    for panic in [false, true] {
+        let (project, bank) = fixture(false);
+        let pointer = bank.sources.as_ptr();
+        let mut c = AudioPreparationCustody::try_new_on_control().unwrap();
+        if panic {
+            c.revision.panic_after = Some(9);
+        } else {
+            c.revision.fail_after = Some(9);
+        }
+        let token = begin(&mut c, &project, bank).ok().unwrap();
+        let mut ledger =
+            crate::AudioRootStorageLedger::try_new_on_control(storage_reservation()).unwrap();
+        ledger
+            .borrow_custody_on_control(&c, crate::AudioStorageRole::FailedConstruction)
+            .unwrap();
+        let report = ledger.summary().unwrap();
+        assert!(report.data_bytes > 0);
+        assert!(report.require_complete().is_err());
+        assert_eq!(report.unknown_storage != 0, panic);
+        drop(ledger);
+        assert_eq!(c.bank.as_ref().unwrap().sources.as_ptr(), pointer);
+        c.cleanup_on_control();
+        if panic {
+            assert_eq!(c.phase(), AudioPreparationPhase::FailedIncomplete);
+            assert!(c.recover_on_control(&token).is_none());
+        } else {
+            assert_eq!(
+                c.recover_on_control(&token).unwrap().sources.as_ptr(),
+                pointer
+            );
+        }
+    }
+}
+#[test]
+fn borrowed_storage_checked_reservation_overflow_precedes_any_owner_borrow() {
+    let mut r = storage_reservation();
+    r.data_rows = usize::MAX;
+    assert!(matches!(
+        crate::AudioRootStorageLedger::try_new_on_control(r),
+        Err(AudioStorageError::Overflow)
+    ));
+}
