@@ -1,3 +1,20 @@
+## unified native device GUI integration — #2469 / PR204, 16 october 2026
+
+Canonical child PRs205–209 supply shared extensible primitives, product semantic
+theme resolution, selected-header-only paint, all existing production owner/
+fallback compositions, and a production-backed native catalog with enforcement.
+The final parent integrates that history and documents its finite acceptance
+map and library-first catalog extension sequence. Vector/Operator, Utility,
+Saturator and EQ8 retain their useful widths, controls, focus and canonical
+bindings; existing other panels remain compatible consumers. No DSP/schema or
+new device feature is added by this integration.
+
+The final exact-source18-step local CI and repository-owned optimized stable
+installation are recorded with PR204 and retained delivery artifacts. Native
+appearance/input/listening and other-platform/reference parity remain separate,
+optional evidence; source/scene tests do not establish them. Historical PR,
+acceptance and delivery records remain intact. No native input was automated.
+
 ## private streaming roots integrated with current main — #2537 / PR232
 
 Current routing, gain recording, transforms, UI and schema25 behavior remain intact.
