@@ -81,16 +81,30 @@ The custom oscillator excludes every partial at or above fundamental Nyquist;
 FM sidebands are not a complete anti-aliasing solution. Eight independent
 Clenshaw residues evaluate the sine series. A process-lifetime immutable
 131,073-f64 phase basis (1,048,584 payload bytes) is initialized on control and
-borrowed directly during sampling. It contains no authored values and has no
-callback reclamation. Original builtin tables and builtin endpoints are retained. Filter preparation
+borrowed directly during sampling. Reservation is fallible and its result, including
+an allocation failure, is cached on control; sampling never initializes the basis.
+It contains no authored values and has no callback reclamation. Original builtin tables and builtin endpoints are retained. Filter preparation
 propagates invalid settings/rates rather than panicking, and interrupted painter
 ownership cancels the gesture through the ordinary control path.
+
+The full 64-partial path uses fixed eight-lane fused recurrences and an analytic
+sine-basis reconstruction, while smaller Nyquist caps retain the general path.
+The strict cap avoids wide division. Settled spectra are borrowed, inactive LFO
+clock arithmetic is skipped, and zero modulation avoids phase conversion. Flat
+envelope decay levels avoid an exponential with a zero multiplier. These paths
+preserve f64 coefficient precision, voice admission and owned twin bytes.
+
+The waveform overview caches bounded plotted geometry per control, keyed by exact
+custom amplitudes, range, Repeat and preview ownership or builtin choice. Parameter
+values are borrowed in one scan and shared by the bars and overview. Theme style
+is rebuilt at render time; unchanged input does not recompute the Fourier preview.
 
 ## Verification and limits
 
 Deterministic tests cover v1–8/v11 migrations, malformed banks, signed zero, cached
 User restoration, strict Nyquist and a nonzero 64th partial, independent sine-sum
-agreement, Repeat and normalization bounds, real snapshot/history/save/open,
+agreement across every cutoff from 1 through 64, fallible phase-basis reservation,
+overview cache reuse/invalidation, Repeat and normalization bounds, real snapshot/history/save/open,
 rendered painter gestures, 64 held/released voices in Arrangement and Session,
 feedback/LFO/filter recurrence, enable-clock continuity, range reversals, partition
 invariance and refusal preserving old PCM. Callback probes cover first paint,
@@ -99,7 +113,7 @@ and deallocations. Existing transactional rollback/admission tests remain active
 
 Run the production CPU fixture with:
 `cargo run -p hex-devices --locked --release --example operator_harmonic_runtime`.
-On the shared AMD EPYC 9V74 x86-64 cloud, four oscillators each using all 64
+Historical pre-optimization evidence: on the shared AMD EPYC 9V74 x86-64 cloud, four oscillators each using all 64
 amplitudes, 256-frame blocks and 128 timed blocks produced these milliseconds:
 
 | Rate | Voices | Median | p95 | Maximum | Block deadline |
@@ -118,3 +132,35 @@ nonzero. Dense maximum polyphony is **not deadline-safe on this cloud machine**;
 these measurements do not establish 100-track scalability or native latency.
 Native macOS visual/listening and physical input-to-audio acceptance remain
 user-owned, separately from automated merge validation.
+
+
+### macOS review candidate measurements (16 October 2026)
+
+The optimized production fixture on Apple M5 Pro retains four oscillators,
+64 authored partials, 256-frame blocks and the 53,792-byte runtime pair. The
+`--varied` fixture uses different coefficients, ratios and phases;
+`--fm` adds a feedforward modulation chain. `--cpu-handshake` times 512 blocks
+and flushes ready/done markers around rendering, allowing an external `ps` CPU
+sample while the process waits on stdin. Centisecond process CPU deltas include
+buffer fill, timing and PCM checksum traversal, but exclude preparation/warmup.
+They are diagnostic rendering upper bounds, separately from wall deadlines.
+
+| 96 kHz workload | Voices | Process CPU ms/block | Wall median / p95 / max ms |
+| --- | ---: | ---: | ---: |
+| uniform spectra | 16 | 0.781 | 1.154 / 20.579 / 135.848 |
+| uniform spectra | 64 | 2.500 | 3.442 / 9.949 / 42.891 |
+| varied spectra | 16 | 0.938 | 1.092 / 3.435 / 10.941 |
+| varied spectra | 64 | 2.949 | 3.414 / 5.361 / 12.607 |
+| varied spectra, FM | 16 | 1.621 | 2.288 / 16.652 / 65.980 |
+| varied spectra, FM | 64 | 4.668 | 5.464 / 7.085 / 11.171 |
+
+The 96 kHz block deadline is 2.667 ms. Concurrent native builds and applications
+were active; these wall results do not establish callback deadline safety. Dense
+maximum polyphony, particularly FM at high sample rates, remains an explicit
+performance limitation and open native acceptance item. Voice/partial counts,
+f64 precision and memory budgets were not reduced. A separate two-voice kernel
+prototype preserved oracle accuracy but improved median kernel latency only
+12.4%, below the selected 25% threshold; it was not integrated into the runtime.
+Local ignored artifacts retain benchmark output, executable hashes, the external
+CPU harness and prototype evidence. Physical audio, screenshots, painting,
+Undo/reopen and listening still require exact-candidate native confirmation.

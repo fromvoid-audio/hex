@@ -131,7 +131,7 @@ impl PreparedOperatorEnvelope {
             return self.initial + (self.peak - self.initial) * age as f64 * self.attack_inverse;
         }
         let decay_age = age - self.attack;
-        if decay_age < self.decay {
+        if decay_age < self.decay && self.peak != self.sustain {
             return self.sustain
                 + (self.peak - self.sustain) * (-(decay_age as f64) * self.decay_rate).exp();
         }
@@ -235,7 +235,12 @@ mod tests {
 
     #[test]
     fn full_envelope_matches_independent_oracle_for_noteoff_in_every_stage() {
-        for levels in [[0.25, 1.0, 0.4], [0.9, 0.3, 0.8], [0.0, 0.0, 0.0]] {
+        for levels in [
+            [0.25, 1.0, 0.4],
+            [0.9, 0.3, 0.8],
+            [0.0, 0.0, 0.0],
+            [0.2, 0.7, 0.7],
+        ] {
             let times = [8, 13, 17];
             let envelope = prepared(levels, times);
             for gate in [0, 1, 7, 8, 9, 20, 21, 40] {

@@ -3,7 +3,7 @@ use super::*;
 
 const PHASE_BITS: u32 = 17;
 pub(super) struct HarmonicPhaseTable {
-    sine: Box<[f64]>,
+    sine: Vec<f64>,
 }
 impl HarmonicPhaseTable {
     fn lookup(&self, phase: u64) -> f64 {
@@ -19,16 +19,50 @@ impl HarmonicPhaseTable {
         )
     }
 }
-pub(super) fn harmonic_phase_table() -> &'static HarmonicPhaseTable {
-    static TABLE: std::sync::OnceLock<HarmonicPhaseTable> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        let count = 1_usize << PHASE_BITS;
-        let sine = (0..=count)
-            .map(|i| (i as f64 * std::f64::consts::TAU / count as f64).sin())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        HarmonicPhaseTable { sine }
-    })
+fn build_phase_table(
+    reserve: impl FnOnce(&mut Vec<f64>, usize) -> Result<(), DeviceContractError>,
+) -> Result<HarmonicPhaseTable, DeviceContractError> {
+    let count = 1_usize << PHASE_BITS;
+    let mut sine = Vec::new();
+    reserve(&mut sine, count + 1)?;
+    for i in 0..=count {
+        sine.push((i as f64 * std::f64::consts::TAU / count as f64).sin());
+    }
+    Ok(HarmonicPhaseTable { sine })
+}
+pub(super) fn harmonic_phase_table() -> Result<&'static HarmonicPhaseTable, DeviceContractError> {
+    static TABLE: std::sync::OnceLock<Result<HarmonicPhaseTable, DeviceContractError>> =
+        std::sync::OnceLock::new();
+    TABLE
+        .get_or_init(|| {
+            build_phase_table(|sine, count| {
+                sine.try_reserve_exact(count)
+                    .map_err(|_| DeviceContractError::RuntimeAllocation)
+            })
+        })
+        .as_ref()
+        .map_err(|error| *error)
+}
+
+#[cfg(test)]
+#[test]
+fn phase_basis_reservation_failure_is_returned_and_cached() {
+    let table = std::sync::OnceLock::new();
+    let failed = table.get_or_init(|| {
+        build_phase_table(|sine, _| {
+            sine.try_reserve_exact(usize::MAX)
+                .map_err(|_| DeviceContractError::RuntimeAllocation)
+        })
+    });
+    assert!(matches!(
+        failed,
+        Err(DeviceContractError::RuntimeAllocation)
+    ));
+    let cached = table.get_or_init(|| build_phase_table(|_, _| panic!("must retain failure")));
+    assert!(matches!(
+        cached,
+        Err(DeviceContractError::RuntimeAllocation)
+    ));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,6 +121,7 @@ impl Spectrum {
             }),
         }
     }
+    #[inline(always)]
     pub(super) fn sample(
         &self,
         operator: usize,
@@ -113,11 +148,7 @@ impl Spectrum {
             };
             value += f64::from(sample) * weight;
         }
-        let cap = if step == 0 {
-            64
-        } else {
-            (((1u128 << 63) - 1) / u128::from(step)).min(64) as usize
-        };
+        let cap = harmonic_cap(step);
         // Clenshaw's sine-series recurrence: two immutable basis lookups, no per-partial trig.
         if self.coefficients[operator][..cap].iter().all(|v| *v == 0.0) {
             return value as f32;
@@ -141,29 +172,62 @@ impl Spectrum {
         let sin4 = 4.0 * sin * cosine * cos2;
         let cos8 = 2.0 * cos4 * cos4 - 1.0;
         let sin8 = 2.0 * sin4 * cos4;
-        let groups = cap.div_ceil(8);
-        let mut b1: [f64; 8] = std::array::from_fn(|r| {
-            let index = (groups - 1) * 8 + r;
-            if index < cap {
-                self.coefficients[operator][index]
-            } else {
-                0.0
+        let coefficients = &self.coefficients[operator];
+        let (b1, b2) = if cap == 64 {
+            let mut b1: [f64; 8] = std::array::from_fn(|r| coefficients[56 + r]);
+            let mut b2 = [0.0; 8];
+            let twice_cos8 = 2.0 * cos8;
+            for row in coefficients[..56].chunks_exact(8).rev() {
+                let mut next = [0.0; 8];
+                for r in 0..8 {
+                    next[r] = twice_cos8.mul_add(b1[r], row[r] - b2[r]);
+                }
+                b2 = b1;
+                b1 = next;
             }
-        });
-        let mut b2 = [0.0; 8];
-        for group in (0..groups - 1).rev() {
-            let next = std::array::from_fn(|r| {
-                self.coefficients[operator][group * 8 + r] + 2.0 * cos8 * b1[r] - b2[r]
+            (b1, b2)
+        } else {
+            let groups = cap.div_ceil(8);
+            let mut b1: [f64; 8] = std::array::from_fn(|r| {
+                let index = (groups - 1) * 8 + r;
+                if index < cap {
+                    coefficients[index]
+                } else {
+                    0.0
+                }
             });
-            b2 = b1;
-            b1 = next;
-        }
-        let mut sr = sin;
-        let mut cr = cosine;
+            let mut b2 = [0.0; 8];
+            for group in (0..groups - 1).rev() {
+                let next = std::array::from_fn(|r| {
+                    coefficients[group * 8 + r] + 2.0 * cos8 * b1[r] - b2[r]
+                });
+                b2 = b1;
+                b1 = next;
+            }
+            (b1, b2)
+        };
+        // sin(r*x)*b1 + sin((8-r)*x)*b2 is the same Clenshaw
+        // reconstruction without an eight-step serial angle recurrence.
+        let sin2 = 2.0 * sin * cosine;
+        let sin3 = sin * cos2 + cosine * sin2;
+        let sin5 = sin4 * cosine + cos4 * sin;
+        let sin6 = sin2 * cos4 + cos2 * sin4;
+        let sin7 = sin8 * cosine - cos8 * sin;
+        let basis = [0.0, sin, sin2, sin3, sin4, sin5, sin6, sin7, sin8];
         for r in 0..8 {
-            value += sr * (b1[r] - cos8 * b2[r]) + cr * sin8 * b2[r];
-            (sr, cr) = (sr * cosine + cr * sin, cr * cosine - sr * sin);
+            value += basis[r + 1] * b1[r] + basis[7 - r] * b2[r];
         }
         value as f32
+    }
+}
+
+/// Strict Nyquist cap. The full-bank fast path avoids division for low notes;
+/// the remaining quotient fits u64 and is at most 63.
+pub(super) fn harmonic_cap(step: u64) -> usize {
+    const BELOW_NYQUIST: u64 = (1_u64 << 63) - 1;
+    if step <= BELOW_NYQUIST / 64 {
+        64
+    } else {
+        (BELOW_NYQUIST / step) as usize
     }
 }

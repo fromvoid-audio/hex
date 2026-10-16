@@ -3,13 +3,33 @@ use hex_devices::operator_state::{OPERATOR_METADATA, harmonic_parameter, paramet
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentEvent};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use std::{hint::black_box, time::Instant};
+fn cpu_checkpoint(enabled: bool, stage: &str, rate: u32, voices: usize) {
+    if enabled {
+        use std::io::Write;
+        println!("cpu_checkpoint={stage} rate={rate} voices={voices}");
+        std::io::stdout().flush().unwrap();
+        std::io::stdin().read_line(&mut String::new()).unwrap();
+    }
+}
 fn main() {
+    // External tooling may sample process CPU at these control-only boundaries.
+    let cpu_handshake = std::env::args().any(|arg| arg == "--cpu-handshake");
+    let varied = std::env::args().any(|arg| arg == "--varied");
+    let fm = std::env::args().any(|arg| arg == "--fm");
+    let blocks = if cpu_handshake { 512 } else { 128 };
     for rate in [44100, 48000, 96000] {
         for voices in [16, 64] {
             let mut state = OPERATOR_METADATA.default_state().unwrap();
             for operator in 1..=4 {
                 for (id, value) in [
-                    (parameter::oscillator_ratio(operator), 1.0),
+                    (
+                        parameter::oscillator_ratio(operator),
+                        if varied { operator as f32 } else { 1.0 },
+                    ),
+                    (
+                        parameter::oscillator_phase(operator),
+                        if varied { operator as f32 / 16.0 } else { 0.0 },
+                    ),
                     (parameter::oscillator_level(operator), 0.25),
                     (parameter::carrier(operator), 0.25),
                 ] {
@@ -23,7 +43,11 @@ fn main() {
                             .patch_parameter(
                                 &state,
                                 parameter::modulation(source, operator),
-                                ParameterValue::Float(0.0),
+                                ParameterValue::Float(if fm && source + 1 == operator {
+                                    0.25
+                                } else {
+                                    0.0
+                                }),
                             )
                             .unwrap();
                     }
@@ -46,7 +70,11 @@ fn main() {
                         .patch_parameter(
                             &state,
                             harmonic_parameter(operator, partial),
-                            ParameterValue::Float(1.0),
+                            ParameterValue::Float(if varied {
+                                ((partial * 7 + operator * 3) % 19) as f32 / 18.0
+                            } else {
+                                1.0
+                            }),
                         )
                         .unwrap();
                 }
@@ -69,9 +97,10 @@ fn main() {
                 block.fill([0.0; 2]);
                 runtime.process_block(&[], &mut block);
             }
-            let mut timings = Vec::with_capacity(128);
+            cpu_checkpoint(cpu_handshake, "ready", rate, voices);
+            let mut timings = Vec::with_capacity(blocks);
             let mut checksum = 0.0;
-            for _ in 0..128 {
+            for _ in 0..blocks {
                 block.fill([0.0; 2]);
                 let start = Instant::now();
                 runtime.process_block(black_box(&[]), black_box(&mut block));
@@ -82,14 +111,15 @@ fn main() {
                     .map(|v| f64::from(*v).abs())
                     .sum::<f64>();
             }
+            cpu_checkpoint(cpu_handshake, "done", rate, voices);
             assert!(checksum.is_finite() && checksum > 0.0);
             timings.sort_by(f64::total_cmp);
             println!(
-                "rate={rate} voices={voices} partials=64 oscillators=4 block=256 pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
+                "rate={rate} voices={voices} partials=64 oscillators=4 block=256 timed_blocks={blocks} varied={varied} fm={fm} pair_bytes={} median_ms={:.4} p95_ms={:.4} max_ms={:.4} deadline_ms={:.4} checksum={:.8}",
                 2 * factory.declared_twin_bytes(),
-                timings[64],
-                timings[121],
-                timings[127],
+                timings[blocks / 2],
+                timings[blocks * 95 / 100],
+                timings[blocks - 1],
                 256000.0 / f64::from(rate),
                 black_box(checksum)
             );

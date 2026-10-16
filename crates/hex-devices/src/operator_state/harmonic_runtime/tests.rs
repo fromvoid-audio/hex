@@ -8,9 +8,17 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
     let spectrum = Spectrum::prepare(&settings);
     let table = crate::shared_sine_table();
     let bank = prepared_bank().unwrap();
-    for cap in [1_u64, 2, 7, 16, 32, 64] {
-        let step = if cap == 64 { 1 << 55 } else { (1 << 63) / cap };
+    for cap in 0_u64..=64 {
+        let step = if cap == 0 {
+            1 << 63
+        } else {
+            ((1_u64 << 63) - 1) / cap
+        };
         let actual_cap = ((((1_u128 << 63) - 1) / u128::from(step)).min(64)) as usize;
+        assert_eq!(
+            actual_cap as u64, cap,
+            "oracle fixture must cover every cutoff"
+        );
         for phase in [0, 1 << 58, 1 << 61, 1 << 62, u64::MAX]
             .into_iter()
             .chain((0..1024_u64).map(|i| i.wrapping_mul(0x9e3779b97f4a7c15)))
@@ -21,7 +29,8 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
                 .enumerate()
                 .map(|(i, c)| c * ((i + 1) as f64 * angle).sin())
                 .sum::<f64>();
-            let actual = spectrum.sample(0, phase, step, table, bank, harmonic_phase_table());
+            let actual =
+                spectrum.sample(0, phase, step, table, bank, harmonic_phase_table().unwrap());
             assert!(
                 (f64::from(actual) - expected).abs() < 2e-6,
                 "cap={cap} phase={phase}"
@@ -33,7 +42,14 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
     settings.harmonics.amplitudes[0][63] = 1.0;
     let spectrum = Spectrum::prepare(&settings);
     assert_eq!(
-        spectrum.sample(0, 1 << 58, 1 << 57, table, bank, harmonic_phase_table()),
+        spectrum.sample(
+            0,
+            1 << 58,
+            1 << 57,
+            table,
+            bank,
+            harmonic_phase_table().unwrap()
+        ),
         0.0,
         "partial exactly at Nyquist is excluded"
     );
@@ -45,7 +61,7 @@ fn production_series_matches_independent_sum_and_strict_nyquist() {
                 (1 << 57) - 1,
                 table,
                 bank,
-                harmonic_phase_table()
+                harmonic_phase_table().unwrap()
             )
             .abs()
             > 0.1,
@@ -206,5 +222,28 @@ fn first_filter_activation_uses_prepared_target_coefficients_and_dry_source() {
 fn harmonic_filter_preparation_refuses_unsupported_rates() {
     for rate in [0, 7999, 192001, u32::MAX] {
         assert!(FilterTrajectory::new(crate::operator_filter::Settings::default(), rate).is_err());
+    }
+}
+
+#[test]
+fn fast_harmonic_cap_matches_wide_oracle_at_every_nyquist_boundary() {
+    let oracle = |step: u64| {
+        if step == 0 {
+            64
+        } else {
+            (((1_u128 << 63) - 1) / u128::from(step)).min(64) as usize
+        }
+    };
+    for count in 1..=64_u64 {
+        let edge = (1_u64 << 63) / count;
+        for step in [edge.saturating_sub(1), edge, edge.saturating_add(1)] {
+            assert_eq!(super::spectrum::harmonic_cap(step), oracle(step));
+        }
+    }
+    for step in [0, 1, u64::MAX]
+        .into_iter()
+        .chain((0..4096_u64).map(|i| i.wrapping_mul(0x9e3779b97f4a7c15)))
+    {
+        assert_eq!(super::spectrum::harmonic_cap(step), oracle(step));
     }
 }

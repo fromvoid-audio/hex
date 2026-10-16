@@ -3073,3 +3073,24 @@ interrupted at step7 after main advanced; it is not merge evidence. Combined
 source checks, a fresh complete exact-candidate run and guarded optimized delivery
 remain outstanding. Native interaction/listening and Windows evidence remain
 separate from automated source checks.
+
+
+## 16 October 2026 — Operator harmonic review candidate
+
+Pulse2342 / PR158 preserves64-voice non-LFO/feedback admission,64partials,
+f64 coefficients and the53,792-byte runtime pair. Bounded per-control overview
+geometry caching avoids repeated Fourier previews and duplicate cloned parameter
+scans. Fallible phase-basis reservation caches failures. Full64 fixed-width
+recurrences, strict u64 Nyquist caps, borrowed settled spectra, inactive LFO work,
+flat envelope decay and zero-modulation phase conversion remove redundant work.
+Independent sine-sum coverage now explicitly selects every cutoff0–64; phase
+reservation failure is tested. All237 device release tests, the focused harmonic
+callback allocation/deallocation probe, cached UI tests, rendered painter test
+and strict UI feature Clippy passed before the final full candidate validation.
+
+96k dense64-voice process CPU remains2.5–4.7ms/block depending on patch, against
+2.667ms duration; concurrent workload also caused wall-time overruns. Performance
+and native acceptance remain open. A bounded two-voice kernel prototype improved
+median latency12.4%, insufficient to justify runtime restructuring, and remains
+ignored evidence only. Full exact-source local CI and optimized stable-path
+delivery are still required; no merge, native acceptance or completion claimed.

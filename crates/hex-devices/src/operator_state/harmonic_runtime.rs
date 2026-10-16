@@ -51,7 +51,7 @@ impl Factory {
             filter: FilterTrajectory::new(settings.filter, rate)?,
             settings,
             table,
-            phase_table: harmonic_phase_table(),
+            phase_table: harmonic_phase_table()?,
             bank: prepared_bank().map_err(|_| DeviceContractError::RuntimeAllocation)?,
             rate,
             parameters,
@@ -463,7 +463,8 @@ impl MutableInstrumentRuntime for Runtime {
                 let _ = self.apply(*event);
                 cursor += 1;
             }
-            let spectrum = self.spectrum();
+            let transition = (self.elapsed < self.frames).then(|| self.spectrum());
+            let spectrum = transition.as_ref().unwrap_or(&self.factory.target);
             let parameters = self.current_parameters();
             let filter_frame = self.filter.armed.then(|| self.filter.frame());
             let law = self.factory.settings.lfo;
@@ -531,14 +532,18 @@ impl MutableInstrumentRuntime for Runtime {
                     };
                     voice.phases[i] = voice.phases[i].wrapping_add(step);
                 }
-                let next = voice.lfo_fraction + delta;
-                voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
-                voice.lfo_fraction = next.fract();
+                if law.active() {
+                    let next = voice.lfo_fraction + delta;
+                    voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
+                    voice.lfo_fraction = next.fract();
+                }
                 voice.age = voice.age.saturating_add(1);
             }
-            let next = self.phase.0 + delta;
-            self.phase.1 = self.phase.1.wrapping_add(next.floor() as u64);
-            self.phase.0 = next.fract();
+            if law.active() {
+                let next = self.phase.0 + delta;
+                self.phase.1 = self.phase.1.wrapping_add(next.floor() as u64);
+                self.phase.0 = next.fract();
+            }
             self.elapsed = self.elapsed.saturating_add(1).min(self.frames);
             if let Some(r) = &mut self.parameters {
                 r.elapsed += 1;

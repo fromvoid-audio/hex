@@ -11,6 +11,7 @@ pub(in crate::editor::device_panel) struct Control {
     mask: usize,
     focus: [gpui::FocusHandle; 4],
     stroke: Option<Stroke>,
+    overview: OverviewCache,
 }
 #[derive(Clone, Copy)]
 struct Stroke {
@@ -21,6 +22,73 @@ struct Stroke {
     last: [f32; 2],
     single: bool,
     key: hex_session::device_gesture::GestureKey,
+}
+#[derive(Clone, Copy)]
+struct OverviewInput {
+    amplitudes: [f32; 64],
+    count: usize,
+    repeat: usize,
+    waveform: Option<u32>,
+    preview_owned: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverviewKey {
+    preview_owned: bool,
+    builtin_choice: Option<u32>,
+    amplitudes: [u32; 64],
+    count: u8,
+    repeat: u8,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverviewPoints {
+    points: [[f32; 2]; 256],
+    builtin: bool,
+}
+#[derive(Default)]
+struct OverviewCache {
+    key: Option<OverviewKey>,
+    points: Option<OverviewPoints>,
+}
+impl OverviewInput {
+    fn key(self) -> OverviewKey {
+        let builtin_choice = if !self.preview_owned
+            && let Some(choice @ 0..=3) = self.waveform
+        {
+            Some(choice)
+        } else {
+            None
+        };
+        OverviewKey {
+            preview_owned: self.preview_owned,
+            builtin_choice,
+            amplitudes: if builtin_choice.is_some() {
+                [0; 64]
+            } else {
+                self.amplitudes.map(f32::to_bits)
+            },
+            count: if builtin_choice.is_some() {
+                0
+            } else {
+                self.count as u8
+            },
+            repeat: if builtin_choice.is_some() {
+                0
+            } else {
+                self.repeat as u8
+            },
+        }
+    }
+}
+impl OverviewCache {
+    fn update(&mut self, input: OverviewInput) -> bool {
+        let key = input.key();
+        if self.key == Some(key) {
+            return false;
+        }
+        self.points = Some(overview_points(input));
+        self.key = Some(key);
+        true
+    }
 }
 fn partial(operator: usize, index: usize) -> hex_lattice_contract::ParameterId {
     id(93 + operator as u32 * 64 + index as u32)
@@ -36,28 +104,150 @@ fn snapshot(
         (partial(operator, i), ParameterValue::Float(values[i]))
     }))
 }
-fn values(view: &mut EditorView, key: Key) -> Option<([f32; 64], usize)> {
-    let parameters = view
-        .device_panel
-        .views
-        .get(&key.0)?
-        .2
-        .as_ref()
-        .ok()?
-        .parameters
-        .clone();
-    let mut values = [0.0; 64];
-    for (i, v) in values.iter_mut().enumerate() {
-        *v = match super::value(view, key.0, &parameters, partial(key.1, i))? {
-            ParameterValue::Float(v) => v,
-            _ => return None,
+fn overview_input(view: &mut EditorView, key: Key) -> Option<OverviewInput> {
+    let (raw_amplitudes, raw_count, raw_repeat, raw_waveform) = {
+        let parameters = &view
+            .device_panel
+            .views
+            .get(&key.0)?
+            .2
+            .as_ref()
+            .ok()?
+            .parameters;
+        let partial_base = 93 + key.1 as u32 * 64;
+        let count_id = 349 + key.1 as u32;
+        let repeat_id = 353 + key.1 as u32;
+        let waveform_id = 57 + key.1 as u32;
+        let mut amplitudes = [None; 64];
+        let mut count = None;
+        let mut repeat = None;
+        let mut waveform = None;
+        for parameter in parameters {
+            let parameter_id = parameter.descriptor.id.value();
+            if (partial_base..partial_base + 64).contains(&parameter_id) {
+                amplitudes[(parameter_id - partial_base) as usize] = Some(parameter.value);
+            } else if parameter_id == count_id {
+                count = Some(parameter.value);
+            } else if parameter_id == repeat_id {
+                repeat = Some(parameter.value);
+            } else if parameter_id == waveform_id {
+                waveform = Some(parameter.value);
+            }
+        }
+        let mut complete_amplitudes = [ParameterValue::Float(0.0); 64];
+        for (index, value) in amplitudes.into_iter().enumerate() {
+            complete_amplitudes[index] = value?;
+        }
+        (complete_amplitudes, count?, repeat?, waveform?)
+    };
+    let mut amplitudes = [0.0; 64];
+    for (index, raw) in raw_amplitudes.into_iter().enumerate() {
+        let ParameterValue::Float(value) = super::effective_parameter_value(
+            view,
+            super::ParameterKey {
+                device: key.0,
+                parameter: partial(key.1, index),
+            },
+            raw,
+        ) else {
+            return None;
         };
+        amplitudes[index] = value;
     }
-    let count = match super::value(view, key.0, &parameters, id(349 + key.1 as u32))? {
-        ParameterValue::Choice(v) if v <= 2 => 16 << v,
+    let ParameterValue::Choice(count) = super::effective_parameter_value(
+        view,
+        super::ParameterKey {
+            device: key.0,
+            parameter: id(349 + key.1 as u32),
+        },
+        raw_count,
+    ) else {
+        return None;
+    };
+    let count = match count {
+        0..=2 => 16 << count,
         _ => return None,
     };
-    Some((values, count))
+    let ParameterValue::Choice(repeat) = super::effective_parameter_value(
+        view,
+        super::ParameterKey {
+            device: key.0,
+            parameter: id(353 + key.1 as u32),
+        },
+        raw_repeat,
+    ) else {
+        return None;
+    };
+    let repeat = match repeat {
+        1..=3 => 1 << repeat,
+        _ => 1,
+    };
+    let waveform = match super::effective_parameter_value(
+        view,
+        super::ParameterKey {
+            device: key.0,
+            parameter: id(57 + key.1 as u32),
+        },
+        raw_waveform,
+    ) {
+        ParameterValue::Choice(choice) => Some(choice),
+        _ => None,
+    };
+    let preview_owned = view.device_gesture.snapshot().is_some_and(|snapshot| {
+        snapshot.target == GestureTarget::DeviceParameterSnapshot { device: key.0 }
+            && snapshot.parameters.is_some_and(|parameters| {
+                parameters
+                    .entries()
+                    .iter()
+                    .any(|(parameter, _)| *parameter == partial(key.1, 0))
+            })
+    });
+    Some(OverviewInput {
+        amplitudes,
+        count,
+        repeat,
+        waveform,
+        preview_owned,
+    })
+}
+fn overview_points(input: OverviewInput) -> OverviewPoints {
+    if !input.preview_owned
+        && let Some(choice @ 0..=3) = input.waveform
+        && let Some(points) = super::waveform_cycle(choice)
+    {
+        let mut cached = [[0.0; 2]; 256];
+        cached[..points.len()].copy_from_slice(&points);
+        return OverviewPoints {
+            points: cached,
+            builtin: true,
+        };
+    }
+    let pattern = input.count / input.repeat;
+    let coefficients: [f32; 64] = std::array::from_fn(|i| {
+        if i < input.count {
+            input.amplitudes[i % pattern] / (i / pattern + 1) as f32
+        } else {
+            0.0
+        }
+    });
+    let normalization = coefficients.iter().sum::<f32>().max(1.0);
+    OverviewPoints {
+        points: std::array::from_fn(|i| {
+            let phase = i as f32 / 255.0;
+            let sample = coefficients
+                .iter()
+                .enumerate()
+                .map(|(n, c)| c * (std::f32::consts::TAU * (n + 1) as f32 * phase).sin())
+                .sum::<f32>()
+                / normalization;
+            [phase, (sample * 0.5 + 0.5).clamp(0.0, 1.0)]
+        }),
+        builtin: false,
+    }
+}
+fn values(view: &mut EditorView, key: Key) -> Option<([f32; 64], usize)> {
+    let input = overview_input(view, key)?;
+    Some((input.amplitudes, input.count))
 }
 pub(super) fn graph(
     view: &mut EditorView,
@@ -86,13 +276,17 @@ pub(super) fn graph(
                 mask: 0,
                 focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true)),
                 stroke: None,
+                overview: OverviewCache::default(),
             }
         });
-    if let Some((values, count)) = values(view, key) {
+    let input = overview_input(view, key);
+    if let Some(input) = input {
         let entity = view.device_panel.operator_harmonics[&key].entity.clone();
+        let values = input.amplitudes;
+        let count = input.count;
         let _ = entity.update(cx, |editor, cx| editor.set_values(values, count, cx));
     }
-    let overview = overview(view, key);
+    let overview = input.map_or_else(div, |input| overview(view, key, input));
     div()
         .w_full()
         .h_full()
@@ -107,54 +301,21 @@ pub(super) fn graph(
                 .child(view.device_panel.operator_harmonics[&key].entity.clone()),
         )
 }
-fn overview(view: &mut EditorView, key: Key) -> Div {
-    let Some((amplitudes, count)) = values(view, key) else {
+fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
+    let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) else {
         return div();
     };
-    let Some(parameters) = view
-        .device_panel
-        .views
-        .get(&key.0)
-        .and_then(|v| v.2.as_ref().ok())
-        .map(|v| v.parameters.clone())
-    else {
-        return div();
-    };
-    let active = view.device_gesture.snapshot().is_some_and(|s| {
-        s.target == GestureTarget::DeviceParameterSnapshot { device: key.0 }
-            && s.parameters
-                .is_some_and(|p| p.entries().iter().any(|(id, _)| *id == partial(key.1, 0)))
-    });
-    let waveform = super::value(view, key.0, &parameters, id(57 + key.1 as u32));
-    if !active && let Some(ParameterValue::Choice(choice @ 0..=3)) = waveform {
-        return super::waveform_cycle(choice)
-            .and_then(|p| hex_widgets::curve_plot(p, super::display_style()))
-            .unwrap_or_else(div);
-    }
-    let repeat = match super::value(view, key.0, &parameters, id(353 + key.1 as u32)) {
-        Some(ParameterValue::Choice(v @ 1..=3)) => 1 << v,
-        _ => 1,
-    };
-    let pattern = count / repeat;
-    let coefficients: [f32; 64] = std::array::from_fn(|i| {
-        if i < count {
-            amplitudes[i % pattern] / (i / pattern + 1) as f32
-        } else {
-            0.0
+    control.overview.update(input);
+    match control.overview.points {
+        Some(points) if points.builtin => {
+            let short: [[f32; 2]; 32] = std::array::from_fn(|i| points.points[i]);
+            hex_widgets::curve_plot(short, super::display_style()).unwrap_or_else(div)
         }
-    });
-    let normalization = coefficients.iter().sum::<f32>().max(1.0);
-    let points = std::array::from_fn::<_, 256, _>(|i| {
-        let phase = i as f32 / 255.0;
-        let sample = coefficients
-            .iter()
-            .enumerate()
-            .map(|(n, c)| c * (std::f32::consts::TAU * (n + 1) as f32 * phase).sin())
-            .sum::<f32>()
-            / normalization;
-        [phase, (sample * 0.5 + 0.5).clamp(0.0, 1.0)]
-    });
-    hex_widgets::curve_plot(points, super::display_style()).unwrap_or_else(div)
+        Some(points) => {
+            hex_widgets::curve_plot(points.points, super::display_style()).unwrap_or_else(div)
+        }
+        None => div(),
+    }
 }
 pub(super) fn tools(
     view: &mut EditorView,
@@ -374,6 +535,72 @@ pub(in crate::editor::device_panel) fn retire(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn overview_input() -> OverviewInput {
+        OverviewInput {
+            amplitudes: std::array::from_fn(|i| ((i % 7) + 1) as f32 / 8.0),
+            count: 32,
+            repeat: 1,
+            waveform: None,
+            preview_owned: true,
+        }
+    }
+
+    #[test]
+    fn overview_cache_reuses_and_invalidates_visible_waveform_data() {
+        let mut cache = OverviewCache::default();
+        let input = overview_input();
+        assert!(cache.update(input));
+        let Some(first) = cache.points.filter(|points| !points.builtin) else {
+            panic!("owned harmonic preview should use the custom waveform");
+        };
+        assert!(!cache.update(input));
+        assert_eq!(cache.points, Some(first));
+
+        let mut changed_amplitude = input;
+        changed_amplitude.amplitudes[0] += 0.25;
+        assert!(cache.update(changed_amplitude));
+        assert_ne!(cache.points, Some(first));
+        let Some(amplitude_changed) = cache.points.filter(|points| !points.builtin) else {
+            panic!("custom waveform changed mode unexpectedly");
+        };
+
+        let mut changed_range = changed_amplitude;
+        changed_range.count = 64;
+        assert!(cache.update(changed_range));
+        assert_ne!(cache.points, Some(amplitude_changed));
+        let Some(range_changed) = cache.points.filter(|points| !points.builtin) else {
+            panic!("custom waveform changed mode unexpectedly");
+        };
+
+        let mut changed_repeat = changed_range;
+        changed_repeat.repeat = 2;
+        assert!(cache.update(changed_repeat));
+        assert_ne!(cache.points, Some(range_changed));
+
+        let mut builtin = changed_repeat;
+        builtin.preview_owned = false;
+        builtin.waveform = Some(1);
+        assert!(cache.update(builtin));
+        let Some(points) = cache.points.filter(|points| points.builtin) else {
+            panic!("unowned builtin waveform should retain builtin geometry");
+        };
+        assert_eq!(
+            points.points[..32],
+            super::super::waveform_cycle(1).unwrap()
+        );
+
+        let mut another_builtin = builtin;
+        another_builtin.waveform = Some(2);
+        assert!(cache.update(another_builtin));
+        assert_ne!(cache.points, Some(points));
+        assert!(cache.points.is_some_and(|points| points.builtin));
+
+        let mut preview_owned_builtin = another_builtin;
+        preview_owned_builtin.preview_owned = true;
+        assert!(cache.update(preview_owned_builtin));
+        assert!(cache.points.is_some_and(|points| !points.builtin));
+    }
+
     fn stroke(mask: usize, single: bool) -> Stroke {
         Stroke {
             values: [0.0; 64],

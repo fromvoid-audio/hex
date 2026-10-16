@@ -333,9 +333,14 @@ impl PreparedOperatorConfiguration {
             if feedback[target] != 0.0 {
                 modulation += feedback[target] * previous[target];
             }
+            let modulation_phase = if modulation == 0.0 {
+                0
+            } else {
+                crate::fm4::phase_from_turns(modulation)
+            };
             let phase = phases[target]
                 .wrapping_add(self.configuration.phases[target])
-                .wrapping_add(crate::fm4::phase_from_turns(modulation));
+                .wrapping_add(modulation_phase);
             raw[target] = f64::from(sample(target, phase, note.steps[target])) * levels[target];
             signals[target] = raw[target] * amplitudes[target];
         }
