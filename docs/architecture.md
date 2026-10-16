@@ -612,3 +612,16 @@ candidates. Engine still has no stream/media/device-I/O dependency. The actual
 publication queue returns this opaque candidate before inheritance or rendering;
 legacy publication remains separate. [Never-installed disposal](never-installed-audio-disposal.md)
 describes terminal anchoring, retained failure and the unresolved native gates.
+
+## controlled standalone VST3 tooling
+
+`hex-plugin-scan` has no workspace dependencies and is not imported by the app,
+engine, audio or session crates. Its Linux-only supervisor admits explicit
+original SDK fixtures through caller-owned build receipts. Separately built C++
+children own factory discovery or bounded offline component processing; foreign
+objects and SDK pointers never enter the Rust supervisor or audio callback.
+Production/installed plugin scanning and application hosting remain refused.
+The receipt records pinned MIT SDK provenance, compiler/header/runtime closure
+and licenses; process cleanup contains ordinary fixture faults, without claiming
+a security sandbox. See the crate README for the finite wire, lifecycle and test
+contracts. Other platforms expose refusal stubs, not a translation fallback.
