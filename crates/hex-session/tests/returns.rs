@@ -1,4 +1,4 @@
-//! Return routing, device ownership, history and schema-19 service acceptance.
+//! Return routing, device ownership, history and schema-20 service acceptance.
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, TrackDeviceRef};
 use hex_session::service::{Event, Request, Service};
@@ -65,7 +65,7 @@ impl Drop for TempDir {
 }
 
 #[test]
-fn return_workflow_routes_pcm_edits_devices_history_and_schema19_roundtrip() {
+fn return_workflow_routes_pcm_edits_devices_history_and_schema20_roundtrip() {
     use hex_engine::NativeDeviceClass;
 
     let service = Service::new(8_000, 16, 0).expect("service");
@@ -353,17 +353,17 @@ fn return_workflow_routes_pcm_edits_devices_history_and_schema19_roundtrip() {
     let (path, _directory) = temp_project_path();
     service
         .submit(Request::SaveNew(path.clone()))
-        .expect("save schema 19 project");
+        .expect("save schema 20 project");
     let saved = wait(&service);
     assert!(saved.error.is_none(), "save: {:?}", saved.error);
     assert!(saved.save_complete);
     assert!(!saved.state.unsaved);
     let bytes = fs::read(&path).expect("saved document bytes");
     assert!(
-        String::from_utf8_lossy(&bytes).contains("\"version\": 19"),
-        "current return project must be written as schema 19"
+        String::from_utf8_lossy(&bytes).contains("\"version\": 20"),
+        "current return project must be written as schema 20"
     );
-    let persisted = hex_storage::load(&path).expect("load schema 19 project");
+    let persisted = hex_storage::load(&path).expect("load schema 20 project");
     assert_eq!(persisted, *saved.state.project);
     assert_eq!(persisted.return_tracks().len(), 1);
     assert_eq!(persisted.track(track).unwrap().sends()[0].gain(), 0.5);

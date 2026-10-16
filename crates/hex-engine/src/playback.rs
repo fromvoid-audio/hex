@@ -544,6 +544,25 @@ impl Playback {
             .is_some_and(|metronome| metronome.enabled())
     }
 
+    /// Preserve only the transient click toggle across an accepted fresh seek
+    /// of this exact prepared source, resetting its sample tail. The caller
+    /// must separately prove the same project context and publication fence.
+    /// Transport, route ownership and reconstructed DSP history are untouched.
+    /// Unsupported or different-source recipients retain their own state.
+    pub fn inherit_metronome_for_fresh_seek(&mut self, previous: &Self) {
+        let same_source = match (&self.prepared_revision, &previous.prepared_revision) {
+            (Some(next), Some(old)) => Arc::ptr_eq(next, old),
+            _ => false,
+        };
+        if !same_source || !self.metronome_supported() || !previous.metronome_supported() {
+            return;
+        }
+        if let Some(metronome) = self.metronome.as_mut() {
+            metronome.set_enabled(previous.metronome_enabled());
+            metronome.reset();
+        }
+    }
+
     fn reset_metronome(&mut self) {
         if let Some(metronome) = self.metronome.as_mut() {
             metronome.reset();
