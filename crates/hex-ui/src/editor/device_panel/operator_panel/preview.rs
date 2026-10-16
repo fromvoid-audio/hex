@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // Preserve selector-column space while accepting the wider shared dial tile.
-pub(super) const PANEL_WIDTH: f32 = 2.0 * FIELD_WIDTH + 148.0;
+pub(super) const PANEL_WIDTH: f32 = crate::device_composition::VECTOR_PREVIEW_WIDTH;
 const FIELD_WIDTH: f32 = hex_widgets::MICRO_DIAL_WIDTH;
 const ROW_HEIGHT: f32 = 40.0;
 
@@ -283,16 +283,12 @@ fn routing_link(
         .justify_between();
     for (index, color) in colors.enumerate() {
         icon = icon.child(
-            div()
-                .id(ElementId::Name(
-                    format!("operator-route-icon-{}-{index}", device.value()).into(),
-                ))
-                .w(px(5.0))
-                .h(px(5.0))
-                .bg(rgb(color)),
+            hex_widgets::device_identity_marker(color).id(ElementId::Name(
+                format!("operator-route-icon-{}-{index}", device.value()).into(),
+            )),
         );
     }
-    div()
+    hex_widgets::device_focus_target(super::super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-preview-{}-route-link", device.value()).into(),
         ))
@@ -305,9 +301,6 @@ fn routing_link(
             })
             .into()
         })
-        .border_1()
-        .border_color(rgb(super::super::device_layout_style().surface))
-        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .w(px(18.0))
         .h(px(34.0))
         .flex()
