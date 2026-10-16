@@ -127,7 +127,10 @@ headless microbenchmark, not a physical-device deadline or native UI test.
 
 ## Dependencies
 
-hex-engine; CPAL for CoreAudio output; rtrb for SPSC commands. Tests use
+hex-engine; hex-stream for exact catalog/pair custody and control-side stream
+disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow production
+stream edge does not expose pages to the renderer or admit native streamed
+candidates. Tests use
 hex-project as a dev-dependency to build canonical prepared revisions for the
 callback boundary. The non-default `allocation-probe` feature also activates
 hex-engine's hidden `instrument-test-support` preparation seam and uses
@@ -177,3 +180,17 @@ graph, allocates, blocks or drops final owners in the callback. Take normalizati
 and saved history belong to session/project. See
 [gain recording](../../docs/gain-touch-spans.md) for quantum and physical-delivery
 limits and selected headless allocation coverage.
+
+## never-installed candidate custody
+
+`Control::stage_audio_candidate` accepts an opaque constructor-owned candidate
+only with the real native terminal receiver already anchored. The existing queue
+returns this admission-pending variant before installation; legacy publication
+behavior is unchanged. Persistent slots retain root/runtime identities, actual
+catalog leases/pairs and original-bank recovery until normal lifecycle-worker
+destruction. UI return ingestion/polling cannot invoke the new worker join or
+candidate destructors; READY recovery moves the already-restored bank only.
+Coupled callback guards move their exact Boxes to control after both final
+releases; build errors after backend exposure remain uncertain. No complete-cost,
+native admission or final-active quiescence claim follows. See
+[never-installed disposal](../../docs/never-installed-audio-disposal.md).

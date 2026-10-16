@@ -390,6 +390,112 @@ fn effective_midi_route(
 }
 
 impl SessionPlayback {
+    pub(crate) fn new_audio_candidate(
+        revision: Arc<PreparedRevision>,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let bytes = preroll::arrangement_runtime_storage_preflight_bytes(&revision)
+            .ok_or(crate::AudioStorageError::UnknownStorage)?;
+        if bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(crate::AudioStorageError::ReservationExceeded);
+        }
+        Self::new(revision).map_err(|_| crate::AudioStorageError::UnsupportedGraph)
+    }
+    pub(crate) fn validate_candidate_runtime_storage(
+        &self,
+        metadata: usize,
+    ) -> Result<(), crate::AudioStorageError> {
+        let bytes = self
+            .accounted_runtime_storage_bytes()
+            .and_then(|n| n.checked_add(metadata))
+            .ok_or(crate::AudioStorageError::UnknownStorage)?;
+        if bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(crate::AudioStorageError::ReservationExceeded);
+        }
+        Ok(())
+    }
+    /// Constructor-bound inventory of independently movable runtime owner
+    /// locations, adapted from original177 owner_groups.rs. No callback visitor
+    /// or byte/handle completeness claim; this candidate cannot transfer owners.
+    pub(crate) fn visit_candidate_groups(
+        &self,
+        visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
+    ) -> Result<(), crate::AudioStorageError> {
+        // Exhaustive owning-field match: other buffers belong to the Session
+        // container group, not independent transferable device/context groups.
+        let Self {
+            capture_runtime: _,
+            capture_epoch: _,
+            gain_recording_override: _,
+            compensation,
+            device_metering: _,
+            revision: _,
+            periodic_tempo: _,
+            anchor: _,
+            historical_floor: _,
+            route_historical_floors: _,
+            routes: _,
+            route_scratch: _,
+            device_chains,
+            return_chains,
+            return_scratch: _,
+            return_effect_tails,
+            mutable_instruments,
+            mutable_onsets: _,
+            mutable_events: _,
+            tail_groups,
+            tail_track_ids: _,
+            tail_mutable_instruments,
+            tail_mixes: _,
+            tail_suffix_starts: _,
+            tail_suffix_matrices: _,
+            tail_output_active: _,
+            tail_output_scratch: _,
+            releases: _,
+            release_scratch: _,
+            retained_contexts,
+            context_lease_plan: _,
+            analytic_continuations: _,
+            analytic_continuation_scratch: _,
+            release_capacity: _,
+            release_order: _,
+            release_order_scratch: _,
+            suppressions: _,
+            suppression_scratch: _,
+            spans: _,
+            analytic_import: _,
+            performance_frame: _,
+            arrangement_frame: _,
+            arrangement_loop_pass: _,
+            playing: _,
+            linear_arrangement_export: _,
+            route_state_generation: _,
+            candidate_admission_open: _,
+        } = self;
+        for index in 0..device_chains.len() {
+            visit(0, index, true)?;
+        }
+        for (index, owner) in tail_groups.iter().enumerate() {
+            visit(1, index, owner.is_some())?;
+        }
+        for (index, owner) in mutable_instruments.iter().enumerate() {
+            visit(2, index, owner.is_some())?;
+        }
+        for (index, owner) in tail_mutable_instruments.iter().enumerate() {
+            visit(3, index, owner.is_some())?;
+        }
+        for index in 0..return_chains.len() {
+            visit(4, index, true)?;
+        }
+        for (index, owner) in return_effect_tails.slots().iter().enumerate() {
+            visit(5, index, owner.is_some())?;
+        }
+        for (index, owner) in retained_contexts.iter().enumerate() {
+            visit(6, index, owner.is_some())?;
+        }
+        visit(7, 0, true)?; // this exact Session revision handle
+        visit(8, 0, compensation.is_some())?;
+        Ok(())
+    }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
         self.device_metering = enabled;
         for chain in self

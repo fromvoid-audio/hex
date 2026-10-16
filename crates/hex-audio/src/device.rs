@@ -5,7 +5,7 @@ use crate::spectrum_worker::{
 use crate::{lifecycle, prepared};
 use cpal::{
     FromSample, Sample, SizedSample,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
+    traits::{DeviceTrait, HostTrait},
 };
 use hex_engine::Frame;
 use std::{
@@ -78,7 +78,7 @@ impl PreparedOutput {
             Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
             None => prepared::channel(config.sample_rate),
         };
-        let (control, callback) = match channel_result {
+        let (mut control, callback) = match channel_result {
             Ok(channel) => channel,
             Err(error) => {
                 if let Some(reaper) = spectrum_reaper {
@@ -87,36 +87,30 @@ impl PreparedOutput {
                 return Err(error.to_string());
             }
         };
-        let status = control.status.clone();
+        let (data_guard, error_guard, terminals) =
+            crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
+        let native = crate::native_callback_owner::NativeRetirement::new(
+            terminals,
+            control.native_candidate_root(),
+        );
+        // Anchor both terminal receivers and lease BEFORE CPAL can start or
+        // retain a callback, including failed construction with no Stream handle.
+        let mut stream_owner =
+            lifecycle::StreamOwner::prepared_custody(lease, spectrum_reaper, native);
+        control.enable_native_custody()?;
+        stream_owner.expose_backend();
         let stream = if sample_format == cpal::SampleFormat::F32 {
-            build::<f32>(&device, &config, callback, status).map_err(|error| error.to_string())
+            build::<f32>(&device, &config, data_guard, error_guard)
         } else if sample_format == cpal::SampleFormat::I16 {
-            build::<i16>(&device, &config, callback, status).map_err(|error| error.to_string())
-        } else if sample_format == cpal::SampleFormat::U16 {
-            build::<u16>(&device, &config, callback, status).map_err(|error| error.to_string())
+            build::<i16>(&device, &config, data_guard, error_guard)
         } else {
-            Err(format!("unsupported output format: {sample_format:?}"))
-        };
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(error) => {
-                drop(control);
-                if let Some(reaper) = spectrum_reaper {
-                    let _ = reaper.shutdown_and_join();
-                }
-                return Err(error);
-            }
-        };
-        if let Err(error) = stream.play() {
-            drop(lifecycle::StreamOwner::with_spectrum(
-                stream,
-                lease,
-                spectrum_reaper,
-            ));
-            return Err(error.to_string());
+            build::<u16>(&device, &config, data_guard, error_guard)
         }
+        .map_err(|error| error.to_string())?;
+        stream_owner.set_stream(stream);
+        stream_owner.play()?;
         Ok(Self {
-            _stream: lifecycle::StreamOwner::with_spectrum(stream, lease, spectrum_reaper),
+            _stream: stream_owner,
             control,
             sample_rate: config.sample_rate,
             label: format!(
@@ -143,54 +137,65 @@ fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), Stri
 fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut callback: prepared::Callback,
-    status: Arc<prepared::Status>,
+    mut data_guard: crate::native_callback_owner::Guard<
+        crate::native_callback_owner::NativeCallbackOwner,
+    >,
+    mut error_guard: crate::native_callback_owner::Guard<
+        crate::native_callback_owner::ErrorCallbackOwner,
+    >,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     f32: FromSample<T>,
 {
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
-    let errors = status.clone();
     device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            let start = Instant::now();
-            callback.begin_block();
-            let mut block: [Frame; 256] = [[0.0; 2]; 256];
-            let mut peaks = [0.0_f32; 2];
-            let complete = data.len() / channels * channels;
-            data[complete..].fill(T::from_sample(0.0));
-            for chunk in data[..complete].chunks_mut(channels * block.len()) {
-                let frames = chunk.len() / channels;
-                let block_start_frame = status.position.load(Relaxed);
-                let rendered = callback.render(&mut block[..frames]);
-                finish_host_chunk(
-                    &mut callback,
-                    chunk,
-                    &mut block[..frames],
-                    channels,
-                    &rendered,
-                    block_start_frame,
-                    start,
-                );
-                for stereo in &block[..frames] {
-                    for channel in 0..2 {
-                        peaks[channel] = peaks[channel].max(stereo[channel].abs());
+            let Some(owner) = data_guard.owner_mut() else {
+                data.fill(T::from_sample(0.0));
+                return;
+            };
+            owner.run(|callback, status| {
+                let start = Instant::now();
+                callback.begin_block();
+                let mut block: [Frame; 256] = [[0.0; 2]; 256];
+                let mut peaks = [0.0_f32; 2];
+                let complete = data.len() / channels * channels;
+                data[complete..].fill(T::from_sample(0.0));
+                for chunk in data[..complete].chunks_mut(channels * block.len()) {
+                    let frames = chunk.len() / channels;
+                    let block_start_frame = status.position.load(Relaxed);
+                    let rendered = callback.render(&mut block[..frames]);
+                    finish_host_chunk(
+                        callback,
+                        chunk,
+                        &mut block[..frames],
+                        channels,
+                        &rendered,
+                        block_start_frame,
+                        start,
+                    );
+                    for stereo in &block[..frames] {
+                        for channel in 0..2 {
+                            peaks[channel] = peaks[channel].max(stereo[channel].abs());
+                        }
                     }
                 }
-            }
-            status.peak_left.store(peaks[0].to_bits(), Relaxed);
-            status.peak_right.store(peaks[1].to_bits(), Relaxed);
-            let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-            status.callback_max_ns.fetch_max(elapsed, Relaxed);
-            let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
-            if elapsed > deadline {
-                status.deadline_misses.fetch_add(1, Relaxed);
-            }
+                status.peak_left.store(peaks[0].to_bits(), Relaxed);
+                status.peak_right.store(peaks[1].to_bits(), Relaxed);
+                let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                status.callback_max_ns.fetch_max(elapsed, Relaxed);
+                let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
+                if elapsed > deadline {
+                    status.deadline_misses.fetch_add(1, Relaxed);
+                }
+            });
         },
         move |_| {
-            errors.device_fault.store(true, Relaxed);
+            if let Some(owner) = error_guard.owner_mut() {
+                owner.report();
+            }
         },
         None,
     )

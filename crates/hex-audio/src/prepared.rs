@@ -24,7 +24,9 @@ use std::time::Instant;
 // pre-cut prefix fits in one callback, so no persistent Stop-discard watermark
 // is needed when a later post-cut ticket remains queued.
 const COMMANDS: usize = 32;
-const RETIRED: usize = 2;
+pub(crate) const RETIRED: usize = 2;
+#[cfg(test)]
+pub(crate) mod candidate_tests;
 const ROUTE_READER_ATTEMPTS: usize = 3;
 const MAX_TRACKS: usize = MAX_SESSION_ROUTE_TRACKS;
 /// Fixed number of route entries accepted by `Status::session_routes`.
@@ -159,7 +161,7 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
-struct Publication {
+pub(crate) struct Publication {
     revision: u64,
     /// UI/control project context this compiled playback belongs to. This is
     /// audio publication metadata, not project schema or engine state.
@@ -167,6 +169,26 @@ struct Publication {
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
+}
+enum QueuedPublication {
+    Legacy(Publication),
+    Candidate(crate::candidate_custody::QueuedCandidate),
+}
+pub(crate) enum ReturnedPublication {
+    Legacy(Publication),
+    Candidate(crate::candidate_custody::ReturnedCandidate),
+}
+fn enqueue_legacy(
+    queue: &mut Producer<QueuedPublication>,
+    value: Publication,
+) -> Result<(), Publication> {
+    let Ok(chunk) = queue.write_chunk_uninit(1) else {
+        return Err(value);
+    };
+    // Safe rtrb API, exactly one reserved slot and std::iter::Once. Refusal
+    // precedes moving the owner; no enum fallback can invent queue success.
+    chunk.fill_from_iter(std::iter::once(QueuedPublication::Legacy(value)));
+    Ok(())
 }
 
 /// Controls whether a newly compiled runtime inherits transport and Session
@@ -636,8 +658,11 @@ impl std::fmt::Debug for PublishError {
 
 pub struct Control {
     pub sample_preview: crate::sample_preview::Control,
-    publications: Producer<Publication>,
-    retired: Consumer<Publication>,
+    publications: Producer<QueuedPublication>,
+    retired: Option<Consumer<ReturnedPublication>>,
+    candidate_root: crate::candidate_custody::CandidateRoot,
+    native_custody: bool,
+    held_control_return: Option<ReturnedPublication>,
     commands: Producer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
     admitted_ticket: Arc<AtomicU64>,
@@ -655,8 +680,9 @@ pub struct Control {
 
 pub struct Callback {
     sample_preview: crate::sample_preview::Callback,
-    publications: Consumer<Publication>,
-    retired: Producer<Publication>,
+    publications: Consumer<QueuedPublication>,
+    retired: Producer<ReturnedPublication>,
+    candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
     pending_stop_marker: Arc<AtomicU64>,
     admitted_ticket: Arc<AtomicU64>,
@@ -674,7 +700,8 @@ pub struct Callback {
     active: Option<Publication>,
     deferred: Option<Publication>,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
-    held_retirement: Option<Publication>,
+    held_retirement: Option<ReturnedPublication>,
+    terminal_disposal_pending: bool,
     published_route_key: Option<(u64, u64)>,
     #[cfg(test)]
     route_slot_visits: usize,
@@ -717,11 +744,15 @@ pub fn channel_with_spectrum(
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();
     let (gain_recording, callback_gain_recording) = crate::gain_recording::channel();
+    let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
     Ok((
         Control {
             sample_preview,
+            candidate_root: candidate_root.clone(),
+            native_custody: false,
+            held_control_return: None,
             publications,
-            retired,
+            retired: Some(retired),
             commands,
             pending_stop_marker: pending_stop_marker.clone(),
             admitted_ticket: admitted_ticket.clone(),
@@ -738,6 +769,7 @@ pub fn channel_with_spectrum(
         },
         Callback {
             sample_preview: callback_preview,
+            candidate_root,
             publications: incoming,
             retired: returning,
             commands: events,
@@ -757,6 +789,7 @@ pub fn channel_with_spectrum(
             active: None,
             deferred: None,
             held_retirement: None,
+            terminal_disposal_pending: false,
             published_route_key: None,
             #[cfg(test)]
             route_slot_visits: 0,
@@ -936,7 +969,7 @@ impl Control {
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback),
         };
-        if let Err(PushError::Full(publication)) = self.publications.push(publication) {
+        if let Err(publication) = enqueue_legacy(&mut self.publications, publication) {
             self.publication_pending.store(false, Release);
             return Err(PublishError {
                 reason: "playback publication queue full",
@@ -1048,13 +1081,75 @@ impl Control {
         self.sample_preview.reclaim();
         let mut count = 0;
         for _ in 0..RETIRED {
-            let Ok(publication) = self.retired.pop() else {
+            let publication = self
+                .held_control_return
+                .take()
+                .or_else(|| self.retired.as_mut().and_then(|r| r.pop().ok()));
+            let Some(publication) = publication else {
                 break;
             };
-            drop(publication);
+            match publication {
+                ReturnedPublication::Legacy(publication) => drop(publication),
+                ReturnedPublication::Candidate(returned) => {
+                    if let Err(returned) = self.candidate_root.ingest(returned) {
+                        self.held_control_return = Some(ReturnedPublication::Candidate(returned));
+                        break;
+                    }
+                }
+            }
             count += 1;
         }
+        crate::lifecycle::request_candidate_cleanup(&self.candidate_root);
         count
+    }
+    pub(crate) fn enable_native_custody(&mut self) -> Result<(), String> {
+        crate::lifecycle::prepare_candidate_cleanup()?;
+        self.native_custody = true;
+        Ok(())
+    }
+    pub(crate) fn native_candidate_root(&self) -> crate::candidate_custody::CandidateRoot {
+        self.candidate_root.clone()
+    }
+    /// Accept custody only. The current admission check always refuses these
+    /// candidates before inheritance/active/render; accepted queueing is not an
+    /// installed revision or a complete-cost claim.
+    pub fn stage_audio_candidate(
+        &mut self,
+        owner: hex_engine::AudioCandidateOwner,
+        domains: Vec<crate::CandidateDomain>,
+    ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateStageRefusal> {
+        if !self.native_custody
+            || self.closing.load(Acquire)
+            || owner.sample_rate() != self.rate
+            || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
+        {
+            return Err(crate::AudioCandidateStageRefusal {
+                reason: "candidate native custody unavailable",
+                owner,
+                domains,
+            });
+        }
+        let publications = &mut self.publications;
+        self.candidate_root
+            .stage(owner, domains, |queued| {
+                let Ok(chunk) = publications.write_chunk_uninit(1) else {
+                    return Err(queued);
+                };
+                chunk.fill_from_iter(std::iter::once(QueuedPublication::Candidate(queued)));
+                Ok(())
+            })
+            .map(|(_, ticket)| ticket)
+    }
+    pub fn recover_audio_candidate(
+        &mut self,
+        ticket: &crate::AudioCandidateTicket,
+    ) -> Option<crate::AudioCandidateRecovery> {
+        // Caller polls ordinary return ingestion with reclaim(); this method
+        // only moves a READY original bank/receipt, with no destructor or join.
+        self.candidate_root.recover(ticket)
+    }
+    pub fn audio_candidate_custody(&self) -> crate::AudioCandidateCustodyReport {
+        self.candidate_root.report()
     }
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
@@ -1065,8 +1160,61 @@ impl Control {
     }
 }
 
+impl Drop for Control {
+    fn drop(&mut self) {
+        if !self.native_custody {
+            return;
+        }
+        self.candidate_root
+            .abandon_control(self.retired.take(), self.held_control_return.take());
+    }
+}
+
 impl Callback {
+    pub(crate) fn close_candidate_custody_on_control(&mut self) {
+        self.closing.store(true, Release);
+        self.candidate_root.close();
+    }
+    pub(crate) fn drain_candidate_custody_on_control(&mut self) -> bool {
+        self.close_candidate_custody_on_control();
+        if self.terminal_disposal_pending {
+            return false;
+        }
+        // Persistent held custody precedes any destructor. A failed legacy
+        // destructor latches Pending, just like the outer callback carrier.
+        // Candidate carriers only move into the exact root/slot association.
+        for _ in 0..2 {
+            // one existing held return plus the one-slot input ring
+            if self.held_retirement.is_none() {
+                self.held_retirement = self.publications.pop().ok().map(|queued| match queued {
+                    QueuedPublication::Legacy(value) => ReturnedPublication::Legacy(value),
+                    QueuedPublication::Candidate(value) => {
+                        ReturnedPublication::Candidate(value.reject_before_install())
+                    }
+                });
+            }
+            if matches!(
+                self.held_retirement.as_ref(),
+                Some(ReturnedPublication::Legacy(_))
+            ) {
+                self.terminal_disposal_pending = true;
+                drop(self.held_retirement.take());
+                self.terminal_disposal_pending = false;
+            } else if let Some(ReturnedPublication::Candidate(value)) = self.held_retirement.take()
+            {
+                if let Err(value) = self.candidate_root.ingest(value) {
+                    self.held_retirement = Some(ReturnedPublication::Candidate(value));
+                    return false;
+                }
+            }
+        }
+        self.held_retirement.is_none() && self.publications.is_empty()
+    }
+
     fn return_graph(&mut self, publication: Publication) {
+        self.return_publication(ReturnedPublication::Legacy(publication));
+    }
+    fn return_publication(&mut self, publication: ReturnedPublication) {
         if let Err(PushError::Full(publication)) = self.retired.push(publication) {
             self.held_retirement = Some(publication);
         }
@@ -1086,7 +1234,7 @@ impl Callback {
             barrier.wait();
         }
         if let Some(publication) = self.held_retirement.take() {
-            self.return_graph(publication);
+            self.return_publication(publication);
             if self.held_retirement.is_some() {
                 // Ownership backpressure must not delay the independent Stop
                 // path. Keep the graph retained while consuming bounded control.
@@ -1099,6 +1247,9 @@ impl Callback {
             }
         }
         if self.closing.load(Acquire) {
+            // A candidate return may end this block early; closing is already
+            // silent and must expose stopped status at every such frontier.
+            self.status.playing.store(false, Relaxed);
             if !self.retired.is_full() {
                 if let Some(publication) = self.deferred.take() {
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
@@ -1123,6 +1274,15 @@ impl Callback {
             }
             if !self.retired.is_full() {
                 if let Ok(publication) = self.publications.pop() {
+                    let publication = match publication {
+                        QueuedPublication::Legacy(publication) => publication,
+                        QueuedPublication::Candidate(candidate) => {
+                            self.return_publication(ReturnedPublication::Candidate(
+                                candidate.reject_before_install(),
+                            ));
+                            return;
+                        }
+                    };
                     if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
                         if cancellation.finish_for_shutdown() {
                             self.status.publish_rejected_revision(
@@ -1158,7 +1318,20 @@ impl Callback {
             && (self.active.is_none() || !self.retired.is_full())
             && let Ok(publication) = self.publications.pop()
         {
-            self.deferred = Some(publication);
+            match publication {
+                QueuedPublication::Legacy(publication) => self.deferred = Some(publication),
+                QueuedPublication::Candidate(candidate) => {
+                    // Actual admission refusal, before any inheritance, active
+                    // installation, applied revision/routes or render operation.
+                    self.return_publication(ReturnedPublication::Candidate(
+                        candidate.reject_before_install(),
+                    ));
+                    // Rejection must not starve priority Stop or the bounded
+                    // command prefix belonging to the still-active graph.
+                    self.consume_commands();
+                    return;
+                }
+            }
         }
 
         // A candidate with a transient release-capacity refusal remains owned
@@ -4040,13 +4213,13 @@ mod tests {
         let (mut control, mut callback) = channel(48_000).unwrap();
         control
             .publications
-            .push(Publication {
+            .push(QueuedPublication::Legacy(Publication {
                 revision: 99,
                 control_context_generation: 0,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
                 playback: Box::new(graph().0),
-            })
+            }))
             .unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
         let rejected = control
@@ -4376,13 +4549,13 @@ mod tests {
         for revision in 10..10 + RETIRED as u64 {
             callback
                 .retired
-                .push(Publication {
+                .push(ReturnedPublication::Legacy(Publication {
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0),
-                })
+                }))
                 .unwrap();
         }
         assert!(callback.retired.is_full());
@@ -4808,13 +4981,13 @@ mod tests {
     fn retired_session_audio_pcm_stays_owned_until_control_reclaims_publication() {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let (playback, weak_revision, _, _) = session_audio_graph();
-        callback.held_retirement = Some(Publication {
+        callback.held_retirement = Some(ReturnedPublication::Legacy(Publication {
             revision: 1,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(playback),
-        });
+        }));
         assert!(weak_revision.upgrade().is_some());
         callback.begin_block();
         assert!(weak_revision.upgrade().is_some());
@@ -4921,13 +5094,13 @@ mod tests {
             assert!(
                 callback
                     .retired
-                    .push(Publication {
+                    .push(ReturnedPublication::Legacy(Publication {
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
-                    })
+                    }))
                     .is_ok()
             );
             retired_weak.push(weak);
@@ -4994,25 +5167,25 @@ mod tests {
             assert!(
                 callback
                     .retired
-                    .push(Publication {
+                    .push(ReturnedPublication::Legacy(Publication {
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
-                    })
+                    }))
                     .is_ok()
             );
             retired_weak.push(weak);
         }
         let (held, held_weak) = graph();
-        callback.held_retirement = Some(Publication {
+        callback.held_retirement = Some(ReturnedPublication::Legacy(Publication {
             revision: 4,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(held),
-        });
+        }));
         let mut last_ticket = 0;
         for _ in 0..COMMANDS {
             last_ticket = control.command_with_ticket(PlaybackCommand::Play).unwrap();
@@ -5152,13 +5325,13 @@ mod tests {
         assert!(
             control
                 .publications
-                .push(Publication {
+                .push(QueuedPublication::Legacy(Publication {
                     revision: 3,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(queued),
-                })
+                }))
                 .is_ok()
         );
         control.request_shutdown();
