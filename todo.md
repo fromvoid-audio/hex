@@ -1,4 +1,483 @@
+## combined mutable loop acceptance — #2165 / PR251, 16 october 2026
+
+Source-loop PR98/#2214 and transport-loop PR100/#2215 remain the original
+implementations with their recorded finite native acceptance. The parent adds
+the missing combined-path regression: independently expanded linear PCM across
+repeated wraps, separate source-iteration/transport-pass identities, exclusive
+gate clamping and loop-start chase, compatible revision handoff, and callback
+allocation/deallocation measurement with both loops enabled. The contract and
+remaining seek/export/native limits are in
+[mutable transport loops](docs/mutable-transport-loops.md).
+
+Exact-source local validation is recorded with PR251. This adds no runtime or UI
+behavior and makes no new listening, physical deadline or Live parity claim.
+
+## utility completion candidate — #18 / PR250, 16 october 2026
+
+The remaining focused correctness fix suppresses warmed DC/bass-filter residuals
+after Utility mute while histories continue advancing through the zeroed input.
+Canonical playback regression also reproduced an audible old tail surviving a
+mute handoff. Stateful mute now zeroes processor input/output with a stable matrix
+and strictly mute-only history retargeting. Track/Return DC, bass-side and audition
+silence/unmute continuity and actual Return callback allocation coverage protect
+the repair; broader filter-setting transitions retain existing policy.
+Service coverage edits all fourteen controls, checks per-edit undo/redo, and
+saves/reopens their canonical state and stable identity. Existing merged DSP,
+panel, shared layout and theme implementations are preserved.
+See [the native checklist and reference unknowns](docs/utility-acceptance.md).
+Exact candidate local CI, optimized delivery and native results are recorded in
+PR250/Pulse18; no native acceptance or measured Live filter parity is claimed.
+
+## 16 October 2026 — native parameter metadata admission (#16 / PR249)
+
+- Recovered canonical issue linkage through supported Start Task; prior staged
+  runtime/device history remains preserved.
+- Shared descriptor validation rejects Unicode uppercase/control text, empty or
+  oversized units/choice labels, and selectors exceeding 256 alternatives. The
+  existing 128-byte label limit now covers each display field; lowercase Unicode
+  at the exact UTF-8 byte limit remains valid. Effect and instrument registries
+  already invoke this boundary; no state/schema or processing change is needed.
+- Regression reproduced the prior acceptance of an empty unit before the repair.
+  Contract/lattice/device checks pass (252 tests; two opt-in timing probes
+  ignored). Exact-source full local CI follows on the committed candidate.
+- Reconciled stale lattice documentation with the integrated mutable runtime,
+  ordered instrument and shared render/retirement source coverage.
+- Parent #16 remains open for its separately recorded acceptance. This focused
+  metadata stage supplies no new native listening, physical deadline, broad
+  scalability or device-parity evidence.
+
+## device lane drops integration — #2333 / PR183, 16 october 2026
+
+The existing canonical device-drop implementation now integrates current main.
+Conflicts preserve both track/device commands and routing/gain-recording contracts;
+the stale-revision UI fixture retains audio-clip waveforms and gain previews.
+Device drops create tracks in empty space/above/between/after tracks or append
+an effect/replace an instrument on an existing lane, with one Undo/Redo.
+The retained Finder adapter remains original PR172 history. Exact final-source
+local CI and stable optimized delivery are recorded with PR183. Native user
+interaction/listening acceptance remains separate; no native input was automated.
+
+## 13 October 2026 — drops above the first track (pulse2333 / pr183)
+
+The existing catalog-device Arrangement implementation is retained. Shared painted
+insertion targeting now recognizes the top three pixels of the first track for
+samples and devices, without adding a spacer. Sample insertion preview remains
+visible at the content's top edge. Rendered regressions failed before the fix
+(missing sample insertion line; device targeted the existing first track) and
+cover the repaired above-first destination plus device trailing-space appends.
+Automated results are retained with this task; native macOS user acceptance and
+the existing PR183 readiness/evidence hold remain pending. The linked Pulse task
+was resumed through Start Task; no duplicate issue was created. This follow-up
+extends PR183's existing implementation.
+
+## native host conversion commitment — #2453 / PR192, 16 october 2026
+
+The focused current-main fix validates final host channel/sample conversion
+before copying a chunk and confirming gain-recording/spectrum output evidence.
+Overflow-safe mono means preserve sum-first rounding when finite, including
+subnormals. Float range and CPAL integer saturation remain unchanged. Refused
+chunks are silent and fault/stop; failed values receive no applied gain receipt,
+and successful prefix samples remain intact. Tests cover float/i16/u16 with
+mono/stereo/four-channel layouts, extremes, nonfinite/layout refusal and actual
+gain-receipt success/abort with zero total/net allocation count and bytes.
+
+PR192's complete previous history is preserved at
+`codex/backup-2453-before-main-isolation-20261016` (`11c3ceb7`), as authorized by
+the owner; this candidate excludes the unmerged PR190 typing runtime. Exact-final
+full local CI and merge evidence are recorded by the PR continuation after
+integration. Native device/listening/deadline acceptance remains separate.
+
+## borrowed typed DATA and unresolved obligations — #2538 / PR233
+
+The audio-only ledger borrows actual private PreparedRevision/root and caller-bank
+custodies. DATA deduplicates only by anchored owner, charge location and equal
+constructor declaration; independent physical handles remain separate obligations.
+The concrete stream façade checks actual control/pages/catalog identity and full
+metadata coverage, captures listed constructor capacities and charges each whole
+actual domain once. Metadata equality does not establish a lease or owner identity.
+
+The named DATA contract preserves original177 exclusions as explicit opaque-cost
+obligations; retirement, handles and source-domain lifetime bindings remain open.
+`require_complete` refuses, with no publication/admission or native cap change.
+See [the bounded manifest](docs/audio-only-storage-accounting.md). Exact-source
+full local CI and source negative controls are recorded with PR233; this does not
+close original24 native/performance acceptance or downstream2541 aggregate costs.
+
+## unified native device GUI integration — #2469 / PR204, 16 october 2026
+
+Canonical child PRs205–209 supply shared extensible primitives, product semantic
+theme resolution, selected-header-only paint, all existing production owner/
+fallback compositions, and a production-backed native catalog with enforcement.
+The final parent integrates that history and documents its finite acceptance
+map and library-first catalog extension sequence. Vector/Operator, Utility,
+Saturator and EQ8 retain their useful widths, controls, focus and canonical
+bindings; existing other panels remain compatible consumers. No DSP/schema or
+new device feature is added by this integration.
+
+The final exact-source18-step local CI and repository-owned optimized stable
+installation are recorded with PR204 and retained delivery artifacts. Native
+appearance/input/listening and other-platform/reference parity remain separate,
+optional evidence; source/scene tests do not establish them. Historical PR,
+acceptance and delivery records remain intact. No native input was automated.
+
+## private streaming roots integrated with current main — #2537 / PR232
+
+Current routing, gain recording, transforms, UI and schema25 behavior remain intact.
+Private resident sources use the canonical Arc<AudioData> plus retained Vec and
+charge both allocation locations, including spare capacity and distinct handles.
+Session meter metadata uses the same persistent copy/normal cleanup discipline
+as tempo. Nonunity Arrangement/Session clip gains are preserved; unrepresented
+touch/transform/input-route graphs refuse before source moves. The root ownership
+and actual-supported-constructor fault suite passes69 tests. Full exact-source
+CI and remaining downstream accounting/native streaming acceptance stay separate.
+See [integration evidence](docs/streaming-prerequisite-integration.md).
+
+## 2026-10-15 — #2537 private PreparedRevision root checkpoint
+
+- Composed four actual shared owners around the existing sealed Project, Session
+  and preview. Reserved their four handles/layouts before source-bank movement;
+  no compiler rerun or public owner escape. Reports follow actual final storage.
+- Constructor-paired control restoration retains identical owners on refusal,
+  validates all restoration slots before moves and preserves partial custody,
+  original input-bank identity and the first destructor panic without retry.
+- Eight focused final-root controls plus the preparation suite and private
+  teardown seam cover supported constructors and unsupported-origin refusal.
+  All526 engine tests across22 test processes pass (four existing ignored), with
+  strict engine Clippy and source guards. Exact-source full local CI, guarded delivery and all downstream accounting/
+  native admission obligations remain open with the primary.
+
+## 2026-10-15 — #2537 private Arrangement root checkpoint
+
+- Extracted preparation-only source and constructor declarations from the exact
+  published foundation; current native/media/UI behavior remains separate.
+- Private Project-root assembly now owns actual final Track/Return containers,
+  feeds and shared context. Reports follow moved owners; teardown validates the
+  full restoration batch before normal child disposal.
+- Existing54 preparation tests and six new root tests pass on actual supported
+  Rust1.94 constructors. Pinned that verified toolchain for normal checks/builds;
+  other compiler origins retain refusal. Final shared PreparedRevision roots,
+  exact full CI and guarded delivery remain open.
+
+## 2026-10-15 — #2537 approved backend prerequisite extraction
+
+- Ported required routing/Return-feed/gain-envelope backend contracts from the
+  retained foundation, with neutral provenance metadata for lossless old saves;
+  no importer, typing, presets, accessibility or associated UI was imported.
+- Normal save schema23 preserves both host gains and selected backend fields.
+  Frozen main17–19 and foundation18–22 readers preserve their distinct shapes.
+  Five golden byte fixtures were generated with the exact original encoders.
+- Project/storage tests, targeted gain/Return playback and metered automation
+  capture tests, affected strict Clippy and architecture/GPUI/UI guards pass.
+  This is a source checkpoint; full final CI, tracked roots and downstream
+  delivery remain open. See docs/streaming-prerequisite-integration.md.
+
+## production-backed device catalog and guard — #2474 / PR209, 16 october 2026
+
+The native layout_review catalog now includes the actual production composition
+and semantic theme modules. Eleven view-local fixtures retain real numeric,
+toggle, selector and response-graph controls, with actual useful widths from one
+product constant set. They cover the four priority devices and existing other
+panels/fallbacks without DSP, parameter, schema or feature expansion. Header,
+section focus, page, disabled and bypass demonstration states remain distinct.
+Track/Return toggles are fixture ownership labels; production bindings/routing
+are covered separately by the source guard and existing device-panel tests.
+
+All eleven targeted gallery tests pass: compact header/body/width geometry,
+narrow/wide viewport clipping, retained drafts and popup focus through themes,
+independent section state, stable tabs and disabled/input behavior. Four guard
+regressions pass, including mutations of actual production source for local
+chrome/style-helper/field overrides, missing owner/fallback calls and gallery
+copies. Thirty runner tests pass. The structured device boundary scan and an
+explicit rendered gallery harness are included in quick/full and full local CI
+respectively; the final full run has eighteen steps. Source/scene checks do not
+establish native GPU pixels, physical interaction, listening or Live parity.
+
+Historical gallery images, source/build IDs and earlier acceptance remain in
+docs/layout-review.md as history. Exact-final-source full local CI, merge and
+repository-owned optimized stable delivery are recorded with this PR; optional
+native checks use the supplied finite checklist. No native input was automated.
+
+## production device compositions — pulse2473 / PR208, 16 october 2026
+
+The pure `hex-ui/src/device_composition.rs` slot seam supplies production
+geometry for Vector/Operator, Utility, Saturator, EQ8 and the other existing
+specialized/registered fallback panels, ready for the separate Pulse2474 gallery
+migration. Generic widget extensions provide rounded vertical/dense sections,
+short rows, intrinsic/full-width captions, identity/focus chrome, segments and
+one 12px header-action footprint. Product theme roles resolve idle/selected and
+hover text contrast; no device-ID header metric/style branch remains. Generic
+fallback slots receive dense rounded sections without width/control-footprint
+changes (+2px section row pitch); all three unsupported-state paths use the
+same semantic padded/scrollable ErrorDisplay composition.
+
+Utility retains its two 64px columns at 144px frame width; tightly packed dial
+columns retain their 52px controls. Operator geometry, page slots, focus/tab
+ownership, invalid-draft barriers and gestures remain unchanged. No DSP, schema,
+parameter laws/IDs, devices or features were added. Existing dated appearance
+history is preserved with current theme policy clarified. All 51 widget tests,
+86 device-panel tests and two device-theme tests pass; existing native review
+examples compile. Architecture/UI-style/GPUI-patch guards and formatting/diff
+checks pass. The coordinator owns final exact-source local CI, merge and
+optimized stable-path delivery. Optional native appearance/input acceptance is
+separate; no automated native interaction or listening claim is made.
+
+## simple stable app installation — #2627 / PR246, 16 october 2026
+
+The repository installer stages and validates the optimized app before replacing
+`artifacts/hex.app`. Temporary old-app custody exists only during publication and
+is removed after successful verification; future installs retain no rollback app
+copy. Retry restores or verifies a complete app and cleans interrupted staging.
+Historical bundles, settings, projects and media remain untouched. Running apps
+are refused without force-quit. Source/CI/signing provenance remains bundled;
+Pulse ticket state does not gate builds or installation. Filesystem and native
+signature regression checks pass; full final-source CI is recorded with the PR.
+No actual Hex installation, launch or native interaction acceptance was performed.
+
+## semantic device theme roles — pulse2471 / PR206, 16 october 2026
+
+`hex-ui::theme::device_style` now resolves common Control/Layout/Display/Readout
+roles from the active product palette. Operator shell/section/display neutrals,
+focus/dial rail and inline readouts no longer use fixed neutral colors or a
+device-ID appearance fork. Stable oscillator a/b/c/d colors are centralized as
+musical identity cues with readable badge foregrounds. Geometry, focus/tab
+ownership, parameter laws/IDs, DSP, schema and selection policy are unchanged.
+
+Retained preview numerics/toggles, EQ audition and return-send numerics refresh
+style alongside canonical controls and retained response graphs/popups, without
+replacing entities or active drafts. New contrasting-palette source/scene tests
+cover readable semantic roles, active canonical/preview draft and focus
+preservation, open selector popup and retained preview-toggle refresh. All 86
+device-panel tests, the focused theme tests, formatting and source guards pass.
+Suppressing the two preview style refresh calls makes both new regressions fail;
+the calls were restored before the passing run. Full exact-source local CI,
+merge and optimized stable-path delivery follow on the final candidate. Optional native
+appearance/input acceptance remains separate.
+
+## shared device layout primitives — pulse2470 / PR205, 16 october 2026
+
+`hex-widgets` now supplies composable frame/header/body, rounded semantic sections,
+rails/grouped rows, recessed displays and row/column/grid/wrapped/split layouts.
+Every production instrument/effect/Return shell uses one compact 14px header and
+shared shell/inset/radius tokens; device-ID header-density selection is removed.
+Idle header/surround share a surface without a dark dividing rule. Vector retains
+its 168px composition, 40px rows, tab slots, focus groups and existing gestures;
+Sine/effects retain useful widths and parameter arrangements. Product colors and
+canonical parameter semantics/bindings stay outside the widget library.
+
+Two new rendered widget tests pass: normal/constrained shell/body bounds, actual
+filled-quad corner radii/backgrounds, oversized descendant paint/hit clipping,
+wrapping/grid/split placement and unchanged control heights. All 84 targeted device
+panel tests pass, including new Sine/effect header/body alignment and existing
+Vector focus/navigation/gesture/containment regressions. Strict all-target widgets
+and UI Clippy, architecture/style/GPUI guards and format/diff checks pass. The
+minimal GPUI test-support accessor correction skips transparent border-only fills;
+the cumulative patch applies exactly to the checksum-verified archive and all 15
+patched file hashes match provenance. It changes no production native/render path.
+
+The [widget API/extension rule](crates/hex-widgets/README.md#shared-device-composition)
+and [device controls contract](docs/device-controls.md#extensible-shared-layout--pulse2470)
+require generic library extensions before new panel visual capabilities. Scene
+and hit-mask evidence does not establish GPU pixels or physical native input.
+Full exact-candidate local CI, merge and optimized stable-path delivery remain the
+coordinator's next steps; optional native appearance/input checks remain separate.
+
+## PR164 review fixes — 15 october 2026
+
+Stopped/reset analytic enable edits now begin next playback at the target
+endpoint, while paused previously rendered notes preserve their frozen ramp.
+Successful output capture clears only the requested prefix; refusal retains
+bounded full-slice cleanup. Both focused regressions reproduced before repair.
+Continuation (11) and capture (12) tests pass on Linux/Rust1.94 with the default
+Rust test stack. All 137 audio allocation-feature tests pass. A two-output
+release microbenchmark reduces median capture time from 6.169 to 3.816 µs;
+`docs/performance.md` records its workload and limits. All 16 full local-CI
+stages passed on clean bf3c5c8. Current main d7915f8 is integrated, retaining
+host input/output gain and aggregate instrument-memory admission changes; only
+this file and performance notes required conflict resolution, preserving both
+histories. Fresh full CI is required on the integrated candidate before merge;
+native listening and physical deadline acceptance remain separate.
+
+## streaming source/provider matrix — pulse2536, 15 october 2026
+
+Planning-only [matrix](docs/streaming-source-support-matrix.md) maps every
+live #24 acceptance criterion, public source/provider class, constructor and
+ownership/accounting gap to existing evidence, missing source, native tests or
+explicit product decisions. It preserves #16/#2162/#2164/#2165/#2229 source work
+and the #2537–2546 decomposition. Exact published PR177 source is inspected
+separately from PR231's older intake base; unpublished root WIP remains unverified.
+Documentation link/path/claim and whitespace review are the applicable checks.
+The user subsequently authorized its documentation-only PR231 merge, subject to
+required exact-source local CI. Runtime implementation, native delivery and
+full streaming completion remain open; #24's review holds are preserved.
+
+## CLAP admission contract — 15 october 2026
+
+Pulse #2523 / PR218 defines the [foreign-module admission and containment
+contract](docs/clap-admission.md): a proposed finite macOS arm64 offline guest
+profile, byte custody, filesystem/network/IPC authority, descendant/resource
+limits, cleanup/refusal states and eleven qualification canaries. The foreign
+allowlist remains empty. No plugin was loaded and no native containment evidence
+is claimed. PR199/#20 and PR193/#21 remain canonical frozen implementation
+history; compiler/SDK notices and eight ignored Mac fixture tests remain separate
+gates. Documentation validation and required local-CI results are recorded with
+the exact PR candidate in Pulse; this entry is not a check-pass assertion.
+
+## device chain pan and bottom navigator — 13 october 2026
+
+Track and return device chains now share middle-button horizontal drag panning and
+an overview in the bottom status bar. Proportional device silhouettes and a measured
+viewport focus frame support click, drag and wheel navigation; the bottom-right
+chevron opens/closes the device panel and preserves the focused return. Release
+outside the rail, Escape, owner/project changes and workspace-mode changes retire
+capture. Navigation stays out of project history. Root pointer capture protects
+typed device drafts from blur while panning and checks close admission before a
+field can lose its draft; refused finalization keeps the panel open.
+
+Focused device-panel GPUI tests pass (56 tests), including rendered card movement,
+both navigator ends, wheel input, resize clamping, return overflow, short/empty
+chains, toggle ownership and full-queue draft preservation. Final Linux cloud checks
+pass: the full UI suite (414 passed, two existing ignores), strict all-target
+UI-feature Clippy, desktop build, architecture/GPUI/style guards, format and diff
+checks. Native macOS visual and physical middle-button acceptance remain pending.
+The user's screenshot is visual reference only; no new installed-Live behavior experiment was performed.
+Pulse intake is blocked because the connected create-ticket schema cannot supply
+the server-required `request_id`; no ticket was created.
+
+## device title reordering — 13 october 2026
+
+Regular and return device titles start metadata-only drags without a floating
+preview, as requested in the follow-up. Stable insertion markers resolve left/right card halves, inter-card
+gaps and the chain tail. Return effects use canonical `MoveReturnDevice`; regular
+effects and the freely positioned instrument reuse the existing actor drop path.
+Hover does not edit, valid moves produce one revision/Undo entry, and self-drop,
+Escape/outside release and stale/pending input preserve cancellation/refusal.
+Rendered title-move tests and source guards pass; full local CI belongs to the
+focused PR. Native macOS/listening and drag autoscroll remain open. See
+[device controls](docs/device-controls.md). Pulse intake is blocked by the live
+request_id requirement omitted/stripped by the installed create_ticket schema;
+no new ticket ID is claimed.
+
+## vector synth name — 13 october 2026
+
+Renamed the registered four-operator synth display name to `vector`; the shared
+catalog and device view feed the browser and card header. Existing
+`hex.instrument.operator` identity, state and DSP remain compatible. Updated
+existing catalog/view checks and profiler output. Native browser/header and
+existing-project reopening acceptance remain open; automated results belong to
+the focused rename PR. See [instrument contract](docs/operator-native.md).
+
+## operator focus presentation — 13 october 2026
+
+User reports retained in Pulse2373 and oscillator enable Pulse2335. Individual
+new-ticket intake is blocked: live create_ticket requires request_id, while the
+installed MCP schema omits/strips it. No new ticket IDs are claimed.
+
+- Row order: coarse/frequency → fine → fixed → level → oscillator badge.
+- Center curve/detail display stays dark on keyboard and pointer focus.
+- Defer section notifications after GPUI's post-paint focus callbacks so section
+  highlights repaint immediately without mouse movement.
+- Before-fix rendered tests reproduced badge-first order and a stale LFO
+  background; after the repaint repair, the same test reproduced light detail
+  background. Retained logs: artifacts/operator-focus/before.log and middle-detail.log.
+- Focused rendered navigation suite: 7/7 pass after repair; full exact-source
+  local CI remains the merge gate.
+- Canonical oscillator on/off remains in existing unmerged PR164/Pulse2335.
+  Do not claim a selection-only badge toggles sound.
+- Native checklist after optimized stable delivery: Tab/Shift-Tab through each
+  row in ratio/fixed mode; LFO on/wave/rate/amount → filter → pitch → global
+  highlights update without moving mouse; focus/edit center controls and curve
+  without lightening background; valid edits commit once, invalid drafts retain focus.
+  Native delivery and owner acceptance are pending on this Linux executor.
+
+## common wav import encodings — 13 october 2026
+
+The reported `encoding is not pcm or ieee float` rejection is addressed by shared
+extensible PCM/float header validation, PCM8, float64 and G.711 decoding, plus
+bounded resident Microsoft/IMA ADPCM block decoding. Resident imports cover both
+Arrangement and Session, sampler assets and project reopen through the existing
+service path. Seekable/verified readers share the new fixed-frame formats;
+ADPCM is explicitly resident-only. Byte/frame ceilings and the mono/stereo,
+8–192 kHz domain remain unchanged. RF64/RIFX, surround downmix and other compressed
+WAV codecs remain unsupported; do not claim arbitrary WAV-container support.
+
+Independent FFmpeg PCM16 oracles cover every G.711 codeword and multi-block mono/
+stereo ADPCM, including declared final padding. Generated exact-sample tests
+cover extensible GUID/depth/layout validation, PCM8, float64 and seekable windows.
+Malformed ADPCM headers/dimensions/fact extents, custom Microsoft coefficients,
+caller ceilings and nonfinite/unrepresentable float64 have regression coverage.
+Native reimport of the user's failed sample and listening remain pending. Pulse
+intake is blocked because the connected create-ticket schema cannot supply the
+server-required `request_id`; no ticket was created. Full local CI is a separate
+PR delivery gate; cloud tests do not establish native macOS acceptance.
+
+
+## Operator Tab review repairs — pulse2373 / PR178
+
+Oscillator squares remain visually at the right while preceding their controls
+in the focus tree. Selector focus activates its oscillator and uses a distinct
+thicker focus border. Section backgrounds follow descendant focus only, including
+lfo summary/detail and routing preset; previous groups deactivate even when their
+view context remains selected. Common lfo widgets mount once in the summary,
+with remaining controls in detail, avoiding duplicate GPUI focus ancestry/Tab IDs.
+Fine/filter/pitch/global invalid previews refuse both Tab directions before blur;
+valid preview drafts finish locally without authoring canonical sound. The routing
+icon retains its lowercase Enter/Space tooltip. Shared disabled-widget navigation
+intent/restoration remains preserved. Rendered regressions cover geometry/order,
+all lfo widgets, routing, group exit and preview drafts; restored-old-behavior
+negative controls reproduce both invalid-preview traversal and duplicate-lfo order.
+Full exact-source CI, optimized review build and pending native confirmation are
+recorded in PR178/Pulse2373 under the retained review-only hold.
+
+## 13 October 2026 — header double-click fullscreen
+
+The shared loading/editor title bar now toggles native fullscreen on left
+double-click and restores normal mode on the next double-click. Single/right
+clicks and triple-click continuation do not toggle; window controls retain
+their own stopped-propagation actions. A rendered GPUI pointer regression checks
+entry and exit. Native macOS transitions, header dragging and window-control
+sanity checks remain user acceptance. Automated validation is recorded with the
+task result. Pulse intake is currently blocked: its create-ticket endpoint
+requires a request_id that the installed tool schema does not expose.
+
+## Open latest session log from header — 13 october 2026
+
+A compact debug control sits at the far right beside the version in the editor,
+startup and demo headers. It opens the current session's log with the macOS
+default text editor (`open -t`), using the injected path and a background launcher.
+Repeated pending requests are ignored; missing logging and launch failures show
+a lowercase dialog. The existing header layout test now checks the button's
+right edge, spacing and title-row bounds. See [session diagnostics](docs/diagnostics.md).
+
+Linux source guards, formatting, `cargo check -p hex-ui --locked` and strict
+UI-feature Clippy pass. Focused header/title and diagnostic tests pass, and the
+locked desktop build succeeds. The macOS-only layout test skips its assertions
+on Linux; full exact-commit local CI remains the merge gate.
+Native acceptance: click the control, verify the current session log opens in a
+text editor, and check title/version/button spacing at the minimum window width.
+Pulse ticket creation is blocked by a connector schema mismatch: the live
+server requires request_id but the connector does not pass that field through.
+No ticket update, merge or macOS test bundle is claimed.
+
+## persistent Arrangement selection — pulse2386 / pr170
+
+The captured time range survives mouse release and subsequent idle controller
+maintenance. Autoscroll no longer cancels a completed range when no gesture is
+active; stale active gestures and explicit Escape cancellation retain their
+existing behavior. Rendered audio/MIDI/empty-lane and main-scope regression fails
+before the fix; final focused/full source checks and native exact-candidate
+confirmation are recorded in Pulse2386/PR170. No native acceptance claim here.
+
 ## Operator fixed navigation and rail context — pulse2341 / PR156
+
+13 October 2026 — Pulse2333 / draft PR183: Arrangement catalog device drops
+use shared painted lane/gap/empty targeting, captured TrackId/instrument identity
+and a bounded worker request. Track creation plus generic device assignment is
+one prepared atomic command/Undo; hybrid defaults, audio/MIDI clips, effect state
+and prior selection are retained. Included original PR172 one-file OS adapter;
+no existing-device Arrangement moves or new DSP/routing/schema. Exact-source
+Linux evidence belongs to PR183; native optimized review build and human
+confirmation remain pending. Ticket blocked/draft under readiness/evidence hold.
+
 
 Fixed Envelope-left/Oscillator-right bounds, whole-global-rail Routing entry and
 owner-guarded Fine/shell context are implemented. The original rendered
@@ -533,8 +1012,13 @@ remain separate from time editing and DSP.
   ripple/preview, source controls, clip detail values, resizing, overview/panning,
   save/reopen and minimum-layout focus. Use owning documents' concrete checklists;
   do not rerun interactions already explicitly accepted unless affected by a change.
+  Consolidated evidence and staged remaining checks: [native interaction](docs/native-interaction.md),
+  Pulse #22 / PR244. On 16 October the user reported no additional results;
+  native acceptance remains open. No runtime change or new delivery is claimed.
 - [ ] **native audio reliability** — listening, device selection/disconnect/restart,
   stop under pressure, sustained stress, physical timing and first-transient checks.
+  Owner-reported 16 October start/stop and Stop-during-editing results are in
+  `docs/native-audio-acceptance.md`; remaining native gates stay open.
 - [ ] **long-project streaming** — graph/catalog leases, callback endpoint retirement,
   prewarm/readiness and sustained advancing 100-track mixed-rate native playback,
   edit/seek/launch and fault acceptance before lifting resident import limits.
@@ -2075,7 +2559,6 @@ merge gate. Native screenshots guided two layout iterations; user drag/listening
 acceptance remains Pulse2330. The narrow geometry microbenchmark does not prove
 native latency or Live parity. See [comparison and limitations](research/observations/operator-visual-002.md).
 
-
 ## 11 october 2026 — pulse2337: stable Operator time axis and stage caps
 
 Direct user clarification and two supplied Live screenshots establish fixed
@@ -2134,6 +2617,22 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
   Finder drops2385, persistent selection2386 and multi-track selection2387 are
   separate tickets; Return listening2388 and realistic long export2389 deferred.
 
+### operator enable controls — pulse2335 / pr164
+
+- Strict version-8 state appends four canonical enable bools after the frozen
+  LFO prefix: 380 bytes, IDs513–516, all enabled when migrating versions1–7.
+- Five generic continuation-contract tests and three codec tests passed on an
+  unchanged source digest; `docs/operator-enable-continuation.md` records the
+  exact commit/digest and retained partial-run evidence.
+- Shared ownership handoffs are released. Provider coefficient oracles, mutable
+  LFO/feedback tests, ten generic engine continuation/ownership/refusal tests and
+  shared-context regressions passed at clean checkpoint fb31d4d.
+- Capture regression exposed a default-test-thread stack overflow. Fixed current
+  and scratch transition tables now use bounded fallible control allocation,
+  charged to the unchanged preroll cap; post-repair checks remain pending.
+- Canonical badge toggles, history/save/reopen and pending/queue-refusal fixtures
+  are integrated with PR156 navigation. New held/release/reversal callback probes,
+  UI fixtures, full final local CI and user listening/UI acceptance remain open.
 ## 11 October 2026 — candidate-owned handoff scratch (Pulse2371 / PR166)
 
 - Isolated the handoff.rs-only patch from PR164's shared-scratch checkpoint;
@@ -2194,6 +2693,62 @@ See [controls](docs/device-controls.md) and [state](docs/operator-state.md).
 The connected001 isolated review process also crashed during a user-reported window move. The preserved macOS report identifies bundle `org.portalsurfer.hex.review2341.connected.001a00c`, PID 72869, main-thread EXC_BAD_ACCESS/SIGSEGV at 0x120 in Core Animation animation collection/transaction flush. This proves the app crashed, not its underlying cause. No agent closed or controlled that app during the human check. Separate Pulse #2362 owns native window lifecycle investigation and a focused fix; PR156 remains draft, with no crash fix or native safety claim here.
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
+
+11 October 2026 Operator-enable focused follow-up: ten engine continuation,
+nine capture and twelve preroll tests pass on default test stacks after the
+control-allocation repair; strict engine/device Clippy passes at 63f6bb6.
+Measured tables are 49,152 bytes/runtime with 344-byte samplers; existing caps
+remain unchanged. At 3948b38 all five mutable LFO tests and three held/release
+reversal callback probes pass with zero total and signed-net allocations. At
+9ea80fa both canonical badge/history/save and pending/refusal UI tests pass with
+ui-test-support. Navigation fixtures expose obsolete preview indices from the
+PR154/156 merge; owner-confirmed semantic selector repair, canonical LFO inset
+and enable descriptor inventory are prepared, unrun. Zero-filter UI invocations
+are not acceptance. Full exact final CI, review/merge and user native/listening
+remain open; see docs/operator-enable-continuation.md for retained evidence.
+
+Operator-enable full-CI follow-up: broad15 Operator UI tests pass after complete
+semantic fixture audit, but full workspace CI exposed two default-stack handoff
+aborts. Architect disassembly traced a2,149,936-byte nested chain to redundant
+local span-scratch construction in mutable candidate preflight. The shared helper
+now borrows existing candidate scratch at both calls, with unchanged query/error,
+ownership and accounting contracts. The original seven-owner fixture is restored;
+no stack override or boxing workaround remains. Native facade inventory nowchecks
+all four exact true Boolean defaults. Fresh default-stack/frame/allocation/fullCI
+validation remains pending; see docs/operator-enable-continuation.md for failures,
+measured frames and unmeasured baseline qualifications.
+
+
+Operator-enable5d0ad5b: both original default-stack regressions pass after shared
+scratch reuse; disassembly selected chain subtotals fall below2MiB, with peak
+stack still unmeasured. Unfiltered engine244pass/1fail/3ignored exposes a reduced
+release-bank fixture that stops an unheard exact-onset relaunch. Rendering one
+sample restores its intended two-live-tail refusal scenario without weakening
+assertions. Callback/full final CI and dependency/native gates remain open.
+
+
+Operator-enable27d08de focused release/stack3, engine245 and audio136tests pass.
+FullCI stops on a second stale88→92 Operator catalog assertion in native
+admission integration; exact four Boolean IDs/defaults are added alongside the
+updated count, with all musical oracle assertions preserved. FullCI remains open.
+
+
+Operator-enable70a631b native admission11passes; fullCI stops at Session64-tail
+occupancy. Architect baseline audit confirms NEW Session unheard-onset
+cancellation (c9432c8), matching olderArrangement behavior. Finite3fixture repair
+preserves64/65and16soundedtails, pending/finalclock andPCM oracle; strengthens
+full-bank unheard-stop positivecontrol versus soundedrefusal. Fullvalidationpending.
+
+
+Operator-enable6dd02b5 reducedbank1/Session32pass; fullCI nextstops on a stale
+preset-state length364→380. Existing preset fixture nowchecks v8 and preserves
+authoredfalse/true/true/trueenable flags plus exactsuffix/UndoRedo equality.
+Intentionallegacy364checks retained; fullvalidation stillpending.
+
+
+Operator-enablec1501a2 fullCIsteps1–12pass; step13rejects unusedmut innewUItest.
+The single token is removed, with strictwarnings preserved; finalCIstillpending.
+
 ## 11 October 2026 — Pulse #2408 stable optimized test delivery
 
 PR #167 adds the native optimized delivery wrapper to the existing bundle entry
@@ -2302,3 +2857,297 @@ Hardware/compiler differ from the historical busy Mac, so no causal speedup,
 matched Mac idle baseline or physical callback deadline is claimed. No runtime,
 fixture, comparator or admission limit changed. Final exact-head local CI is
 the separate source-review gate; native evidence limitations remain explicit.
+
+
+## device selection fix — 13 october 2026
+
+Device cards now retain a transient selected DeviceId and share an accent
+border/title-bar state across instruments, track effects and Return effects.
+Capture-phase left mouse-down selects even when a nested control consumes input;
+owner changes, removal and project replacement retire selection. Focused rendered
+regressions were added. All 47 device-panel tests pass; disabling the new
+selection handler makes the click regression fail with no selected DeviceId.
+Architecture, GPUI patch, UI style and formatting guards pass. Full local CI
+is the remaining merge gate; native macOS click-through remains pending. Pulse issue intake is blocked: create_ticket
+requires request_id, which the exposed tool schema does not support. This entry
+records implementation evidence and does not replace Pulse planning authority.
+
+13 October 2026 — manual native device gain staging: source implements paired
+input/output sample-peak strips at every device host's right edge, manual output
+trim via shared numeric gestures, held peak hover values and schema-18 persisted
+host gain. Focused tests cover serial boundaries, transients, bypass, legacy
+unity migration, invalid gain refusal, undo and native instrument PCM/voice
+identity. Automatic matching/toggle/focus-loss/lock remains deferred. Native
+Mac visual/drag/hover/slow-attack/listening/save-reopen acceptance remains user-owned.
+Pulse issue intake is currently blocked: the live create_ticket endpoint requires
+request_id but the installed connector does not transmit that field. No ticket
+creation is claimed; the focused PR and this dated evidence retain source scope.
+
+14 October 2026 — device gain follow-up: both meter wells adjust persisted host
+gain and reset on double-click. Gain and unity markers accompany live peak fills.
+Audible meter handles survive preview/canonical handoffs without clearing the
+display. Regression coverage includes pre/post DSP levels, bypass, input/output
+undo, schema-19 loading and readout updates during a held pointer press. Native
+Mac pointer/paint/listening acceptance remains user-owned. Pulse discovery is
+blocked by list_projects/list_tags server errors; no issue update is claimed.
+
+## 15 October 2026 — variable-size instrument memory admission (Pulse2589 / PR242)
+
+User authorized replacing the effect-derived per-instrument 4 KiB ceiling with
+declared requirements and aggregate accounting. Mutable pairs can now exceed
+8 KiB within the unchanged combined 2 MiB/256-instance active budget; retained
+tails keep their independent 2 MiB cap. Effect/Return per-twin, voice/event,
+retarget-proof, ledger and checkpoint limits remain separate. Tests exercise
+actual larger owned buffers, exact aggregate/tail boundaries, construction-free
+refusal, PCM/rollback/history/checkpoint continuity and larger callback copies.
+A failed-before regression and optimized component measurements are retained in
+`artifacts/instrument-memory-budget/`; see docs/performance.md. Full exact-source
+CI and native delivery results belong in the linked PR/Pulse evidence. This does
+not complete Operator filter2326, higher-polyphony2226 or scalability2108.
+
+
+- Pulse2326 / PR212: registered original Clean carrier filter with LP/HP/BP/notch/
+  morph, 12/24 slope, canonical saved frequency/resonance/morph controls, v11 codec
+  preserving v8 enable prefix and reserved parallel formats/IDs. Bounded analytic import
+  preserves sounding Arrangement/Session voices and gates on first activation;
+  feedback/LFO history and supported parameter ramps survive compatible edits.
+  Both banks are charged under Pulse2589 aggregate admission. Independent transfer,
+  boundary, codec, callback allocation, UI focus/history and export checks added.
+  See docs/operator-filter.md for finite pre-envelope output-tail law, explicit
+  active-seek/class-exit refusals, offline overhead and native/reference gaps.
+  Exact final full local CI and guarded native delivery evidence belongs to PR212.
+
+
+### 2026-10-15 — default-stack analytic-import handoff repair (Pulse #2611)
+
+- Current main `db16a68` reproduced a macOS default test-thread stack overflow in
+  `mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_suffix`;
+  both full local CI and the exact single test aborted before the repair.
+- Moved analytic seed/proof plans into control-reserved candidate-owned scratch,
+  reusing it for both handoff phases and charging its actual/preflight backing.
+  Refused plans reset their valid prefix; no callback allocation or cap increase.
+- Canonical PR #243 owns this focused fix. Exact-source full local CI and optimized
+  guarded delivery are required; source tests do not establish native listening.
+
+
+### 2026-10-16 — musical editing: canonical audio clip gain (Pulse #27 / PR #185)
+
+- Added saved/history clip gain in integer millidecibels (-60..=24 dB), including
+  Arrangement and Session one-shots. Source edits, splits and copies retain it.
+- Preparation supplies a finite source-stage coefficient to resident/streamed,
+  native/offline rendering; 0 dB preserves the neutral PCM path. Session gain-only
+  replacement retains the launch anchor. No new callback allocation/ownership seam.
+- Audio detail gain buttons dispatch canonical edits; cached waveform geometry
+  and Session bars reflect gain. Schema 20 migrates prior documents to unity and
+  refuses invalid/current missing values. Contract: `docs/clip-view.md`.
+- Targeted model/storage and gain resident/streamed regressions pass. Final full
+  local CI, allocation probes and optimized native delivery belong to the combined
+  exact candidate; native gain listening/visual checks remain optional evidence.
+- This completes only clip gain within #27. Pitch/warp, beat anchoring, source
+  envelopes and remaining musical-editing work stay open.
+
+## 16 October 2026 — musical transport and captured gestures (Pulse #27 / PR #185)
+
+- Added a real transient metronome through the bounded playback action queue,
+  with prepared denominator-beat/bar accents, seek/loop/pause/Stop handling and
+  compatible revision inheritance. Legacy/export graphs refuse enabling it;
+  native export remains click-free. The toolbar displays admitted state.
+- Added latest-target ruler drag seeking; final release survives queue pressure,
+  while project/viewport/focus changes, Escape and Stop cancel future targets.
+  This is transport seeking, not stopped-transport audio preview.
+- Added bounded horizontal edge autoscroll for Arrangement clip move/copy,
+  browser audio and audio/MIDI trims, preserving source grab anchors and one
+  release edit. Source/viewport changes and cancellation reject stale previews.
+- Targeted engine metronome (6), callback metronome/allocation (2), and feature UI
+  tests (442 passed, 2 existing ignored) pass; strict feature UI lint and source
+  guards pass. The callback clip-gain allocation probe also passed separately.
+  The initial focus-test failure and corrected active-window/draw setup remain
+  in retained local evidence. These are development checks, not full final CI.
+- Contract and finite optional native checklist: `docs/musical-editing.md`.
+  Pitch, beat anchoring, source envelopes and all six warp modes remain required;
+  user priority is Beats and Re-Pitch first. Issue #27 stays incomplete/draft.
+
+
+## 16 October 2026 — musical audio processing (Pulse #27 / PR #185)
+
+- Added canonical retained original-domain/crop views, integer-cent pitch,
+  Q32.32 beat anchoring, strictly increasing source/beat warp markers and
+  original-source Q16.16 gain envelopes; schema 21 preserves roots, crops,
+  frozen musical fades, settings and seeds. Frame-only prior projects migrate
+  unchanged. Split/copy/range/trim/history use one domain projection.
+- Added std-only hex-warp with six distinct original algorithms: bandlimited
+  Re-Pitch, transient/division Beats with tails/decay, period-adaptive Tones,
+  seeded fixed-grain Texture, linked stereo Complex and actual spectral-envelope
+  correction in Complex Pro. Re-Pitch keeps independent transpose inactive.
+- All compiler paths share direct/prepared selection. Session stages graph,
+  inventory and worker waveform summaries before canonical/history commit.
+  Process-wide derived PCM tokens cap candidate/active/cache/retired ownership
+  at 768 MiB; derived cache 256 MiB/256 entries, committed+pending full original
+  source owners separately 256 MiB, scratch 32 MiB/full root 16777216 frames and
+  bounded work/cancellation. Cache eviction cannot release audible ownership.
+- Lowercase Arrangement controls dispatch real pitch/anchor/warp/mode parameter,
+  marker and source gain commands. Eight-point pages clamp to active contents.
+  Worker-prepared accepted root waveforms stay available after cache eviction,
+  include fade/envelope once, and keep gain separate. Source editor coordinates
+  remain explicit; unprepared transformed drag/trim previews suppress misleading
+  original 1:1 waveform geometry.
+- Development checks: model/storage/Session suites and warp signal tests passed
+  in the development report (exact retained path: artifacts/local-ci/20261016T060628Z-f9202791).
+  Nine engine transform tests passed in 20261016T061516Z-5e2ea739, including
+  all-mode split/random seek, tail-to-zero, malformed/refused streamed changes,
+  injected cancellation, budget/source-owner release and cache-independent views.
+  Strict affected-crate Clippy, UI command/page regression, derived-only callback
+  allocation/retirement and Session peak rollback passed in nonstale targeted
+  run artifacts/local-ci/20261016T061559Z-04daf3db. Intermediate failed/stale
+  development reports remain retained; none substitutes for final full local CI.
+- Latest nonstale targeted report `20261016T063332Z-a633ed02` passed strict
+  affected-crate/feature Clippy, the rendered retained-fade readout/reset/adjust
+  regression (1), the full feature UI suite (448 passed, 2 existing ignored), and
+  the derived-only callback allocation/retirement probe (1). This includes actual
+  rendered vertical and horizontal drag cases. Twelve engine transform tests
+  passed in `20261016T063032Z-803b0343`, including the shared projected-fade PCM
+  oracle. Subsequent curve-knot geometry passed the full feature UI suite.
+  Retained fade controls preserve authored durations with explicit reanchor
+  disclosure, and draw the shared frozen-tempo projection without changing PCM.
+- Vertical pure tests passed in development report
+  20261016T061058Z-184eb5b1. Its GPUI test filters omitted ui-test-support and
+  executed zero rendered tests; those are not evidence of rendered behavior.
+  Optimized DSP preparation benchmark and exact fixture/kernel hashes are recorded in docs/musical-editing.md and ignored
+  artifacts/musical-editing/perf/warp/measurement.json. Final neutral performance
+  comparison, integrated exact-source full CI, PR readiness and delivery remain
+  with the primary. Native UI/listening/Windows and exact Live equivalence are
+  unverified; finite optional owner checklist and truthful limits are documented.
+
+
+## 16 October 2026 — compact musical clip ownership (Pulse #27 / PR #185)
+
+- A neutral control benchmark exposed extra clip clone/layout cost. The private
+  edit field now uses optional shared ownership and copy-on-write mutations;
+  read-only getters, owned snapshots and schema 21 stay unchanged. On this
+  arm64 build, `Clip` is 104 bytes rather than 136. This layout reduction does
+  not itself establish recovered edit/compile latency; the primary will rerun
+  the same optimized baseline comparison.
+- Copy/move/trim/pitch/phase/fade changes preserve independent clones and all
+  Undo/Redo states; a new regression also checks snapshot restoration. Existing
+  split/domain continuity tests remain intact.
+- Guarded targeted report `20261016T064706Z-88105f38` passed 355 model/storage/
+  Session tests, 12 engine transform tests, feature UI (448 passed, 2 existing
+  ignored), and strict affected-crate feature Clippy. The initial new test
+  incorrectly expected Undo to rewind the stable-ID high-water mark; its failed
+  report is retained and the assertion now respects the existing ID contract.
+  Final exact-source full CI and performance comparison remain with the primary.
+
+## routing integration continuation — 16 october 2026 (pulse28 / pr184)
+
+Resumed the existing canonical branch and integrated current main without
+replacing the PR or its history. Preserved newer device gains, analytic
+continuation, default-stack handoff, device metering and same-pass output capture.
+Automated track captures now use each sample's effective post-device gain;
+ReturnFeed captures include the same post-fader signal and original retired
+Return tails exactly once without replaying feeds. Focused PCM regressions cover
+these combined paths.
+
+Schema23 writes complete combined state. Strict top-level key presence preserves
+both historical main and feature-branch schema18/19 meanings without parse-error
+fallback;20–22 remain readable. Nonzero device trims, provenance, opaque states,
+ReturnFeed, gain curve and epoch round trips are required regression evidence.
+Full exact-commit local CI is required before any readiness assertion. General
+audio/MIDI graph playback, actual automation recording, runtime delay-ring
+compensation and their discontinuity/ownership contracts remain unfinished.
+Issue28 and PR184 remain in progress/draft; its review-only hold is retained.
+No native interaction, listening, deadline or delivery success is implied.
+
+## complete routing implementation candidate — 16 october 2026 (pulse28 / pr184)
+
+The continuation above is superseded by the complete source implementation:
+canonical typed Track/Return stereo inputs, acyclic root-resolved MIDI sources,
+strict schema24 preservation, native routing controls, prepared gain touch spans
+and delivered-quantum recording with one atomic loop-normalized history edit.
+Production compensation uses actual processor/instrument declarations, bounded
+transactional rings and exact origin clocks through Arrangement, Session, capture
+and export. Compatible handoffs preserve in-flight history; nonzero timing/layout
+changes and MIDI source-layout changes require Stop. Zero-delay safe edits remain
+live. Compensation cannot remove physical latency.
+
+Source regressions cover actual routing PCM, source fanout/stop/relaunch and
+independent audio ownership, supported analytic import and unsupported feedback
+chase, late rollback, startup/final export samples, rate mismatch, cancellation,
+queue/credit exhaustion, loop normalization, history, strict migrations and selected
+zero-allocation callback paths. Full engine, audio allocation, project/storage,
+export feature suites and workspace/feature Clippy passed during development.
+Exact clean-candidate full local CI, release measurements and guarded stable native
+delivery are recorded in PR184/Pulse28, separately from optional native interaction,
+listening, physical deadlines and Windows acceptance. See docs/routing.md,
+docs/gain-touch-spans.md and docs/latency-compensation.md for the finite contracts.
+
+
+The final PR28 scope excludes previously merged draft prerequisites' Live-set
+adapter/CLI/UI and streaming wrapper extensions. Their source/history remains in
+PR150/Pulse32 and PR177/Pulse24. Neutral bounded import provenance and historical
+schema18/19 dispatch remain for faithful project migration; they expose no import
+command. The combined borrowed pages/observer engine seam remains because routing
+and gain-render regressions exercise it, without enabling native streamed
+publication or lifting resident limits. This separation does not complete or
+authorize either prerequisite feature.
+
+## header-only native device selection — pulse2472 / PR207, 16 october 2026
+
+The shared frame now separates neutral shell colors from selected header paint
+through `DeviceFrameStyle`. The product resolver supplies readable selected
+header text; Track instruments/effects, Return effects and the shared gallery
+frame use that contract. Whole-device selection, numeric gesture/focus ownership,
+Vector internal sections, bypass and replacement-drop feedback are unchanged.
+
+A rendered regression first reproduced the prior accent-colored surround using
+the same frame implementation as optimized source0518cd0/build85511434. With the
+repair, the header changes while frame/body/section paint, border style, geometry
+and clipping stay stable through selection/deselection. Source/scene evidence is
+not a native display screenshot or physical-input acceptance. Existing Track and
+Return interaction tests now also check neutral body paint/geometry; Return
+child selection checks the selected shared header. All 50 widget, 86 device-panel and 9 gallery tests pass. Full
+exact-source local CI follows on the final candidate. Optional native review
+uses the finite checklist supplied with optimized stable-path delivery.
+
+
+## 16 October 2026 — musical editing / routing integration
+
+Pulse27 / PR185 integrates routing PR184 at main799e96d before final delivery.
+The combined schema25 retains published schema1–24 readers and stores complete
+clip gain/musical editing state separately from routing, gain lanes, device host
+gains and neutral import provenance. Strictly identifiable development schema20/21
+projects retain a dedicated recovery path; ambiguous envelopes are refused.
+The d871be9 full local-CI run passed workspace tests, then was intentionally
+interrupted at step7 after main advanced; it is not merge evidence. Combined
+source checks, a fresh complete exact-candidate run and guarded optimized delivery
+remain outstanding. Native interaction/listening and Windows evidence remain
+separate from automated source checks.
+# 16 October 2026 — lfo assignment #2383 / pr173
+
+The strengthened rendered regression reproduced the depth caption overlapping
+navigation in synced mode at 880 px. Shared destination-caption rows and tighter
+vertical spacing repair the layout without replacing controls or focus owners.
+Free/synced modes at 880/1440 px now check caption boundaries against the actual
+navigation rail. Final integrated exact-source CI supersedes earlier-head evidence;
+native pixel/input/listening and reference acceptance remain separate.
+
+Recovered the existing canonical PR and preserved its commit history while
+integrating current main. The resulting change is limited to discoverable
+oscillator pitch mapping, selected-destination/depth readback and focused
+canonical/PCM/export/allocation coverage; inherited preset work stays outside
+this deliverable. Current shared widget styling and focus ownership are retained.
+See docs/operator-lfo-assignment.md for scope, reference limitations and the finite
+native checklist. Exact-source full CI and optimized delivery evidence are
+recorded separately with the PR/build; native/listening/reference review remains
+open, including deferred #2384 acceptance.
+
+## 16 October 2026 — deterministic stream shutdown fixture (#2636 / PR252)
+
+Moved the undrained-ready-queue shutdown fixture to its owning runtime unit tests
+with test-only real-worker barriers/publication observations. A deliberately
+delayed worker reproduced the old 30 ms setup assumption: zero queued pages were
+correctly reclaimed, so the expected-one assertion failed. The repaired fixture
+waits for one actual queued page and one actual worker-held page before shutdown;
+the negative control retains complete join/pool accounting with zero publication.
+Normal and allocation-probe stream suites pass. Final exact-source CI is recorded
+with PR252. Production shutdown, queue bounds and native streaming admission are
+unchanged; no new native-device or physical-deadline acceptance is claimed.

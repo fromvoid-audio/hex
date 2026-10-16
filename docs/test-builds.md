@@ -1,32 +1,26 @@
 # optimized native test delivery
 
 Every Hex change requiring user testing uses `sh scripts/bundle-macos.sh` with
-full exact-source local CI evidence, included ticket/PR revisions and a finite
+full exact-source local CI evidence, included PR revisions and a finite
 checklist. This is the native macOS workflow; Hex is not a VST3 and does not use
 plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
-## shared pipeline
+## repository-owned build and install
 
-1. Review the focused final PR and run `python3 scripts/local-ci.py` on its clean
-   final commit. All required steps must pass with unchanged source digest.
-2. Passing required exact-source checks authorizes merge under the shared policy.
-   No hosted/paid CI or separate pre-merge user-testing gate is introduced here.
-3. Immediately run the guarded post-merge delivery below. A merge commit can use
-   its candidate's CI only when the complete Git tree/digest is identical and the
-   verified candidate is an ancestor. For a squash merge, run delivery from the
-   clean verified PR-head checkout after authenticating that the merged PR's
-   complete tree is identical; retain the head/merge mapping in Pulse's candidate
-   receipt. The wrapper does not weaken its source gate to guess squash ancestry.
-   Revalidate any changed source.
-4. Record the installed receipt, CI report, source, included ticket/PR revisions,
-   build version and checklist in Pulse. Successful accessible delivery permits
-   `ready_for_review`; failed delivery keeps work open. Use the supported Pulse
-   reconcile/completion workflow, preserving its gates.
-5. Only explicit owner approval of that exact tested build and included revisions
-   permits Done. Any later behavior/revision change requires an updated optimized
-   build/checklist and renewed approval. Merge is not user acceptance.
+Review the focused PR and run `python3 scripts/local-ci.py` on its clean final
+commit. All required steps must pass with unchanged source digest before merge.
+Build and install with this repository's command below; Pulse is a ticket manager
+and does not authorize, schedule or attest Hex builds or installation.
+
+A merge commit can use its candidate's CI only when the complete Git tree/digest
+is identical and the verified candidate is an ancestor. For a squash merge, use
+the clean verified PR-head checkout after verifying the merged PR's complete tree
+is identical and record the head/merge mapping with the build evidence.
+Revalidate changed source. Keep the installed receipt, CI report, source, included
+PR revisions, version and finite checklist together. Record failures accurately;
+disk installation and merge do not establish native UI or listening acceptance.
 
 ## delivery command
 
@@ -44,11 +38,11 @@ sh scripts/bundle-macos.sh \
 `included-test-revisions.json` is a nonempty list such as:
 
 ```json
-[{"ticket":2408,"ticket_revision":9,"pr":"https://github.com/PORTALSURFER/hex/pull/167","head":"<full-40-character-pr-head>"}]
+[{"pr":"https://github.com/PORTALSURFER/hex/pull/167","head":"<full-40-character-pr-head>"}]
 ```
 
-Include every ticket/PR revision whose changed behavior is supplied for testing;
-these records are an explicit coordinator assertion, not inferred acceptance.
+Include every PR revision whose changed behavior is supplied for testing. Ticket
+references may be included for context but are not required by the installer.
 The checklist must describe finite observable behaviors and identify any native,
 listening or platform gaps. The installed UI already displays the package version
 and short source revision captured by `hex-ui/build.rs`; the receipt supplies full
@@ -78,22 +72,30 @@ Packaging retains font/GPUI licenses, verifies the native linker's ad-hoc signed
 executable with `codesign --verify --strict --ignore-resources` so an unsigned
 local bundle is not mistaken for a sealed app. Independent receipt checks still
 verify every resource, and executable signature validation also runs inside
-activation/recovery verification so invalid code triggers rollback. It hashes every packaged file and records full provenance in
+publication verification so invalid code preserves the prior usable app. It hashes
+every packaged file and records full provenance in
 `Contents/Resources/test-build.json`. This is local unsigned bundle packaging,
 not Developer ID signing, notarization or distribution. A copy of the full local
 CI summary and `USER-TEST.md` travel with the app. The complete CI logs remain at
 the receipt's recorded report location.
 
-An advisory activation lock serializes cooperating deliveries at the configured
-location. A staged complete bundle is verified before directory replacement.
-The prior app is renamed to a retained `.hex-rollback-<id>.app` sibling; its path
-is recorded in the new receipt. Nothing prunes prior backups or historical apps.
-A durable `.hex-test-build-transaction.json` journal supports recovery on retry:
-an interruption between renames restores the old bundle; a corrupt new bundle
-is retained for inspection and the old bundle is restored. A verified new bundle
-can finish an interrupted activation. Invalid journals or uncertain first-install
-states stop for inspection. Never delete the journal, stage or only rollback copy
-merely to make a retry pass.
+An advisory installation lock serializes cooperating installers at the configured
+location. The installer builds and verifies a complete bundle in the fixed
+`.hex-install/stage.app` workspace beside the stable app. It flushes the bundle
+before publication, moves the existing app to temporary `.hex-install/previous.app`
+custody, then renames the complete candidate into place and verifies it again.
+Successful installation deletes the temporary old app and workspace. No retained
+`.hex-rollback-*.app` copy or version-backup journal is created. To return to older
+code, rebuild that source revision using its matching verification evidence.
+
+Retrying the same command under the installation lock handles interruption: a
+missing stable app is restored from temporary custody; a completed verified app
+finishes cleanup; a failed published candidate is replaced by the intact prior
+app. Partial staging is discarded before rebuilding. Unknown workspace contents,
+symlinks or ambiguous states stop for inspection. An older installer's
+`.hex-test-build-transaction.json` also stops installation without changing its
+history. Do not delete uncertain custody just to make a retry pass. Historical
+review apps, rollback copies and old receipts are never collected by this tool.
 
 Process checks run before building, recovery and replacement, including case
 aliases. A running target blocks replacement; save your work, quit normally and
@@ -104,20 +106,16 @@ launch/relaunch the stable app yourself; replacing files does not prove a runnin
 process loaded them. The sidecar `artifacts/hex-test-build-receipt.json` and bundled
 receipt describe disk activation only.
 
-For manual rollback, save and quit Hex, inspect the recorded backup identity,
-retain the current app under a temporary recovery name, then rename the intact
-backup to the configured location. Do not restore user settings/projects/media
-from a bundle backup: this workflow never touches them. Retain receipts/evidence
-until exact-build owner approval is recorded.
-
 ## automated and native evidence
 
-The shared full local CI runner includes delivery regression tests for production bundle assembly from Cargo-reported custom target paths, checksum
+The repository full local CI runner includes installer regression tests for
+production bundle assembly from Cargo-reported custom target paths, checksum
 failure, unrelated identity/symlinks, running case aliases, serialized activation,
-interrupted rename recovery, corrupt-new-bundle rollback and stale/incomplete CI
+interrupted publication/cleanup retry, temporary custody restoration and stale CI
 rejection. A macOS regression compiles a linker-signed fixture and verifies valid
 unsigned-bundle packaging, resource tampering rejection and invalid executable
-signature rejection even after rehashing. These deterministic filesystem tests do not establish native UI,
+signature rejection even after rehashing. These deterministic filesystem tests
+do not establish native UI,
 physical audio deadlines, listening quality or arbitrary crash/power-loss safety.
 The coordinator supplies the optimized app and finite checklist; the user owns
 native interaction tests while present.

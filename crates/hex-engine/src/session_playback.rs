@@ -299,6 +299,9 @@ impl SessionHandoffReport {
 pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
+    gain_recording_override: Option<f32>,
+    compensation: Option<crate::signal_graph::SignalRuntime>,
+    device_metering: bool,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
     anchor: Option<SessionClockAnchor>,
@@ -327,12 +330,17 @@ pub struct SessionPlayback {
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
+    // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
+    // revision context. Actual capacities are charged in preroll accounting.
+    analytic_continuations: Vec<Option<hex_lattice::AnalyticContinuation>>,
+    analytic_continuation_scratch: Vec<Option<hex_lattice::AnalyticContinuation>>,
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
     spans: MidiSpanBuffer,
+    analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
@@ -358,7 +366,41 @@ impl fmt::Debug for SessionPlayback {
     }
 }
 
+fn effective_midi_route(
+    revision: &PreparedRevision,
+    routes: &[TrackRoute],
+    index: usize,
+) -> Result<TrackRoute, SessionPlaybackError> {
+    let mut route = *routes
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    let track = revision
+        .arrangement()
+        .tracks()
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    if let Some(source) = track.midi_source_index {
+        let source = routes
+            .get(source)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        route.owner = source.owner;
+        route.pending = source.pending;
+    }
+    Ok(route)
+}
+
 impl SessionPlayback {
+    pub(crate) fn set_device_metering(&mut self, enabled: bool) {
+        self.device_metering = enabled;
+        for chain in self
+            .device_chains
+            .iter_mut()
+            .chain(self.return_chains.iter_mut())
+        {
+            chain.set_metering(enabled);
+        }
+    }
+
     pub(super) fn historical_floor_for(&self, route_index: usize) -> Option<BeatTime> {
         self.historical_floor
             .into_iter()
@@ -779,6 +821,9 @@ impl SessionPlayback {
             .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let analytic_continuations = reserve_analytic_continuations()?;
+        let analytic_continuation_scratch = reserve_analytic_continuations()?;
+
         let mut suppressions = Vec::new();
         suppressions
             .try_reserve_exact(release_capacity)
@@ -788,9 +833,19 @@ impl SessionPlayback {
             .try_reserve_exact(release_capacity)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let compensation = revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .transpose()
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
+            gain_recording_override: None,
+            compensation,
+            device_metering: false,
             revision,
             periodic_tempo,
             anchor: None,
@@ -817,12 +872,15 @@ impl SessionPlayback {
             release_scratch,
             retained_contexts,
             context_lease_plan,
+            analytic_continuations,
+            analytic_continuation_scratch,
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,
             suppressions,
             suppression_scratch,
             spans: MidiSpanBuffer::default(),
+            analytic_import: analytic_import::ImportPlan::new()?,
             performance_frame: 0,
             arrangement_frame: 0,
             arrangement_loop_pass: 0,
@@ -951,7 +1009,7 @@ impl SessionPlayback {
                     .arrangement()
                     .tracks()
                     .iter()
-                    .any(crate::Track::has_stateful_devices))
+                    .any(crate::Track::has_device_chain))
     }
 
     pub(crate) fn has_active_arrangement_voices(&self) -> bool {
@@ -1080,6 +1138,21 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+/// These tables never grow, shrink, swap ownership or allocate in handoff or
+/// rendering. Refusal/destruction of their storage belongs to control.
+fn reserve_analytic_continuations()
+-> Result<Vec<Option<hex_lattice::AnalyticContinuation>>, SessionPlaybackError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(MAX_TRACKS)
+        .map_err(|_| SessionPlaybackError::Allocation)?;
+    if slots.capacity() != MAX_TRACKS {
+        return Err(SessionPlaybackError::Allocation);
+    }
+    slots.resize(MAX_TRACKS, None);
+    Ok(slots)
+}
+
 mod commands;
 mod handoff;
 mod preroll;
@@ -1166,3 +1239,14 @@ mod render_diagnostic_tests {
         );
     }
 }
+
+mod analytic_import;
+mod gain_recording;
+#[cfg(test)]
+mod return_feed_tests;
+
+#[cfg(test)]
+mod compensation_tests;
+
+#[cfg(test)]
+mod routing_tests;

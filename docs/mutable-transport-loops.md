@@ -58,3 +58,21 @@ unchanged handoff. The callback allocation
 probe measures a real prepared Arrangement loop through a wrap and requires
 zero total and signed-net allocation count/bytes. This evidence does not prove
 native-device timing, physical callback deadlines, or audible acceptance.
+
+## combined source and transport loops
+
+Pulse #2165 retains the implementations in [PR #98](https://github.com/PORTALSURFER/hex/pull/98)
+and [PR #100](https://github.com/PORTALSURFER/hex/pull/100). Its parent acceptance
+also covers both loop kinds enabled on the same Arrangement clip: source
+iteration repeats within each transport pass, while actual transport wraps
+assign a new pass even when they chase the same source iteration again.
+An exclusive transport end may shorten a source-clipped gate further.
+
+The combined regression uses an independently authored, nonlooping sequence of
+gates as its PCM oracle, including a transport start inside a source occurrence
+and a transport end inside a later occurrence. It checks repeated wraps,
+nonuniform block partitions, occurrence identity, clamped/chased gate deadlines
+and compatible revision handoff. The actual callback allocation probe also
+exercises both loops together. These are headless regression checks; historical
+native acceptance recorded on tickets #2214/#2215 is separate evidence and does
+not establish physical deadlines or reference parity.

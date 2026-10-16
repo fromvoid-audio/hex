@@ -612,25 +612,62 @@ mod tests {
         let start = Instant::now();
         let first_context = stamp(4, 1, 192_000, 1);
         for sequence in 0..16 {
-            analysis.ingest(batch(sequence, first_context, 0.3, 256));
+            let mut captured = batch(sequence, first_context, 0.3, 256);
+            captured.captured_start = start;
+            analysis.ingest(captured);
         }
         assert!(analysis.analyze_if_due(start).is_some());
 
         let next_context = stamp(4, 2, 192_000, 2);
         let next_capture_at = start + Duration::from_millis(21);
         for sequence in 16..32 {
-            analysis.ingest(batch(sequence, next_context, 0.4, 256));
+            let mut captured = batch(sequence, next_context, 0.4, 256);
+            captured.captured_start = next_capture_at;
+            analysis.ingest(captured);
         }
         assert!(analysis.analyze_if_due(next_capture_at).is_none());
         let second = analysis
             .analyze_if_due(start + Duration::from_millis(34))
             .expect("global cadence elapsed");
+        assert_eq!(second.stamp, next_context);
+        assert_eq!(second.captured_at, next_capture_at);
+        assert!(second.is_fresh_at(next_capture_at + DISPLAY_STALE_AFTER));
+        assert!(
+            !second.is_fresh_at(next_capture_at + DISPLAY_STALE_AFTER + Duration::from_nanos(1))
+        );
         assert!(!second.is_fresh_at(start + Duration::from_millis(122)));
         assert!(
             analysis
                 .analyze_if_due(start + Duration::from_millis(200))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn delayed_capture_is_fresh_by_capture_age_not_fixture_start() {
+        let mut analysis = core();
+        let start = Instant::now();
+        let captured_at = start + Duration::from_millis(40);
+        let context = stamp(4, 2, 8_000, 2);
+        for sequence in 0..16 {
+            let mut captured = batch(sequence, context, 0.4, 256);
+            captured.captured_start = captured_at;
+            analysis.ingest(captured);
+        }
+        let result = analysis
+            .analyze_if_due(start + Duration::from_millis(54))
+            .expect("complete delayed capture window");
+        assert_eq!(result.captured_at, captured_at);
+        // The old absolute +122 ms query is only 82 ms after this capture.
+        let query_at = start + Duration::from_millis(122);
+        assert!(query_at.duration_since(start) > DISPLAY_STALE_AFTER);
+        assert_eq!(
+            query_at.duration_since(result.captured_at),
+            Duration::from_millis(82)
+        );
+        assert!(result.is_fresh_at(query_at));
+        assert!(result.is_fresh_at(captured_at + DISPLAY_STALE_AFTER));
+        assert!(!result.is_fresh_at(captured_at + DISPLAY_STALE_AFTER + Duration::from_nanos(1)));
     }
 
     #[test]

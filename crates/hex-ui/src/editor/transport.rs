@@ -31,6 +31,20 @@ impl EditorView {
             .child(self.icon("■", "stop · escape", Stop, cx))
             .child(
                 self.control_icon(
+                    "m",
+                    "toggle metronome",
+                    |view, _, _| view.toggle_metronome(),
+                    cx,
+                )
+                .opacity(if self.metronome_pending() { 0.45 } else { 1.0 })
+                .text_color(rgb(theme::color(if self.metronome_enabled() {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Muted
+                }))),
+            )
+            .child(
+                self.control_icon(
                     "↻",
                     "toggle loop on/off · l · cmd+l sets selected clip",
                     |view, _, _| view.toggle_loop(),

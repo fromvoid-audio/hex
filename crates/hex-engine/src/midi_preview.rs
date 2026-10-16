@@ -1,8 +1,8 @@
 //! Immutable, bounded Arrangement data prepared alongside MIDI playback.
 
+pub(crate) mod persistent;
 use crate::Invalid;
 use hex_project::ClipId;
-use std::sync::Arc;
 
 /// Maximum exact note samples retained for one MIDI clip preview.
 pub const MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP: usize = 32;
@@ -31,13 +31,13 @@ pub struct MidiClipPreview {
 /// Immutable project-wide preview index. Clips are sorted by ID for O(log n) lookup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MidiArrangementPreview {
-    clips: Arc<[MidiClipPreview]>,
+    clips: crate::owned_shared::OwnedShared<[MidiClipPreview]>,
 }
 
 impl MidiArrangementPreview {
     pub(crate) fn from_sorted_clips(clips: Vec<MidiClipPreview>) -> Self {
         Self {
-            clips: clips.into(),
+            clips: crate::owned_shared::OwnedShared::from_owned_vec(clips),
         }
     }
 
