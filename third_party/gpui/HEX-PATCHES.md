@@ -54,3 +54,17 @@ arrow fallback elsewhere. Window-scoped frame override persists outside hover
 bounds and restores through deactivation/removal/destruction, without NSCursor
 hide-count changes. Test-only platform cursor readout verifies restoration after
 rendered gesture termination; native appearance/delivery acceptance is separate.
+
+13 October painted-background test support: `VisualTestContext::rendered_background`
+reads the last completed scene quad matching an element's debug bounds. It neither
+draws another frame nor injects pointer input, so tests can distinguish actual
+paint from focus state that has not reached the screen. Test-support only; no
+production rendering or native graphics behavior changes.
+
+16 October rounded-layout test support: `rendered_background` skips transparent
+border-only quad fills, which `Style::paint` emits after the filled surface.
+`rendered_surface_geometry` exposes the last filled matching quad's corner radii
+and ancestor mask in scaled pixels. Both read only the completed test scene;
+no production paint, native API, cursor or input behavior changes. Hex widget
+regressions cover opaque fills followed by same-bounds border-only quads, rounded
+surface geometry, oversized content masks and hit exclusion at constrained sizes.

@@ -57,3 +57,14 @@ interaction and dense 1/100-track feedback/completion measurements remain open. 
 combined build, select time on main, copy/cut/paste and ripple-paste over gaps,
 move through the upper-third handle, Option-copy, and split a main cursor across
 audio and MIDI. Check Undo, selection after track deletion, and empty projects.
+
+## completed selection persistence — pulse2386
+
+Autoscroll maintenance runs only while a captured time-selection or range-move
+gesture exists. An idle controller tick preserves the completed selection,
+its start/end and track/project scope after mouse release. Stale active gestures
+still cancel, and Escape explicitly clears the range. Selection remains view
+state and creates no history entry. Rendered pointer-sequence regressions cover
+audio, MIDI and empty lanes plus the main editing proxy, followed by idle ticks
+and Escape. Native macOS confirmation on the exact optimized candidate remains
+pending; source tests do not establish native paint timing.

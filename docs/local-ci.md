@@ -17,8 +17,9 @@ target/cache configuration, and executes checks sequentially. It does not instal
 tools or hooks, change the machine's Cargo configuration, launch the app, bundle
 an application, or contact a hosted CI service.
 
-The full run executes its runner and native delivery regression tests, the architecture, GPUI patch and UI
-style guards, formatting, locked workspace and UI-feature tests, audio and stream
+The full run executes its runner and native delivery regression tests, the architecture, GPUI patch, UI
+style and device-composition guards, formatting, locked workspace and UI-feature tests,
+the native layout gallery's rendered test harness, audio and stream
 allocation probes, strict workspace and feature-specific Clippy, and a locked
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
@@ -32,11 +33,38 @@ Git's file listing. If the repository identity changes during execution, the run
 is marked `stale` and returns nonzero even when commands passed. Interrupted and
 missing-tool runs retain a summary, logs and explicit incomplete/skipped steps.
 
-`--quick` runs only the three source guards and formatting. Formatting does not
+`--quick` runs the four source guards and formatting. Formatting does not
 use Cargo's target cache, so quick mode neither resolves nor claims/cleans a Cargo
 target. Its summary status is `partial`, and it is never sufficient merge evidence. A full successful summary
 is tied to the recorded unchanged commit and working-tree digest; any source edit
 afterward makes that evidence stale for the new tree.
+
+`python3 scripts/check-device-layout.py` checks the production device boundary.
+Its Rust token scan skips comments and quoted data, balances function bodies,
+and requires the shared shell, semantic style resolver, generic/unsupported
+compositions and Track/Return dispatch calls. Dedicated panel modules are
+discovered automatically; current effect panels must be reachable from both
+owners, while Vector is instrument-only. A new instrument-specific panel must
+declare that class in the guard alongside its dispatch. Panel and production
+composition code may choose content geometry, but paint, borders, rounded
+surfaces and style construction belong in widgets and the theme resolver.
+Retained-control style helpers are included: local style literals and later
+field overrides cannot bypass the semantic resolver through those helpers.
+The gallery must call the same production compositions. Plot/response math in
+their separate graph modules, device-chain host navigation and drop-feedback
+artwork are outside this narrow scan. It does not prove arbitrary Rust helper
+indirection, rendered fidelity, native input or audio behavior.
+
+`python3 -m unittest discover -s scripts/tests -p test_device_layout.py -v`
+includes negative controls against temporary copies of actual production source:
+local surface/header paint and rounding, missing Return fallback composition,
+retained-control color forks, gallery style/composition forks and an unregistered
+effect dispatch must fail. Tests never mutate the checkout.
+These guard regressions also run in the full runner's script-test step.
+The explicit `device-gallery-tests` step runs `cargo test -p hex-ui --example
+layout_review --features ui-test-support --locked`; normal workspace example
+compilation alone does not execute that rendered harness. These GPUI scene/input
+fixtures do not establish native GPU pixels or physical interaction acceptance.
 
 ## continuous integration and merge policy
 
@@ -107,6 +135,57 @@ The ownership protocol coordinates concurrent invocations of this runner only.
 It cannot detect a direct `cargo build`, a separate local-CI implementation, or
 another process that ignores the advisory lock. Do not share a Cargo target with
 such a process during a run or while a worktree handoff is cleaning it.
+
+## explicit optimized release ownership
+
+The dev owner marker does **not** certify release artifacts. The accepted dev
+handoff above continues to preserve release files. Before an optimized build,
+`LocalCiRunner.guarded_release()` acquires the same target-wide nonblocking
+`CargoTargetLock` and uses a separate `.release-owner.json` marker. Source commit
+and content hash, workspace/common Git directory, target path/inode, release
+profile and explicit workspace package IDs are recorded independently of dev.
+
+An empty target can be claimed. Unknown populated targets, malformed metadata,
+pending handoffs, changed target identity or another repository refuse unless
+the caller explicitly adopts release ownership after checking sole ownership.
+The packaging CLI exposes `--adopt-release-target` for that assertion; it does
+not imply dev adoption or loosen any disk/profile/source checks. Direct Cargo
+builds still do not participate in this cooperative lock.
+
+Before incompatible release cleanup, the guard durably writes a pending marker.
+It invokes `cargo clean --profile release` for current workspace package IDs
+only; it never clears the whole target. Failed cleanup, interrupted builds,
+source changes, unidentified/changed artifacts and consumer exceptions leave
+pending ownership. Explicit recovery repeats selective cleanup; normal reuse
+refuses. The marker becomes ready only after optimized compilation, exact-source
+verification, executable hashing and successful guarded consumption. Logs and
+the complete ownership report are retained in the runner's artifact directory.
+
+Cargo's cleaner ignores URL/version qualifiers in package selectors. Release
+preparation therefore checks full locked metadata for workspace/external package
+name collisions and refuses those cases. A previous recorded workspace with
+removed, renamed or version-changed packages also refuses, even with adoption:
+use a fresh target rather than guessing deletion paths or broadening cleanup.
+The real-Cargo test preserves this limitation explicitly.
+
+`scripts/hex-test-build.py` exposes `optimized_artifact(runner, package=...,
+adopt=False)` for both existing delivery and artifact-only review preparation.
+It builds with `--release --locked --message-format=json`, requires a unique
+opt-level-3 executable event, identifies the plain executable inside the owned
+target and keeps the lock across the caller's copy. Importing and calling this
+helper does not activate, install or launch an app. Artifact-only callers should
+copy the yielded binary into their independently authorized staging directory;
+they must not call `build`, `activate` or `recover` to achieve staging.
+
+The release fixture uses real Cargo in isolated temporary worktrees/targets:
+incompatible numeric/string APIs and executable outputs A→B→A, a dev-only
+negative control which leaves the release artifact intact, unchanged external
+release dependencies and dev hashes, retained binaries, same-source reuse and
+removed/renamed refusal. The original dev-only real-Cargo regression remains
+unchanged. Contention, malformed/recreated target ownership, failed/interrupted
+cleanup, changed source/artifact and failed staging consumption have focused
+refusal tests. These checks do not substitute for the required exact-source
+full local CI or native optimized build/signature/bundle validation.
 
 ## read-only disk headroom
 

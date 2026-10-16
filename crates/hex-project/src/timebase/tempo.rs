@@ -1,3 +1,7 @@
+pub use allocation_layout::TempoMapOwnedAllocationLayout;
+pub use copy_custody::{TempoMapCopyCustody, TempoMapCopyError, TempoMapCopyPhase};
+mod allocation_layout;
+mod copy_custody;
 use super::{BeatTime, MAX_TEMPO_POINTS, Tempo};
 use crate::Invalid;
 

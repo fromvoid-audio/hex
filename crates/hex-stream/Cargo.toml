@@ -19,3 +19,6 @@ rtrb = "=0.3.4"
 
 [dev-dependencies]
 allocation-counter = "=0.8.1"
+
+[build-dependencies]
+sha2 = "=0.10.9"
