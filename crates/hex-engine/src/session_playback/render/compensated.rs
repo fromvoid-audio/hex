@@ -27,6 +27,8 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::DeviceRuntime)?
             .delays
             .push_transport_stamp(crate::compensation::TransportStamp {
+                performance_frame,
+                transport_is_running: self.playing,
                 arrangement_frame,
                 loop_pass,
                 performance_beat_raw: beat.raw(),

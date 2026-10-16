@@ -17,6 +17,16 @@ pub trait NativeInstrumentClock {
     fn loop_pass_at_offset(&self, _offset: usize) -> Option<u64> {
         None
     }
+    /// Optional exact host performance-frame origin, independent of arrangement
+    /// loop wraps. Unknown during warmup or stopped monitoring is explicit None.
+    fn performance_frame_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
+    /// Transport state at the input origin. An advancing beat alone does not
+    /// imply playback: stopped audition can have a running musical clock.
+    fn transport_is_running(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// One note-on or note-off event in caller-owned block storage.
@@ -401,6 +411,21 @@ impl NativeInstrumentRuntimePair {
     pub fn begin_block(&mut self) {
         self.scratch.copy_history_from(self.primary.as_ref());
         self.block_started = true;
+    }
+
+    /// Check generic event bounds and both twins' immutable event-domain,
+    /// active-ID and capacity validation against their current histories.
+    /// This does not inspect a clock, open a block, process PCM or change either
+    /// history. Success is not renderability: ordinary processing still requires
+    /// its complete event and clock preflight against current scratch state.
+    pub fn preflight_event_batch(
+        &self,
+        events: &[NativeInstrumentEvent],
+        frame_count: usize,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        validate_event_batch(events, frame_count, self.max_events_per_block)?;
+        self.primary.preflight_events(events, frame_count)?;
+        self.scratch.preflight_events(events, frame_count)
     }
 
     /// Validate and process one block/segment. Generic ordering and payload
@@ -1298,6 +1323,41 @@ mod tests {
         let reference = render(&mut two_voice_reference, &[candidate], 4);
         assert_eq!(actual, reference);
         assert!(actual.iter().any(|frame| *frame != [0.0, 0.0]));
+    }
+
+    #[test]
+    fn event_only_preflight_checks_generic_bounds_and_both_histories_without_processing() {
+        let mut runtime = new_pair(1, 2);
+        let on = [event_on(0, 11, 60, 100)];
+        assert!(runtime.preflight_event_batch(&on, 1).is_ok());
+        assert!(runtime.committed_is_quiescent());
+        assert_eq!(
+            runtime.preflight_event_batch(&[event_on(1, 11, 60, 100)], 1),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert_eq!(
+            runtime.preflight_event_batch(&[on[0]; 9], 1),
+            Err(NativeInstrumentRuntimeError::EventCapacityExceeded)
+        );
+        runtime.begin_block();
+        runtime.process_block(&on, &mut [[0.0; 2]]).unwrap();
+        // Only scratch has the active ID; a primary-only check would accept it.
+        assert_eq!(
+            runtime.preflight_event_batch(&on, 1),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        runtime.rollback_block();
+        assert!(runtime.committed_is_quiescent());
+        runtime.begin_block();
+        assert!(runtime.preflight_event_batch(&on, 1).is_ok());
+        runtime.process_block(&on, &mut [[0.0; 2]]).unwrap();
+        runtime.commit_block();
+        // Commit swaps twins: only primary now has the active ID.
+        assert_eq!(
+            runtime.preflight_event_batch(&on, 1),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert!(!runtime.committed_is_quiescent());
     }
 
     #[test]

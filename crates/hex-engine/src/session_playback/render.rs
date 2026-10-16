@@ -1841,6 +1841,12 @@ struct InstrumentClock<'a, T: ?Sized> {
     start: u64,
 }
 impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentClock<'_, T> {
+    fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+        self.start.checked_add(u64::try_from(offset).ok()?)
+    }
+    fn transport_is_running(&self) -> Option<bool> {
+        Some(true)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         let frame = self.start.checked_add(u64::try_from(offset).ok()?)?;
         self.timing.frame_to_beat(frame).ok().map(|beat| beat.raw())
@@ -1850,6 +1856,28 @@ impl<T: MidiTiming + ?Sized> hex_lattice::NativeInstrumentClock for InstrumentCl
 #[cfg(test)]
 mod observed_page_tests {
     use super::*;
+    #[test]
+    fn instrument_clock_exposes_nonzero_performance_across_content_loop_positions() {
+        use hex_lattice::NativeInstrumentClock;
+        let project = hex_project::Project::new(48_000).unwrap();
+        let timing = crate::PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
+        let clock = InstrumentClock {
+            timing: &timing,
+            start: 96_000,
+        };
+        assert_eq!(clock.performance_frame_at_offset(256), Some(96_256));
+        assert_eq!(clock.transport_is_running(), Some(true));
+        assert_eq!(clock.arrangement_frame_at_offset(0), None);
+        assert_eq!(
+            clock.beat_at_offset(256),
+            timing.frame_to_beat(96_256).ok().map(|b| b.raw())
+        );
+        let exhausted = InstrumentClock {
+            timing: &timing,
+            start: u64::MAX,
+        };
+        assert_eq!(exhausted.performance_frame_at_offset(1), None);
+    }
     struct NoPages {
         accesses: usize,
     }

@@ -257,6 +257,8 @@ fn silence_advances_pending_impulse_and_epoch_reset_removes_old_content() {
 
 fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
+        performance_frame: index as u64,
+        transport_is_running: index % 3 != 0,
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
