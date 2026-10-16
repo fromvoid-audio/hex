@@ -1,3 +1,13 @@
+## private pitch-envelope math proofs — PR189 / #2327, 16 october 2026
+
+Reviewed the isolated signed normalized linear envelope and checked semitone
+frequency multiplier proofs, imported only by tests. They add no production
+codec/provider/runtime/UI or parameter domain. Source and allocation tests cover
+boundaries, partitions, independent frequency/phase oracles and atomic refusals.
+Final exact-source checks are recorded in PR189; the production pitch-envelope
+feature and native/reference acceptance remain open. Pulse requires
+reauthentication here; no parent completion or ticket update is claimed.
+
 ## retire completed active analytic ramps — 16 october 2026
 
 An existing generic coefficient regression reproduced active transition entries

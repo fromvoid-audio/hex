@@ -55,7 +55,7 @@ single private module under `allocation-probe`. Preparation, frequency queries,
 copy/replacement and refusal must have zero total count/bytes and zero signed
 net count/bytes; existing sensitivity calibration remains required. This is a
 standalone control-math probe, not native callback, lock, deadline or publication
-evidence. Exact source/commands/full local-CI/log digests belong in draft PR189.
+evidence. Exact source/commands/full local-CI/log digests are recorded in PR189.
 
 ## full original issue remains unmet
 

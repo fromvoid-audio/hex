@@ -53,8 +53,9 @@ allocation harness measures total and signed-current counts/bytes across
 preparation, queries, copies and refusals. This is a math probe, not evidence
 of native callback publication or processing.
 
-Strict lint/full exact-source local CI remain required before draft push. HOLD
-prohibits passing Pulse gate/check receipts or readiness registration.
+The focused proof PR requires strict lint/full exact-source local CI before
+source merge under the standing AGENTS.md policy. Source merge does not register
+whole-issue readiness or complete the native pitch-envelope feature.
 
 ## full pitch/filter work remains pending
 
@@ -69,7 +70,7 @@ Do not substitute the amplitude envelope's zero End/exponential law or wire
 this test-only precursor to native controls. Source-codec/provider and
 phase/history/Nyquist admission, complete ownership/budgets, normal history/
 presets, Arrangement/Session/export, allocation/performance and native/reference
-acceptance remain required for full #2327. Filter processing/placement/circuit/
-bypass/tail contracts remain #2326. The mutable host's 10-second declared-tail
+acceptance remain required for full #2327. Current main implements the separate Operator Clean filter; additional circuit
+and reference acceptance remain #2326. The mutable host's 10-second declared-tail
 limit is independent and is not relaxed by the pure 60-second law domain.
 No production integration, native artifact, listening or completion is claimed.
