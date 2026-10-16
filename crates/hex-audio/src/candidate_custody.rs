@@ -83,6 +83,16 @@ struct Execution {
     inputs: Option<OwnedAudioInputs>,
     failed: bool,
     first_panic: Option<Box<dyn Any + Send>>,
+    #[cfg(test)]
+    _probe: Option<ExecutionDropProbe>,
+}
+#[cfg(test)]
+struct ExecutionDropProbe(Box<dyn FnMut() + Send>);
+#[cfg(test)]
+impl Drop for ExecutionDropProbe {
+    fn drop(&mut self) {
+        (self.0)();
+    }
 }
 #[derive(Default)]
 struct Work {
@@ -293,6 +303,7 @@ impl CandidateRoot {
                     returns.pending = true;
                     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
                         returns.first_panic = Some(payload);
+                        self.close();
                         return false;
                     }
                     returns.pending = false;
@@ -370,6 +381,8 @@ impl CandidateRoot {
                             inputs: None,
                             failed: false,
                             first_panic: None,
+                            #[cfg(test)]
+                            _probe: None,
                         });
                         slot.phase = Phase::Cleaning;
                     }
@@ -383,6 +396,7 @@ impl CandidateRoot {
             match catch_unwind(AssertUnwindSafe(|| drop(work.bank_drop.take()))) {
                 Err(payload) => {
                     work.first_panic = Some(payload);
+                    self.close();
                     return;
                 }
                 Ok(()) => work.bank_drop_pending = false,
@@ -401,6 +415,7 @@ impl CandidateRoot {
             return;
         };
         if current.failed {
+            self.close();
             return;
         }
         // No ordinary bank lock is held across provider/destructor/join work.
@@ -432,12 +447,17 @@ impl CandidateRoot {
         let stamp = current.stamp;
         {
             let mut bank = lock(&self.0.bank);
+            if current.failed {
+                bank.closing = true;
+            }
             let Some(slot) = bank.slots.get_mut(stamp.slot) else {
                 current.failed = true;
+                bank.closing = true;
                 return;
             };
             if slot.incarnation != stamp.incarnation || slot.identity != Some(stamp.owner) {
                 current.failed = true;
+                bank.closing = true;
                 return;
             }
             if current.failed {
@@ -449,6 +469,7 @@ impl CandidateRoot {
             if slot.ready.is_some() || current.inputs.is_none() || current.disposed.is_none() {
                 current.failed = true;
                 slot.phase = Phase::Failed;
+                bank.closing = true;
                 return;
             }
             if let (Some(inputs), Some(disposed)) = (current.inputs.take(), current.disposed.take())
@@ -463,6 +484,7 @@ impl CandidateRoot {
         match catch_unwind(AssertUnwindSafe(|| drop(work.current.take()))) {
             Err(payload) => {
                 work.first_panic = Some(payload);
+                self.close();
                 return;
             }
             Ok(()) => work.metadata_drop_pending = false,
@@ -624,6 +646,77 @@ pub struct AudioCandidateCustodyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn actual_failed_metadata_disposal_closes_new_staging_and_preserves_refused_inputs() {
+        let Some(owner) = crate::prepared::candidate_tests::candidate() else {
+            return;
+        };
+        let root = CandidateRoot::new(2).unwrap();
+        let (queued, ticket) = root
+            .stage(owner, vec![], Ok::<_, QueuedCandidate>)
+            .ok()
+            .unwrap();
+        root.ingest(queued.reject_before_install()).ok().unwrap();
+        let drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = drops.clone();
+        {
+            // Secure the actual returned constructor owners in the same
+            // persistent execution slot, with a nested destructor fault.
+            let mut work = lock(&root.0.execution);
+            let mut bank = lock(&root.0.bank);
+            let slot = &mut bank.slots[ticket.stamp.slot];
+            let returned = slot.returned.take().unwrap();
+            let catalog = slot.catalog.take().unwrap();
+            work.current = Some(Execution {
+                stamp: returned.stamp,
+                owner: returned.owner,
+                catalog,
+                disposed: None,
+                inputs: None,
+                failed: false,
+                first_panic: None,
+                _probe: Some(ExecutionDropProbe(Box::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    std::panic::panic_any("actual execution metadata destructor");
+                }))),
+            });
+            slot.phase = Phase::Cleaning;
+        }
+        root.advance_on_control();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(root.recover(&ticket).is_none());
+        assert!(lock(&root.0.bank).slots[ticket.stamp.slot].ready.is_some());
+        let first = lock(&root.0.execution)
+            .first_panic
+            .as_ref()
+            .unwrap()
+            .as_ref() as *const dyn Any as *const ();
+        root.advance_on_control();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lock(&root.0.execution)
+                .first_panic
+                .as_ref()
+                .unwrap()
+                .as_ref() as *const dyn Any as *const (),
+            first
+        );
+        let next = crate::prepared::candidate_tests::candidate().unwrap();
+        let identity = next.identity();
+        let domains = Vec::with_capacity(3);
+        let pointer = domains.as_ptr();
+        let refused = root
+            .stage(next, domains, Ok::<_, QueuedCandidate>)
+            .err()
+            .unwrap();
+        assert_eq!(refused.owner.identity(), identity);
+        assert_eq!(refused.domains.capacity(), 3);
+        assert_eq!(refused.domains.as_ptr(), pointer);
+        assert_eq!(root.report().occupied_slots, 1);
+        // Explicit control-side test teardown; production retains failed custody.
+        drop(refused);
+        drop(root);
+    }
     #[test]
     fn pressured_job_idle_ingest_and_retirement_order_keep_owners_and_ui_poll_moves_only_ready() {
         let Some(owner) = crate::prepared::candidate_tests::candidate() else {

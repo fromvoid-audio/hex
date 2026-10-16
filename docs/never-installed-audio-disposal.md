@@ -61,8 +61,10 @@ The old public consuming `StreamControl::shutdown` behavior is unchanged.
 
 Every potentially destructive frontier records Pending before taking the owner.
 Control-side catches retain the first payload and remaining custody; failed
-frontiers are never retried or treated as closure. Slots/domain occupancy remain
-charged until normal cleanup. A live Control polls a READY original bank/receipt; recovery itself only moves
+frontiers are never retried or treated as closure. An irreversible cleanup
+failure also closes further staging in that root, returning new inputs unchanged;
+already accepted owners remain retained. Busy external leases do not close it.
+Slots/domain occupancy remain charged until normal cleanup. A live Control polls a READY original bank/receipt; recovery itself only moves
 those values under a nonblocking bank lock. Original-bank extraction and empty
 Execution metadata destruction finish on lifecycle before READY is published.
 Control abandonment instead lets lifecycle destroy that bank normally, with
