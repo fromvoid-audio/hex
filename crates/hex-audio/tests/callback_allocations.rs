@@ -3138,3 +3138,90 @@ fn mutable_arrangement_transport_loop_callback_is_allocation_and_deallocation_fr
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn mutable_arrangement_source_and_transport_loops_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let track = match editor.execute(Command::AddMidiTrack {
+        name: "combined loop".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected MIDI track".into()),
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected default instrument slot")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let clip = match editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(5)?,
+    })? {
+        Created::Clip(clip) => clip,
+        _ => return Err("expected Arrangement MIDI clip".into()),
+    };
+    editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_ratio(3, 2)?,
+        duration: BeatTime::from_quarters(2)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?;
+    editor.execute(Command::SetMidiClipSource {
+        clip,
+        source_length: BeatTime::from_quarters(5)?,
+        source_start: BeatTime::from_ratio(1, 2)?,
+        loop_start: BeatTime::from_quarters(1)?,
+        loop_end: BeatTime::from_quarters(2)?,
+        looping: true,
+        length: BeatTime::from_quarters(5)?,
+    })?;
+    editor.execute(Command::SetLoopRegion {
+        start: 30_000,
+        end: 78_000,
+        enabled: true,
+    })?;
+
+    let graph = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &BTreeMap::new(),
+        Arc::new(SineTable::new()),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(graph)?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial combined-loop publication failed")?;
+    control
+        .session_command_with_ticket(SessionPlaybackCommand::Play)
+        .map_err(|_| "combined-loop Play admission failed")?;
+
+    let mut output = [[0.0; 2]; 128];
+    let mut heard_note = false;
+    // 210,000 frames cross the initial pass and three transport-loop wraps.
+    for _ in 0..1_641 {
+        measured_block(&mut callback, &mut output);
+        heard_note |= output.iter().any(|frame| frame[0] != 0.0);
+    }
+    assert!(
+        heard_note,
+        "combined loop fixture rendered no instrument audio"
+    );
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}

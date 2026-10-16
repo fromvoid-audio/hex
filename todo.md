@@ -1,3 +1,17 @@
+## combined mutable loop acceptance — #2165 / PR251, 16 october 2026
+
+Source-loop PR98/#2214 and transport-loop PR100/#2215 remain the original
+implementations with their recorded finite native acceptance. The parent adds
+the missing combined-path regression: independently expanded linear PCM across
+repeated wraps, separate source-iteration/transport-pass identities, exclusive
+gate clamping and loop-start chase, compatible revision handoff, and callback
+allocation/deallocation measurement with both loops enabled. The contract and
+remaining seek/export/native limits are in
+[mutable transport loops](docs/mutable-transport-loops.md).
+
+Exact-source local validation is recorded with PR251. This adds no runtime or UI
+behavior and makes no new listening, physical deadline or Live parity claim.
+
 ## native host conversion commitment — #2453 / PR192, 16 october 2026
 
 The focused current-main fix validates final host channel/sample conversion
