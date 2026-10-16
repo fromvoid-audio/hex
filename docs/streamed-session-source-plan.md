@@ -133,3 +133,16 @@ Disabling the native rate guard or dropping the first worker panic payload makes
 the focused controls fail. This remains a staged source checkpoint: Session
 sink/facade/UI integration, final repository CI and native listening/UI acceptance
 are still outstanding.
+
+## Worker connection checkpoint
+
+The existing native lifecycle open lane can now return a four-terminal worker
+output to the Session worker. The UI does not receive that output. The neutral
+`WorkerAudioSink` constructor negotiates the device rate before canonical Session
+startup; an explicit device failure keeps offline editing and saving usable.
+Canonical generation/revision notification precedes event-queue backpressure,
+and native progress continues while event delivery is full or requests are idle.
+Closing Service signals the worker; its adapter close runs there without a UI
+join. This source checkpoint provides the connection seam and headless controls;
+the desktop adapter, mode selectors and live publication integration remain
+outstanding. It is not final repository CI or native listening acceptance.

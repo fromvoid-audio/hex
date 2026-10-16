@@ -2,7 +2,10 @@ mod device;
 mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerPreparedOutput};
-pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
+pub use lifecycle::{
+    RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen, request_initial_open,
+    request_recovery_open, request_worker_open,
+};
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;

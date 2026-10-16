@@ -250,3 +250,12 @@ Verified-mode events never return legacy Playback, even for empty revisions.
 Waveform availability is explicit, and unsupported offline export is refused.
 See [canonical source plan](../../docs/streamed-session-source-plan.md) for source
 limits, history, semantic epochs, retained paths and remaining native composition.
+
+The optional `WorkerAudioSink` is a neutral desktop-injected boundary, not an
+audio dependency. The existing Session worker initializes it before constructing
+the canonical Session at the negotiated device rate. A failed open explicitly
+keeps offline editing/saving at 48000 Hz. Canonical source snapshots are shared
+without copying their source-plan maps; the sink observes generation changes
+before the corresponding event can wait for UI delivery. Idle request waits and
+full event delivery continue bounded sink polling, and ordinary worker exit calls
+its idempotent close. Default constructors retain the existing Resident path.

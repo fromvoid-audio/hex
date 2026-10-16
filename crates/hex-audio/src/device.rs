@@ -63,7 +63,7 @@ impl WorkerPreparedOutput {
         Some(client)
     }
 }
-struct Opened {
+pub(crate) struct Opened {
     stream: lifecycle::StreamOwner,
     legacy: Option<prepared::Control>,
     publication: Option<prepared::WorkerControl>,
@@ -74,7 +74,7 @@ struct Opened {
     spectrum_error: Option<String>,
 }
 impl Opened {
-    fn into_legacy(self) -> Result<PreparedOutput, String> {
+    pub(crate) fn into_legacy(self) -> Result<PreparedOutput, String> {
         Ok(PreparedOutput {
             _stream: self.stream,
             control: self.legacy.ok_or("legacy audio endpoint unavailable")?,
@@ -84,7 +84,7 @@ impl Opened {
             spectrum_error: self.spectrum_error,
         })
     }
-    fn into_worker(self) -> Result<WorkerPreparedOutput, String> {
+    pub(crate) fn into_worker(self) -> Result<WorkerPreparedOutput, String> {
         Ok(WorkerPreparedOutput {
             _stream: self.stream,
             publication: self
@@ -97,7 +97,7 @@ impl Opened {
         })
     }
 }
-fn open_prepared(
+pub(crate) fn open_prepared(
     expected_sample_rate: Option<u32>,
     lease: lifecycle::Lease,
     worker: bool,

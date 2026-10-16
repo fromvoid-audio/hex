@@ -14,7 +14,10 @@ use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 #[cfg(test)]
 mod audio_batch_tests;
+mod audio_sink;
 mod canonical_audio_source;
+pub use audio_sink::WorkerAudioSink;
+use audio_sink::WorkerEvents;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -57,7 +60,7 @@ pub struct AudioClipWaveform {
 pub struct ViewState {
     /// Present only for a canonical worker snapshot. Preview views cannot mint
     /// source freshness for streamed constructor publication.
-    pub canonical_audio_source: Option<CanonicalAudioSourceSnapshot>,
+    pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
@@ -538,6 +541,28 @@ impl Service {
         )
     }
 
+    /// Compose the desktop audio adapter without opening a device on the caller.
+    /// The existing worker negotiates the actual rate before creating Session;
+    /// failed output setup retains canonical editing/saving in offline mode.
+    pub fn with_audio_sink(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        audio: Box<dyn WorkerAudioSink>,
+    ) -> Result<Self, ServiceError> {
+        Self::start_with_audio(
+            48_000,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
+                    .map_err(|error| error.to_string().to_lowercase())
+            }),
+            Some(audio),
+        )
+    }
+
     fn with_exporter_and_recovery(
         sample_rate: u32,
         history_capacity: usize,
@@ -545,10 +570,34 @@ impl Service {
         recovery: Option<PathBuf>,
         exporter: Exporter,
     ) -> Result<Self, ServiceError> {
+        Self::start_with_audio(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            exporter,
+            None,
+        )
+    }
+
+    fn start_with_audio(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        exporter: Exporter,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+    ) -> Result<Self, ServiceError> {
         let shutdown = Arc::new(AtomicBool::new(false));
-        let session = Session::new(sample_rate, history_capacity, max_resident_frames)
-            .map_err(ServiceError::Session)?
-            .with_shutdown(Arc::clone(&shutdown));
+        let session = if audio.is_none() {
+            Some(
+                Session::new(sample_rate, history_capacity, max_resident_frames)
+                    .map_err(ServiceError::Session)?
+                    .with_shutdown(Arc::clone(&shutdown)),
+            )
+        } else {
+            None
+        };
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
@@ -561,14 +610,33 @@ impl Service {
             .stack_size(8 * 1024 * 1024)
             .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
             .map_err(ServiceError::Worker)?;
+        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             .spawn(move || {
+                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
+                let session = match session {
+                    Some(session) => session,
+                    None => {
+                        let (rate, error) = match events.initialize() {
+                            Ok(rate) => (rate, None),
+                            Err(error) => (48_000, Some(error)),
+                        };
+                        let Ok(session) = Session::new(rate, history_capacity, max_resident_frames)
+                        else {
+                            return;
+                        };
+                        if let Some(error) = error {
+                            events.startup_failed(error);
+                        }
+                        session.with_shutdown(worker_shutdown)
+                    }
+                };
                 run_worker(
                     session,
                     history_capacity,
                     request_rx,
-                    event_tx,
+                    events,
                     export_work_tx,
                     actor_export_events,
                     recovery,
@@ -709,12 +777,12 @@ fn view_state(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
-        canonical_audio_source: Some(CanonicalAudioSourceSnapshot::capture(
+        canonical_audio_source: Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
             &project,
             project_generation,
             revision,
             session,
-        )),
+        ))),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
@@ -814,15 +882,11 @@ fn native_playback(prepared: Arc<PreparedRevision>) -> Playback {
     }
 }
 
-fn send_event(sender: &SyncSender<Event>, event: Event) -> bool {
-    sender.send(event).is_ok()
-}
-
 fn run_worker(
     mut session: Session,
     history_capacity: usize,
     requests: Receiver<Request>,
-    events: SyncSender<Event>,
+    mut events: WorkerEvents,
     export_work: SyncSender<ExportWork>,
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
@@ -847,7 +911,7 @@ fn run_worker(
     );
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut device_gesture = GestureMachine::default();
-    let initial = match compile(&session, None) {
+    let mut initial = match compile(&session, None) {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
             state = view_state(
@@ -903,11 +967,15 @@ fn run_worker(
             active_device_gesture: None,
         },
     };
-    if !send_event(&events, initial) {
+    let audio_error = events.take_startup_error();
+    if audio_error.is_some() && initial.error.is_none() {
+        initial.error = audio_error;
+    }
+    if !events.send(initial) {
         return;
     }
 
-    while let Ok(request) = requests.recv() {
+    while let Some(request) = events.next_request(&requests) {
         let mut computer_keyboard_complete = None;
         let mut computer_keyboard_playback = None;
         let mut audio_batch_complete = None;
@@ -2040,30 +2108,27 @@ fn run_worker(
         } else {
             restore_prepared.map(native_playback)
         };
-        if !send_event(
-            &events,
-            Event {
-                state: Arc::clone(&state),
-                playback,
-                status,
-                error,
-                request_complete: true,
-                computer_keyboard_complete,
-                audio_batch_complete,
-                save_complete,
-                open_complete,
-                project_replaced,
-                stopped_playback_restore_complete,
-                created,
-                duplicate_complete,
-                restore_complete,
-                device_preview,
-                gesture_ack,
-                gesture_protocol_ack,
-                gesture_request,
-                active_device_gesture: device_gesture.snapshot(),
-            },
-        ) {
+        if !events.send(Event {
+            state: Arc::clone(&state),
+            playback,
+            status,
+            error,
+            request_complete: true,
+            computer_keyboard_complete,
+            audio_batch_complete,
+            save_complete,
+            open_complete,
+            project_replaced,
+            stopped_playback_restore_complete,
+            created,
+            duplicate_complete,
+            restore_complete,
+            device_preview,
+            gesture_ack,
+            gesture_protocol_ack,
+            gesture_request,
+            active_device_gesture: device_gesture.snapshot(),
+        }) {
             return;
         }
         if let Some(job) = export_job {

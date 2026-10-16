@@ -3671,3 +3671,9 @@ same-owner device/context refusal, with zero total/net callback probes. A narrow
 negative control reproduces premature speculative repin. Final source evidence
 and exact full local CI are recorded externally; PR239 UI composition and original
 #24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.
+
+- PR #239 worker-connection checkpoint: one existing lifecycle open lane selects
+  legacy or worker-owned completion. Neutral Session sink negotiates before
+  canonical startup, polls through event backpressure, and closes on worker exit.
+  Focused negotiated-rate/offline/editing/backpressure/close controls and existing
+  Session suites pass; desktop/native publication and mode UI remain open.
