@@ -1,3 +1,23 @@
+## semantic device theme roles — pulse2471 / PR206, 16 october 2026
+
+`hex-ui::theme::device_style` now resolves common Control/Layout/Display/Readout
+roles from the active product palette. Operator shell/section/display neutrals,
+focus/dial rail and inline readouts no longer use fixed neutral colors or a
+device-ID appearance fork. Stable oscillator a/b/c/d colors are centralized as
+musical identity cues with readable badge foregrounds. Geometry, focus/tab
+ownership, parameter laws/IDs, DSP, schema and selection policy are unchanged.
+
+Retained preview numerics/toggles, EQ audition and return-send numerics refresh
+style alongside canonical controls and retained response graphs/popups, without
+replacing entities or active drafts. New contrasting-palette source/scene tests
+cover readable semantic roles, active canonical/preview draft and focus
+preservation, open selector popup and retained preview-toggle refresh. All 86
+device-panel tests, the focused theme tests, formatting and source guards pass.
+Suppressing the two preview style refresh calls makes both new regressions fail;
+the calls were restored before the passing run. Full exact-source local CI,
+merge and optimized stable-path delivery follow on the final candidate. Optional native
+appearance/input acceptance remains separate.
+
 ## shared device layout primitives — pulse2470 / PR205, 16 october 2026
 
 `hex-widgets` now supplies composable frame/header/body, rounded semantic sections,

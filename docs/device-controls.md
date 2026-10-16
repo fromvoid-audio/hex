@@ -53,8 +53,11 @@ All instrument, effect and Return frames use one 14px header, 3px horizontal
 header inset, 2px header gap, 4px outer radius and 1px border. Idle header/surround
 share the injected surface without a dark separating rule. Production dispatch
 selects musical panel content and useful widths, never header density or style.
-One product-owned neutral layout palette preserves the accepted Vector hierarchy;
-widgets receive colors through ControlStyle and have no device identities.
+One product-owned semantic resolver in `hex-ui/src/theme/device.rs` derives the
+layout, control, recessed-display and inline-readout palettes from the active
+four-color theme. The layout role gives idle headers and surrounds the same
+surface; rail and display roles retain the accepted Vector hierarchy. Widgets
+receive colors through ControlStyle and have no device identities.
 Frame selection still transforms only its supplied palette; bodies/controls
 receive the unselected layout/control palettes independently.
 
