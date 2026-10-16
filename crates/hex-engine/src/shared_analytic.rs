@@ -249,6 +249,26 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// Exhaustive audited empty-table payload check for the opt-in compiler.
+    /// Vec headers belong to this outer payload; nonzero spare capacities or
+    /// nested handles are unsupported rather than assumed free/complete.
+    pub(crate) fn require_empty_owned_storage(&self) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            owners,
+            ids,
+            payload_bytes,
+        } = self;
+        if !owners.is_empty()
+            || owners.capacity() != 0
+            || !ids.is_empty()
+            || ids.capacity() != 0
+            || *payload_bytes != 0
+        {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        Ok(())
+    }
+
     pub(crate) fn empty() -> Arc<Self> {
         Arc::new(Self::default())
     }

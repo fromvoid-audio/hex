@@ -132,6 +132,16 @@ impl PreparedAnalyticNote {
     }
 }
 
+/// Control-side declaration of the entire exclusively owned provider pointee
+/// and nested heap payload. This is not allocator/RSS measurement or a DSP
+/// runtime declaration. Shared, Weak, or opaque children require Unknown.
+/// Static program storage is outside graph ownership and must be documented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedStorageDeclaration {
+    Unknown,
+    ExclusiveOnly { bytes: usize },
+}
+
 /// Immutable sample-rate-specific instrument configuration prepared on the
 /// control side. Note samplers are compact copyable values so release tails can
 /// retain their exact source law without callback allocation or final drops.

@@ -37,10 +37,10 @@ impl SessionPlayback {
     }
     pub(crate) fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {
         if self.linear_arrangement_export
-            || !self
+            || self
                 .revision
                 .gain_recording_track()
-                .is_some_and(|id| id.value() == track)
+                .is_none_or(|id| id.value() != track)
         {
             return None;
         }

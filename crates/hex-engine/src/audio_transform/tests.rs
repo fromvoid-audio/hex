@@ -729,3 +729,26 @@ fn projected_fade_samples_match_prepared_pcm_after_crop_and_tempo_change() {
         edit.domain.fade.gain_at(7_200)
     );
 }
+
+#[test]
+fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
+    let budget = Arc::new(budget::Budget::new(1024));
+    let reservation = budget.reserve(64).unwrap();
+    let mut audio = Audio::from_derived(48_000, vec![[0.0; 2]; 8], reservation).unwrap();
+    // Even a deliberately forged test receipt cannot relabel a derived owner.
+    audio.pcm_arc_receipt = crate::pcm_arc::PcmArcReceipt::current(
+        audio.frames.values.len(),
+        audio.frames.values.capacity(),
+    );
+    let source = crate::OwnedAudioSource {
+        kind: crate::audio_only_inputs::SourceKind::Resident(audio),
+        handle: crate::audio_only_inputs::handle().unwrap(),
+    };
+    assert_eq!(
+        crate::audio_input_storage::parts(&source),
+        Err(crate::AudioStorageError::UnknownStorage)
+    );
+    assert_eq!(budget.used(), 64);
+    drop(source);
+    assert_eq!(budget.used(), 0);
+}
