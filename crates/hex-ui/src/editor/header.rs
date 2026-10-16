@@ -150,15 +150,6 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
 }
 
-pub(super) fn loading_toolbar(message: &str) -> Stateful<Div> {
-    toolbar_row().justify_center().child(
-        div()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .child(theme::text(message)),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::project_title;
@@ -243,9 +234,12 @@ mod ui_tests {
             let current = view.state.as_ref().expect("fixture state");
             let filename = format!("{}.HEX", "Long Project Name ".repeat(30));
             view.state = Some(Arc::new(hex_session::service::ViewState {
+                canonical_audio_source: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: current.timeline_frames,
                 can_undo: false,
                 can_redo: false,

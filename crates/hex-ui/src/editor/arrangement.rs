@@ -4,8 +4,8 @@ use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
-    Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
-    Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
+    Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
 };
 
 impl EditorView {
@@ -96,8 +96,8 @@ impl EditorView {
         self.arrangement_pan.take().is_some()
     }
 
-    pub(super) fn arrangement(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state() else {
+    pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let Some(state) = self.state.as_ref().cloned() else {
             let viewport = Viewport {
                 start: 0,
                 length: 1,
@@ -128,7 +128,7 @@ impl EditorView {
                 ruler_width,
             );
             let overview = super::overview::widget(
-                super::overview::cached(&self.overview_cache, self.project_generation, state),
+                super::overview::cached(&self.overview_cache, self.project_generation, &state),
                 empty_viewport,
                 cx.entity(),
             );
@@ -139,10 +139,10 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .children([overview])
-                .child(self.ruler(state, ruler_width, cx))
+                .child(self.ruler(&state, ruler_width, cx))
                 .child(super::loop_rail::view(
                     self,
-                    state,
+                    &state,
                     empty_viewport,
                     &grid,
                     cx,
@@ -178,7 +178,7 @@ impl EditorView {
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
         let bands = super::musical_time::adaptive_grid_bands(&state.project, viewport, ruler_width);
         let overview = super::overview::widget(
-            super::overview::cached(&self.overview_cache, self.project_generation, state),
+            super::overview::cached(&self.overview_cache, self.project_generation, &state),
             viewport,
             cx.entity(),
         );
@@ -253,9 +253,16 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .children([overview])
-            .child(self.ruler(state, ruler_width, cx))
-            .child(super::loop_rail::view(self, state, viewport, &grid, cx))
-            .children([self.arrangement_body(content, cx)]);
+            .child(self.ruler(&state, ruler_width, cx))
+            .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
+            .children([self.arrangement_body(content, cx)])
+            .children(super::gain_lane::view(
+                self,
+                &state,
+                viewport,
+                ruler_width,
+                cx,
+            ));
         let main = self.main_track_row(viewport, &bands, &grid, cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)
@@ -389,7 +396,7 @@ impl EditorView {
                         }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
-                        let started = cursor_down_entity.update(cx, |view, _| {
+                        let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
                             let move_started = view.begin_main_time_range_move_gesture(x, y)
                                 || view.begin_time_range_move_gesture(x, y);
                             let started = if move_started {
@@ -408,13 +415,18 @@ impl EditorView {
                             };
                             if started {
                                 view.focus.focus(window);
+                                if !move_started {
+                                    cx.notify();
+                                }
                             }
-                            started
+                            (started, move_started)
                         });
                         if started {
-                            // Selection handles own the gesture even when a clip is underneath.
+                            // Selection updates invalidate the live owner/overlays only.
                             cx.stop_propagation();
-                            window.refresh();
+                            if moving {
+                                window.refresh();
+                            }
                         }
                     });
                     let cursor_move_entity = measure_entity.clone();
@@ -424,17 +436,25 @@ impl EditorView {
                         }
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
-                        let changed = cursor_move_entity.update(cx, |view, _| {
-                            view.update_time_range_move_gesture(x, y, event.modifiers.platform)
-                                || view.update_time_selection_gesture(
-                                    x,
-                                    y,
-                                    event.modifiers.platform,
-                                )
+                        let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                            let moving = view.time_range_move_gesture.is_some();
+                            let changed =
+                                view.update_time_range_move_gesture(x, y, event.modifiers.platform)
+                                    || view.update_time_selection_gesture(
+                                        x,
+                                        y,
+                                        event.modifiers.platform,
+                                    );
+                            if changed && !moving {
+                                cx.notify();
+                            }
+                            (changed, moving)
                         });
                         if changed {
                             cx.stop_propagation();
-                            window.refresh();
+                            if moving {
+                                window.refresh();
+                            }
                         }
                     });
                     let cursor_up_entity = measure_entity.clone();
@@ -442,7 +462,8 @@ impl EditorView {
                         if !phase.capture() || event.button != MouseButton::Left {
                             return;
                         }
-                        let finished = cursor_up_entity.update(cx, |view, _| {
+                        let (finished, moving) = cursor_up_entity.update(cx, |view, cx| {
+                            let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
                             view.refresh_time_gesture_modifiers(
@@ -456,10 +477,14 @@ impl EditorView {
                                         y,
                                         event.modifiers.platform,
                                     );
-                            view.finish_time_range_move_gesture()
-                                || view.finish_time_selection_gesture()
+                            let finished = view.finish_time_range_move_gesture()
+                                || view.finish_time_selection_gesture();
+                            if finished && !moving {
+                                cx.notify();
+                            }
+                            (finished, moving)
                         });
-                        if finished {
+                        if finished && moving {
                             window.refresh();
                         }
                     });
@@ -468,6 +493,7 @@ impl EditorView {
             .absolute()
             .inset_0(),
         );
+        body = body.children(self.arrangement_device_drop_preview());
         let insertion_line_y = if self
             .state()
             .is_some_and(|state| state.project.tracks().is_empty())
@@ -487,7 +513,7 @@ impl EditorView {
         };
         if let Some(line_y) = insertion_line_y {
             if let Some(bounds) = self.arrangement_bounds {
-                let relative_y = line_y - bounds.top - 1.0;
+                let relative_y = line_y - bounds.top;
                 if relative_y.is_finite() && relative_y >= 0.0 && relative_y < bounds.height {
                     body = body.child(
                         div()
@@ -496,7 +522,7 @@ impl EditorView {
                             .absolute()
                             .left_0()
                             .right_0()
-                            .top(px(relative_y))
+                            .top(px((relative_y - 1.0).max(0.0)))
                             .h(px(2.0))
                             .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                     );
@@ -515,6 +541,7 @@ impl EditorView {
     ) -> Div {
         let entity = cx.entity();
         let clip_entity = entity.clone();
+        let device_entity = entity.clone();
         div()
             .flex_1()
             .min_h_0()
@@ -523,6 +550,31 @@ impl EditorView {
             .child(upper.flex_1().min_h_0())
             .child(returns)
             .child(main)
+            .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
+                let Some(payload) = event
+                    .dragged_item()
+                    .downcast_ref::<super::drag::NativeDeviceDrag>()
+                else {
+                    return;
+                };
+                let pointer = event.event.position;
+                device_entity.update(cx, |view, cx| {
+                    view.update_arrangement_device_drop(
+                        payload,
+                        f32::from(pointer.x),
+                        f32::from(pointer.y),
+                    );
+                    cx.notify();
+                });
+            })
+            .on_drop(cx.listener(
+                |view, payload: &super::drag::NativeDeviceDrag, window, cx| {
+                    view.drop_arrangement_device(payload, window, cx);
+                },
+            ))
+            .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
+                view.drop_external_audio_paths(paths.paths(), window, cx);
+            }))
             .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
                     return;
@@ -678,7 +730,7 @@ impl EditorView {
             .cursor_pointer()
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
-                    description: "seek to position".into(),
+                    description: "drag to seek".into(),
                 })
                 .into()
             })
@@ -686,27 +738,57 @@ impl EditorView {
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
+                    entity.update(_cx, |view, _| view.update_scrub_geometry(bounds));
                     let mouse_entity = entity.clone();
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.bubble()
                             || event.button != MouseButton::Left
                             || !bounds.contains(&event.position)
                         {
                             return;
                         }
-                        let Some(frame) = super::seek::pointer_to_frame(
-                            f32::from(event.position.x),
-                            f32::from(bounds.origin.x),
-                            f32::from(bounds.size.width),
-                            seek_viewport,
-                        ) else {
-                            return;
-                        };
-                        mouse_entity.update(cx, |view, _| {
-                            if view.context_menu.is_none() {
-                                view.request_seek(frame);
+                        let started = mouse_entity.update(cx, |view, _| {
+                            if view.begin_scrub(f32::from(event.position.x), seek_viewport, bounds)
+                            {
+                                view.focus.focus(window);
+                                true
+                            } else {
+                                false
                             }
                         });
+                        if started {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                    let move_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if !phase.capture() {
+                            return;
+                        }
+                        let changed = move_entity.update(cx, |view, _| {
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                view.update_scrub(f32::from(event.position.x), false)
+                            } else {
+                                view.lose_scrub_pointer()
+                            }
+                        });
+                        if changed {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
+                    });
+                    let up_entity = entity.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                        if !phase.capture() || event.button != MouseButton::Left {
+                            return;
+                        }
+                        if up_entity.update(cx, |view, _| {
+                            view.update_scrub(f32::from(event.position.x), true)
+                        }) {
+                            cx.stop_propagation();
+                            window.refresh();
+                        }
                     });
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {

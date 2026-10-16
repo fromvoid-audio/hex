@@ -1,9 +1,28 @@
 mod device;
 mod render_fault;
-pub use device::PreparedOutput;
-pub use lifecycle::{RecoveryOpen, RecoveryOpenError, request_initial_open, request_recovery_open};
+pub mod sample_preview;
+pub use device::{PreparedOutput, WorkerPreparedOutput};
+pub use lifecycle::{
+    RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen, request_initial_open,
+    request_recovery_open, request_worker_open,
+};
 pub use render_fault::RenderFaultSnapshot;
+mod candidate_catalog;
+mod candidate_custody;
+pub mod gain_recording;
 mod lifecycle;
+mod native_callback_owner;
+pub use candidate_catalog::CandidateDomain;
+pub use candidate_custody::{
+    AudioCandidateCancellationResult, AudioCandidateCustodyReport,
+    AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
+    AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainStartError,
+    AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
+    AudioCandidatePublicationReservation, AudioCandidateRecovery, AudioCandidateReturnKind,
+    AudioCandidateStageRefusal, AudioCandidateTicket,
+};
 pub mod processor_audition;
 pub mod spectrum;
 pub mod spectrum_target;
@@ -183,3 +202,7 @@ mod tests {
 }
 
 pub mod prepared;
+
+/// Instrumented constructor-only fixture; no physical device/CPAL evidence.
+#[cfg(feature = "allocation-probe")]
+pub mod worker_fixture;

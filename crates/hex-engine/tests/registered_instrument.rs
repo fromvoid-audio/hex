@@ -76,6 +76,10 @@ impl NativeInstrumentDefinition for ConstantDefinition {
     }
 }
 impl PreparedNativeInstrument for ConstantPrepared {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, DeviceContractError> {
         let mut payload = [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS];
         payload[0] = u64::from(self.stereo[0].to_bits());

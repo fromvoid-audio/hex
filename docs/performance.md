@@ -1,3 +1,96 @@
+## project-wide selection feedback — 17 october 2026
+
+Optimized candidate `17ce787dc7ef892b8d9876f811d70663ca2b4f68` passed all 20
+local CI steps and the unchanged native 360-row 1/100-track protocol, with zero
+failures (320 measured, 40 warmup). The original 100-track selection median was
+32.461–32.746 ms. The fixed candidate measures:
+
+| 100-track case | median ms | p95 ms | maximum ms |
+| --- | ---: | ---: | ---: |
+| copy | 4.742 | 6.208 | 7.153 |
+| cut | 4.789 | 6.991 | 9.232 |
+| replace-paste | 4.723 | 9.466 | 9.847 |
+| ripple-insert | 4.937 | 6.948 | 9.564 |
+
+All 160 measured 100-track selections are below the 16.67 ms paint budget in this
+capture. Cached clip scenes preserve live selection overlays; PR267 removes a
+redundant geometry-key invalidation after prepaint. The cold-frame regression
+fails before the fix and passes afterward without additional settling.
+[All six metrics, 1-track comparison, raw rows, failed intermediate run and provenance](evidence/time-selection-2026-10-17/report.md).
+Same fixtures and native harness; PR263 intentionally corrects the main-lane
+selection endpoint. Synthetic in-process input, offline audio, uncontrolled host
+load and native paint/following-frame bounds do not establish physical display,
+GPU or audio deadlines. No outliers were removed.
+
+## Project-wide selection — 16 October 2026
+
+The optimized native 1/100-track mixed audio/MIDI capture completed360rows
+(320measured, zero failures). Median selection paint was6.97–7.08ms versus
+32.46–32.75ms; UI-observed copy/cut/replace-paste/ripple-insert completion was
+28.03–35.25ms versus62.31–76.30ms.
+[Full distributions, raw data, exact-source provenance and limitations](evidence/time-selection-2026-10-16/report.md).
+Uncontrolled desktop load, synthetic in-process native dispatch, offline audio;
+no physical display/audio deadline or subjective smoothness claim.
+
+## PR164 capture prefix clearing — 15 October 2026
+
+A release-mode headless comparison on Linux x86_64, AMD EPYC 9V74 (five exposed
+CPUs), Rust1.94 measures two selected outputs (one track and one Return), 48kHz,
+256-frame blocks and 16,384-frame borrowed slices. Each process warms 200 blocks
+and times 3,000 render calls with `Instant`; preparation, sample inspection and
+sorting stay outside timing. The existing capture audio fixture supplies two
+tracks and shared Return routing; its finite clips finish during warmup, so this
+primarily measures silent-block overhead. One process per variant, uncontrolled
+host load, no concurrent Cargo. Only success-path clearing differs.
+
+| Clearing | p50 µs | p99 µs | max µs |
+| --- | ---: | ---: | ---: |
+| full supplied slices | 6.169 | 30.426 | 1162.093 |
+| rendered prefix | 3.816 | 14.171 | 288.876 |
+
+Clear writes fall from 32,768 to 512 stereo frames per call for this selection.
+This is a short throughput comparison, not sustained/native deadline evidence.
+Reproducer (temporarily appended to `session_playback/capture_tests.rs`) and raw
+logs: `artifacts/pr164-review/capture-prefix-microbenchmark.rs` and
+`capture-benchmark-{before,after}.log`. Command:
+`cargo test --release -p hex-engine --lib capture_prefix_microbenchmark -- --nocapture`.
+The temporary benchmark was removed after measurement; deterministic prefix and
+refusal regression coverage remains in the normal suite.
+
+## variable-size instrument state admission — 15 October 2026
+
+Pulse2589/[PR242](https://github.com/PORTALSURFER/hex/pull/242) removes the
+effect-derived 4 KiB instrument-twin ceiling while preserving the 2 MiB combined
+active DSP-pair and independently retained-tail budgets. Device DSP and voice
+counts are unchanged. This is memory admission policy, not an optimization or
+an Ableton allocation claim. Device-specific processing/timing acceptance remains
+required when a larger implementation is registered.
+
+An optimized Rust1.94.0 test probe on Linux x86_64, AMD EPYC9V74 (five visible
+vCPUs, shared cloud host), measures actual owned test-runtime buffers. Each size
+has100 control constructions of the complete pair and host ledgers, with final
+destruction outside timing. Copy measurements use100 warmups and1000 timed
+`begin_block` plus alternating commit/rollback operations; the fixture has no
+active notes. Storage construction and timing-vector allocation are outside
+copy timing. Results in nanoseconds, with scheduling outliers retained:
+
+| bytes per twin | pair bytes | construction p50 / p99 / max | copy + commit/rollback p50 / p99 / max |
+| ---: | ---: | ---: | ---: |
+| 1056 | 2112 | 250 / 12499 / 12499 | 40 / 60 / 70 |
+| 5120 | 10240 | 351 / 1623 / 1623 | 80 / 111 / 32128 |
+| 32768 | 65536 | 882 / 6891 / 6891 | 610 / 831 / 22584 |
+| 1048576 | 2097152 | 21582 / 468266 / 468266 | 21913 / 62234 / 140492 |
+
+Command: `cargo test --release -p hex-engine --lib --locked profile_instrument_memory_budget -- --ignored --nocapture`.
+Raw log: `artifacts/instrument-memory-budget/release-copy.log`; exact source and
+log digests accompany PR evidence. These are one-run headless component costs,
+not instrument rendering, dense workloads, native callback deadlines, listening
+acceptance or a justification for increasing the aggregate pool. The former
+policy fails the new >8 KiB owned-pair regression with `Budget`; the new policy
+passes. Boundary tests retain byte/count/overflow refusal before construction,
+full tail ownership and separate checkpoint limits. Callback allocation probes
+use an actual >8 KiB inline-state fixture with full history copying.
+
 ## 100-track original Lattice effects — 11 October 2026
 
 Pulse2317/PR140 measures canonical resident Arrangement rendering on Apple M5
@@ -2530,3 +2623,40 @@ in these runs. Raw logs are retained in `artifacts/device-gain-meters/` (ignored
 This does not cover dense memoryless chains, native UI workload, instrument tap
 normalization, physical audio deadlines or Apple Silicon timing. The demo render
 profile also completed; native deadline/listening acceptance remains open.
+
+
+## routing and compensation — 16 october 2026 (pulse28 / pr184)
+
+Optimized source `8a6194072161755132208f9888e6ad623516abb3`, Apple M5 Pro,
+24 GiB, macOS26.6.2 arm64, rustc1.98.1. The guarded release owner identifies the
+Cargo-reported profile executable and checks unchanged clean source. No other
+Cargo build or benchmark ran concurrently; ordinary OS activity was uncontrolled.
+Logs: `artifacts/local-ci/issue28-profile-guarded-3/{summary.json,graph-profiles.log,demo-profile.log}`.
+
+The original sustained fixtures use48 kHz,256-frame blocks,8192 warm-up frames
+and101 samples of16 blocks each. Construction/admission is outside timing. The
+audio fixture loops500000 original PCM frames; the MIDI fixture has three tracks,
+two instrument destinations (sine/fm4), and two notes per512-frame source loop.
+The same functions measure the dry/local reference and production routed runtime.
+
+| runtime | median ns/frame | p99 ns/frame | median frames/second |
+| --- | ---: | ---: | ---: |
+| local MIDI |293.33|418.74|3409072|
+| routed MIDI, known zero latency |293.49|414.92|3407300|
+| dry stereo audio |6.65|16.76|150311927|
+| compensated stereo audio,7-frame processor |383.03|584.50|2610788|
+| routed stereo audio,3-frame prefix/7-frame source |393.70|518.11|2540023|
+
+The first implementation (`f7c73dd0a6b54fa79bc28706815fccd22989d4ed`, guarded
+run `issue28-profile-guarded-2`) forced MIDI-only routes through the per-sample
+graph: local424.63 versus routed5558.37 median ns/frame. The final block-path
+repair removes that avoidable cost. Between-run OS/load variation prevents
+attributing the faster absolute reference timing to the repair. Positive latency
+and authored audio inputs retain the more expensive transactional graph; these
+small fixtures do not establish near-capacity graph performance.
+
+The original demo profile also ran at64/128/256/512 frames: p50
+0.5/0.9/2.6/4.6 microseconds and p99 0.6/2.3/8.8/12.3 microseconds respectively.
+These are headless throughput measurements, separate from allocation probes,
+CoreAudio device stress, listening, Windows native validation and Live parity.
+Compensation does not remove causal or physical latency.

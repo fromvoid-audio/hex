@@ -11,6 +11,13 @@ pub(super) struct ProjectRevision {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StoppedPlaybackRestore {
+    Preparing,
+    Ready,
+    Published(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AdmissionState {
     Pending,
     Applied,
@@ -114,6 +121,25 @@ impl AudioAdmissionStatus {
         {
             current.state = AdmissionState::Rejected(reason);
             return true;
+        }
+        false
+    }
+
+    /// A control-side refusal can precede any submitted audio revision. Keep
+    /// its canonical state visible after transient event text has changed.
+    pub(super) fn unpublished_refusal(
+        &mut self,
+        project: ProjectRevision,
+        reason: &'static str,
+    ) -> bool {
+        if let Some(current) = self.current.as_mut()
+            && current.project == project
+            && current.audio_revision.is_none()
+            && current.state != AdmissionState::Applied
+        {
+            let before = current.state;
+            current.state = AdmissionState::Rejected(reason);
+            return before != current.state;
         }
         false
     }

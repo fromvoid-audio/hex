@@ -1,4 +1,6 @@
 //! Control-side owner of canonical editing state and its bounded decoded media.
+pub mod gain_recording;
+
 use hex_engine::{Audio, Project as PlaybackProject};
 use hex_media::{
     DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample,
@@ -16,7 +18,16 @@ use std::{
 };
 
 pub mod arrangement_seek;
+mod audio_sources;
+mod verified_import;
+use audio_sources::MediaBank;
+pub use audio_sources::{
+    AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
+};
 pub mod device_gesture;
+mod device_snapshot;
+pub mod import_batch;
+pub mod import_batch_decode;
 pub mod service;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
 
@@ -141,8 +152,16 @@ struct ResidentImportAccounting {
 /// Canonical project controller plus retained, bounded decoded assets.
 pub struct Session {
     editor: Editor,
+    audio_transforms: hex_engine::audio_transform::AudioTransformPreparation,
+    audio_clip_waveforms:
+        std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
     sine_table: Arc<hex_engine::SineTable>,
     media: HashMap<AssetId, ResidentAsset>,
+    verified_sources: BTreeMap<AssetId, VerifiedAudioFile>,
+    semantic_source_epoch: u64,
+    audio_mode: DocumentAudioMode,
+    source_reservation: Option<SourcePlanReservation>,
     resident_frames: u64,
     max_resident_frames: u64,
     resident_waveform_bins: usize,
@@ -155,10 +174,20 @@ impl Session {
         history_capacity: usize,
         max_resident_frames: u64,
     ) -> Result<Self, SessionError> {
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         Ok(Self {
+            audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
+                Arc::clone(&shutdown),
+            ),
+            audio_clip_waveforms: std::cell::RefCell::new(BTreeMap::new()),
+            shutdown,
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
             sine_table: Arc::new(hex_engine::SineTable::new()),
             media: HashMap::new(),
+            verified_sources: BTreeMap::new(),
+            semantic_source_epoch: 0,
+            audio_mode: DocumentAudioMode::Resident,
+            source_reservation: None,
             resident_frames: 0,
             max_resident_frames,
             resident_waveform_bins: 0,
@@ -301,15 +330,43 @@ impl Session {
                 return Err(SessionError::Invalid("duplicate decoded project asset"));
             }
         }
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         Ok(Self {
+            audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
+                Arc::clone(&shutdown),
+            ),
+            audio_clip_waveforms: std::cell::RefCell::new(BTreeMap::new()),
+            shutdown,
             editor,
             sine_table,
             media,
+            verified_sources: BTreeMap::new(),
+            semantic_source_epoch: 0,
+            audio_mode: DocumentAudioMode::Resident,
+            source_reservation: None,
             resident_frames,
             max_resident_frames,
             resident_waveform_bins,
             resident_waveform_bytes,
         })
+    }
+
+    fn with_shutdown(mut self, shutdown: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.audio_transforms =
+            hex_engine::audio_transform::AudioTransformPreparation::new(Arc::clone(&shutdown));
+        self.shutdown = shutdown;
+        self
+    }
+
+    /// Read-only worker-prepared summaries. A borrow conflict reports an error;
+    /// it never replaces canonical metadata or the currently accepted audio.
+    pub fn audio_clip_waveforms(
+        &self,
+    ) -> Result<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>, SessionError> {
+        self.audio_clip_waveforms
+            .try_borrow()
+            .map(|views| views.clone())
+            .map_err(|_| SessionError::Invalid("audio waveform state is already borrowed"))
     }
 
     pub fn project(&self) -> &Project {
@@ -497,11 +554,13 @@ impl Session {
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor.execute_prepared(command, |candidate| {
-            hex_engine::PreparedRevision::prepare(
+            prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
                 previous.map(|artifact| artifact.session().as_ref()),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
             )
             .map(Arc::new)
             .map_err(SessionError::from)
@@ -534,11 +593,13 @@ impl Session {
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
             |candidate| {
-                hex_engine::PreparedRevision::prepare(
+                prepare_with_waveforms(
                     candidate,
                     &media,
                     Arc::clone(&table),
                     previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
                 )
                 .map(Arc::new)
                 .map_err(SessionError::from)
@@ -587,11 +648,13 @@ impl Session {
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
             |candidate| {
-                hex_engine::PreparedRevision::prepare(
+                prepare_with_waveforms(
                     candidate,
                     &media,
                     Arc::clone(&table),
                     previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
                 )
                 .map(Arc::new)
                 .map_err(SessionError::from)
@@ -684,11 +747,13 @@ impl Session {
                 gain,
             },
             |candidate| {
-                hex_engine::PreparedRevision::prepare(
+                prepare_with_waveforms(
                     candidate,
                     &media,
                     Arc::clone(&sine_table),
                     previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
                 )
                 .map(Arc::new)
                 .map_err(SessionError::from)
@@ -826,11 +891,13 @@ impl Session {
                     ));
                 }
                 candidate_media.insert(asset_id, staged_asset.clone());
-                let revision = hex_engine::PreparedRevision::prepare(
+                let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
                     Arc::clone(&sine_table),
                     previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
                 )
                 .map(Arc::new)
                 .map_err(SessionError::from)?;
@@ -941,11 +1008,13 @@ impl Session {
                     ));
                 }
                 candidate_media.insert(asset_id, staged_asset.clone());
-                let revision = hex_engine::PreparedRevision::prepare(
+                let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
                     Arc::clone(&sine_table),
                     previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
                 )
                 .map(Arc::new)
                 .map_err(SessionError::from)?;
@@ -1033,11 +1102,13 @@ impl Session {
                     ));
                 }
                 candidate_media.insert(asset_id, staged_asset.clone());
-                let revision = hex_engine::PreparedRevision::prepare(
+                let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
                     Arc::clone(&sine_table),
                     previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
                 )
                 .map(Arc::new)
                 .map_err(SessionError::from)?;
@@ -1086,11 +1157,13 @@ impl Session {
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor.undo_prepared(|candidate| {
-            hex_engine::PreparedRevision::prepare(
+            prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
                 previous.map(|artifact| artifact.session().as_ref()),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
             )
             .map(Arc::new)
             .map_err(SessionError::from)
@@ -1124,11 +1197,13 @@ impl Session {
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor.redo_prepared(|candidate| {
-            hex_engine::PreparedRevision::prepare(
+            prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
                 previous.map(|artifact| artifact.session().as_ref()),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
             )
             .map(Arc::new)
             .map_err(SessionError::from)
@@ -1159,6 +1234,11 @@ impl Session {
 
     /// Compile the current canonical snapshot on a control worker.
     pub fn compile(&self) -> Result<PlaybackProject, SessionError> {
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
+            return Err(SessionError::Invalid(
+                "verified streaming requires protected native pages",
+            ));
+        }
         Ok(self
             .compile_prepared_revision(None)?
             .arrangement()
@@ -1170,6 +1250,11 @@ impl Session {
     pub fn compile_with_midi_preview(
         &self,
     ) -> Result<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>), SessionError> {
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
+            return Err(SessionError::Invalid(
+                "verified streaming requires protected native pages",
+            ));
+        }
         let prepared = self.compile_prepared_revision(None)?;
         Ok((
             prepared.arrangement().as_ref().clone(),
@@ -1177,22 +1262,127 @@ impl Session {
         ))
     }
 
+    /// Prepare transient recording capability without changing canonical state or history.
+    pub fn prepare_gain_recording(
+        &self,
+        track: hex_project::TrackId,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
+            return Err(SessionError::Invalid(
+                "gain recording is unavailable for verified streaming",
+            ));
+        }
+        hex_engine::PreparedRevision::prepare_for_gain_recording_with_audio_transforms(
+            self.project(),
+            &self.media_bank().resident,
+            self.sine_table(),
+            previous.map(|prepared| prepared.session().as_ref()),
+            track,
+            &self.audio_transforms,
+        )
+        .map(Arc::new)
+        .map_err(SessionError::from)
+    }
+
     pub fn compile_prepared_revision(
         &self,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
-        Ok(Arc::new(hex_engine::PreparedRevision::prepare(
+        Ok(Arc::new(prepare_with_waveforms(
             self.project(),
             &self.media_bank(),
             self.sine_table(),
             previous.map(|artifact| artifact.session().as_ref()),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
         )?))
     }
 
-    fn media_bank(&self) -> BTreeMap<AssetId, Audio> {
-        self.media
-            .iter()
-            .map(|(id, resident)| (*id, resident.audio.clone()))
-            .collect()
+    fn media_bank(&self) -> MediaBank {
+        MediaBank {
+            epoch: self.semantic_source_epoch,
+            resident: self
+                .media
+                .iter()
+                .map(|(id, resident)| (*id, resident.audio.clone()))
+                .collect(),
+            verified: self.verified_sources.clone(),
+        }
     }
 }
+
+/// All waveform work runs in the same control preparation closure as accepted PCM.
+/// Root summaries deduplicate exact retained Audio owners; views never reprocess PCM.
+fn prepare_with_waveforms(
+    project: &Project,
+    media: &MediaBank,
+    table: Arc<hex_engine::SineTable>,
+    previous: Option<&hex_engine::PreparedSessionInventory>,
+    transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    let mut old = retained
+        .try_borrow_mut()
+        .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;
+    let (prepared, next) = transforms.transaction(|| {
+        let prepared = if media.verified.is_empty() {
+            hex_engine::PreparedRevision::prepare_with_audio_transforms(
+                project,
+                &media.resident,
+                table,
+                previous,
+                transforms,
+            )?
+        } else {
+            media.prepare(project, table, previous)?
+        };
+        // At most 262144 leaf bins per accepted revision (plus bounded pyramid
+        // and per-root metadata). Dense projects receive coarser truthful peaks.
+        let requested_bins =
+            (262_144 / prepared.arrangement().audio_clip_views().len().max(1)).clamp(1, 1_024);
+        let mut roots: Vec<(Audio, Arc<Waveform>)> = Vec::new();
+        let mut next = BTreeMap::new();
+        for view in prepared.arrangement().audio_clip_views() {
+            let waveform = if let Some((_, waveform)) = roots
+                .iter()
+                .find(|(audio, _)| audio.shares_pcm_with(&view.audio))
+            {
+                Arc::clone(waveform)
+            } else {
+                // Existing summaries retain exact PCM identity for safe cross-revision reuse.
+                let existing = old.values().find(|entry| {
+                    entry.waveform.shares_audio_with(&view.audio)
+                        && entry.waveform.bins.len() <= requested_bins
+                });
+                let waveform =
+                    if let Some(existing) = existing {
+                        Arc::clone(&existing.waveform)
+                    } else {
+                        Arc::new(waveform::summarize(&view.audio, requested_bins).map_err(
+                            |_| hex_engine::Invalid("transformed waveform preparation failed"),
+                        )?)
+                    };
+                roots.try_reserve(1).map_err(|_| {
+                    hex_engine::Invalid("audio waveform root index allocation failed")
+                })?;
+                roots.push((view.audio.clone(), Arc::clone(&waveform)));
+                waveform
+            };
+            next.insert(
+                view.clip,
+                service::AudioClipWaveform {
+                    waveform,
+                    offset: view.offset,
+                    length: view.length,
+                },
+            );
+        }
+        Ok((prepared, next))
+    })?;
+    *old = next;
+    Ok(prepared)
+}
+
+#[cfg(test)]
+mod audio_edit_tests;

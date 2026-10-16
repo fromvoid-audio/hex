@@ -123,12 +123,19 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+    pub(crate) voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+}
+
+impl MidiRenderSpan {
+    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::PreparedMidiNote> {
+        self.voice
+    }
 }
 
 /// Identity of a carried occurrence that must not be emitted again by the
 /// newly prepared source while its copied voice is still sounding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub(crate) struct MidiOccurrenceSuppression {
     pub(crate) track: hex_project::TrackId,
     pub(crate) clip: hex_project::ClipId,
@@ -136,10 +143,85 @@ pub(crate) struct MidiOccurrenceSuppression {
     pub(crate) iteration: u64,
     pub(crate) loop_pass: u64,
     pub(crate) until_frame: u64,
-    /// Present only for mutable event dispatch. The stable IDs alone are not
-    /// enough to suppress a source note that has changed since the old event.
-    pub(crate) mutable_signature: Option<crate::mutable_instrument::MutableOccurrenceSignature>,
+    // One key serves both identity lookup and reconstructed mutable signature.
+    // Analytic records canonicalize every unused detail, including padding.
+    onset_beat: BeatTime,
+    gate_end_beat: BeatTime,
+    pitch: u8,
+    channel: u8,
+    velocity: u8,
+    kind: u8,
+    padding: [u8; 4],
 }
+
+impl MidiOccurrenceSuppression {
+    pub(crate) const fn analytic(
+        key: crate::mutable_instrument::MutableOccurrenceKey,
+        until_frame: u64,
+    ) -> Self {
+        Self {
+            track: key.track,
+            clip: key.clip,
+            note: key.note,
+            iteration: key.iteration,
+            loop_pass: key.loop_pass,
+            until_frame,
+            onset_beat: BeatTime::ZERO,
+            gate_end_beat: BeatTime::ZERO,
+            pitch: 0,
+            channel: 0,
+            velocity: 0,
+            kind: 0,
+            padding: [0; 4],
+        }
+    }
+
+    pub(crate) const fn mutable(
+        signature: crate::mutable_instrument::MutableOccurrenceSignature,
+        until_frame: u64,
+    ) -> Self {
+        let (onset_beat, gate_end_beat, pitch, channel, velocity) = signature.details();
+        Self {
+            onset_beat,
+            gate_end_beat,
+            pitch,
+            channel,
+            velocity,
+            kind: 1,
+            ..Self::analytic(signature.key(), until_frame)
+        }
+    }
+
+    /// Exact original value, including every key/beat/MIDI bit. No allocation
+    /// or provider lookup, and no integer/beat/velocity precision reduction.
+    pub(crate) const fn mutable_signature(
+        self,
+    ) -> Option<crate::mutable_instrument::MutableOccurrenceSignature> {
+        if self.kind == 1 {
+            Some(
+                crate::mutable_instrument::MutableOccurrenceSignature::from_parts(
+                    crate::mutable_instrument::MutableOccurrenceKey {
+                        track: self.track,
+                        clip: self.clip,
+                        note: self.note,
+                        iteration: self.iteration,
+                        loop_pass: self.loop_pass,
+                    },
+                    self.onset_beat,
+                    self.gate_end_beat,
+                    self.pitch,
+                    self.channel,
+                    self.velocity,
+                ),
+            )
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod suppression_tests;
 
 /// Opaque copied analytic voice retained after a route is replaced.
 #[derive(Clone, Copy, Debug)]
@@ -216,12 +298,50 @@ impl MidiRenderSpan {
 }
 
 impl MidiReleaseVoice {
+    pub(crate) fn start_frame(&self) -> u64 {
+        self.start_frame
+    }
+
     pub(crate) fn context_ref(&self) -> Option<crate::midi_note_bank::SharedContextRef> {
         self.voice.context_ref()
     }
 
     pub(crate) fn set_context_ref(&mut self, context: crate::midi_note_bank::SharedContextRef) {
         self.voice = self.voice.with_context_ref(context);
+    }
+
+    pub(crate) fn sampler(&self) -> PreparedMidiNote {
+        self.voice
+    }
+
+    pub(crate) fn set_sampler(&mut self, sampler: PreparedMidiNote) {
+        self.voice = sampler;
+    }
+
+    pub(crate) fn detach(&mut self, transitions: &[Option<hex_lattice::AnalyticContinuation>]) {
+        self.voice = self.voice.detach(transitions);
+    }
+
+    pub(crate) fn sample_at_with_continuation(
+        &self,
+        frame: u64,
+        contexts: &crate::shared_analytic::SharedAnalyticContextTable,
+        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        transitions: &[Option<hex_lattice::AnalyticContinuation>],
+    ) -> Result<Option<[f32; 2]>, crate::Invalid> {
+        if frame < self.start_frame || frame >= self.end_frame {
+            return Ok(None);
+        }
+        self.voice
+            .sample_at(
+                contexts,
+                retained,
+                transitions,
+                frame,
+                frame - self.start_frame,
+                self.gate_end_frame - self.start_frame,
+            )
+            .map(Some)
     }
 
     pub(crate) fn end_frame(&self) -> u64 {
@@ -352,6 +472,7 @@ impl MidiReleaseVoice {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn sample_at(
         &self,
         frame: u64,
@@ -377,6 +498,7 @@ pub struct MidiInstrumentRenderContext<'a, T: MidiTiming + ?Sized = PreparedTemp
     timing: &'a T,
     onset_floor_exclusive: Option<BeatTime>,
     suppressions: &'a [MidiOccurrenceSuppression],
+    continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
 }
 
 impl<T: MidiTiming + ?Sized> Copy for MidiInstrumentRenderContext<'_, T> {}
@@ -394,6 +516,7 @@ impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
             timing,
             onset_floor_exclusive: None,
             suppressions: &[],
+            continuations: &[],
         }
     }
 
@@ -403,6 +526,16 @@ impl<'a, T: MidiTiming + ?Sized> MidiInstrumentRenderContext<'a, T> {
     pub fn after_onset(self, beat: BeatTime) -> Self {
         Self {
             onset_floor_exclusive: Some(beat),
+            ..self
+        }
+    }
+
+    pub(crate) fn with_continuations(
+        self,
+        continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
+    ) -> Self {
+        Self {
+            continuations,
             ..self
         }
     }
@@ -899,14 +1032,20 @@ impl PreparedMidiInstrumentTemplate {
             for span in buffer.spans() {
                 if frame >= span.start_frame && frame < span.end_frame {
                     let Some(voice) = span.voice else { continue };
-                    let Some(contribution) = voice.sample(
-                        &self.shared_contexts,
-                        &[],
-                        frame - span.start_frame,
-                        span.gate_end_frame - span.start_frame,
-                    ) else {
-                        continue;
-                    };
+                    let contribution = voice
+                        .sample_at(
+                            &self.shared_contexts,
+                            &[],
+                            context.continuations,
+                            frame,
+                            frame - span.start_frame,
+                            span.gate_end_frame - span.start_frame,
+                        )
+                        .map_err(|_| {
+                            MidiTemplateError::InvalidSource(
+                                "analytic continuation sample was refused",
+                            )
+                        })?;
                     mix.add_frame(output_frame, contribution);
                 }
             }

@@ -6,7 +6,16 @@ Compose the audio backend and GPUI shell; own executable startup and app-level f
 
 ## Dependencies
 
-hex-audio, hex-ui, and GPUI application lifecycle.
+hex-audio, hex-ui, and GPUI application lifecycle. The native Session adapter
+also uses hex-session's neutral worker sink/source snapshots, hex-engine's
+consuming preparation contracts, hex-stream's verified constructor metadata, and hex-media's bounded reader-limit
+values (the existing Session/stream workers perform all file decoding).
+The nondefault `allocation-probe` test feature substitutes only output-open
+completion through the actual native endpoint constructor. Its dev-only
+hex-project and allocation-counter dependencies exercise real canonical edits
+and zero-total/net callback allocations; neither is a production desktop edge.
+Desktop binds those existing responsibilities; Session gains no audio/stream
+edge and Desktop owns no independent scheduler, source worker or editable model.
 
 ## Does not own
 

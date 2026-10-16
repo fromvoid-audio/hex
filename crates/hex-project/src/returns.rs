@@ -70,6 +70,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                 .position(|track| track.id == id)
                 .ok_or(Invalid("return track no longer exists"))?;
             project.returns.remove(index);
+            project
+                .audio_feeds
+                .retain(|r| r.source() != crate::RoutingOwner::Return(id));
+            project
+                .routing
+                .retain(|feed| feed.source != id && feed.destination != id);
             for track in &mut project.tracks {
                 track.sends.retain(|send| send.return_track != id);
             }

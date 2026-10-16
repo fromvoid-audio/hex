@@ -36,57 +36,60 @@ fn plot<const N: usize>(
             .border_1()
             .border_color(rgb(style.border))
             .bg(rgb(style.background))
-            .child(canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    if width <= 0.0 || height <= 0.0 {
-                        return;
-                    }
-                    let mut grid = PathBuilder::stroke(px(0.5));
-                    for division in 1..4 {
-                        let y = bounds.origin.y + px(height * division as f32 / 4.0);
-                        grid.move_to(point(bounds.origin.x, y));
-                        grid.line_to(point(bounds.origin.x + bounds.size.width, y));
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        let width = f32::from(bounds.size.width);
+                        let height = f32::from(bounds.size.height);
+                        if width <= 0.0 || height <= 0.0 {
+                            return;
+                        }
+                        let mut grid = PathBuilder::stroke(px(0.5));
+                        for division in 1..4 {
+                            let y = bounds.origin.y + px(height * division as f32 / 4.0);
+                            grid.move_to(point(bounds.origin.x, y));
+                            grid.line_to(point(bounds.origin.x + bounds.size.width, y));
+                            if centered_axes {
+                                let x = bounds.origin.x + px(width * division as f32 / 4.0);
+                                grid.move_to(point(x, bounds.origin.y));
+                                grid.line_to(point(x, bounds.origin.y + bounds.size.height));
+                            }
+                        }
+                        if let Ok(grid) = grid.build() {
+                            window.paint_path(grid, rgb(style.rail));
+                        }
                         if centered_axes {
-                            let x = bounds.origin.x + px(width * division as f32 / 4.0);
-                            grid.move_to(point(x, bounds.origin.y));
-                            grid.line_to(point(x, bounds.origin.y + bounds.size.height));
+                            let mut axes = PathBuilder::stroke(px(0.5));
+                            let x = bounds.origin.x + px(width * 0.5);
+                            let y = bounds.origin.y + px(height * 0.5);
+                            axes.move_to(point(bounds.origin.x, y));
+                            axes.line_to(point(bounds.origin.x + bounds.size.width, y));
+                            axes.move_to(point(x, bounds.origin.y));
+                            axes.line_to(point(x, bounds.origin.y + bounds.size.height));
+                            if let Ok(axes) = axes.build() {
+                                window.paint_path(axes, rgb(style.border));
+                            }
                         }
-                    }
-                    if let Ok(grid) = grid.build() {
-                        window.paint_path(grid, rgb(style.rail));
-                    }
-                    if centered_axes {
-                        let mut axes = PathBuilder::stroke(px(0.5));
-                        let x = bounds.origin.x + px(width * 0.5);
-                        let y = bounds.origin.y + px(height * 0.5);
-                        axes.move_to(point(bounds.origin.x, y));
-                        axes.line_to(point(bounds.origin.x + bounds.size.width, y));
-                        axes.move_to(point(x, bounds.origin.y));
-                        axes.line_to(point(x, bounds.origin.y + bounds.size.height));
-                        if let Ok(axes) = axes.build() {
-                            window.paint_path(axes, rgb(style.border));
+                        let mut curve = PathBuilder::stroke(px(1.0));
+                        for (index, [x, y]) in points.iter().enumerate() {
+                            let point = point(
+                                bounds.origin.x + px(*x * width),
+                                bounds.origin.y + px((1.0 - *y) * height),
+                            );
+                            if index == 0 {
+                                curve.move_to(point);
+                            } else {
+                                curve.line_to(point);
+                            }
                         }
-                    }
-                    let mut curve = PathBuilder::stroke(px(1.0));
-                    for (index, [x, y]) in points.iter().enumerate() {
-                        let point = point(
-                            bounds.origin.x + px(*x * width),
-                            bounds.origin.y + px((1.0 - *y) * height),
-                        );
-                        if index == 0 {
-                            curve.move_to(point);
-                        } else {
-                            curve.line_to(point);
+                        if let Ok(curve) = curve.build() {
+                            window.paint_path(curve, rgb(style.accent));
                         }
-                    }
-                    if let Ok(curve) = curve.build() {
-                        window.paint_path(curve, rgb(style.accent));
-                    }
-                },
-            )),
+                    },
+                )
+                .size_full(),
+            ),
     )
 }
 
@@ -109,6 +112,38 @@ mod tests {
         hover: 0x404040,
         font_size: 8.0,
     };
+
+    struct CurveFixture(std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>);
+    impl gpui::Render for CurveFixture {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::prelude::*;
+            let bounds = self.0.clone();
+            gpui::div().w(gpui::px(64.0)).h(gpui::px(14.0)).child(
+                curve_plot([[0.0, 0.5], [0.5, 1.0], [1.0, 0.5]], STYLE)
+                    .unwrap()
+                    .on_children_prepainted(move |children, _, _| *bounds.borrow_mut() = children),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn compact_curve_canvas_fills_its_display(cx: &mut gpui::TestAppContext) {
+        let bounds = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let window = cx.add_window(|_, _| CurveFixture(bounds.clone()));
+        let visual = gpui::VisualTestContext::from_window(*window, cx);
+        visual.run_until_parked();
+        let bounds = bounds.borrow();
+        assert_eq!(bounds.len(), 1);
+        assert!(bounds[0].size.width >= gpui::px(60.0));
+        assert!(
+            bounds[0].size.height >= gpui::px(10.0),
+            "curve canvas must have height to paint its waveform"
+        );
+    }
 
     #[test]
     fn curve_plot_accepts_normalized_ordered_points_and_refuses_invalid_data() {

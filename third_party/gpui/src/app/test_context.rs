@@ -120,6 +120,12 @@ impl AppContext for TestAppContext {
 }
 
 impl TestAppContext {
+    /// Verify private cached-scene replay against the retained legacy painter.
+    /// Test support only; no window, native graphics or public scene API.
+    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
+        crate::scene::verify_bulk_replay()
+    }
+
     /// Cursor last delivered to the test platform, independent of hit testing.
     /// This is not evidence of physical native cursor appearance.
     pub fn platform_cursor_style(&self) -> crate::CursorStyle {
@@ -687,7 +693,8 @@ impl VisualTestContext {
         self.update(|window, _| window.rendered_frame.cursor_style(window))
     }
 
-    /// Background of the last painted quad exactly matching a debug element's bounds.
+    /// Background of the last filled quad exactly matching a debug element's bounds.
+    /// Border-only quads have transparent fills and do not replace the surface.
     /// Reads the completed scene without drawing or injecting pointer events.
     pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
         self.update(|window, _| {
@@ -699,8 +706,29 @@ impl VisualTestContext {
                 .quads
                 .iter()
                 .rev()
-                .find(|quad| quad.bounds == scaled)
+                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
                 .map(|quad| quad.background)
+        })
+    }
+
+    /// Rounded geometry and ancestor mask of the last filled scene quad matching
+    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
+    /// GPU framebuffer or native display readback.
+    pub fn rendered_surface_geometry(
+        &mut self,
+        selector: &'static str,
+    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
+            let scaled = bounds.scale(window.scale_factor());
+            window
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .rev()
+                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
+                .map(|quad| (quad.corner_radii, quad.content_mask.bounds))
         })
     }
 

@@ -11,29 +11,15 @@ use hex_project::DeviceId;
 
 pub(super) mod context;
 pub(super) mod envelope;
+pub(super) mod harmonics;
 pub(super) mod preview;
 
-pub(super) const OPERATOR_FRAME_WIDTH: f32 =
-    SHELL_WIDTH + DETAIL_WIDTH + preview::PANEL_WIDTH + 30.0;
-const BODY_HEIGHT: f32 = 168.0;
+pub(super) const OPERATOR_FRAME_WIDTH: f32 = crate::device_composition::VECTOR_WIDTH;
 // Three shared tiles plus fixed selector, badge, gaps and retained breathing room.
-const SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
-const DETAIL_WIDTH: f32 = 292.0;
+const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
-// Neutral colors based on the user-supplied Operator reference crops.
-const DISPLAY_BACKGROUND: u32 = 0x191919;
-const RAIL_BACKGROUND: u32 = 0x363636;
-const RAIL_GUTTER: u32 = 0x474747;
-
-pub(super) fn frame_style() -> hex_widgets::ControlStyle {
-    hex_widgets::ControlStyle {
-        background: RAIL_GUTTER,
-        surface: RAIL_GUTTER,
-        raised: RAIL_GUTTER,
-        border: RAIL_GUTTER,
-        ..super::control_style()
-    }
-}
+// Retain the implementation while these additional harmonic tools are dormant.
+const SHOW_HARMONIC_TOOLS: bool = false;
 
 gpui::actions!(hex_operator, [ActivateRouting, ActivateSection]);
 
@@ -59,6 +45,7 @@ pub(super) enum OperatorPage {
     Envelope,
     Routing,
     Lfo,
+    Filter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -113,7 +100,7 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Instrument,
         type_id: device_view.type_id,
     };
-    let mut shell = div()
+    let mut shell = hex_widgets::device_rail(super::device_layout_style())
         .id(ElementId::Name(
             format!("operator-shell-{}", device.value()).into(),
         ))
@@ -121,10 +108,6 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .bg(rgb(RAIL_GUTTER))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
         .pr(px(4.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
@@ -144,81 +127,47 @@ pub(super) fn render_body(
         device,
         (state.page == OperatorPage::Envelope).then_some(state.selected_operator),
     );
+    harmonics::retire(view, cx, |key| {
+        key.0 != device
+            || (matches!(
+                state.page,
+                OperatorPage::Oscillator | OperatorPage::Envelope
+            ) && key.1 == state.selected_operator)
+    });
+    if state.page == OperatorPage::Envelope {
+        harmonics::hide_painter(view, cx, device, state.selected_operator);
+    }
     let detail = match state.page {
-        OperatorPage::Oscillator => oscillator_detail(
+        OperatorPage::Oscillator | OperatorPage::Envelope => oscillator_envelope_detail(
             view,
             cx,
             device,
             identity,
             parameters,
             state.selected_operator,
-        ),
-        OperatorPage::Envelope => envelope_detail(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            state.selected_operator,
+            state.page,
         ),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
+        OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
-    div()
+    let detail =
+        crate::device_composition::tabbed_detail(detail, page_tabs(view, cx, device, owner, state))
+            .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
+            .id(ElementId::Name(
+                format!("operator-detail-{}", device.value()).into(),
+            ))
+            .debug_selector(move || format!("operator-detail-{}", device.value()))
+            .track_focus(&detail_focus);
+    let preview = preview::render(view, cx, device, device_view);
+    crate::device_composition::three_pane(shell, detail, preview)
         .tab_group()
         .on_children_prepainted(context::focus_listener(view, cx, device))
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-body-{}", device.value()))
-        .w_full()
-        .h(px(BODY_HEIGHT))
-        .min_h_0()
-        .overflow_hidden()
-        .flex()
-        .gap(px(4.0))
-        .bg(rgb(RAIL_GUTTER))
-        .px(px(3.0))
-        .py(px(1.0))
-        .child(shell)
-        .child(
-            div()
-                .on_children_prepainted(context::section_listener(
-                    view,
-                    cx,
-                    device,
-                    Section::Detail,
-                ))
-                .id(ElementId::Name(
-                    format!("operator-detail-{}", device.value()).into(),
-                ))
-                .debug_selector(move || format!("operator-detail-{}", device.value()))
-                .flex_1()
-                .w(px(DETAIL_WIDTH))
-                .min_w_0()
-                .track_focus(&detail_focus)
-                .bg(rgb(DISPLAY_BACKGROUND))
-                .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-                .overflow_hidden()
-                .relative()
-                .px(px(4.0))
-                .h_full()
-                .flex()
-                .flex_col()
-                .gap(px(3.0))
-                .child(detail)
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(86.0))
-                        .left_0()
-                        .w_full()
-                        .px(px(4.0))
-                        .child(page_tabs(view, cx, device, owner, state)),
-                ),
-        )
-        .child(preview::render(view, cx, device, device_view))
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "tab"
@@ -253,7 +202,6 @@ fn page_tabs(
         device,
         NavigationTarget::Page(OperatorPage::Envelope),
     );
-    let lfo_focus = navigation_focus(view, cx, device, NavigationTarget::Page(OperatorPage::Lfo));
     let oscillator_focus = navigation_focus(
         view,
         cx,
@@ -266,33 +214,30 @@ fn page_tabs(
         .h(px(16.0))
         .items_center()
         .justify_between()
-        .child(page_tab(
-            cx,
-            device,
-            owner,
-            OperatorPage::Envelope,
-            "envelope",
-            state.page,
-            envelope_focus,
-        ))
-        .child(page_tab(
-            cx,
-            device,
-            owner,
-            OperatorPage::Lfo,
-            "lfo",
-            state.page,
-            lfo_focus,
-        ))
-        .child(page_tab(
-            cx,
-            device,
-            owner,
-            OperatorPage::Oscillator,
-            "oscillator",
-            state.page,
-            oscillator_focus,
-        ))
+        .child(
+            page_tab(
+                cx,
+                device,
+                owner,
+                OperatorPage::Envelope,
+                "envelope",
+                state.page,
+                envelope_focus,
+            )
+            .flex_1(),
+        )
+        .child(
+            page_tab(
+                cx,
+                device,
+                owner,
+                OperatorPage::Oscillator,
+                "oscillator",
+                state.page,
+                oscillator_focus,
+            )
+            .w(px(120.0)),
+        )
 }
 
 fn operator_row(
@@ -344,7 +289,7 @@ fn operator_row(
     );
     let (section_focus, focused) =
         context::section_focus(view, cx, device, Section::Oscillator(operator));
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(
             view,
             cx,
@@ -361,16 +306,9 @@ fn operator_row(
         .items_center()
         .justify_between()
         .gap(px(2.0))
-        .pl(px(4.0))
-        .pr(px(18.0))
+        .pr(px(14.0))
         .relative()
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .track_focus(&section_focus)
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
         .child(primary);
     row = row.child(fine);
     let fixed_control = shell_control(
@@ -396,7 +334,7 @@ fn operator_row(
             .child(fixed_control),
     );
     row = row.child(level).child(
-        operator_label(view, cx, device, operator, selected)
+        operator_label(view, cx, device, parameters, operator, selected)
             .absolute()
             .right(px(4.0))
             .top(px(14.0)),
@@ -408,43 +346,44 @@ fn operator_label(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    parameters: &[NativeDeviceParameterView],
     operator: usize,
     selected: bool,
 ) -> Stateful<Div> {
     let owner = context::Owner::capture(view, device);
+    let enabled = matches!(
+        value(view, device, parameters, id(513 + operator as u32)),
+        Some(ParameterValue::Bool(true))
+    );
     let focus = navigation_focus(view, cx, device, NavigationTarget::Oscillator(operator));
-    div()
-        .id(ElementId::Name(
-            format!("operator-select-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
-        .track_focus(&focus)
-        .key_context("hex_operator_section")
-        .focus(|style| {
-            style
-                .border_2()
-                .border_color(rgb(theme::color(theme::PaletteRole::Text)))
-        })
-        .w(px(12.0))
-        .h(px(12.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(8.0))
-        .rounded(px(1.0))
-        .border_1()
-        .border_color(rgb(theme::color(if selected {
-            theme::PaletteRole::Text
-        } else {
-            theme::PaletteRole::Border
-        })))
-        .bg(rgb([0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428][operator]))
-        .text_color(rgb(0x15171b))
-        .cursor(gpui::CursorStyle::PointingHand)
-        .child(theme::text(["a", "b", "c", "d"][operator]))
-        .on_click(cx.listener(move |view, _, window, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
-                focus.focus(window);
+    hex_widgets::device_badge(
+        theme::text(["a", "b", "c", "d"][operator]),
+        theme::device_identity_style(operator, enabled, selected),
+    )
+    .id(ElementId::Name(
+        format!("operator-select-{}-{operator}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("operator-select-{}-{operator}", device.value()))
+    .track_focus(&focus)
+    .key_context("hex_operator_section")
+    .cursor(gpui::CursorStyle::PointingHand)
+    .on_click(cx.listener(move |view, _, window, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view))
+            && finalize_controls(view, cx)
+            && toggle_enable(view, device, operator)
+        {
+            focus.focus(window);
+            let state = view.device_panel.operator_pages.entry(device).or_default();
+            state.selected_operator = operator;
+            if state.page != OperatorPage::Envelope {
+                state.page = OperatorPage::Oscillator;
+            }
+            cx.notify();
+        }
+    }))
+    .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
+        if owner.is_some_and(|owner| owner.is_current(view)) {
+            if finalize_controls(view, cx) {
                 let state = view.device_panel.operator_pages.entry(device).or_default();
                 state.selected_operator = operator;
                 if state.page != OperatorPage::Envelope {
@@ -452,20 +391,54 @@ fn operator_label(
                 }
                 cx.notify();
             }
-        }))
-        .on_action(cx.listener(move |view, _: &ActivateSection, _, cx| {
-            if owner.is_some_and(|owner| owner.is_current(view)) {
-                if finalize_controls(view, cx) {
-                    let state = view.device_panel.operator_pages.entry(device).or_default();
-                    state.selected_operator = operator;
-                    if state.page != OperatorPage::Envelope {
-                        state.page = OperatorPage::Oscillator;
-                    }
-                    cx.notify();
-                }
-                cx.stop_propagation();
-            }
-        }))
+            cx.stop_propagation();
+        }
+    }))
+}
+
+/// One ordinary canonical Boolean edit, with pending state retained on queue
+/// refusal. Rapid clicks read the latest queued value rather than a render's
+/// captured flag. Project history and audio publication remain session-owned.
+pub(super) fn toggle_enable(view: &mut EditorView, device: DeviceId, operator: usize) -> bool {
+    if operator >= 4 {
+        return false;
+    }
+    let key = ParameterKey {
+        device,
+        parameter: id(513 + operator as u32),
+    };
+    let canonical = view
+        .device_panel
+        .views
+        .get(&device)
+        .and_then(|(_, _, device_view)| device_view.as_ref().ok())
+        .and_then(|device_view| {
+            device_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == key.parameter)
+        })
+        .map(|parameter| parameter.value);
+    let previous_pending = view.device_panel.pending_values.get(&key).copied();
+    let Some(ParameterValue::Bool(previous)) = previous_pending.or(canonical) else {
+        view.error = Some("oscillator enable control is unavailable".into());
+        return false;
+    };
+    let value = ParameterValue::Bool(!previous);
+    view.device_panel.pending_values.insert(key, value);
+    if !view.enqueue_device_barrier(hex_session::service::Request::SetDeviceParameter {
+        device,
+        parameter: key.parameter,
+        value,
+    }) {
+        if let Some(previous) = previous_pending {
+            view.device_panel.pending_values.insert(key, previous);
+        } else {
+            view.device_panel.pending_values.remove(&key);
+        }
+        return false;
+    }
+    true
 }
 
 fn page_tab(
@@ -487,7 +460,6 @@ fn page_tab(
         .debug_selector(move || format!("operator-page-{}-{label}", device.value()))
         .track_focus(&focus)
         .key_context("hex_operator_section")
-        .focus(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))))
         .cursor(gpui::CursorStyle::PointingHand)
         .on_click(cx.listener(move |view, _, window, cx| {
             if owner.is_some_and(|owner| owner.is_current(view)) && finalize_controls(view, cx) {
@@ -515,13 +487,14 @@ fn page_tab(
         }))
 }
 
-fn oscillator_detail(
+fn oscillator_envelope_detail(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
+    page: OperatorPage,
 ) -> Stateful<Div> {
     let one_based = operator as u32 + 1;
     let waveform = compact_control(
@@ -534,7 +507,7 @@ fn oscillator_detail(
         ControlPresentation::CompactSelector,
         Some("wave"),
     );
-    let phase = compact_control(
+    let phase = compact_control_with_codec(
         view,
         cx,
         device,
@@ -543,19 +516,41 @@ fn oscillator_detail(
         id(operator as u32 * 3 + 3),
         ControlPresentation::InlineValue,
         Some("phase"),
+        Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
-    let velocity = compact_control_with_codec(
+    let companion_base = 357 + operator as u32 * 8;
+    let oscillator_velocity = compact_control_with_codec(
         view,
         cx,
         device,
         identity,
         parameters,
-        id(74 + operator as u32),
+        id(companion_base + 1),
         ControlPresentation::InlineValue,
-        Some("velocity"),
+        Some("osc<vel"),
         Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
-    let feedback = compact_control(
+    let restart = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion_base),
+        ControlPresentation::CompactButton,
+        Some("r"),
+    );
+    let quantize = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion_base + 2),
+        ControlPresentation::CompactButton,
+        Some("q"),
+    );
+    let feedback = compact_control_with_codec(
         view,
         cx,
         device,
@@ -564,6 +559,7 @@ fn oscillator_detail(
         id(78 + operator as u32),
         ControlPresentation::InlineValue,
         Some("feedback"),
+        Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
     let fixed = matches!(
         value(view, device, parameters, id(62 + operator as u32 * 3)),
@@ -581,152 +577,384 @@ fn oscillator_detail(
             Some("multi"),
         )
     });
-    let waveform_choice =
-        value(view, device, parameters, id(56 + one_based)).and_then(|value| match value {
-            ParameterValue::Choice(choice) => Some(choice),
-            _ => None,
-        });
-    let cycle = waveform_choice.and_then(waveform_cycle).and_then(|points| {
-        hex_widgets::curve_plot(points, display_style())
-            .map(|plot| plot.grid().grid_cols(1).grid_rows(1))
-    });
-    div()
-        .id(ElementId::Name(
-            format!("operator-osc-detail-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-osc-detail-{}-{operator}", device.value()))
-        .w_full()
-        .h(px(160.0))
+    let (graph, waveform_preview) = harmonics::graph(view, cx, device, operator, parameters);
+    let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
+    let harmonic_repeat_control = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(353 + operator as u32),
+        ControlPresentation::CompactSelector,
+        Some("repeat"),
+    );
+    let envelope_fields =
+        envelope_fields(view, cx, device, identity, parameters, operator, multiplier)
+            .when(SHOW_HARMONIC_TOOLS, |fields| {
+                fields.child(harmonics::tools(view, cx, device, operator))
+            });
+    let oscillator_fields = div()
+        .id("operator-oscillator-fields")
+        .debug_selector(|| "operator-oscillator-fields".into())
+        .w(px(120.0))
+        .flex_shrink_0()
         .flex()
         .flex_col()
-        .gap(px(2.0))
         .child(
             div()
-                .id("operator-waveform-cycle")
-                .debug_selector(|| "operator-waveform-cycle".into())
                 .w_full()
-                .h(px(86.0))
+                .h(px(21.0))
                 .flex_shrink_0()
-                .child(cycle.unwrap_or_else(|| div())),
+                .flex()
+                .gap(px(4.0))
+                .child(detail_field(
+                    device,
+                    id(57 + operator as u32),
+                    "wave",
+                    64.0,
+                    waveform,
+                ))
+                .child(
+                    div()
+                        .id("operator-waveform-preview")
+                        .debug_selector(|| "operator-waveform-preview".into())
+                        .w(px(52.0))
+                        .h(px(21.0))
+                        .flex_shrink_0()
+                        .child(waveform_preview),
+                ),
         )
+        .child(
+            div()
+                .w_full()
+                .h(px(21.0))
+                .flex_shrink_0()
+                .flex()
+                .gap(px(4.0))
+                .child(detail_field(
+                    device,
+                    id(78 + operator as u32),
+                    "feedback",
+                    52.0,
+                    feedback,
+                ))
+                .child(detail_field(
+                    device,
+                    id(353 + operator as u32),
+                    "repeat",
+                    64.0,
+                    harmonic_repeat_control,
+                )),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(21.0))
+                .flex_shrink_0()
+                .flex()
+                .gap(px(4.0))
+                .child(detail_field(
+                    device,
+                    id(operator as u32 * 3 + 3),
+                    "phase",
+                    58.0,
+                    div()
+                        .flex()
+                        .gap(px(2.0))
+                        .child(div().w(px(42.0)).child(phase))
+                        .child(restart),
+                ))
+                .child(detail_field(
+                    device,
+                    id(companion_base + 1),
+                    "osc<vel",
+                    58.0,
+                    div()
+                        .flex()
+                        .gap(px(2.0))
+                        .child(div().w(px(42.0)).child(oscillator_velocity))
+                        .child(quantize),
+                )),
+        );
+    let upper_display = if page == OperatorPage::Envelope {
+        let base = 33 + operator as u32 * 6;
+        let values = std::array::from_fn(|field| {
+            value(view, device, parameters, id(base + field as u32))
+                .and_then(|value| match value {
+                    ParameterValue::Float(value) if value.is_finite() => Some(value),
+                    _ => None,
+                })
+                .unwrap_or(0.0)
+        });
+        envelope::graph(view, cx, device, operator, values)
+    } else {
+        div()
+            .id("operator-waveform-cycle")
+            .debug_selector(|| "operator-waveform-cycle".into())
+            .w_full()
+            .h(px(86.0))
+            .flex_shrink_0()
+            .flex()
+            .gap(px(2.0))
+            .child(div().flex_1().min_w_0().h_full().child(graph))
+            .child(harmonic_range_control)
+    };
+    let selector = if page == OperatorPage::Envelope {
+        format!("operator-envelope-{}-{operator}", device.value())
+    } else {
+        format!("operator-osc-detail-{}-{operator}", device.value())
+    };
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .child(upper_display)
+        // Both detail pages keep the same graph and tab slots.
         .child(div().h(px(16.0)).flex_shrink_0())
         .child(
             div()
                 .w_full()
+                .h(px(63.0))
+                .flex_shrink_0()
                 .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(waveform)
-                .child(section_title("phase"))
-                .child(phase),
-        )
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(section_title("velocity"))
-                .child(velocity)
-                .child(section_title("feedback"))
-                .child(feedback),
-        )
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .children(fixed.then(|| section_title("multi")))
-                .children(multiplier),
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id("operator-envelope-fields")
+                        .debug_selector(|| "operator-envelope-fields".into())
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(envelope_fields),
+                )
+                .child(oscillator_fields),
         )
 }
 
-fn waveform_cycle(choice: u32) -> Option<[[f32; 2]; 32]> {
-    if choice > 3 {
-        return None;
+// Display order is independent of stable serialized parameter choices.
+pub(super) fn choice_order(
+    identity: DeviceControlIdentity,
+    parameter: ParameterId,
+    count: usize,
+) -> Vec<u32> {
+    if identity.type_id.as_str() == Ok("hex.instrument.operator")
+        && (57..=60).contains(&parameter.value())
+        && count == 23
+    {
+        vec![
+            0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 1, 14, 15, 16, 17, 18, 19, 20, 2, 3, 21, 22, 4,
+        ]
+    } else {
+        (0..count as u32).collect()
     }
-    Some(std::array::from_fn(|index| {
-        let phase = index as f32 / 31.0;
-        let level = match choice {
-            0 => (std::f32::consts::TAU * phase).sin() * 0.5 + 0.5,
-            1 => 1.0 - phase,
-            2 => {
-                if phase < 0.5 {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            _ if phase <= 0.5 => phase * 2.0,
-            _ => (1.0 - phase) * 2.0,
-        };
-        [phase, level]
-    }))
 }
 
-fn envelope_detail(
+fn waveform_cycle(choice: u32) -> Result<[[f32; 2]; 256], hex_engine::Invalid> {
+    hex_engine::native_operator_waveform_preview(choice)
+        .map_err(|_| hex_engine::Invalid("could not prepare oscillator waveform preview"))
+        .map(|samples| {
+            std::array::from_fn(|index| {
+                [
+                    index as f32 / 255.0,
+                    (samples[index] * 0.5 + 0.5).clamp(0.0, 1.0),
+                ]
+            })
+        })
+}
+
+fn detail_caption(label: &'static str) -> Div {
+    hex_widgets::device_inline_caption(theme::text(label), super::control_style())
+        .h(px(7.0))
+        .text_size(px(7.0))
+        .line_height(px(7.0))
+        .overflow_hidden()
+}
+
+fn detail_field(
+    device: DeviceId,
+    parameter: ParameterId,
+    label: &'static str,
+    width: f32,
+    control: Div,
+) -> Stateful<Div> {
+    let selector = format!("operator-field-{}-{}", device.value(), parameter.value());
+    let caption_selector = format!("{selector}-label");
+    let value_selector = format!("{selector}-value");
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w(px(width))
+        .h(px(21.0))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            detail_caption(label)
+                .id(ElementId::Name(caption_selector.clone().into()))
+                .debug_selector(move || caption_selector.clone()),
+        )
+        // Constrain even long typed drafts to this field's own hit/paint bounds.
+        .child(
+            div()
+                .id(ElementId::Name(value_selector.clone().into()))
+                .debug_selector(move || value_selector.clone())
+                .w_full()
+                .h(px(14.0))
+                .overflow_hidden()
+                .child(control),
+        )
+}
+
+#[allow(clippy::too_many_arguments)] // Fixed multiplier shares the third inspector row.
+fn envelope_fields(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
-) -> Stateful<Div> {
+    multiplier: Option<Div>,
+) -> Div {
+    use super::numeric_display::NumericDisplayCodec as Codec;
     let base = 33 + operator as u32 * 6;
+    let companion = 357 + operator as u32 * 8;
     let labels = ["initial", "peak", "sustain", "attack", "decay", "release"];
-    let values = std::array::from_fn(|field| {
-        value(view, device, parameters, id(base + field as u32))
-            .and_then(|value| match value {
-                ParameterValue::Float(value) if value.is_finite() => Some(value),
-                _ => None,
-            })
-            .unwrap_or(0.0)
-    });
-    let graph = envelope::graph(view, cx, device, operator, values);
-    let mut fields = div().w_full().flex().flex_col().gap(px(2.0));
-    for indices in [[3, 4, 5], [0, 1, 2]] {
-        let mut row = div().w_full().flex().gap(px(3.0));
+    let mut fields = div().w_full().flex().flex_col();
+    for (indices, extra, label) in [
+        ([3, 4, 5], companion + 3, "time<vel"),
+        ([0, 1, 2], 74 + operator as u32, "vel"),
+    ] {
+        let mut row = div()
+            .w_full()
+            .h(px(21.0))
+            .flex_shrink_0()
+            .flex()
+            .gap(px(4.0));
         for field in indices {
-            row = row.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .child(section_title(labels[field]))
-                    .child(compact_control_with_codec(
-                        view,
-                        cx,
-                        device,
-                        identity,
-                        parameters,
-                        id(base + field as u32),
-                        ControlPresentation::InlineValue,
-                        None,
-                        Some(if field < 3 {
-                            super::numeric_display::NumericDisplayCodec::AmplitudeDb
-                        } else {
-                            super::numeric_display::NumericDisplayCodec::Seconds
-                        }),
-                    )),
+            let parameter = id(base + field as u32);
+            let control = compact_control_with_codec(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                parameter,
+                ControlPresentation::InlineValue,
+                None,
+                Some(if field < 3 {
+                    Codec::AmplitudeDb
+                } else {
+                    Codec::Seconds
+                }),
             );
+            row = row.child(detail_field(
+                device,
+                parameter,
+                labels[field],
+                46.0,
+                control,
+            ));
         }
-        fields = fields.child(row);
+        let control = compact_control_with_codec(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(extra),
+            ControlPresentation::InlineValue,
+            None,
+            Some(Codec::Percent),
+        );
+        fields = fields.child(row.child(detail_field(device, id(extra), label, 46.0, control)));
     }
-    div()
-        .id(ElementId::Name(
-            format!("operator-envelope-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-envelope-{}-{operator}", device.value()))
-        .w_full()
-        .h(px(160.0))
+    let loop_mode = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion + 5),
+        ControlPresentation::CompactSelector,
+        Some("loop"),
+    );
+    let loop_choice = value(view, device, parameters, id(companion + 5));
+    let loop_parameter = match loop_choice {
+        Some(ParameterValue::Choice(1)) => Some((
+            companion + 6,
+            "time",
+            ControlPresentation::InlineValue,
+            Some(Codec::Seconds),
+        )),
+        Some(ParameterValue::Choice(2 | 3)) => Some((
+            companion + 7,
+            "repeat",
+            ControlPresentation::CompactSelector,
+            None,
+        )),
+        _ => None,
+    };
+    let mut loop_cell = div()
+        .w(px(100.0))
+        .flex_shrink_0()
         .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(graph)
-        .child(div().h(px(16.0)).flex_shrink_0())
-        .child(fields)
+        .gap(px(4.0))
+        .child(detail_field(
+            device,
+            id(companion + 5),
+            "loop",
+            52.0,
+            loop_mode,
+        ));
+    if let Some((parameter, label, presentation, codec)) = loop_parameter {
+        let control = compact_control_with_codec(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(parameter),
+            presentation,
+            None,
+            codec,
+        );
+        loop_cell = loop_cell.child(detail_field(device, id(parameter), label, 44.0, control));
+    }
+    let key = compact_control_with_codec(
+        view,
+        cx,
+        device,
+        identity,
+        parameters,
+        id(companion + 4),
+        ControlPresentation::InlineValue,
+        None,
+        Some(Codec::Percent),
+    );
+    let mut row = div()
+        .w_full()
+        .h(px(21.0))
+        .flex_shrink_0()
+        .flex()
+        .gap(px(4.0))
+        .child(loop_cell)
+        .child(detail_field(device, id(companion + 4), "key", 46.0, key));
+    if let Some(multiplier) = multiplier {
+        row = row.child(detail_field(
+            device,
+            id(64 + operator as u32 * 3),
+            "multi",
+            46.0,
+            multiplier,
+        ));
+    }
+    fields.child(row)
 }
 
 fn routing_detail(
@@ -1028,17 +1256,11 @@ fn value(
 }
 
 pub(super) fn display_style() -> hex_widgets::ControlStyle {
-    let mut style = super::control_style();
-    style.background = DISPLAY_BACKGROUND;
-    style.rail = 0x242424;
-    style
+    theme::device_style(theme::DeviceStyleRole::Display)
 }
 
-fn section_title(label: &'static str) -> Div {
-    div()
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text(label))
+fn section_title(label: impl AsRef<str>) -> Div {
+    hex_widgets::device_inline_caption(theme::text(label), super::control_style())
 }
 
 fn lfo_detail(
@@ -1048,7 +1270,7 @@ fn lfo_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(4.0));
+    let mut content = div().w_full().h_full().flex().flex_col().gap(px(1.0));
     let sync = matches!(
         value(view, device, parameters, id(84)),
         Some(ParameterValue::Bool(true))
@@ -1056,9 +1278,41 @@ fn lfo_detail(
     // Shared widget entities must have exactly one rendered focus parent.
     // On/wave/active-rate/amount live in the summary; detail owns the remainder.
     for ids in [
-        &[84, if sync { 85 } else { 86 }][..],
-        &[88, 89, 90, 91, 92][..],
+        &[84, if sync { 85 } else { 86 }, 88][..],
+        &[89, 90, 91, 92][..],
     ] {
+        if ids[0] == 89 {
+            let selected = ["a", "b", "c", "d"]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, label)| {
+                    (value(view, device, parameters, id(89 + index as u32))
+                        == Some(ParameterValue::Bool(true)))
+                    .then_some(label)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            content = content.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(section_title("pitch destinations").debug_selector(move || {
+                        format!("operator-lfo-destinations-{}", device.value())
+                    }))
+                    .child(
+                        section_title(if selected.is_empty() {
+                            "selected: none".to_owned()
+                        } else {
+                            format!("selected: {selected}")
+                        })
+                        .debug_selector(move || {
+                            format!("operator-lfo-selected-{}-{selected}", device.value())
+                        }),
+                    ),
+            );
+        }
         let mut row = div().w_full().flex().items_center().gap(px(3.0));
         for parameter in ids {
             row = row.child(compact_control(
@@ -1090,6 +1344,10 @@ fn lfo_detail(
         }
         content = content.child(row);
     }
+    content = content.child(
+        section_title("100% = +/-12 st; pitch only")
+            .debug_selector(move || format!("operator-lfo-depth-{}", device.value())),
+    );
     content.id(ElementId::Name(
         format!("operator-lfo-detail-{}", device.value()).into(),
     ))
@@ -1112,26 +1370,41 @@ pub(super) fn lfo_summary(
     );
     let section = Section::Preview("lfo");
     let (focus, focused) = context::section_focus(view, cx, device, section);
-    let mut row = div()
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
         .on_children_prepainted(context::section_listener(view, cx, device, section))
         .id(ElementId::Name(
             format!("operator-preview-row-{}-lfo", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-preview-row-{}-lfo", device.value()))
         .w_full()
-        .px(px(4.0))
         .track_focus(&focus)
-        .bg(rgb(if focused {
-            RAIL_GUTTER
-        } else {
-            RAIL_BACKGROUND
-        }))
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
         .h(px(40.0))
         .flex()
         .items_center()
         .gap(px(2.0));
-    row = row.child(compact_control(
+    let active = view
+        .device_panel
+        .operator_pages
+        .entry(device)
+        .or_default()
+        .page;
+    let link_focus = navigation_focus(view, cx, device, NavigationTarget::Page(OperatorPage::Lfo));
+    let link = page_tab(
+        cx,
+        device,
+        context::Owner::capture(view, device),
+        OperatorPage::Lfo,
+        "lfo",
+        active,
+        link_focus,
+    )
+    .id(ElementId::Name(
+        format!("operator-lfo-link-{}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("operator-lfo-link-{}", device.value()))
+    .w(px(40.0))
+    .h(px(14.0));
+    let enabled = compact_control(
         view,
         cx,
         device,
@@ -1139,8 +1412,21 @@ pub(super) fn lfo_summary(
         parameters,
         id(82),
         ControlPresentation::CompactButton,
-        Some("lfo"),
-    ));
+        Some(""),
+    );
+    row = row.child(
+        div()
+            .w(px(40.0))
+            .flex_shrink_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(2.0))
+            .child(link)
+            .child(enabled),
+    );
     for (parameter, label) in [
         (83, "wave"),
         (if sync { 86 } else { 85 }, "rate"),
@@ -1154,6 +1440,103 @@ pub(super) fn lfo_summary(
             parameters,
             id(parameter),
             if matches!(parameter, 83 | 86) {
+                ControlPresentation::CompactSelector
+            } else {
+                ControlPresentation::MicroDial
+            },
+            Some(label),
+        ));
+    }
+    row
+}
+
+fn filter_detail(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let mut detail = div()
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(section_title("filter"));
+    for fields in [
+        &[(20_003, "slope"), (20_004, "circuit")][..],
+        &[(20_007, "morph")][..],
+    ] {
+        let mut row = div()
+            .w_full()
+            .h(px(48.0))
+            .flex()
+            .items_center()
+            .gap(px(3.0));
+        for &(parameter, label) in fields {
+            row = row.child(compact_control(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                id(parameter),
+                if parameter < 20_005 {
+                    ControlPresentation::CompactSelector
+                } else {
+                    ControlPresentation::MicroDial
+                },
+                Some(label),
+            ));
+        }
+        detail = detail.child(row);
+    }
+    detail.id(ElementId::Name(
+        format!("operator-filter-detail-{}", device.value()).into(),
+    ))
+}
+
+pub(super) fn filter_summary(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    device_view: &NativeDeviceView,
+) -> Stateful<Div> {
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: device_view.type_id,
+    };
+    let section = Section::Preview("filter");
+    let (focus, focused) = context::section_focus(view, cx, device, section);
+    let mut row = hex_widgets::device_grouped_row(super::device_layout_style(), focused)
+        .on_children_prepainted(context::section_listener(view, cx, device, section))
+        .id(ElementId::Name(
+            format!("operator-preview-row-{}-filter", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-preview-row-{}-filter", device.value()))
+        .track_focus(&focus)
+        .w_full()
+        .h(px(40.0))
+        .flex()
+        .items_center()
+        .gap(px(2.0));
+    for (parameter, label) in [
+        (20_001, "filter"),
+        (20_002, "type"),
+        (20_005, "freq"),
+        (20_006, "res"),
+    ] {
+        row = row.child(compact_control(
+            view,
+            cx,
+            device,
+            identity,
+            &device_view.parameters,
+            id(parameter),
+            if parameter == 20_001 {
+                ControlPresentation::CompactButton
+            } else if parameter < 20_005 {
                 ControlPresentation::CompactSelector
             } else {
                 ControlPresentation::MicroDial
@@ -1184,7 +1567,9 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
-        exposed.extend(82..=92);
+        exposed.extend(82..=388);
+        exposed.extend(20_001..=20_007);
+        exposed.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
                 if source != target {
@@ -1210,30 +1595,26 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 88);
+        assert_eq!(exposed.len(), 395);
         assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&92));
+        assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
             assert!(!exposed.contains(&diagonal));
         }
     }
 
     #[test]
-    fn waveform_cycle_preview_matches_selected_fundamental_shape() {
-        let sine = waveform_cycle(0).expect("sine preview");
-        let saw = waveform_cycle(1).expect("saw preview");
-        let square = waveform_cycle(2).expect("square preview");
-        let triangle = waveform_cycle(3).expect("triangle preview");
-        assert_eq!(sine.len(), 32);
-        assert_eq!(saw[0], [0.0, 1.0]);
-        assert_eq!(saw[31], [1.0, 0.0]);
-        assert_eq!(square[0][1], 1.0);
-        assert_eq!(square[31][1], 0.0);
-        assert!(
-            triangle
-                .iter()
-                .all(|[x, y]| (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y))
-        );
-        assert!(waveform_cycle(4).is_none());
+    fn waveform_previews_cover_the_catalog_and_reject_user_without_a_bank() {
+        for choice in (0..23).filter(|choice| *choice != 4) {
+            let points = waveform_cycle(choice).expect("builtin preview");
+            assert_eq!(points.len(), 256);
+            assert!(
+                points
+                    .iter()
+                    .all(|[x, y]| x.is_finite() && y.is_finite() && (0.0..=1.0).contains(y))
+            );
+        }
+        assert!(waveform_cycle(4).is_err());
+        assert!(waveform_cycle(23).is_err());
     }
 }

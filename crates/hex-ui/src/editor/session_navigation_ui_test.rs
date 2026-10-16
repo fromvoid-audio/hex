@@ -74,17 +74,19 @@ fn session_window(
     let (project, first_track, second_track, first_scene, _) = fixture();
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::MAX_RESIDENT_FRAMES).expect("disposable service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("test offline output".into()))
             });
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -110,8 +112,7 @@ fn worker_session_window(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Ed
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::MAX_RESIDENT_FRAMES).expect("disposable service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("test offline output".into()))
             });
@@ -514,4 +515,117 @@ fn failed_scene_duplicate_clears_its_pending_selection_intent(cx: &mut TestAppCo
 
 fn near(left: Pixels, right: Pixels) -> bool {
     (f32::from(left) - f32::from(right)).abs() <= 1.0
+}
+
+#[gpui::test]
+fn computer_keyboard_dispatch_reserves_notes_and_toggle_without_edit_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, _) = session_window(cx);
+    editor.update(cx, |view, _| {
+        view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[0].id());
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.simulate_keystrokes("m");
+    editor.read_with(&visual, |view, _| assert!(view.computer_keyboard.enabled));
+    for key in ["s", "l"] {
+        visual.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            is_held: false,
+        });
+    }
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.computer_keyboard.held()[2].unwrap().pitch, 62);
+        assert_eq!(view.computer_keyboard.held()[14].unwrap().pitch, 74);
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "s and l must not solo or change the loop"
+        );
+    });
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("s").unwrap(),
+        is_held: true,
+    });
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("shift-s").unwrap(),
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(view.computer_keyboard.held()[2].is_none())
+    });
+    visual.simulate_keystrokes("m");
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.computer_keyboard.enabled);
+        assert!(view.computer_keyboard.held().iter().all(Option::is_none));
+    });
+}
+
+#[gpui::test]
+fn computer_keyboard_preserves_text_focus_and_cancels_on_focus_loss(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = session_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, cx| {
+        window.activate_window();
+        editor.update(cx, |view, _| {
+            view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[0].id());
+        });
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("m");
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("a").unwrap(),
+        is_held: false,
+    });
+    let lease = editor.read_with(&visual, |view, _| {
+        view.computer_keyboard.input.as_ref().unwrap().clone()
+    });
+    visual.update(|_, cx| {
+        editor.update(cx, |view, cx| {
+            view.browser.open = true;
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.browser.search.read(cx).focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    assert!(
+        lease.is_cancelled(),
+        "focus loss must immediately cancel the active audio lease"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(view.computer_keyboard.held().iter().all(Option::is_none));
+        assert!(view.computer_keyboard.suspended);
+    });
+    visual.simulate_input("asmzcv");
+    editor.read_with(&visual, |view, cx| {
+        assert!(
+            view.computer_keyboard.enabled,
+            "typing m must not toggle the keyboard"
+        );
+        assert_eq!(view.browser.search.read(cx).content, "asmzcv");
+        assert_eq!(
+            (
+                view.computer_keyboard.base_pitch,
+                view.computer_keyboard.velocity
+            ),
+            (60, 100)
+        );
+    });
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    visual.run_until_parked();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("a").unwrap(),
+        is_held: true,
+    });
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.computer_keyboard.held()[0].is_none(),
+            "focus reset must not retrigger repeat"
+        )
+    });
 }

@@ -1,309 +1,363 @@
-//! Fixture-owned candidates composed inside a neutral shared host vocabulary.
+//! Real production slot compositions, populated with retained view-local controls.
 use super::*;
+use hex_widgets::{DeviceLayout, device_layout};
 
 impl Gallery {
-    pub(super) fn composition(
-        &self,
-        state_at: &impl Fn(usize) -> State,
-        live: bool,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let header_state = state_at(0);
-        let header = div()
-            .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .right(px(0.0))
-            .h(px(20.0))
-            .rounded_tl(px(3.0))
-            .rounded_tr(px(3.0))
-            .border_1()
-            .border_color(gpui::rgba(0))
-            .bg(rgb(if header_state == State::Selected {
-                SELECTED
-            } else {
-                BACKGROUND
-            }))
-            .text_color(rgb(style(header_state, true).text))
-            .px(px(4.0))
-            .flex()
-            .items_center()
-            .gap(px(3.0))
-            .child(
-                div()
-                    .size(px(7.0))
-                    .rounded_full()
-                    .bg(rgb(style(header_state, true).accent)),
-            )
-            .child(theme::text("device"));
-        let mut host = div()
-            .size_full()
-            .relative()
-            .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
-            .bg(rgb(BACKGROUND))
-            .border_1()
-            .border_color(rgb(BACKGROUND))
-            .text_color(rgb(style(header_state, false).text))
-            .child(self.target(header, 0, live, window, cx));
-        let section = |index, label: &str| {
-            let state = state_at(index);
-            div()
-                .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS))
-                .border_1()
-                .border_color(rgb(BACKGROUND))
-                .bg(rgb(if state == State::Selected {
-                    BACKGROUND
-                } else {
-                    DARK
-                }))
-                .text_color(rgb(style(state, false).text))
-                .p(px(3.0))
-                .child(theme::text(label))
+    pub(super) fn sample(&mut self, _: &Window, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let body = if let Some(fixture) = self.fixtures.get(&self.entry) {
+            fixture.sync(self.disabled, cx);
+            self.fixture_body(fixture, cx)
+        } else {
+            device_composition::unsupported_body(theme::text(
+                self.error.as_deref().unwrap_or("fixture unavailable"),
+            ))
         };
-        match self.family {
-            Family::Inspector => {
-                let left = section(1, "section a")
-                    .absolute()
-                    .top(px(22.0))
-                    .left(px(3.0))
-                    .w(px(68.0))
-                    .bottom(px(3.0));
-                let right = section(2, "section b")
-                    .absolute()
-                    .top(px(22.0))
-                    .right(px(3.0))
-                    .w(px(68.0))
-                    .bottom(px(3.0));
-                host = host
-                    .child(self.target(left, 1, live, window, cx))
-                    .child(self.target(right, 2, live, window, cx));
-                // The light surround is painted after the neighboring sections and
-                // header, so it pushes both aside without changing their geometry.
-                let screen = div()
-                    .absolute()
-                    .top(px(3.0))
-                    .bottom(px(2.0))
-                    .left(px(69.0))
-                    .right(px(69.0))
-                    .rounded(px(5.0))
-                    .bg(rgb(BACKGROUND))
-                    .p(px(3.0))
-                    .when(live, |panel| {
-                        panel.debug_selector(|| "inspector-surround".into())
-                    })
-                    .child(
-                        div()
-                            .size_full()
-                            .rounded(px(3.0))
-                            .bg(rgb(DISPLAY))
-                            .p(px(3.0))
-                            .when(live, |panel| {
-                                panel.debug_selector(|| "inspector-screen".into())
-                            })
-                            .child(theme::text("inspector"))
-                            .child(div().h(px(1.0)).mt(px(24.0)).bg(rgb(
-                                if header_state == State::Disabled {
-                                    0x555555
-                                } else {
-                                    MUTED
-                                },
-                            )))
-                            .child(theme::text(match self.selected {
-                                Some(1) => "section a",
-                                Some(2) => "section b",
-                                _ => "selection",
-                            })),
-                    );
-                host = host.child(screen.id("inspector-shield").occlude().on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|_, _, _, cx| cx.stop_propagation()),
-                ));
-            }
-            Family::RaisedTabs => {
-                let active = if live {
-                    self.active_tab
-                } else if state_at(2) == State::Selected {
-                    2
+        let body = body.debug_selector(|| "fixture-body".into());
+        let actions = hex_widgets::device_action(
+            theme::text(if self.bypassed { "⊘" } else { "●" }),
+            theme::device_header_action_style(
+                self.selected,
+                if self.bypassed {
+                    theme::DeviceActionRole::Muted
                 } else {
-                    1
-                };
-                let mut tabs = div()
-                    .absolute()
-                    .top(px(3.0))
-                    .left(px(70.0))
-                    .right(px(3.0))
-                    .h(px(20.0))
-                    .flex()
-                    .gap(px(2.0));
-                for (index, label) in [(1, "page a"), (2, "page b")] {
-                    let active_page = index == active;
-                    let tab = div()
-                        .w(px(68.0))
-                        .h(px(20.0))
-                        .border_1()
-                        .border_color(gpui::rgba(0))
-                        .child(
-                            div()
-                                .h(px(if active_page { 20.0 } else { 14.0 }))
-                                .mt(px(if active_page { 0.0 } else { 2.0 }))
-                                .rounded_tl(px(if active_page { 4.0 } else { 2.0 }))
-                                .rounded_tr(px(if active_page { 4.0 } else { 2.0 }))
-                                .when(!active_page, |shape| {
-                                    shape.rounded_bl(px(2.0)).rounded_br(px(2.0))
-                                })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .line_height(px(12.0))
-                                .when(live, |shape| {
-                                    shape.debug_selector(move || {
-                                        if index == 1 {
-                                            "page-a-shape"
-                                        } else {
-                                            "page-b-shape"
-                                        }
-                                        .into()
-                                    })
-                                })
-                                .bg(rgb(if active_page { DISPLAY } else { DARK }))
-                                .text_color(rgb(style(state_at(index), false).text))
-                                .px(px(3.0))
-                                .child(
-                                    div()
-                                        .when(live, |label| {
-                                            label.debug_selector(move || {
-                                                if index == 1 {
-                                                    "page-a-label"
-                                                } else {
-                                                    "page-b-label"
-                                                }
-                                                .into()
-                                            })
-                                        })
-                                        .child(theme::text(label)),
-                                ),
-                        );
-                    tabs = tabs.child(self.target(tab, index, live, window, cx));
+                    theme::DeviceActionRole::Normal
+                },
+            ),
+        )
+        .id("fixture-header-bypass")
+        .debug_selector(|| "fixture-header-bypass".into())
+        .cursor_pointer()
+        .on_click(cx.listener(|view, _, _, cx| {
+            if !view.disabled {
+                view.bypassed = !view.bypassed;
+                cx.notify();
+            }
+        }));
+        hex_widgets::device_frame(
+            theme::text(format!("{} · fixture", self.entry.label())),
+            theme::device_frame_style(self.selected),
+            actions,
+            body,
+        )
+        .id("catalog-card")
+        .debug_selector(|| "catalog-card".into())
+        .track_focus(&self.header_focus)
+        .w(px(self.entry.width()))
+        .h(px(device_composition::BODY_HEIGHT
+            + hex_widgets::DEVICE_FRAME_HEADER_HEIGHT
+            + 2.0))
+        .flex_shrink_0()
+        .capture_any_mouse_down(cx.listener(
+            |view, event: &gpui::MouseDownEvent, _, cx| {
+                if event.button == gpui::MouseButton::Left && !view.disabled {
+                    view.selected = true;
+                    cx.notify();
                 }
-                let screen = div()
-                    .absolute()
-                    .top(px(21.0))
-                    .left(px(3.0))
-                    .right(px(3.0))
-                    .bottom(px(3.0))
-                    .rounded(px(3.0))
-                    .bg(rgb(DISPLAY))
-                    .p(px(6.0))
-                    .when(live, |panel| {
-                        panel.debug_selector(|| "tabbed-screen".into())
-                    })
-                    .child(theme::text(if active == 1 {
-                        "page a · screen"
-                    } else {
-                        "page b · screen"
-                    }))
-                    .child(div().h(px(1.0)).mt(px(28.0)).bg(rgb(
-                        if header_state == State::Disabled {
-                            0x555555
-                        } else {
-                            MUTED
-                        },
-                    )));
-                // Inverse corners join the raised tab to the screen: a dark
-                // square behind a rounded header-colored cutout creates the
-                // inward curve that ordinary tab corner rounding cannot draw.
-                let active_left = 71.0 + (active - 1) as f32 * 70.0;
-                let header_fill = if header_state == State::Selected {
-                    SELECTED
-                } else {
-                    BACKGROUND
-                };
-                let junction = |left: bool| {
-                    div()
-                        .absolute()
-                        .top(px(17.0))
-                        .left(px(if left {
-                            active_left - 4.0
-                        } else {
-                            active_left + 66.0
-                        }))
-                        .size(px(4.0))
-                        .bg(rgb(DISPLAY))
-                        .when(live, |corner| {
-                            corner.debug_selector(move || {
-                                if left {
-                                    "tab-junction-left"
-                                } else {
-                                    "tab-junction-right"
-                                }
-                                .into()
-                            })
-                        })
-                        .child(
-                            div()
-                                .size_full()
-                                .bg(rgb(header_fill))
-                                .when(left, |cutout| cutout.rounded_br(px(4.0)))
-                                .when(!left, |cutout| cutout.rounded_bl(px(4.0))),
-                        )
-                };
-                host = host
-                    .child(screen)
-                    .child(tabs)
-                    .child(junction(true))
-                    .child(junction(false));
-            }
-            Family::SplitScreen => {
-                let upper = div()
-                    .absolute()
-                    .top(px(22.0))
-                    .left(px(3.0))
-                    .right(px(3.0))
-                    .h(px(49.0))
-                    .rounded_tl(px(4.0))
-                    .rounded_tr(px(4.0))
-                    .bg(rgb(DISPLAY))
-                    .border_1()
-                    .border_color(rgb(DISPLAY))
-                    .p(px(4.0))
-                    .child(theme::text("screen"));
-                let lower = section(2, "controls")
-                    .border_color(rgb(if state_at(2) == State::Selected {
-                        BACKGROUND
-                    } else {
-                        DARK
-                    }))
-                    .absolute()
-                    .top(px(71.0))
-                    .left(px(3.0))
-                    .right(px(3.0))
-                    .bottom(px(3.0))
-                    .rounded_tl(px(0.0))
-                    .rounded_tr(px(0.0));
-                host = host
-                    .child(self.target(upper, 1, live, window, cx))
-                    .child(self.target(lower, 2, live, window, cx));
-            }
-            Family::SplitSections => {
-                let upper = section(1, "long section")
-                    .absolute()
-                    .top(px(22.0))
-                    .left(px(3.0))
-                    .right(px(3.0))
-                    .h(px(59.0));
-                let lower = section(2, "short section")
-                    .absolute()
-                    .top(px(83.0))
-                    .left(px(3.0))
-                    .right(px(3.0))
-                    .bottom(px(3.0));
-                host = host
-                    .child(self.target(upper, 1, live, window, cx))
-                    .child(self.target(lower, 2, live, window, cx));
-            }
-            _ => {}
-        }
-        host
+            },
+        ))
     }
+    fn fixture_body(&self, fixture: &Fixture, cx: &mut Context<Self>) -> Div {
+        // Track/Return are ownership labels around the exact same effect body.
+        // No per-owner geometry, widget state or style branch is allowed here.
+        match self.entry {
+            Entry::Vector => self.vector_body(fixture, cx),
+            Entry::Utility => {
+                let input = device_composition::rail_column()
+                    .w(px(64.0))
+                    .h_full()
+                    .justify_between()
+                    .child(hex_widgets::device_caption(
+                        theme::text("input"),
+                        theme::device_style(theme::DeviceStyleRole::Control),
+                    ))
+                    .child(
+                        device_layout(DeviceLayout::Row)
+                            .gap(px(2.0))
+                            .child(fixture.toggle(0, 31.0))
+                            .child(fixture.toggle(1, 31.0)),
+                    )
+                    .child(fixture.selector(0, 64.0))
+                    .child(fixture.number(0))
+                    .child(fixture.toggle(2, 64.0))
+                    .child(fixture.toggle(3, 64.0))
+                    .child(fixture.number(3));
+                let output = device_composition::rail_column()
+                    .w(px(64.0))
+                    .h_full()
+                    .justify_between()
+                    .child(hex_widgets::device_caption(
+                        theme::text("output"),
+                        theme::device_style(theme::DeviceStyleRole::Control),
+                    ))
+                    .child(fixture.number(1))
+                    .child(fixture.number(2))
+                    .child(
+                        device_layout(DeviceLayout::Row)
+                            .gap(px(2.0))
+                            .child(fixture.toggle(4, 31.0))
+                            .child(fixture.toggle(5, 31.0)),
+                    );
+                device_composition::utility(input, output)
+            }
+            Entry::Saturator => device_composition::stacked_plot(
+                fixture.selector(0, 120.0),
+                graph(fixture),
+                caption("normalized fixture curve"),
+                device_composition::control_row()
+                    .h(px(52.0))
+                    .flex_shrink_0()
+                    .justify_between()
+                    .child(fixture.number(0))
+                    .child(fixture.number(1))
+                    .child(fixture.number(2)),
+            ),
+            Entry::Eq8 => {
+                let mut bands = device_composition::rail_column()
+                    .w(px(96.0))
+                    .h_full()
+                    .gap(px(1.0))
+                    .child(caption("bands"));
+                for index in 0..8 {
+                    bands = bands.child(
+                        hex_widgets::device_compact_row(
+                            theme::device_style(theme::DeviceStyleRole::Layout),
+                            index == self.active_tab,
+                        )
+                        .w(px(92.0))
+                        .h(px(17.0))
+                        .child(
+                            hex_widgets::device_inline_caption(
+                                theme::text((index + 1).to_string()),
+                                theme::device_style(theme::DeviceStyleRole::Control),
+                            )
+                            .w(px(10.0)),
+                        )
+                        .child(fixture.toggle(index, 18.0))
+                        .child(fixture.selector(index, 64.0)),
+                    );
+                }
+                let toolbar = device_layout(DeviceLayout::Row)
+                    .h(px(16.0))
+                    .items_center()
+                    .child(fixture.selector(8, 64.0));
+                let mut controls = device_composition::control_row().h(px(40.0)).gap(px(2.0));
+                for index in 0..4 {
+                    controls = controls.child(fixture.number(index));
+                }
+                device_composition::split_body(
+                    device_composition::compact_rail(bands)
+                        .w(px(96.0))
+                        .flex_shrink_0(),
+                    device_composition::plot_column(toolbar, graph(fixture), controls),
+                )
+            }
+            Entry::Compressor => {
+                let rail = device_composition::dense_rail(
+                    device_composition::rail_column()
+                        .w(px(64.0))
+                        .child(fixture.number(0))
+                        .child(fixture.number(1))
+                        .child(fixture.number(2)),
+                )
+                .w(px(64.0))
+                .flex_shrink_0();
+                let toolbar = device_layout(DeviceLayout::Row)
+                    .h(px(14.0))
+                    .justify_between()
+                    .child(fixture.number(3))
+                    .child(fixture.number(4));
+                device_composition::split_body(
+                    rail,
+                    device_composition::plot_column(
+                        toolbar,
+                        graph(fixture),
+                        device_layout(DeviceLayout::Row)
+                            .h(px(14.0))
+                            .child(fixture.number(5)),
+                    ),
+                )
+            }
+            Entry::Gate => device_composition::paired_rails(
+                device_composition::rail_column().children((0..3).map(|i| fixture.number(i))),
+                device_composition::rail_column().children((3..6).map(|i| fixture.number(i))),
+            ),
+            Entry::AutoPan => device_composition::centered_rails(device_composition::dense_rail(
+                device_composition::rail_column().children((0..3).map(|i| fixture.number(i))),
+            )),
+            Entry::Instrument | Entry::Effect => {
+                div().w_full().h(px(device_composition::BODY_HEIGHT)).child(
+                    device_composition::wrapped_body(
+                        (0..3)
+                            .map(|i| fixture.number(i))
+                            .chain([fixture.toggle(0, 136.0), fixture.selector(0, 136.0)]),
+                    )
+                    .id("fixture-generic-body")
+                    .overflow_y_scroll(),
+                )
+            }
+            Entry::Unsupported => device_composition::unsupported_body(theme::text(
+                "unsupported fixture state · shared recoverable display",
+            )),
+            Entry::Parts => {
+                let rail = device_composition::dense_rail(
+                    device_composition::rail_column()
+                        .w(px(64.0))
+                        .children((0..3).map(|i| fixture.number(i))),
+                )
+                .w(px(64.0))
+                .flex_shrink_0();
+                device_composition::split_body(
+                    rail,
+                    device_composition::plot_column(
+                        fixture.selector(0, 64.0),
+                        graph(fixture),
+                        fixture.toggle(0, 40.0),
+                    ),
+                )
+            }
+        }
+    }
+    fn vector_body(&self, fixture: &Fixture, cx: &mut Context<Self>) -> Div {
+        let style = theme::device_style(theme::DeviceStyleRole::Layout);
+        let mut shell = hex_widgets::device_rail(style)
+            .w(px(device_composition::VECTOR_SHELL_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .pr(px(4.0));
+        let mut preview = hex_widgets::device_rail(style)
+            .w(px(device_composition::VECTOR_PREVIEW_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .pl(px(2.0));
+        for row in 0..4 {
+            let operator = 3 - row;
+            shell = shell.child(
+                hex_widgets::device_grouped_row(
+                    style,
+                    !self.disabled && self.section == Some(operator),
+                )
+                .id(("fixture-shell-row", operator))
+                .debug_selector(move || format!("fixture-shell-row-{operator}"))
+                .capture_any_mouse_down(cx.listener(
+                    move |view, event: &gpui::MouseDownEvent, _, cx| {
+                        if event.button == gpui::MouseButton::Left && !view.disabled {
+                            view.section = Some(operator);
+                            cx.notify();
+                        }
+                    },
+                ))
+                .h(px(40.0))
+                .justify_between()
+                .child(fixture.number(operator * 3))
+                .child(fixture.number(operator * 3 + 1))
+                .child(fixture.toggle(operator, 18.0))
+                .child(fixture.number(operator * 3 + 2))
+                .child(hex_widgets::device_badge(
+                    theme::text(["a", "b", "c", "d"][operator]),
+                    theme::device_identity_style(operator, !self.disabled, false),
+                )),
+            );
+            preview = preview.child(
+                hex_widgets::device_grouped_row(
+                    style,
+                    !self.disabled && self.section == Some(4 + row),
+                )
+                .id(("fixture-preview-row", row))
+                .debug_selector(move || format!("fixture-preview-row-{row}"))
+                .capture_any_mouse_down(cx.listener(
+                    move |view, event: &gpui::MouseDownEvent, _, cx| {
+                        if event.button == gpui::MouseButton::Left && !view.disabled {
+                            view.section = Some(4 + row);
+                            cx.notify();
+                        }
+                    },
+                ))
+                .h(px(40.0))
+                .justify_between()
+                .child(
+                    div()
+                        .w(px(44.0))
+                        .flex_shrink_0()
+                        .child(caption(["lfo", "filter", "pitch env", "global"][row])),
+                )
+                .children((0..3).map(|column| fixture.number(12 + row * 3 + column))),
+            );
+        }
+        let tabs = self.tabs(cx);
+        let detail = device_composition::rail_column()
+            .h(px(160.0))
+            .child(div().h(px(86.0)).flex_shrink_0().child(graph(fixture)))
+            .child(div().h(px(16.0)).flex_shrink_0())
+            .child(caption(if self.active_tab == 0 {
+                "envelope · fixture"
+            } else {
+                "oscillator · fixture"
+            }))
+            .child(
+                device_layout(DeviceLayout::Row)
+                    .child(fixture.number(24))
+                    .child(fixture.number(25)),
+            );
+        device_composition::three_pane(
+            shell,
+            device_composition::tabbed_detail(detail, tabs),
+            preview,
+        )
+    }
+    fn tabs(&self, cx: &mut Context<Self>) -> Div {
+        let mut tabs = device_layout(DeviceLayout::Row)
+            .w_full()
+            .h(px(16.0))
+            .justify_between();
+        for (index, label) in ["envelope", "oscillator"].into_iter().enumerate() {
+            tabs = tabs.child(
+                hex_widgets::panel_tab(
+                    theme::text(label),
+                    self.active_tab == index,
+                    theme::device_style(theme::DeviceStyleRole::Display),
+                )
+                .id(label)
+                .debug_selector(move || label.into())
+                .track_focus(&self.page_focus[index])
+                .w(px(90.0))
+                .h(px(16.0))
+                .cursor_pointer()
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    if !view.disabled && view.finish_drafts(cx) {
+                        view.active_tab = index;
+                        view.page_focus[index].focus(window);
+                        cx.notify();
+                    }
+                }))
+                .on_key_down(cx.listener(
+                    move |view, event: &KeyDownEvent, window, cx| {
+                        if view.disabled {
+                            return;
+                        }
+                        match event.keystroke.key.as_str() {
+                            "enter" | "space" if view.finish_drafts(cx) => view.active_tab = index,
+                            "left" | "right" => view.page_focus[1 - index].focus(window),
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    },
+                )),
+            );
+        }
+        tabs
+    }
+}
+fn caption(label: &str) -> Div {
+    hex_widgets::device_caption(
+        theme::text(label),
+        theme::device_style(theme::DeviceStyleRole::Control),
+    )
+}
+fn graph(fixture: &Fixture) -> Div {
+    div()
+        .w_full()
+        .h_full()
+        .min_h_0()
+        .child(fixture.graph.clone())
 }

@@ -15,6 +15,23 @@ result is consumed, or until an abandoned late output and any retained stream
 lease have retired. Device setup and stream disposal stay off the audio callback
 and caller thread.
 
+The staged service integration also provides `WorkerPreparedOutput`: its native
+factory reserves paired client/publication terminal destinations before CPAL
+exposure. Configure its virgin Root before `take_client()`; the returned move-only
+`prepared::Client` has bounded scalar/command methods and borrowed observations.
+Closing it transfers the complete endpoint bundle for lifecycle destruction and
+leaves an inert token. Worker publication and graph cleanup can finish while the
+client remains live; final native resource/lease release waits for its actual
+endpoint Drop. Session/desktop integration of this factory is still in progress;
+see [source/service integration](../../docs/streamed-session-source-plan.md).
+
+Worker publication can reserve and start a pending source constructor directly
+inside one of the same two Root domain slots, then poll complete verification and
+in-place sealing. It returns only a nonowning slot/incarnation token. Cancellation
+and close preserve its actual pair and prebound cleanup capsule for lifecycle
+join/destruction; reuse waits for the final report. No page endpoint is exposed
+before sealing, and queue refusal/terminal closure cannot discard a live owner.
+
 `prepared::Control` publishes a fixed-size `Playback` wrapper through a one-slot
 queue and keeps publication admission closed until the callback accepts or
 returns that candidate. Session route commands share the bounded command queue
@@ -76,6 +93,26 @@ unchanged control entries plus snapshot reads. Render/validation checks stay
 outside timing; no CPAL stream is opened. See docs/performance.md for methodology,
 retained outliers and the separate physical deadline gate.
 
+## Browser sample preview
+
+`prepared::Control::sample_preview` accepts finite, output-rate `Audio` prepared
+on a background worker. `request` silences older generations before decoding;
+`publish` coalesces a latest pending owner behind the one-slot input queue.
+The existing callback adds the one-shot at unity after project master output,
+including while project transport is stopped or paused. Project Stop is separate.
+Two return slots carry exhausted/stale PCM to the ordinary control reclamation
+poll; full return storage retains ownership and stale PCM stays silent. Shutdown
+waits for preview owners too. No extra stream, callback allocation, locking or
+final PCM drop is needed. The media decoder and browser input remain outside
+this crate. See [runtime](../../docs/runtime.md#browser-sample-playback--pulse2637--pr254).
+
+The strict worker factory uses the same analysis implementation at the actual
+fixed device rate, with a private actual Capture/Reader/Reaper receipt. Its Reader
+is part of Client's terminal bundle; the Reaper stays in persistent lifecycle
+custody until normal join, retaining the first worker panic without retry. Generic
+`spawn_spectrum_worker` callers retain dynamic-rate analysis and do not gain this
+native constructor receipt. See [source/service integration](../../docs/streamed-session-source-plan.md#capture-enabled-native-boundary).
+
 ## Output spectrum analysis
 
 `spectrum` provides the fixed 4096-frame stereo FFT kernel; `spectrum_worker`
@@ -114,7 +151,15 @@ headless microbenchmark, not a physical-device deadline or native UI test.
 
 ## Dependencies
 
-hex-engine; CPAL for CoreAudio output; rtrb for SPSC commands. Tests use
+The narrow `hex-media` dev dependency opens real verified WAV fixtures for actual
+catalog/source association tests. Production media decoding remains in
+`hex-stream`; audio gains no media/file I/O dependency or callback decoding.
+
+hex-engine; hex-stream for exact catalog/pair custody and control-side stream
+disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow production
+stream edge supplies one sealed exact-domain endpoint to the opted-in constructor
+renderer under its real readiness transaction. Legacy callers remain unchanged.
+Tests use
 hex-project as a dev-dependency to build canonical prepared revisions for the
 callback boundary. The non-default `allocation-probe` feature also activates
 hex-engine's hidden `instrument-test-support` preparation seam and uses
@@ -148,3 +193,92 @@ backend telemetry. This observational FFT is separate from musical device DSP
 in `hex-devices`; construction and analysis belong on control/worker threads.
 It does not capture audio, own a rolling stream window, schedule a worker or
 render a UI. See [spectrum analysis](../../docs/spectrum-analysis.md).
+
+
+## Delivered gain recording
+
+`gain_recording` owns bounded value/receipt rings:64 outstanding ordinary events,
+independent terminal reservation, and1022 events per take. Targets bind stable
+track and project/audio/transport/gesture identities. Callback consumption applies
+only the latest boundary value; superseded events release credits without an
+applied receipt. `finish_gain_recording_quantum` runs after native conversion and
+write, deferring acknowledgments until the compensated sample reaches Main.
+Failed output, transport reset and cancellation abort the uncommitted take.
+Priority Stop stays independent of queue saturation. No record or receipt owns a
+graph, allocates, blocks or drops final owners in the callback. Take normalization
+and saved history belong to session/project. See
+[gain recording](../../docs/gain-touch-spans.md) for quantum and physical-delivery
+limits and selected headless allocation coverage.
+
+## never-installed candidate custody
+
+`Control::stage_audio_candidate` accepts an opaque constructor-owned candidate
+only with the real native terminal receiver already anchored. The existing queue
+returns this admission-pending variant before installation; legacy publication
+behavior is unchanged. Persistent slots retain root/runtime identities, actual
+catalog leases/pairs and original-bank recovery until normal lifecycle-worker
+destruction. UI return ingestion/polling cannot invoke the new worker join or
+candidate destructors; READY recovery moves the already-restored bank only.
+Coupled callback guards move their exact Boxes to control after both final
+releases; build errors after backend exposure remain uncertain. No complete-cost,
+native admission or final-active quiescence claim follows. See
+[never-installed disposal](../../docs/never-installed-audio-disposal.md).
+
+The initial PR235 final-active constructor path retains the same private
+owner/Stamp in the single active-slot enum. Only coupled final native release
+plus the exact completed stream-handle frontier can return it for control
+disposal. That disposal-only path still refuses production admission; its
+headless cfg(test) override exercises actual playback. PR236's separately
+opted-in eligible constructor and PR237 readiness supply the bounded native path. A final result follows normal runtime,
+carrier, catalog and pool cleanup, never pause/ACK alone or OS-stop inference.
+See [final-active disposal](../../docs/final-active-audio-disposal.md) for the
+closed audio-only ownership class, retained Unknowns and evidence limits.
+
+
+## exact streamed chunk readiness
+
+The pre-first-accept streaming opt-in reserves finite actual per-runtime demand
+backing. Same-owner/context/predecessor/command-prefix readiness gates initial
+and replacement installs and every streamed chunk. Unready chunks BUFFER without
+clock/DSP advance, retaining prior committed PCM; real Pause/priority Stop pass
+pending Play. Both normal and observed renders share protected-page transactions.
+Mutable native runtime metadata reduces the existing 32 MiB runtime allowance as
+well as caller DATA budgets. Seek/launch and actual UI composition remain deferred.
+See [native streamed readiness](../../docs/streamed-native-readiness.md).
+
+The four-terminal output also reserves one Resident compatibility forwarding
+cell. Client submission is nonblocking and returns a request token; the Session
+worker publishes after taking the payload outside the cell mutex, and returns
+either the actual submitted revision or the unchanged owning refusal. The
+callback applied revision remains a third, separate observation. The cell holds
+at most one request/result and is charged as its actual payload plus a paired
+opaque Arc/Mutex resource. Verified constructor configuration requires its
+virgin state and seals owning Playback admission before Client exposure. It
+never becomes a fallback for a Verified generation.
+
+PR239's worker preparation reserves one existing opted-in runtime/archive cell
+before collecting a native input bank. The checked preparation token is not a
+publication ticket. Source rows, original bank, preparation custody, draft and
+completed unpublished owner stay in that cell under dedicated work custody;
+no ordinary bank or terminal lock spans source copies, compilation or cleanup.
+The caller's finite DATA/peak, member/transfer and handle reservations remain
+occupied through cancellation, close, refusal and sticky failures. Normal
+lifecycle cleanup destroys the original sources and emptied wrappers before
+vacancy; it never fabricates a NeverInstalled receipt for unpublished work.
+Queue staging borrows that same rooted owner through preflight and reserves the
+actual publication entry before the nonfallible Runtime/anchor split. Queue
+pressure preserves the preparation token, slot/incarnation, original bank and
+owner for retry; accepted work replaces its conservative reservation with actual
+charges without releasing domain coverage. Empty construction wrappers are
+reclaimed on the lifecycle worker before slot reuse. A source domain started
+after graph reservation can be bound once into the same cell, retaining the
+actual pair until graph cleanup and its pool report complete. The Desktop
+adapter remains subsequent PR239 integration work.
+
+The split Client also exposes Resident conditional-runtime cancellation through
+the existing one-slot forwarding cell. It borrows the exact submitted revision's
+atomic decision without cloning an owner into UI custody. Contention is Busy;
+stale/no-longer-retained revisions are UnknownRevision, and callback Applying or
+Complete remains distinct from cancellation. Mirror replacement/destruction is
+worker-side outside the slot mutex. Verified opt-in still requires the virgin
+empty cell and never admits these owning Resident requests.

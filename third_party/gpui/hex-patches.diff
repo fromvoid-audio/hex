@@ -1,9 +1,15 @@
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -120,6 +120,12 @@
+@@ -120,6 +120,18 @@
  }
 
  impl TestAppContext {
++    /// Verify private cached-scene replay against the retained legacy painter.
++    /// Test support only; no window, native graphics or public scene API.
++    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
++        crate::scene::verify_bulk_replay()
++    }
++
 +    /// Cursor last delivered to the test platform, independent of hit testing.
 +    /// This is not evidence of physical native cursor appearance.
 +    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
@@ -13,7 +19,7 @@
      /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
      pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
          let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -675,6 +681,29 @@
+@@ -675,6 +687,51 @@
  }
 
  impl VisualTestContext {
@@ -23,7 +29,8 @@
 +        self.update(|window, _| window.rendered_frame.cursor_style(window))
 +    }
 +
-+    /// Background of the last painted quad exactly matching a debug element's bounds.
++    /// Background of the last filled quad exactly matching a debug element's bounds.
++    /// Border-only quads have transparent fills and do not replace the surface.
 +    /// Reads the completed scene without drawing or injecting pointer events.
 +    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
 +        self.update(|window, _| {
@@ -35,14 +42,102 @@
 +                .quads
 +                .iter()
 +                .rev()
-+                .find(|quad| quad.bounds == scaled)
++                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
 +                .map(|quad| quad.background)
++        })
++    }
++
++    /// Rounded geometry and ancestor mask of the last filled scene quad matching
++    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
++    /// GPU framebuffer or native display readback.
++    pub fn rendered_surface_geometry(
++        &mut self,
++        selector: &'static str,
++    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
++                .map(|quad| (quad.corner_radii, quad.content_mask.bounds))
 +        })
 +    }
 +
      /// Provides a `Window` and `App` for the duration of the closure.
      pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
          self.cx
+--- a/src/bounds_tree.rs
++++ b/src/bounds_tree.rs
+@@ -33,11 +33,27 @@
+     }
+
+     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
++        self.insert_with_order(new_bounds, None)
++    }
++
++    /// Reserve an ordered interval for an already ordered replay subtree.
++    /// Check arithmetic before insertion mutates bounds, nodes or traversal state.
++    pub fn reserve(&mut self, bounds: Bounds<U>, span: u32) -> Option<u32> {
++        let previous_max = self.root.map_or(0, |root| self.nodes[root].max_ordering());
++        let base = previous_max.checked_add(1)?;
++        let ceiling = base.checked_add(span)?;
++        ceiling.checked_add(1)?; // Leave room for a following live insertion.
++        self.insert_with_order(bounds, Some(ceiling));
++        Some(base)
++    }
++
++    fn insert_with_order(&mut self, new_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
+         // If the tree is empty, make the root the new leaf.
+         if self.root.is_none() {
+-            let new_node = self.push_leaf(new_bounds, 1);
++            let order = reserved.unwrap_or(1);
++            let new_node = self.push_leaf(new_bounds, order);
+             self.root = Some(new_node);
+-            return 1;
++            return order;
+         }
+
+         // Search for the best place to add the new leaf based on heuristics.
+@@ -64,12 +80,16 @@
+                 .union(self.nodes[right].bounds())
+                 .half_perimeter();
+             if left_cost < right_cost {
+-                max_intersecting_ordering =
+-                    self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
++                if reserved.is_none() {
++                    max_intersecting_ordering =
++                        self.find_max_ordering(right, &new_bounds, max_intersecting_ordering);
++                }
+                 index = left;
+             } else {
+-                max_intersecting_ordering =
+-                    self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
++                if reserved.is_none() {
++                    max_intersecting_ordering =
++                        self.find_max_ordering(left, &new_bounds, max_intersecting_ordering);
++                }
+                 index = right;
+             }
+         }
+@@ -87,11 +107,11 @@
+         else {
+             unreachable!();
+         };
+-        if sibling_bounds.intersects(&new_bounds) {
++        if reserved.is_none() && sibling_bounds.intersects(&new_bounds) {
+             max_intersecting_ordering = cmp::max(max_intersecting_ordering, *sibling_ordering);
+         }
+
+-        let ordering = max_intersecting_ordering + 1;
++        let ordering = reserved.unwrap_or_else(|| max_intersecting_ordering + 1);
+         let new_node = self.push_leaf(new_bounds, ordering);
+         let new_parent = self.push_internal(sibling, new_node);
+
 --- a/src/interactive.rs
 +++ b/src/interactive.rs
 @@ -361,6 +361,10 @@
@@ -504,6 +599,768 @@
          | CursorStyle::ResizeLeftRight
          | CursorStyle::ResizeColumn => (&SIZEWE, IDC_SIZEWE),
          CursorStyle::ResizeUp
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -65,7 +65,7 @@
+     }
+
+     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
+-        let mut primitive = primitive.into();
++        let primitive = primitive.into();
+         let clipped_bounds = primitive
+             .bounds()
+             .intersect(&primitive.content_mask().bounds);
+@@ -79,6 +79,10 @@
+             .last()
+             .copied()
+             .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
++        self.append_primitive(primitive, order);
++    }
++
++    fn append_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
+         match &mut primitive {
+             Primitive::Shadow(shadow) => {
+                 shadow.order = order;
+@@ -115,6 +119,127 @@
+     }
+
+     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
++        if self.try_bulk_replay(range.clone(), prev_scene) {
++            return;
++        }
++        self.replay_legacy(range, prev_scene);
++    }
++
++    // A cached subtree can retain its internal painter ordering. Reserving one
++    // conservative union adds ordering constraints only between disjoint areas;
++    // overlapping primitives and mixed-kind ties retain their original order.
++    // Refused paths must not mutate any scene or bounds-tree state.
++    fn try_bulk_replay(&mut self, range: Range<usize>, prev_scene: &Scene) -> bool {
++        if !self.layer_stack.is_empty() {
++            return false;
++        }
++        let Some(operations) = prev_scene.paint_operations.get(range.clone()) else {
++            return false;
++        };
++        let mut depth = 0_usize;
++        for operation in &prev_scene.paint_operations[..range.start] {
++            match operation {
++                PaintOperation::StartLayer(_) => {
++                    let Some(next) = depth.checked_add(1) else {
++                        return false;
++                    };
++                    depth = next;
++                }
++                PaintOperation::EndLayer => {
++                    let Some(next) = depth.checked_sub(1) else {
++                        return false;
++                    };
++                    depth = next;
++                }
++                PaintOperation::Primitive(_) => {}
++            }
++        }
++        if depth != 0 {
++            return false;
++        }
++        let mut union = None::<Bounds<ScaledPixels>>;
++        let mut min_order = u32::MAX;
++        let mut max_order = 0_u32;
++        let mut visible = false;
++        for operation in operations {
++            let bounds = match operation {
++                PaintOperation::Primitive(primitive) => {
++                    if !finite_replay_bounds(primitive.bounds())
++                        || !finite_replay_bounds(&primitive.content_mask().bounds)
++                    {
++                        return false;
++                    }
++                    let clipped = primitive
++                        .bounds()
++                        .intersect(&primitive.content_mask().bounds);
++                    if clipped.is_empty() {
++                        continue;
++                    }
++                    min_order = min_order.min(primitive.order());
++                    max_order = max_order.max(primitive.order());
++                    visible = true;
++                    clipped
++                }
++                PaintOperation::StartLayer(bounds) => {
++                    let Some(next) = depth.checked_add(1) else {
++                        return false;
++                    };
++                    depth = next;
++                    *bounds
++                }
++                PaintOperation::EndLayer => {
++                    let Some(next) = depth.checked_sub(1) else {
++                        return false;
++                    };
++                    depth = next;
++                    continue;
++                }
++            };
++            if !finite_replay_bounds(&bounds) {
++                return false;
++            }
++            let combined = union.map_or(bounds, |union| union.union(&bounds));
++            if !finite_replay_bounds(&combined) {
++                return false;
++            }
++            union = Some(combined);
++        }
++        if depth != 0 || !visible {
++            return false;
++        }
++        let Some(bounds) = union else {
++            return false;
++        };
++        let span = max_order - min_order;
++        let Some(base) = self.primitive_bounds.reserve(bounds, span) else {
++            return false;
++        };
++        // All eligibility and overflow checks precede the reservation. Every
++        // visible order lies in [min_order, max_order], so this addition fits.
++        for operation in operations {
++            match operation {
++                PaintOperation::Primitive(primitive) => {
++                    if !primitive
++                        .bounds()
++                        .intersect(&primitive.content_mask().bounds)
++                        .is_empty()
++                    {
++                        self.append_primitive(
++                            primitive.clone(),
++                            base + (primitive.order() - min_order),
++                        );
++                    }
++                }
++                PaintOperation::StartLayer(bounds) => self
++                    .paint_operations
++                    .push(PaintOperation::StartLayer(*bounds)),
++                PaintOperation::EndLayer => self.paint_operations.push(PaintOperation::EndLayer),
++            }
++        }
++        true
++    }
++
++    fn replay_legacy(&mut self, range: Range<usize>, prev_scene: &Scene) {
+         for operation in &prev_scene.paint_operations[range] {
+             match operation {
+                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+@@ -170,6 +295,20 @@
+     }
+ }
+
++fn finite_replay_bounds(bounds: &Bounds<ScaledPixels>) -> bool {
++    let values = [
++        bounds.origin.x.0,
++        bounds.origin.y.0,
++        bounds.size.width.0,
++        bounds.size.height.0,
++        bounds.right().0,
++        bounds.bottom().0,
++    ];
++    values.into_iter().all(f32::is_finite)
++        && bounds.size.width.0 >= 0.0
++        && bounds.size.height.0 >= 0.0
++}
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
+ #[cfg_attr(
+     all(
+@@ -207,6 +346,17 @@
+ }
+
+ impl Primitive {
++    fn order(&self) -> DrawOrder {
++        match self {
++            Primitive::Shadow(value) => value.order,
++            Primitive::Quad(value) => value.order,
++            Primitive::Path(value) => value.order,
++            Primitive::Underline(value) => value.order,
++            Primitive::MonochromeSprite(value) => value.order,
++            Primitive::PolychromeSprite(value) => value.order,
++            Primitive::Surface(value) => value.order,
++        }
++    }
+     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
+         match self {
+             Primitive::Shadow(shadow) => &shadow.bounds,
+@@ -831,3 +981,572 @@
+         }
+     }
+ }
++
++#[cfg(any(test, feature = "test-support"))]
++pub(crate) fn verify_bulk_replay() -> Result<(), String> {
++    replay_verification::verify()
++}
++
++// Std-only fixtures run through Hex's existing root-locked test-support graph.
++#[cfg(any(test, feature = "test-support"))]
++mod replay_verification {
++    use super::*;
++    use crate::{AtlasTextureKind, TileId, rgba};
++
++    fn require(value: bool, message: &str) -> Result<(), String> {
++        if value {
++            Ok(())
++        } else {
++            Err(message.to_owned())
++        }
++    }
++
++    fn bounds(x: f32, y: f32, width: f32, height: f32, scale: f32) -> Bounds<ScaledPixels> {
++        Bounds {
++            origin: point((x * scale).into(), (y * scale).into()),
++            size: Size {
++                width: (width * scale).into(),
++                height: (height * scale).into(),
++            },
++        }
++    }
++
++    fn primitive(
++        kind: usize,
++        id: u32,
++        bounds: Bounds<ScaledPixels>,
++        mask: Bounds<ScaledPixels>,
++    ) -> Primitive {
++        let color = Hsla {
++            h: id as f32 / 256.0,
++            s: 0.6,
++            l: 0.4,
++            a: 0.37,
++        };
++        let content_mask = ContentMask { bounds: mask };
++        match kind % 6 {
++            0 => Shadow {
++                order: 0,
++                blur_radius: 2.0.into(),
++                bounds,
++                corner_radii: Default::default(),
++                content_mask,
++                color,
++            }
++            .into(),
++            1 => Quad {
++                bounds,
++                content_mask,
++                background: rgba(0x3366cc80).into(),
++                border_color: color,
++                ..Default::default()
++            }
++            .into(),
++            2 => Path {
++                id: PathId(0),
++                order: 0,
++                bounds,
++                content_mask: content_mask.clone(),
++                vertices: vec![PathVertex {
++                    xy_position: bounds.origin,
++                    st_position: point(0.0, 0.0),
++                    content_mask,
++                }],
++                color: color.into(),
++                start: bounds.origin,
++                current: bounds.bottom_right(),
++                contour_count: 1,
++            }
++            .into(),
++            3 => Underline {
++                order: 0,
++                pad: id,
++                bounds,
++                content_mask,
++                color,
++                thickness: 1.0.into(),
++                wavy: id % 2,
++            }
++            .into(),
++            4 => MonochromeSprite {
++                order: 0,
++                pad: id,
++                bounds,
++                content_mask,
++                color,
++                tile: AtlasTile {
++                    texture_id: AtlasTextureId {
++                        index: id % 2,
++                        kind: AtlasTextureKind::Monochrome,
++                    },
++                    tile_id: TileId(id % 3),
++                    padding: 0,
++                    bounds: Default::default(),
++                },
++                transformation: TransformationMatrix::unit(),
++            }
++            .into(),
++            _ => PolychromeSprite {
++                order: 0,
++                pad: id,
++                grayscale: id % 2 == 0,
++                opacity: 0.37,
++                bounds,
++                content_mask,
++                corner_radii: Default::default(),
++                tile: AtlasTile {
++                    texture_id: AtlasTextureId {
++                        index: id % 2,
++                        kind: AtlasTextureKind::Polychrome,
++                    },
++                    tile_id: TileId(id % 3),
++                    padding: 0,
++                    bounds: Default::default(),
++                },
++            }
++            .into(),
++        }
++    }
++
++    fn describe(primitive: &Primitive, normalize: bool) -> String {
++        let mut primitive = primitive.clone();
++        let order = if normalize { 0 } else { primitive.order() };
++        match &mut primitive {
++            Primitive::Shadow(value) => {
++                value.order = order;
++                format!("shadow:{value:?}")
++            }
++            Primitive::Quad(value) => {
++                value.order = order;
++                format!("quad:{value:?}")
++            }
++            Primitive::Path(value) => {
++                value.order = order;
++                if normalize {
++                    value.id = PathId(0);
++                }
++                format!("path:{value:?}")
++            }
++            Primitive::Underline(value) => {
++                value.order = order;
++                format!("underline:{value:?}")
++            }
++            Primitive::MonochromeSprite(value) => {
++                value.order = order;
++                format!("mono:{value:?}")
++            }
++            Primitive::PolychromeSprite(value) => {
++                value.order = order;
++                format!("poly:{value:?}")
++            }
++            Primitive::Surface(value) => {
++                value.order = order;
++                format!("surface:{value:?}")
++            }
++        }
++    }
++
++    fn operations(scene: &Scene, normalize: bool) -> Vec<String> {
++        scene
++            .paint_operations
++            .iter()
++            .map(|operation| match operation {
++                PaintOperation::Primitive(value) => describe(value, normalize),
++                PaintOperation::StartLayer(bounds) => format!("start:{bounds:?}"),
++                PaintOperation::EndLayer => "end".to_owned(),
++            })
++            .collect()
++    }
++
++    fn fingerprint(scene: &Scene) -> String {
++        format!(
++            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
++            operations(scene, false),
++            scene.primitive_bounds,
++            scene.layer_stack,
++            scene.shadows,
++            scene.quads,
++            scene.paths,
++            scene.underlines,
++            scene.monochrome_sprites,
++            scene.polychrome_sprites,
++            scene.surfaces
++        )
++    }
++
++    fn painted(scene: &Scene) -> Vec<(Bounds<ScaledPixels>, String)> {
++        let mut primitives = Vec::new();
++        for batch in scene.batches() {
++            match batch {
++                PrimitiveBatch::Shadows(values) => {
++                    primitives.extend(values.iter().cloned().map(Primitive::from))
++                }
++                PrimitiveBatch::Quads(values) => {
++                    primitives.extend(values.iter().cloned().map(Primitive::from))
++                }
++                PrimitiveBatch::Paths(values) => {
++                    primitives.extend(values.iter().cloned().map(Primitive::from))
++                }
++                PrimitiveBatch::Underlines(values) => {
++                    primitives.extend(values.iter().cloned().map(Primitive::from))
++                }
++                PrimitiveBatch::MonochromeSprites { sprites, .. } => {
++                    primitives.extend(sprites.iter().cloned().map(Primitive::from))
++                }
++                PrimitiveBatch::PolychromeSprites { sprites, .. } => {
++                    primitives.extend(sprites.iter().cloned().map(Primitive::from))
++                }
++                PrimitiveBatch::Surfaces(values) => {
++                    primitives.extend(values.iter().cloned().map(Primitive::from))
++                }
++            }
++        }
++        primitives
++            .iter()
++            .map(|primitive| {
++                (
++                    primitive
++                        .bounds()
++                        .intersect(&primitive.content_mask().bounds),
++                    describe(primitive, true),
++                )
++            })
++            .collect()
++    }
++
++    fn equivalent(fast: &mut Scene, legacy: &mut Scene) -> Result<(), String> {
++        require(
++            operations(fast, true) == operations(legacy, true),
++            "operation payload/layer stream changed",
++        )?;
++        require(
++            fast.paths
++                .iter()
++                .map(|path| path.id)
++                .eq(legacy.paths.iter().map(|path| path.id)),
++            "replayed PathId assignment differs",
++        )?;
++        require(
++            fast.paths
++                .iter()
++                .enumerate()
++                .all(|(index, path)| path.id == PathId(index)),
++            "replayed paths lack fresh contiguous ids",
++        )?;
++        fast.finish();
++        legacy.finish();
++        let actual = painted(fast);
++        let expected = painted(legacy);
++        let mut xs = Vec::new();
++        let mut ys = Vec::new();
++        for (bounds, _) in actual.iter().chain(&expected) {
++            xs.extend([bounds.origin.x.0, bounds.right().0]);
++            ys.extend([bounds.origin.y.0, bounds.bottom().0]);
++        }
++        xs.sort_by(f32::total_cmp);
++        xs.dedup();
++        ys.sort_by(f32::total_cmp);
++        ys.dedup();
++        // Every elementary overlap cell is checked, not just operation order:
++        // disjoint objects may gain constraints, but mixed-kind/alpha painter
++        // order at any potentially painted location must match the old batches.
++        for x in xs.windows(2) {
++            for y in ys.windows(2) {
++                let probe = point(
++                    (x[0] + (x[1] - x[0]) * 0.5).into(),
++                    (y[0] + (y[1] - y[0]) * 0.5).into(),
++                );
++                let active = |items: &[(Bounds<ScaledPixels>, String)]| {
++                    items
++                        .iter()
++                        .filter(|(bounds, _)| bounds.contains(&probe))
++                        .map(|(_, payload)| payload.clone())
++                        .collect::<Vec<_>>()
++                };
++                if active(&actual) != active(&expected) {
++                    return Err(format!("mixed painter order changed at {probe:?}"));
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn refused(scene: &mut Scene, range: Range<usize>, previous: &Scene) -> Result<(), String> {
++        let before = fingerprint(scene);
++        require(
++            !scene.try_bulk_replay(range, previous),
++            "ineligible replay accepted",
++        )?;
++        require(
++            before == fingerprint(scene),
++            "refused replay mutated scene/bounds-tree state",
++        )
++    }
++
++    fn source(scale: f32, seed: u32) -> (Scene, Range<usize>) {
++        let mut scene = Scene::default();
++        let mask = bounds(-40.0, -40.0, 160.0, 160.0, scale);
++        scene.insert_primitive(primitive(
++            2,
++            200,
++            bounds(-8.0, -6.0, 19.0, 15.0, scale),
++            mask,
++        ));
++        let start = scene.len();
++        let mut state = u64::from(seed);
++        for index in 0..24_u32 {
++            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
++            let x = ((state >> 32) % 48) as f32 - 12.0;
++            let y = ((state >> 40) % 32) as f32 - 8.0;
++            if index == 8 {
++                scene.push_layer(bounds(-14.0, -10.0, 70.0, 52.0, scale));
++            }
++            if index == 11 {
++                scene.push_layer(bounds(-8.0, -5.0, 45.0, 40.0, scale));
++            }
++            if index == 15 {
++                scene.pop_layer();
++            }
++            if index == 18 {
++                scene.pop_layer();
++            }
++            let clip = if index % 5 == 0 {
++                bounds(0.0, 0.0, 23.5, 17.25, scale)
++            } else {
++                mask
++            };
++            scene.insert_primitive(primitive(
++                index as usize,
++                index,
++                bounds(x + 0.25, y + 0.5, 17.75, 13.25, scale),
++                clip,
++            ));
++        }
++        let end = scene.len();
++        (scene, start..end)
++    }
++
++    pub(super) fn verify() -> Result<(), String> {
++        for scale in [1.0, 2.0] {
++            for seed in 1..=12 {
++                let (previous, range) = source(scale, seed);
++                let mut fast = Scene::default();
++                let mut legacy = Scene::default();
++                let mask = bounds(-40.0, -40.0, 160.0, 160.0, scale);
++                let prefix = primitive(2, 100, bounds(-10.0, -6.0, 30.0, 19.0, scale), mask);
++                fast.insert_primitive(prefix.clone());
++                legacy.insert_primitive(prefix);
++                require(
++                    fast.try_bulk_replay(range.clone(), &previous),
++                    "balanced mixed replay unexpectedly refused",
++                )?;
++                legacy.replay_legacy(range.clone(), &previous);
++                // Another cached range, followed by a live translucent overlay.
++                require(
++                    fast.try_bulk_replay(range.clone(), &previous),
++                    "second cached range refused",
++                )?;
++                legacy.replay_legacy(range, &previous);
++                let suffix = primitive(1, 101, bounds(-3.0, -1.0, 44.0, 31.0, scale), mask);
++                fast.insert_primitive(suffix.clone());
++                legacy.insert_primitive(suffix);
++                equivalent(&mut fast, &mut legacy)?;
++                let mut next_fast = Scene::default();
++                let mut next_legacy = Scene::default();
++                require(
++                    next_fast.try_bulk_replay(0..fast.len(), &fast),
++                    "repeated fast replay refused",
++                )?;
++                next_legacy.replay_legacy(0..legacy.len(), &legacy);
++                equivalent(&mut next_fast, &mut next_legacy)?;
++                // Current external layer must preserve the original fallback.
++                let mut fallback = Scene::default();
++                let mut reference = Scene::default();
++                fallback.push_layer(mask);
++                reference.push_layer(mask);
++                refused(&mut fallback, 0..next_fast.len(), &next_fast)?;
++                fallback.replay(0..next_fast.len(), &next_fast);
++                reference.replay_legacy(0..next_legacy.len(), &next_legacy);
++                fallback.pop_layer();
++                reference.pop_layer();
++                equivalent(&mut fallback, &mut reference)?;
++
++                // Fixed cached content across generations, with fresh live
++                // prefix/overlay each frame. Rebased intervals must not grow
++                // merely because the previous source was itself bulk replayed.
++                let mut old_fast = fast;
++                let mut old_legacy = legacy;
++                let mut cached_fast = 1..old_fast.len() - 1;
++                let mut cached_legacy = 1..old_legacy.len() - 1;
++                let span = |scene: &Scene, range: Range<usize>| {
++                    let mut orders = scene.paint_operations[range]
++                        .iter()
++                        .filter_map(|operation| match operation {
++                            PaintOperation::Primitive(value) => Some(value.order()),
++                            _ => None,
++                        });
++                    let first = orders.next().unwrap_or(0);
++                    let (min, max) = orders.fold((first, first), |(min, max), order| {
++                        (min.min(order), max.max(order))
++                    });
++                    max - min
++                };
++                let original_span = span(&old_fast, cached_fast.clone());
++                for generation in 0..8 {
++                    let mut current_fast = Scene::default();
++                    let mut current_legacy = Scene::default();
++                    let prefix = primitive(
++                        2,
++                        150,
++                        bounds(-10.0 + generation as f32 * 0.5, -6.0, 30.0, 19.0, scale),
++                        mask,
++                    );
++                    current_fast.insert_primitive(prefix.clone());
++                    current_legacy.insert_primitive(prefix);
++                    let start = current_fast.len();
++                    require(
++                        current_fast.try_bulk_replay(cached_fast, &old_fast),
++                        "bulk-to-bulk cached generation refused",
++                    )?;
++                    current_legacy.replay_legacy(cached_legacy, &old_legacy);
++                    let end = current_fast.len();
++                    require(
++                        span(&current_fast, start..end) == original_span,
++                        "cached order span inflated across frames",
++                    )?;
++                    let overlay = primitive(
++                        1,
++                        151,
++                        bounds(-3.0, generation as f32 * 0.25, 44.0, 31.0, scale),
++                        mask,
++                    );
++                    current_fast.insert_primitive(overlay.clone());
++                    current_legacy.insert_primitive(overlay);
++                    equivalent(&mut current_fast, &mut current_legacy)?;
++                    cached_fast = start..end;
++                    cached_legacy = 1..current_legacy.len() - 1;
++                    old_fast = current_fast;
++                    old_legacy = current_legacy;
++                }
++            }
++        }
++        let area = bounds(0.0, 0.0, 20.0, 20.0, 1.0);
++        let mut previous = Scene::default();
++        previous.push_layer(area);
++        previous.insert_primitive(primitive(1, 1, area, area));
++        previous.pop_layer();
++        let mut destination = Scene::default();
++        refused(&mut destination, 1..2, &previous)?; // Old external layer.
++        refused(&mut destination, 0..2, &previous)?; // Unbalanced contained layer.
++        refused(&mut destination, 2..3, &previous)?; // End without start.
++        refused(&mut destination, 4..5, &previous)?; // Invalid internal range.
++        refused(&mut destination, 0..0, &previous)?; // Empty range safely falls back.
++        let mut malformed_prefix = Scene::default();
++        malformed_prefix
++            .paint_operations
++            .push(PaintOperation::EndLayer);
++        malformed_prefix
++            .paint_operations
++            .push(PaintOperation::Primitive(primitive(1, 2, area, area)));
++        refused(&mut destination, 1..2, &malformed_prefix)?;
++        refused(&mut destination, 0..1, &malformed_prefix)?;
++        let mut empty = Scene::default();
++        empty
++            .paint_operations
++            .push(PaintOperation::Primitive(primitive(
++                1,
++                3,
++                bounds(0.0, 0.0, 0.0, 10.0, 1.0),
++                area,
++            )));
++        refused(&mut destination, 0..1, &empty)?;
++        destination.replay(0..1, &empty);
++        require(
++            destination.len() == 0,
++            "empty primitive replay gained a paint operation",
++        )?;
++        for invalid in [
++            bounds(f32::NAN, 0.0, 1.0, 1.0, 1.0),
++            bounds(0.0, 0.0, f32::INFINITY, 1.0, 1.0),
++        ] {
++            let mut source = Scene::default();
++            source
++                .paint_operations
++                .push(PaintOperation::Primitive(primitive(1, 4, invalid, area)));
++            refused(&mut destination, 0..1, &source)?;
++        }
++        let negative = bounds(0.0, 0.0, -1.0, 10.0, 1.0);
++        let mut invalid_layer = Scene::default();
++        invalid_layer
++            .paint_operations
++            .push(PaintOperation::StartLayer(negative));
++        invalid_layer
++            .paint_operations
++            .push(PaintOperation::Primitive(primitive(1, 7, area, area)));
++        invalid_layer
++            .paint_operations
++            .push(PaintOperation::EndLayer);
++        refused(&mut destination, 0..3, &invalid_layer)?;
++        for (extent, mask) in [
++            (negative, area),
++            (area, negative),
++            (area, bounds(0.0, 0.0, f32::INFINITY, 10.0, 1.0)),
++        ] {
++            let mut invalid = Scene::default();
++            invalid
++                .paint_operations
++                .push(PaintOperation::Primitive(primitive(1, 8, extent, mask)));
++            refused(&mut destination, 0..1, &invalid)?;
++        }
++        let mut clipped = Scene::default();
++        clipped.insert_primitive(primitive(1, 9, area, area));
++        clipped
++            .paint_operations
++            .push(PaintOperation::Primitive(primitive(
++                3,
++                10,
++                bounds(50.0, 50.0, 10.0, 10.0, 1.0),
++                area,
++            )));
++        clipped.insert_primitive(primitive(2, 11, area, area));
++        let mut fast_clipped = Scene::default();
++        let mut old_clipped = Scene::default();
++        require(
++            fast_clipped.try_bulk_replay(0..clipped.len(), &clipped),
++            "mixed visible/clipped replay refused",
++        )?;
++        old_clipped.replay_legacy(0..clipped.len(), &clipped);
++        equivalent(&mut fast_clipped, &mut old_clipped)?;
++        let mut overflow_union = Scene::default();
++        for x in [-3.0e38, 2.0e38] {
++            let extent = bounds(x, 0.0, 1.0e38, 1.0, 1.0);
++            overflow_union
++                .paint_operations
++                .push(PaintOperation::Primitive(primitive(1, 5, extent, extent)));
++        }
++        refused(&mut destination, 0..2, &overflow_union)?;
++        let before = fingerprint(&destination);
++        require(
++            destination
++                .primitive_bounds
++                .reserve(area, u32::MAX)
++                .is_none(),
++            "overflowing reservation accepted",
++        )?;
++        require(
++            before == fingerprint(&destination),
++            "overflowing reservation mutated tree",
++        )?;
++        require(
++            destination
++                .primitive_bounds
++                .reserve(area, u32::MAX - 2)
++                .is_some(),
++            "valid near-limit reservation refused",
++        )?;
++        let mut normal = Scene::default();
++        normal.insert_primitive(primitive(1, 6, area, area));
++        refused(&mut destination, 0..normal.len(), &normal)?;
++        Ok(())
++    }
++}
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
 @@ -309,7 +309,7 @@
@@ -515,19 +1372,160 @@
                  .unwrap_or_default()
          }
 
+--- a/src/view.rs
++++ b/src/view.rs
+@@ -23,6 +23,7 @@
+     bounds: Bounds<Pixels>,
+     content_mask: ContentMask<Pixels>,
+     text_style: TextStyle,
++    epoch: u64,
+ }
+
+ impl<V: Render> Element for Entity<V> {
+@@ -84,6 +85,7 @@
+     entity: AnyEntity,
+     render: fn(&AnyView, &mut Window, &mut App) -> AnyElement,
+     cached_style: Option<Rc<StyleRefinement>>,
++    cache_epoch: u64,
+ }
+
+ impl<V: Render> From<Entity<V>> for AnyView {
+@@ -92,6 +94,7 @@
+             entity: value.into_any(),
+             render: any_view::render::<V>,
+             cached_style: None,
++            cache_epoch: 0,
+         }
+     }
+ }
+@@ -100,8 +103,16 @@
+     /// Indicate that this view should be cached when using it as an element.
+     /// When using this method, the view's previous layout and paint will be recycled from the previous frame if [Context::notify] has not been called since it was rendered.
+     /// The one exception is when [Window::refresh] is called, in which case caching is ignored.
+-    pub fn cached(mut self, style: StyleRefinement) -> Self {
++    pub fn cached(self, style: StyleRefinement) -> Self {
++        self.cached_with_epoch(style, 0)
++    }
++
++    /// Cache this view, rebuilding in the current draw when the caller's epoch changes.
++    /// The epoch preserves view and element identity, including pending input state.
++    /// Changing it does not schedule a frame; the caller must notify its owner.
++    pub fn cached_with_epoch(mut self, style: StyleRefinement, epoch: u64) -> Self {
+         self.cached_style = Some(style.into());
++        self.cache_epoch = epoch;
+         self
+     }
+
+@@ -122,6 +133,7 @@
+                 entity,
+                 render: self.render,
+                 cached_style: self.cached_style,
++                cache_epoch: self.cache_epoch,
+             }),
+         }
+     }
+@@ -209,6 +221,7 @@
+                         && element_state.cache_key.bounds == bounds
+                         && element_state.cache_key.content_mask == content_mask
+                         && element_state.cache_key.text_style == text_style
++                        && element_state.cache_key.epoch == self.cache_epoch
+                         && !window.dirty_views.contains(&self.entity_id())
+                         && !window.refreshing
+                     {
+@@ -244,6 +257,7 @@
+                                 bounds,
+                                 content_mask,
+                                 text_style,
++                                epoch: self.cache_epoch,
+                             },
+                         },
+                     )
+@@ -323,6 +337,7 @@
+             entity,
+             render: self.render,
+             cached_style: None,
++            cache_epoch: 0,
+         })
+     }
+ }
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -752,6 +752,9 @@
+@@ -679,12 +679,45 @@
+     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
+     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
+     #[cfg(any(test, feature = "test-support"))]
+-    pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
++    pub(crate) debug_bounds: DebugBounds,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
+     #[cfg(any(feature = "inspector", debug_assertions))]
+     pub(crate) inspector_hitboxes: FxHashMap<HitboxId, crate::InspectorElementId>,
+     pub(crate) tab_stops: TabStopMap,
++}
++
++// Test selectors follow paint ordering, including cached and nested view replay.
++// Retaining only the final map loses each cached view's insertion range and can
++// incorrectly restore another view's later overwrite of the same selector.
++#[cfg(any(test, feature = "test-support"))]
++#[derive(Default)]
++pub(crate) struct DebugBounds {
++    bounds: FxHashMap<String, Bounds<Pixels>>,
++    insertion_history: Vec<(String, Bounds<Pixels>)>,
++}
++
++#[cfg(any(test, feature = "test-support"))]
++impl DebugBounds {
++    pub(crate) fn insert(&mut self, selector: String, bounds: Bounds<Pixels>) {
++        self.insertion_history.push((selector.clone(), bounds));
++        self.bounds.insert(selector, bounds);
++    }
++
++    pub(crate) fn get(&self, selector: &str) -> Option<&Bounds<Pixels>> {
++        self.bounds.get(selector)
++    }
++
++    fn clear(&mut self) {
++        self.bounds.clear();
++        self.insertion_history.clear();
++    }
++
++    fn replay(&mut self, entries: &[(String, Bounds<Pixels>)]) {
++        for (selector, bounds) in entries {
++            self.insert(selector.clone(), *bounds);
++        }
++    }
+ }
+
+ #[derive(Clone, Default)]
+@@ -706,6 +739,8 @@
+     accessed_element_states_index: usize,
+     tab_handle_index: usize,
+     line_layout_index: LineLayoutIndex,
++    #[cfg(any(test, feature = "test-support"))]
++    debug_bounds_index: usize,
+ }
+
+ impl Frame {
+@@ -726,7 +761,7 @@
+             cursor_styles: Vec::new(),
+
+             #[cfg(any(test, feature = "test-support"))]
+-            debug_bounds: FxHashMap::default(),
++            debug_bounds: DebugBounds::default(),
+
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             next_inspector_instance_ids: FxHashMap::default(),
+@@ -751,6 +786,9 @@
+         self.deferred_draws.clear();
          self.tab_stops.clear();
          self.focus = None;
-
++
 +        #[cfg(any(test, feature = "test-support"))]
 +        self.debug_bounds.clear();
-+
+
          #[cfg(any(feature = "inspector", debug_assertions))]
          {
-             self.next_inspector_instance_ids.clear();
-@@ -815,11 +818,21 @@
+@@ -815,11 +853,21 @@
      }
  }
 
@@ -549,7 +1547,7 @@
      pub(crate) platform_window: Box<dyn PlatformWindow>,
      display_id: Option<DisplayId>,
      sprite_atlas: Arc<dyn PlatformAtlas>,
-@@ -1095,6 +1108,9 @@
+@@ -1095,6 +1143,9 @@
                  handle
                      .update(&mut cx, |_, window, cx| {
                          window.active.set(active);
@@ -559,7 +1557,7 @@
                          window.modifiers = window.platform_window.modifiers();
                          window.capslock = window.platform_window.capslock();
                          window
-@@ -1208,6 +1224,7 @@
+@@ -1208,6 +1259,7 @@
              handle,
              invalidator,
              removed: false,
@@ -567,7 +1565,7 @@
              platform_window,
              display_id,
              sprite_atlas,
-@@ -1371,8 +1388,16 @@
+@@ -1371,8 +1423,16 @@
          }
      }
 
@@ -584,7 +1582,25 @@
          self.removed = true;
      }
 
-@@ -3524,14 +3549,27 @@
+@@ -2287,10 +2347,17 @@
+             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
+             tab_handle_index: self.next_frame.tab_stops.paint_index(),
+             line_layout_index: self.text_system.layout_index(),
++            #[cfg(any(test, feature = "test-support"))]
++            debug_bounds_index: self.next_frame.debug_bounds.insertion_history.len(),
+         }
+     }
+
+     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
++        #[cfg(any(test, feature = "test-support"))]
++        self.next_frame.debug_bounds.replay(
++            &self.rendered_frame.debug_bounds.insertion_history
++                [range.start.debug_bounds_index..range.end.debug_bounds_index],
++        );
+         self.next_frame.cursor_styles.extend(
+             self.rendered_frame.cursor_styles
+                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
+@@ -3524,14 +3591,27 @@
          subscription
      }
 
@@ -618,3 +1634,17 @@
 +            }
          }
      }
+
+@@ -3574,6 +3654,12 @@
+                     .join(" ")
+             })
+             .unwrap_or_else(|| action.name().to_string())
++    }
++
++    /// Dispatch input through this window's existing event path, without exposing
++    /// private propagation metadata or generating operating-system input events.
++    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
++        self.dispatch_event(event, cx);
+     }
+
+     /// Dispatch a mouse or keyboard event on the window.

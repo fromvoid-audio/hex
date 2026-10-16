@@ -522,3 +522,33 @@ fn map_verified_error(error: ImportError) -> ImportError {
         other => other,
     }
 }
+
+/// Actual heap DATA owned by a reader, excluding its inline fixed scratch and
+/// operating-system file state. This observation does not certify file lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VerifiedReaderDataLayout {
+    pub path_capacity: usize,
+    pub manifest_capacity: usize,
+    pub manifest_element_bytes: usize,
+}
+impl VerifiedWavReader {
+    pub fn control_data_layout(&self) -> VerifiedReaderDataLayout {
+        let Self {
+            file: _,
+            path,
+            layout: _,
+            captured_len: _,
+            captured_modified: _,
+            max_header_count: _,
+            max_window_frames: _,
+            fingerprint: _,
+            page_digests,
+            scratch: _,
+        } = self;
+        VerifiedReaderDataLayout {
+            path_capacity: path.capacity(),
+            manifest_capacity: page_digests.capacity(),
+            manifest_element_bytes: std::mem::size_of::<[u8; DIGEST_BYTES]>(),
+        }
+    }
+}

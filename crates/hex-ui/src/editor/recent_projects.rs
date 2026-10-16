@@ -176,7 +176,10 @@ impl EditorView {
             self.error = Some("recent project is no longer in the menu".into());
             return;
         }
-        self.choose_project(action.path.clone());
+        self.choose_project(
+            action.path.clone(),
+            hex_session::DocumentAudioMode::Resident,
+        );
     }
 }
 
@@ -261,8 +264,7 @@ mod tests {
         let browser_path = directory.0.join("browser.json");
         let editor = cx
             .update_window(handle, |_, window, cx| {
-                let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                    .expect("test service");
+                let service = Service::new(48_000, 32, 8_000_000).expect("test service");
                 let editor = window.replace_root(cx, |window, cx| {
                     EditorView::new_for_test(
                         window,
@@ -275,9 +277,12 @@ mod tests {
                 });
                 editor.update(cx, |view, _| {
                     view.state = Some(Arc::new(ViewState {
+                        canonical_audio_source: None,
                         project: Arc::new(Project::new(48_000).expect("project")),
                         waveforms: Default::default(),
+                        audio_clip_waveforms: std::collections::BTreeMap::new(),
                         midi_preview: Arc::new(Default::default()),
+                        gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                         timeline_frames: 384_000,
                         can_undo: false,
                         can_redo: false,
@@ -314,9 +319,12 @@ mod tests {
                 .expect("reorder second path");
             let current = view.state.as_ref().expect("state");
             let dirty = ViewState {
+                canonical_audio_source: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: current.timeline_frames,
                 can_undo: true,
                 can_redo: false,

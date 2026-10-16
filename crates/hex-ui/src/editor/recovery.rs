@@ -1,7 +1,6 @@
 //! Output lifecycle admission and graph/cursor restoration, without canonical edits.
 use super::EditorView;
 use hex_engine::playback::PlaybackCommand;
-use hex_session::service::Request;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 impl EditorView {
@@ -15,63 +14,38 @@ impl EditorView {
             self.error = Some("finish the current dialog before restarting audio".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
+        let Some(_state) = self.state.as_ref() else {
             self.error = Some("project is still loading".into());
             return;
         };
-        let rate = state.project.sample_rate();
         let position = self.cursor_position();
-        if let Err(message) = self.recovery.begin(position) {
-            self.error = Some(message.into());
-            return;
-        }
+        let generation = match self.recovery.begin(position) {
+            Ok(generation) => generation,
+            Err(message) => {
+                self.error = Some(message.into());
+                return;
+            }
+        };
+        self.gain_recorder.discard();
         self.offline_cursor = position;
         if let Some(audio) = self.audio.take() {
+            let mut audio = audio;
             audio.control.stop();
+            audio.control.close();
             drop(audio);
         }
         self.clear_audio_accounting();
-        match hex_audio::request_recovery_open(rate) {
-            Ok(handle) => {
-                self.recovery_open = Some(handle);
-                self.status = "restarting audio output".into();
-                self.error = None;
-            }
-            Err(error) => self.fail_audio_recovery(error.to_string()),
+        if self.restart_audio_for_current_document() {
+            self.pending_recovery_generation = Some(generation);
+            self.status = "restarting audio output".into();
+            self.error = None;
+        } else {
+            self.fail_audio_recovery("audio restart request was not admitted".into());
         }
     }
 
     pub(super) fn poll_audio_recovery(&mut self) -> bool {
-        let Some(handle) = self.recovery_open.as_mut() else {
-            return false;
-        };
-        let result = match handle.try_take() {
-            Ok(None) => return false,
-            Ok(Some(result)) => result,
-            Err(error) => Err(error.to_string()),
-        };
-        self.recovery_open = None;
-        match result {
-            Ok(audio) => {
-                let Some(generation) = self.recovery.generation() else {
-                    drop(audio);
-                    return true;
-                };
-                self.clear_audio_accounting();
-                self.audio = Some(audio);
-                self.recovery.opened(generation);
-                if self.enqueue(Request::RestorePlayback { generation }) {
-                    self.status = "restoring audio graph".into();
-                    self.error = None;
-                } else {
-                    self.fail_audio_recovery(
-                        "audio opened but graph restore was not admitted".into(),
-                    );
-                }
-            }
-            Err(error) => self.fail_audio_recovery(error),
-        }
-        true
+        false
     }
 
     pub(super) fn finish_audio_recovery_tick(&mut self) -> bool {
@@ -82,17 +56,22 @@ impl EditorView {
             .state
             .as_ref()
             .is_some_and(|state| self.applied_project_revision == Some(state.revision));
-        let Some(audio) = self.audio.as_mut() else {
-            return false;
-        };
-        if audio.control.status.device_fault.load(Relaxed)
-            || audio.control.status.render_fault.load(Relaxed)
-        {
+        let failed = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.status())
+            .is_none_or(|status| {
+                status.device_fault.load(Relaxed) || status.render_fault.load(Relaxed)
+            });
+        if failed {
             self.fail_audio_recovery(
                 "audio output failed during recovery · retry available".into(),
             );
             return true;
         }
+        let Some(audio) = self.audio.as_mut() else {
+            return false;
+        };
         if let Some(position) = self.recovery.seek_needed(graph_is_current) {
             if let Ok(ticket) = audio
                 .control
@@ -102,14 +81,21 @@ impl EditorView {
                 self.pending_seek_ticket = Some(ticket);
             }
         }
-        let status = &audio.control.status;
+        let Some(status) = audio.control.status() else {
+            return false;
+        };
         if self.recovery.complete(
             graph_is_current,
-            status.consumed_command.load(Acquire),
+            if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+                status.stream_applied_command_prefix.load(Acquire)
+            } else {
+                status.consumed_command.load(Acquire)
+            },
             status.position.load(Relaxed),
             status.playing.load(Relaxed),
         ) {
             self.offline_cursor = status.position.load(Relaxed);
+            self.pending_recovery_generation = None;
             self.status = "audio ready · stopped".into();
             self.error = None;
             return true;
@@ -119,18 +105,22 @@ impl EditorView {
 
     pub(super) fn fail_audio_recovery(&mut self, error: String) {
         self.offline_cursor = self.cursor_position();
-        self.recovery_open = None;
         self.recovery.fail();
         if let Some(audio) = self.audio.take() {
+            let mut audio = audio;
             audio.control.stop();
+            audio.control.close();
             drop(audio);
         }
+        self.pending_recovery_generation = None;
+        self.pending_restart_request = None;
         self.clear_audio_accounting();
         self.status = "audio unavailable · editing and saving remain available".into();
         self.error = Some(error);
     }
 
     fn clear_audio_accounting(&mut self) {
+        self.stopped_playback_restore = None;
         self.service.invalidate_arrangement_seek();
         self.prepared_seek = None;
         self.latched_seek_intent = None;
@@ -143,6 +133,7 @@ impl EditorView {
         self.pending_session_ticket = None;
         self.play_intent.clear();
         self.pending_playback = None;
+        self.pending_resident_publication = None;
         self.clear_route_telemetry();
         self.observed_rejected_action = 0;
         self.observed_rejected_revision = 0;

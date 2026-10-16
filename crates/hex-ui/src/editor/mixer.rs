@@ -82,6 +82,18 @@ impl EditorView {
                 fades,
             ]);
         }
+        strip = strip.child(
+            button(
+                "routing",
+                "show track audio and midi routing",
+                ("routing-toggle", 0),
+            )
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.routing_open = !view.routing_open;
+                view.routing_page = 0;
+                cx.notify();
+            })),
+        );
         if show_main {
             strip = strip
                 .child(div().flex_1())
