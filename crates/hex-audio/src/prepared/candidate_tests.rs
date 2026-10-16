@@ -41,7 +41,7 @@ pub(crate) fn finish(retirement: &mut NativeRetirement) {
     }
 }
 
-fn recover(
+pub(super) fn recover(
     control: &mut Control,
     ticket: &crate::AudioCandidateTicket,
 ) -> crate::AudioCandidateRecovery {
@@ -60,6 +60,11 @@ fn recover(
     }
 }
 pub(crate) fn candidate() -> Option<AudioCandidateOwner> {
+    candidate_with_session(false).map(|(owner, _)| owner)
+}
+pub(super) fn candidate_with_session(
+    with_session: bool,
+) -> Option<(AudioCandidateOwner, Option<hex_project::ClipId>)> {
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return None;
     }
@@ -96,9 +101,40 @@ pub(crate) fn candidate() -> Option<AudioCandidateOwner> {
             })
             .unwrap();
     }
-    let source = OwnedAudioSource::try_resident(48_000, vec![[0.25; 2]; 8])
-        .ok()
-        .unwrap();
+    let session_clip = if with_session {
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "audio scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let Created::SessionClip(clip) = editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "audio clip".into(),
+                asset,
+                source_start: 2,
+                source_end: 6,
+            })
+            .unwrap()
+        else {
+            panic!("session clip")
+        };
+        Some(clip)
+    } else {
+        None
+    };
+    let frames = if with_session {
+        (0..8)
+            .map(|index| [0.25 + 0.01 * index as f32; 2])
+            .collect()
+    } else {
+        vec![[0.25; 2]; 8]
+    };
+    let source = OwnedAudioSource::try_resident(48_000, frames).ok().unwrap();
     let bank = OwnedAudioInputs::try_new(
         vec![(asset, source)],
         AudioStorageReservation {
@@ -119,11 +155,12 @@ pub(crate) fn candidate() -> Option<AudioCandidateOwner> {
         )
         .ok()
         .unwrap();
-    Some(
+    Some((
         AudioCandidateOwner::try_new_on_control(custody, token)
             .ok()
             .unwrap(),
-    )
+        session_clip,
+    ))
 }
 pub(crate) fn anchored() -> (
     Control,
@@ -140,7 +177,7 @@ pub(crate) fn anchored() -> (
 fn legacy() -> Playback {
     Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap())
 }
-fn pair() -> crate::CandidateDomain {
+pub(super) fn pair() -> crate::CandidateDomain {
     let mut runtime =
         hex_stream::StreamRuntime::new(hex_stream::StreamConfig::with_pool_pages(4), vec![])
             .unwrap();

@@ -45,6 +45,16 @@ impl Drop for Lease {
     }
 }
 
+/// Only lifecycle's completed stream-handle frontier constructs this witness.
+/// Missing/exposed handles and pending/panicking Drop cannot produce one.
+pub(crate) struct CompletedStreamHandle {
+    root: u64,
+}
+impl CompletedStreamHandle {
+    pub(crate) fn matches(&self, root: u64) -> bool {
+        self.root == root
+    }
+}
 struct Retirement {
     stream: Option<cpal::Stream>,
     spectrum_reaper: Option<SpectrumReaper>,
@@ -549,19 +559,15 @@ fn retire_prepared_output(mut retirement: Retirement) {
     }
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
-    if !dispose_stream_on_control(
+    if !dispose_stream_and_native_on_control(
         &mut retirement.stream,
         retirement.backend_exposed,
         &mut retirement.stream_drop_pending,
         &mut retirement.stream_disposed,
+        retirement.native.as_mut(),
         |stream| stream.pause().map_err(|_| ()),
     )? {
         return Ok(false);
-    }
-    if let Some(native) = retirement.native.as_mut() {
-        if !native.advance()? {
-            return Ok(false);
-        }
     }
     if let Some(reaper) = retirement.spectrum_reaper.take() {
         if reaper.shutdown_and_join().is_err() {
@@ -569,6 +575,38 @@ fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
         }
     }
     Ok(true)
+}
+
+// One matched retirement bundle owns both the actual stream handle and native
+// terminal root. The witness is never exposed to callers or detached from this
+// completed take/Drop frontier; a root cannot be reused for another incarnation.
+fn dispose_stream_and_native_on_control<S>(
+    stream: &mut Option<S>,
+    backend_exposed: bool,
+    pending: &mut bool,
+    disposed: &mut bool,
+    native: Option<&mut crate::native_callback_owner::NativeRetirement>,
+    pause: impl FnOnce(&S) -> Result<(), ()>,
+) -> Result<bool, ()> {
+    if !dispose_stream_on_control(stream, backend_exposed, pending, disposed, pause)? {
+        return Ok(false);
+    }
+    if let Some(native) = native {
+        return native.advance_after_stream_disposal(&CompletedStreamHandle {
+            root: native.root().root_id(),
+        });
+    }
+    Ok(true)
+}
+#[cfg(test)]
+pub(crate) fn test_dispose_backend<S>(
+    stream: &mut Option<S>,
+    pending: &mut bool,
+    disposed: &mut bool,
+    native: &mut crate::native_callback_owner::NativeRetirement,
+    pause: impl FnOnce(&S) -> Result<(), ()>,
+) -> Result<bool, ()> {
+    dispose_stream_and_native_on_control(stream, true, pending, disposed, Some(native), pause)
 }
 
 // Same physical owner frontier for legacy and prepared native output. A missing

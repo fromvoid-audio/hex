@@ -4,6 +4,16 @@
 use crate::prepared::{Callback, Status};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+/// Sealed application-callback nonrenderability authority. It is not an OS
+/// stop/dispose-success observation and never authorizes publication.
+pub(crate) struct FinalReleaseAuthority {
+    root: u64,
+}
+impl FinalReleaseAuthority {
+    pub(crate) fn matches(&self, root: u64) -> bool {
+        self.root == root
+    }
+}
 pub(crate) struct NativeCallbackOwner {
     pub(crate) callback: Callback,
     status: Arc<Status>,
@@ -11,6 +21,10 @@ pub(crate) struct NativeCallbackOwner {
     probe: Option<DropProbe>,
 }
 impl NativeCallbackOwner {
+    #[cfg(test)]
+    pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
+        self.probe = Some(DropProbe(Box::new(probe)));
+    }
     pub(crate) fn run(&mut self, call: impl FnOnce(&mut Callback, &Status)) {
         // Preserve ordinary Result-based fault handling. No callback unwind
         // recovery is introduced at the native FFI boundary.
@@ -31,6 +45,10 @@ impl Drop for DropProbe {
     }
 }
 impl ErrorCallbackOwner {
+    #[cfg(test)]
+    pub(crate) fn test_drop_probe(&mut self, probe: impl FnMut() + Send + 'static) {
+        self.probe = Some(DropProbe(Box::new(probe)));
+    }
     pub(crate) fn report(&self) {
         self.status
             .device_fault
@@ -262,6 +280,8 @@ pub(crate) struct NativeRetirement {
     data: Option<Box<NativeCallbackOwner>>,
     errors: Option<Box<ErrorCallbackOwner>>,
     states: [Disposal; 2],
+    completed_stream_handle: bool,
+    final_active: Option<crate::candidate_custody::FinalActiveReturn>,
     root: crate::candidate_custody::CandidateRoot,
 }
 impl NativeRetirement {
@@ -274,14 +294,31 @@ impl NativeRetirement {
             data: None,
             errors: None,
             states: [Disposal::Unreceived; 2],
+            completed_stream_handle: false,
+            final_active: None,
             root,
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn test_extracted_identity(&self) -> Option<hex_engine::AudioCandidateIdentity> {
+        self.final_active.as_ref().map(|value| value.identity())
     }
     pub(crate) fn root(&self) -> crate::candidate_custody::CandidateRoot {
         self.root.clone()
     }
-    /// This certifies only physical control custody/disposal. The caller still
-    /// owns backend stop/exposure observations; no final-active fact is minted.
+    /// Supply the exact completed-handle frontier from the owning lifecycle
+    /// bundle. This plus both final guard releases permits application-only
+    /// nonrenderability; native stop/dispose-success is never inferred.
+    pub(crate) fn advance_after_stream_disposal(
+        &mut self,
+        completed: &crate::lifecycle::CompletedStreamHandle,
+    ) -> Result<bool, ()> {
+        if !completed.matches(self.root.root_id()) {
+            return Err(());
+        }
+        self.completed_stream_handle = true;
+        self.advance()
+    }
     pub(crate) fn advance(&mut self) -> Result<bool, ()> {
         if self.states.contains(&Disposal::Pending) {
             return Err(());
@@ -302,8 +339,27 @@ impl NativeRetirement {
             let Some(data) = self.data.as_mut() else {
                 return Err(());
             };
+            if !data.callback.belongs_to_candidate_root(&self.root) {
+                return Err(());
+            }
             if !data.callback.drain_candidate_custody_on_control() {
                 return Ok(false);
+            }
+            if data.callback.has_active_candidate() {
+                // Exact carrier extraction plus completed stream-handle custody
+                // closes every valid application callback path under CPAL's safe
+                // dependency contract. It does not attest native Dispose success.
+                if !self.completed_stream_handle {
+                    return Ok(false);
+                }
+                if !data.callback.extract_final_candidate_on_control(
+                    &FinalReleaseAuthority {
+                        root: self.root.root_id(),
+                    },
+                    &mut self.final_active,
+                ) {
+                    return Err(());
+                }
             }
             self.states[0] = Disposal::Pending;
             drop(self.data.take());
@@ -319,6 +375,14 @@ impl NativeRetirement {
         }
         if self.states != [Disposal::Complete; 2] {
             return Err(());
+        }
+        // The constructor owner stays here through both actual carrier
+        // destructors. A failure before this point cannot publish READY/reuse.
+        if let Some(returned) = self.final_active.take() {
+            if let Err(returned) = self.root.ingest_final(returned) {
+                self.final_active = Some(returned);
+                return Err(());
+            }
         }
         self.terminals = None;
         Ok(self.root.finish_on_control())

@@ -34,6 +34,13 @@ pub struct AudioCandidateStageRefusal {
 pub struct AudioCandidateRecovery {
     pub inputs: OwnedAudioInputs,
     pub disposed: AudioCandidateDisposed,
+    pub return_kind: AudioCandidateReturnKind,
+}
+/// Classification only. The READY result also requires normal physical cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioCandidateReturnKind {
+    NeverInstalled,
+    FinalActive,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -78,6 +85,7 @@ struct Bank {
 struct Execution {
     stamp: Stamp,
     owner: AudioCandidateOwner,
+    return_kind: AudioCandidateReturnKind,
     catalog: CatalogCustody,
     disposed: Option<AudioCandidateDisposed>,
     inputs: Option<OwnedAudioInputs>,
@@ -127,12 +135,59 @@ pub(crate) struct QueuedCandidate {
 pub(crate) struct ReturnedCandidate {
     stamp: Stamp,
     owner: AudioCandidateOwner,
+    return_kind: AudioCandidateReturnKind,
+}
+/// Only the actual active-slot extraction with both native authorities can mint
+/// this distinct carrier; queue rejection cannot manufacture it.
+pub(crate) struct FinalActiveReturn {
+    stamp: Stamp,
+    owner: AudioCandidateOwner,
+}
+pub(crate) struct ActiveCandidate {
+    stamp: Stamp,
+    pub(crate) owner: AudioCandidateOwner,
+}
+impl FinalActiveReturn {
+    #[cfg(test)]
+    pub(crate) fn identity(&self) -> AudioCandidateIdentity {
+        self.owner.identity()
+    }
+}
+impl ActiveCandidate {
+    pub(crate) fn install(
+        value: QueuedCandidate,
+        root: &CandidateRoot,
+    ) -> Result<Self, QueuedCandidate> {
+        if value.stamp.root != root.root_id()
+            || value.stamp.owner != value.owner.identity()
+            || value.owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
+        {
+            return Err(value);
+        }
+        Ok(Self {
+            stamp: value.stamp,
+            owner: value.owner,
+        })
+    }
+    pub(crate) fn return_final(
+        self,
+        authority: &crate::native_callback_owner::FinalReleaseAuthority,
+    ) -> Result<FinalActiveReturn, Self> {
+        if !authority.matches(self.stamp.root) {
+            return Err(self);
+        }
+        Ok(FinalActiveReturn {
+            stamp: self.stamp,
+            owner: self.owner,
+        })
+    }
 }
 impl QueuedCandidate {
     pub(crate) fn reject_before_install(self) -> ReturnedCandidate {
         ReturnedCandidate {
             stamp: self.stamp,
             owner: self.owner,
+            return_kind: AudioCandidateReturnKind::NeverInstalled,
         }
     }
 }
@@ -312,6 +367,20 @@ impl CandidateRoot {
         }
         false
     }
+    pub(crate) fn ingest_final(
+        &self,
+        returned: FinalActiveReturn,
+    ) -> Result<(), FinalActiveReturn> {
+        let returned = ReturnedCandidate {
+            stamp: returned.stamp,
+            owner: returned.owner,
+            return_kind: AudioCandidateReturnKind::FinalActive,
+        };
+        self.ingest(returned).map_err(|value| FinalActiveReturn {
+            stamp: value.stamp,
+            owner: value.owner,
+        })
+    }
     pub(crate) fn ingest(&self, returned: ReturnedCandidate) -> Result<(), ReturnedCandidate> {
         let mut bank = lock(&self.0.bank);
         let a = returned.stamp;
@@ -376,6 +445,7 @@ impl CandidateRoot {
                         work.current = Some(Execution {
                             stamp: returned.stamp,
                             owner: returned.owner,
+                            return_kind: returned.return_kind,
                             catalog,
                             disposed: None,
                             inputs: None,
@@ -474,7 +544,11 @@ impl CandidateRoot {
             }
             if let (Some(inputs), Some(disposed)) = (current.inputs.take(), current.disposed.take())
             {
-                slot.ready = Some(AudioCandidateRecovery { inputs, disposed });
+                slot.ready = Some(AudioCandidateRecovery {
+                    inputs,
+                    disposed,
+                    return_kind: current.return_kind,
+                });
             }
             // READY remains unpublished until all empty owner/container metadata
             // has normally finished destruction on this same worker.
@@ -499,7 +573,7 @@ impl CandidateRoot {
             }
         }
     }
-    fn root_id(&self) -> u64 {
+    pub(crate) fn root_id(&self) -> u64 {
         self.0.root
     }
     /// UI poll: only moves the already READY bank/receipt. No cleanup, owner
@@ -670,6 +744,7 @@ mod tests {
             work.current = Some(Execution {
                 stamp: returned.stamp,
                 owner: returned.owner,
+                return_kind: returned.return_kind,
                 catalog,
                 disposed: None,
                 inputs: None,

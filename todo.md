@@ -3151,3 +3151,16 @@ Normal and allocation-probe stream suites pass. Final exact-source CI is recorde
 with PR252. Production shutdown, queue bounds and native streaming admission are
 unchanged; no new native-device or physical-deadline acceptance is claimed.
 
+
+## 16 October 2026 — final-active audio-only custody (#2540 / PR235)
+
+The same constructor-owned candidate/Stamp now has a private single active-slot
+variant and distinct coupled-terminal FinalActiveReturn. Production admission
+still refuses it; cfg(test) actual-slot controls cover real Session audio,
+Pause/Stop and bounded command/render paths. Persistent extracted custody lasts
+through both actual carrier destructors, then original runtime/group/catalog/pool
+cleanup precedes READY/reuse. Missing handle/releases, Busy and failed destruction
+retain ownership and charges. Exhaustive present/absent location coverage refuses
+unsupported tail/context population; broader transfer fanout remains #24/177.
+Exact-source CI and remaining native evidence are recorded with PR235; no native
+admission, OS-stop success, deadline, listening or complete-cost claim is made.
