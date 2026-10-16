@@ -1,11 +1,11 @@
 use crate::{
     ControlStyle, DialLayout, NumericControl, NumericControlAppearance, NumericControlConfig,
-    NumericControlKind, NumericScale, NumericSpec, Selector, Toggle,
+    NumericControlKind, NumericScale, NumericSpec, ResponseGraph, Selector, Toggle,
 };
 use gpui::{
-    AppContext, Context, Empty, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers,
-    MouseButton, MouseDownEvent, ParentElement, Render, Styled, TestAppContext, VisualTestContext,
-    Window, div, point, px, size,
+    AppContext, Context, Empty, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    Modifiers, MouseButton, MouseDownEvent, ParentElement, Render, Styled, TestAppContext,
+    VisualTestContext, Window, div, point, px, size,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -86,6 +86,54 @@ struct DiscreteTestRoot {
     toggle: Entity<Toggle>,
     selector: Entity<Selector>,
     key_events: Rc<Cell<usize>>,
+}
+
+struct ToggleTraversalRoot {
+    first: Entity<Toggle>,
+    middle: Entity<Toggle>,
+    last: Entity<Toggle>,
+}
+
+struct TabAvailabilityRoot {
+    toggle: Entity<Toggle>,
+    selector: Entity<Selector>,
+    numeric: Entity<NumericControl>,
+    graph: Entity<ResponseGraph>,
+}
+
+impl Render for TabAvailabilityRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.toggle.clone())
+            .child(self.selector.clone())
+            .child(self.numeric.clone())
+            .child(self.graph.clone())
+    }
+}
+
+impl Render for ToggleTraversalRoot {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab" {
+                    cx.stop_propagation();
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                }
+            }))
+            .child(self.first.clone())
+            .child(self.middle.clone())
+            .child(self.last.clone())
+    }
 }
 
 struct ClippedSelectorRoot {
@@ -341,6 +389,188 @@ fn open_discrete_controls(
         })
         .expect("discrete test window");
     (handle, toggle, selector, key_events)
+}
+
+#[gpui::test]
+fn tab_navigation_skips_runtime_disabled_toggle_and_restores_owner_opt_in(cx: &mut TestAppContext) {
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let (first, middle, last) = cx
+        .update_window(handle, |_, window, cx| {
+            let first = cx
+                .new(|cx| Toggle::new(cx, "first-toggle", "first", false, STYLE).expect("toggle"));
+            let middle = cx.new(|cx| {
+                Toggle::new(cx, "middle-toggle", "middle", false, STYLE).expect("toggle")
+            });
+            let last =
+                cx.new(|cx| Toggle::new(cx, "last-toggle", "last", false, STYLE).expect("toggle"));
+            for toggle in [&first, &middle, &last] {
+                toggle.update(cx, |toggle, cx| toggle.set_tab_navigation(true, cx));
+            }
+            window.replace_root(cx, |_, _| ToggleTraversalRoot {
+                first: first.clone(),
+                middle: middle.clone(),
+                last: last.clone(),
+            });
+            (first, middle, last)
+        })
+        .expect("toggle traversal window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(240.0), px(100.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let first_focus = first.read_with(cx, |toggle, app| toggle.focus_handle(app));
+    visual.update(|window, _| window.focus(&first_focus));
+    visual.simulate_keystrokes("space");
+    assert!(first.read_with(cx, |toggle, _| toggle.checked()));
+
+    middle.update(cx, |toggle, cx| toggle.set_enabled(false, cx));
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
+    assert!(last.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(!middle.read_with(cx, |toggle, _| toggle.checked()));
+
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("space");
+    assert!(!first.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(!middle.read_with(cx, |toggle, _| toggle.checked()));
+
+    middle.update(cx, |toggle, cx| toggle.set_enabled(true, cx));
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
+    assert!(middle.read_with(cx, |toggle, _| toggle.checked()));
+    visual.simulate_keystrokes("tab");
+    visual.simulate_keystrokes("space");
+    assert!(!last.read_with(cx, |toggle, _| toggle.checked()));
+
+    middle.update(cx, |toggle, cx| {
+        toggle.set_enabled(false, cx);
+        toggle.set_tab_navigation(false, cx);
+        toggle.set_enabled(true, cx);
+    });
+    visual.simulate_keystrokes("shift-tab");
+    visual.simulate_keystrokes("space");
+    assert!(first.read_with(cx, |toggle, _| toggle.checked()));
+    assert!(middle.read_with(cx, |toggle, _| toggle.checked()));
+}
+
+fn is_tab_stop<T: Focusable>(entity: &Entity<T>, cx: &TestAppContext) -> bool {
+    entity.read_with(cx, |control, app| control.focus_handle(app).tab_stop)
+}
+
+#[gpui::test]
+fn availability_changes_recompute_all_widget_tab_stops(cx: &mut TestAppContext) {
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let spec = NumericSpec::new(-1.0, 1.0, 0.0, NumericScale::Bipolar, 2, None::<String>)
+        .expect("numeric spec");
+    let (toggle, selector, numeric, graph) = cx
+        .update_window(handle, |_, window, cx| {
+            let toggle = cx.new(|cx| {
+                Toggle::new(cx, "availability-toggle", "toggle", false, STYLE).expect("toggle")
+            });
+            let selector = cx.new(|cx| {
+                Selector::new(cx, "availability-selector", ["one", "two"], 0, STYLE)
+                    .expect("selector")
+            });
+            let numeric = cx.new(|cx| {
+                NumericControl::new(
+                    cx,
+                    "availability-numeric",
+                    "value",
+                    NumericControlKind::HorizontalSlider,
+                    spec,
+                    0.0,
+                    STYLE,
+                )
+                .expect("numeric control")
+            });
+            let graph = cx.new(|cx| {
+                let mut graph = ResponseGraph::new(cx, "availability-graph", STYLE);
+                graph.set_editable(true, cx);
+                graph
+            });
+            toggle.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            selector.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            numeric.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            graph.update(cx, |control, cx| control.set_tab_navigation(true, cx));
+            window.replace_root(cx, |_, _| TabAvailabilityRoot {
+                toggle: toggle.clone(),
+                selector: selector.clone(),
+                numeric: numeric.clone(),
+                graph: graph.clone(),
+            });
+            (toggle, selector, numeric, graph)
+        })
+        .expect("availability test window");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(tab_stop, "opted-in available widgets are tab stops");
+    }
+
+    toggle.update(cx, |control, cx| control.set_enabled(false, cx));
+    selector.update(cx, |control, cx| control.set_enabled(false, cx));
+    numeric.update(cx, |control, cx| control.set_enabled(false, cx));
+    graph.update(cx, |control, cx| control.set_editable(false, cx));
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(!tab_stop, "unavailable widgets leave the tab order");
+    }
+
+    toggle.update(cx, |control, cx| control.set_enabled(true, cx));
+    selector.update(cx, |control, cx| control.set_enabled(true, cx));
+    numeric.update(cx, |control, cx| control.set_enabled(true, cx));
+    graph.update(cx, |control, cx| control.set_editable(true, cx));
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(tab_stop, "re-enabled widgets restore their owner's opt-in");
+    }
+
+    toggle.update(cx, |control, cx| {
+        control.set_enabled(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_enabled(true, cx);
+    });
+    selector.update(cx, |control, cx| {
+        control.set_enabled(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_enabled(true, cx);
+    });
+    numeric.update(cx, |control, cx| {
+        control.set_enabled(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_enabled(true, cx);
+    });
+    graph.update(cx, |control, cx| {
+        control.set_editable(false, cx);
+        control.set_tab_navigation(false, cx);
+        control.set_editable(true, cx);
+    });
+    for tab_stop in [
+        is_tab_stop(&toggle, cx),
+        is_tab_stop(&selector, cx),
+        is_tab_stop(&numeric, cx),
+        is_tab_stop(&graph, cx),
+    ] {
+        assert!(!tab_stop, "availability restoration respects owner opt-out");
+    }
 }
 
 fn open_clipped_selector(
@@ -1579,4 +1809,77 @@ fn pan_marker_resets_to_neutral_without_starting_drag(cx: &mut TestAppContext) {
     visual.simulate_click(marker.center(), Modifiers::default());
     control.read_with(cx, |control, _| assert_eq!(control.value(), -0.5));
     assert_eq!(phases.borrow().len(), 3);
+}
+
+#[gpui::test]
+fn both_meter_gain_controls_reset_and_accept_readouts_during_a_press(cx: &mut TestAppContext) {
+    for index in 0..2 {
+        let spec = NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 2, Some("db")).unwrap();
+        let (handle, control) = open_numeric_control_appearance(
+            cx,
+            NumericControlKind::VerticalSlider,
+            spec,
+            -12.0,
+            NumericControlAppearance::DeviceMeters,
+        );
+        control.update(cx, |control, cx| {
+            control.set_meter_readout(
+                crate::DeviceMeterReadout {
+                    index,
+                    height: 184.0,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let selector = if index == 0 {
+            "test-control-input-meter"
+        } else {
+            "test-control-output-meter"
+        };
+        let bounds = visual.debug_bounds(selector).unwrap();
+        let position = point(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        );
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        control.update(cx, |control, cx| {
+            assert!(control.is_interacting());
+            control.set_meter_readout(
+                crate::DeviceMeterReadout {
+                    index,
+                    height: 184.0,
+                    levels: [0.5, 0.25],
+                    ..Default::default()
+                },
+                cx,
+            );
+            assert!(control.is_interacting());
+        });
+        visual.run_until_parked();
+        let fill = visual
+            .debug_bounds(if index == 0 {
+                "test-control-input-meter-fill"
+            } else {
+                "test-control-output-meter-fill"
+            })
+            .unwrap();
+        assert!(fill.size.height > px(100.0));
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        control.read_with(cx, |control, _| assert_eq!(control.value(), 0.0));
+    }
 }

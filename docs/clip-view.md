@@ -35,7 +35,7 @@ or reference parity.
    play-start markers, detail zoom/pan and applicable MIDI note tools. Keep each
    PR targeted and preserve tested interactions while adding the next one.
 
-Gain, pitch, warp modes, broad Live transformations, envelopes/MPE, groove and
+Pitch, warp modes, broad Live transformations, envelopes/MPE, groove and
 scale workflows are requested follow-ups, not implemented merely by displaying
 a panel. Full Live clip-view equivalence remains an acceptance goal. No new
 proprietary UI assets or extracted application code are needed for this layout.
@@ -95,7 +95,7 @@ For a one-shot, it changes source in while retaining source end. Disabling
 looping resets phase to zero. Source/length trims retain the existing phase-reset
 contract. Commands are canonical, validated and undoable; captured revision,
 selection and generation reject stale controls. These use existing saved fields
-and require no schema change. The panel does not expose gain, pitch or warp yet.
+and require no schema change. Pitch and warp remain separate stages. Audio clip gain is described below.
 
 ## source verification and native checklist
 
@@ -116,5 +116,61 @@ Separate review bundle: `artifacts/hex-clip-view-20261009.app`; identity/check l
 - MIDI note edits still work; collapsed MIDI does not receive note shortcuts.
 - Check a small window and existing clip drag/resize; Session source panels still open.
 
-Gain, pitch, warp, detail zoom/pan, draggable markers and direct numeric entry
-remain the next targeted changes. This first panel is not full Live equivalence.
+Pitch, beat anchoring, source envelopes and warp now use the separate
+[musical audio contract](musical-editing.md#canonical-musical-audio). Detail
+zoom/pan, draggable source markers and direct numeric entry remain targeted changes.
+This panel is not full Live equivalence.
+
+## canonical audio clip gain (musical editing, issue 27 / PR 185)
+
+Arrangement clips and Session audio one-shots own independent `ClipGain` values:
+integer millidecibels in -60,000..=24,000 (-60..=24 dB), with exact unity at 0 dB.
+This is a finite attenuation/boost control, with no mute sentinel, limiter or
+normalization. It does not change source bounds, loop phase, duration, tempo or
+pitch. `SetAudioClipGain` validates either audio domain by its stable clip ID;
+invalid edits preserve metadata and history. Trim, split, duplicate and audio
+copy operations retain gain, including Arrangement-to-Session copies. Undo/Redo
+and snapshots retain the exact integer value.
+
+Project schema 25 requires a complete ID-keyed `audio_clip_state` table containing
+validated integer gain and required-nullable transform state. Historical main
+schemas migrate audio gain to unity; strict, explicitly selected development
+20/21 readers preserve their authored gains. Missing/null/noninteger or
+out-of-range current gain refuses admission. Existing recoverable save/journal/
+publication paths remain in use; see the [storage contract](../crates/hex-storage/README.md).
+
+Preparation converts dB to one finite f32 coefficient on the control thread.
+The shared Arrangement resident/streamed kernel applies fades, then clip gain,
+then track processing/balance/volume, sends and master output. Session uses the
+same source-stage gain before its track chain. Native prepared playback and
+offline render/export consume these prepared paths. Unity keeps the existing
+compact clip path and sample operation order; no coefficient conversion,
+allocation, media mutation or history work occurs during rendering. Changing
+only Session gain retains the current one-shot launch anchor across compatible
+revision replacement. Boosted overlapping sources may exceed full scale;
+existing output quantization/clamping and engine overflow limitations still apply.
+
+Both audio detail panels expose real `gain` step buttons: 1 dB by default,
+0.1 dB with Option. Captured revision, generation, selection and pending-edit
+checks protect stale widgets. Arrangement clip/detail waveforms and Session
+source bars scale cached source peaks by clip gain, with visual clipping to the
+available channel height; the underlying waveform/media cache remains unchanged.
+Retained geometry includes gain in its cache identity. Fades retain their own
+existing overlay rather than changing the stored source peaks.
+
+Source regressions cover range rejection/history, source edits and copies,
+strict persistence/migration, exact unity PCM, gain with overlapping clips/fades/
+track/master levels, partitioned resident/streamed parity, Session replacement,
+and rendered gain command/stale-widget dispatch. They establish source behavior;
+native visual/listening acceptance is separate. Optional user checks for the
+final optimized build:
+
+- Select an Arrangement audio clip; increase/decrease gain and use Option for
+  fine steps. Hear the level change and inspect waveform height; 0 dB restores it.
+- Undo/Redo, split/trim/copy, and save/reopen: the gain values and source timing
+  remain correct. Overlapping clips keep their independent levels.
+- Launch a Session audio clip and adjust gain during playback: level changes
+  without restarting the one-shot. Check the source bars and save/reopen value.
+
+Pitch, warp, beat anchoring, source envelopes and remaining issue 27 gestures
+remain separate work; this stage does not establish full musical editing.

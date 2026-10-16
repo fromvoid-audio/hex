@@ -126,3 +126,67 @@ measurement. The raw benchmark output and wrapper duration are retained in
 Re-run on an idle host before using these measurements as a stable machine
 baseline; no implementation optimization is justified by this exploratory run
 alone.
+
+## Linux guest baseline — Pulse2219 / PR176, 13 October 2026
+
+Three sequential direct-binary release runs retain the same fixture SHA-256
+`62bcd219bda3d4cd02574f74b5c7561d47d187db618edc5719576be637bca3a1`
+as the historical busy-host experiment. Each uses 101 measured samples and
+20 warmups, with the unchanged rotating case order, fixture validation,
+chain inventories and nine separately timed group/case combinations.
+No comparator, runtime, fixture or admission behavior changed.
+
+Measurement source is clean plan commit
+`a41c63f3e0935b3483ecdaaaa095e9d0ac0df738`, tree
+`ab112fb3c05242f8cb996402903a44ac65269510`, atop PR166 merge `06ccfef`.
+The evidence commit adds only its task plan, documentation and captured logs;
+measurement runtime source remains unchanged. The optimized binary SHA-256 is
+`a23ec9da3bb5b1c5847e195f1404428e7a5d81b4ca483f795df56fc0d0ac9f61`.
+Build and measured commands, after the published toolchain activation:
+
+```sh
+CARGO_TARGET_DIR=/workspace/hex/target cargo build --release -p hex-lattice --example configuration_profile --locked
+/workspace/hex/target/release/examples/configuration_profile --check
+/workspace/hex/target/release/examples/configuration_profile --repeats 101 --warmup 20
+```
+
+Environment: Linux 6.18.44 x86_64 guest, reported AMD EPYC 9V74, five visible
+CPUs with `cpu.max` of `400000 100000`, Rust 1.94.0 / LLVM 21.1.8.
+The first pre-run load averages were `0.0 / 0.0 / 0.0537`; the final snapshot
+was `0.1538 / 0.0332 / 0.0645`. No Cargo/rustc or other profiling process was
+present during measurement; the capture wrapper and normal agent/runtime
+services remained. Cgroup `nr_throttled` stayed 642 and `throttled_usec`
+stayed 5,813,894 across all three runs. No process was stopped or reconfigured.
+These snapshots describe the naturally quiet selected guest, not activity on
+the underlying physical host or hypervisor, which is not observable here.
+
+Ranges below are the smallest and largest statistic from the three runs, in
+nanoseconds. They are not distributions formed by pooling samples.
+
+| Group | Case | Median range (ns) | p95 range (ns) |
+| --- | --- | ---: | ---: |
+| track | shared Arc | 430,449–483,990 | 554,797–812,296 |
+| track | separate equal | 5,525,187–6,432,827 | 6,254,728–8,677,513 |
+| track | final-byte mismatch | 5,454,320–6,549,453 | 6,344,383–8,308,568 |
+| return | shared Arc | 6,910–7,361 | 8,193–10,046 |
+| return | separate equal | 109,846–112,710 | 174,003–228,305 |
+| return | final-byte mismatch | 108,303–111,187 | 168,364–219,130 |
+| all | shared Arc | 478,732–506,405 | 598,433–1,123,486 |
+| all | separate equal | 5,921,885–6,729,245 | 7,041,755–9,458,763 |
+| all | final-byte mismatch | 5,895,727–6,646,029 | 6,766,691–9,531,162 |
+
+The comparison method matches the original experiment: identical fixture bytes,
+101/20 sampling, rotating order, actual comparator and independently measured
+Track/Return/all sweeps. Hardware, architecture, compiler and virtualization
+differ. In particular, these numbers do not measure the effect of making the
+historical Mac idle and must not be presented as a speedup or regression caused
+by host load. An idle baseline on that original Mac remains unavailable to this
+cloud executor. Neither dataset establishes physical callback deadlines,
+memory traffic, product scalability or Live parity.
+
+Raw runs, fixture check, before/after process/load/CPU snapshots and their SHA-256
+digests are committed in
+[the evidence directory](../research/observations/configuration-comparison-2219/manifest.json).
+The original busy-host evidence above is retained unchanged. Full local CI for
+the final evidence commit is recorded in Pulse2219 and PR176 separately from
+these source-pinned release measurements.

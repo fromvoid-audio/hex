@@ -258,7 +258,7 @@ impl EditorView {
             }
             let selected_clip = self.selected_clip() == Some(clip.id());
             if clip_intersects_exclusions(clip, exclusions) {
-                for fragment in clip_fragments_outside(clip, exclusions)
+                for fragment in clip_fragments_outside(clip, exclusions, state.project.tempo_map())
                     .into_iter()
                     .flatten()
                 {
@@ -720,11 +720,12 @@ impl EditorView {
                 else {
                     continue;
                 };
-                let Ok(fragment) = hex_project::preview_clip_fragment(
+                let Ok(fragment) = hex_project::preview_clip_fragment_with_tempo(
                     clip,
                     selected_start,
                     selected_end,
                     destination_start,
+                    state.project.tempo_map(),
                 ) else {
                     continue;
                 };
@@ -845,6 +846,15 @@ impl EditorView {
         let track_name = track.name().to_owned();
         let track_name_view = div()
             .id(("track-name", track_id.value()))
+            .relative()
+            .children(self.track_selection.contains(track_id).then(|| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .debug_selector(move || format!("selected-track-{}", track_id.value()))
+                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .opacity(0.2)
+            }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
             .w(px(TRACK_HEADER_WIDTH - 10.0))
             .flex_shrink_0()
@@ -861,17 +871,41 @@ impl EditorView {
                 })
                 .into()
             })
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.select_track(track_id, window);
-                cx.notify();
-            }));
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    view.select_track_with_modifiers(track_id, event.modifiers(), window);
+                    cx.notify();
+                }),
+            );
         let track_controls = div()
             .flex()
             .items_center()
             .gap_1()
             .child(
+                button(
+                    "a",
+                    "show track gain automation",
+                    ("gain-lane", track_id.value()),
+                )
+                .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.show_gain_lane(track_id, window, cx);
+                })),
+            )
+            .child(
                 button("+", "increase track gain", ("gain-up", track_id.value())).on_click(
-                    cx.listener(move |view, _, _, cx| {
+                    cx.listener(move |view, _, window, cx| {
+                        if view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track_id))
+                            .is_some_and(|track| {
+                                !track.gain_envelope().is_empty()
+                                    || !track.gain_lane().spans().is_empty()
+                            })
+                        {
+                            view.show_gain_lane(track_id, window, cx);
+                        }
                         view.gain_by(track_id, 0.1);
                         cx.notify();
                     }),
@@ -879,7 +913,18 @@ impl EditorView {
             )
             .child(
                 button("−", "decrease track gain", ("gain-down", track_id.value())).on_click(
-                    cx.listener(move |view, _, _, cx| {
+                    cx.listener(move |view, _, window, cx| {
+                        if view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track_id))
+                            .is_some_and(|track| {
+                                !track.gain_envelope().is_empty()
+                                    || !track.gain_lane().spans().is_empty()
+                            })
+                        {
+                            view.show_gain_lane(track_id, window, cx);
+                        }
                         view.gain_by(track_id, -0.1);
                         cx.notify();
                     }),
@@ -890,7 +935,14 @@ impl EditorView {
                     .w(px(34.0))
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(format!("{:.0}%", track.gain() * 100.0))),
+                    .child(theme::text(
+                        if track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty()
+                        {
+                            format!("{:.0}%", track.gain() * 100.0)
+                        } else {
+                            "auto".into()
+                        },
+                    )),
             )
             .child(
                 button(
@@ -1059,6 +1111,7 @@ impl EditorView {
                         origin_pointer_x: std::rc::Rc::new(std::cell::Cell::new(None)),
                         viewport_start: viewport.start,
                         viewport_length: viewport.length,
+                        scroll: Default::default(),
                         snap_grid: self.snap_grid,
                         snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
                         copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -1066,7 +1119,11 @@ impl EditorView {
                         destination: std::rc::Rc::new(std::cell::Cell::new(None)),
                         insertion_line_y: std::rc::Rc::new(std::cell::Cell::new(None)),
                         ghost_label: format!("audio clip {}", clip_id.value()),
-                        ghost_waveform: state.waveforms.get(&clip.asset()).cloned(),
+                        ghost_waveform: if clip.audio_edit().is_none() {
+                            state.waveforms.get(&clip.asset()).cloned()
+                        } else {
+                            None
+                        },
                         lane_hovered: std::rc::Rc::new(std::cell::Cell::new(false)),
                         last_pointer: std::rc::Rc::new(std::cell::Cell::new(None)),
                     },
@@ -1093,32 +1150,48 @@ impl EditorView {
         content = content.border_1().border_color(rgb(0x000000));
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
-            match waveform {
-                Some(waveform) => {
-                    content = content.child(super::waveform::waveform_view_cached(
-                        waveform,
-                        clip,
-                        visible_start,
-                        visible_end,
-                        std::rc::Rc::clone(&self.waveform_geometry_cache),
-                    ));
-                }
-                None => {
-                    content = content.child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .flex()
-                            .items_center()
-                            .px_1()
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                            .child(theme::text("missing media")),
-                    );
+            if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+                content = content.child(super::waveform::prepared_waveform_view_cached(
+                    prepared,
+                    clip,
+                    visible_start,
+                    visible_end,
+                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                ));
+            } else if clip.audio_edit().is_some() {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .child(theme::text("prepared waveform unavailable")),
+                );
+            } else {
+                match waveform {
+                    Some(waveform) => {
+                        content = content.child(super::waveform::waveform_view_cached(
+                            waveform,
+                            clip,
+                            visible_start,
+                            visible_end,
+                            std::rc::Rc::clone(&self.waveform_geometry_cache),
+                        ));
+                    }
+                    None => {
+                        content = content.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .px_1()
+                                .text_xs()
+                                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                .child(theme::text("missing media")),
+                        );
+                    }
                 }
             }
         }
-        let fade = clip.fade();
+        let fade = clip.retained_fade();
         let envelope_width = self
             .drag_lanes
             .get(&track)
@@ -1128,7 +1201,17 @@ impl EditorView {
             && envelope_width >= 40.0
             && (fade.fade_in() > 0 || fade.fade_out() > 0)
         {
-            let samples = fade_envelope_samples(fade, clip.start(), visible_start, visible_end);
+            let samples = if clip.audio_edit().is_some() {
+                super::waveform::projected_fade_envelope_samples(
+                    clip,
+                    state.project.tempo_map(),
+                    visible_start,
+                    visible_end,
+                )
+                .unwrap_or_default()
+            } else {
+                fade_envelope_samples(fade, clip.start(), visible_start, visible_end)
+            };
             if samples.len() >= 2 {
                 content = content.children([canvas(
                     |_, _, _| (),
@@ -1360,6 +1443,7 @@ impl EditorView {
                 origin_pointer_x: std::rc::Rc::new(std::cell::Cell::new(None)),
                 viewport_start: viewport.start,
                 viewport_length: viewport.length,
+                scroll: Default::default(),
                 snap_grid: self.snap_grid,
                 snap_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),
                 copy_modifier: std::rc::Rc::new(std::cell::Cell::new(false)),

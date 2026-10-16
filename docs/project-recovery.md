@@ -48,6 +48,34 @@ refuse competing changes. Save cleanup deletes only the exact owned generation,
 so saving an older instance cannot delete a newer instance's untitled recovery.
 Lock inodes are retained and never unlinked during operation.
 
+Pulse2450 / [PR175](https://github.com/PORTALSURFER/hex/pull/175) explicitly
+releases each acquired slot lock on normal success and error exits, including
+metadata/magic validation failures. A private guard starts only after exclusive
+acquisition succeeds; Drop supplies best-effort release during unwinding or a
+checked-release failure. Closing just the owner's descriptor can otherwise leave
+a Unix flock alive through a forked/duplicated open-file description. No lock
+inode is unlinked, and admission remains nonblocking.
+
+`StorageError::JournalLockRelease` retains the exact slot path, unlock error,
+original operation error when present, and `JournalChange`: `Unchanged`,
+`CheckpointPublished`, or `CheckpointCleared`. These describe visible checkpoint
+state, not whether a saved project succeeded. Published bytes remain adopted;
+cleared checkpoints remain cleared even when release fails. The Session worker
+presents this as automatic recovery information rather than an uncommitted-save
+or data-loss claim. A later stale-owner clear still refuses a recreated generation.
+
+The deterministic baseline proof on clean06ccfef reproduces WouldBlock after
+both successful owner close and an acquired invalid-magic error while a safe
+descriptor clone remains alive; explicit unlock permits reacquisition. Production
+regressions exercise the guard's same two boundaries, genuine contender refusal,
+unchanged checkpoint/counter, and injected release errors before/after publication
+and clear. The duplicate-description regressions are Unix-only; error ordering
+and generation checks are portable. Original worker3 full-CI failure and worker4's
+unlogged-return Conflict assertion remain historical evidence, not proof of
+checkpoint deletion or an observed fork trace. Native macOS locking/durability
+and power-loss acceptance remain separate; source/commands/digests are recorded
+in Pulse and PR175 on the final exact head. No native test build is supplied.
+
 A journal has distinct `HEXJRNL` magic, version1 bounded target-basename/payload
 fields, validated native project JSON, and a nonzero publication generation.
 Malformed, future, oversized, wrongly bound, symbolic-link and unknown journal
