@@ -576,7 +576,7 @@ unsafe fn build_class() -> *const Class {
             accessibility_dealloc as extern "C" fn(&Object, Sel),
         );
         decl.add_method(
-            sel!(accessibilityHidden),
+            sel!(isAccessibilityHidden),
             accessibility_hidden as extern "C" fn(&Object, Sel) -> BOOL,
         );
         decl.add_method(
@@ -624,11 +624,11 @@ unsafe fn build_class() -> *const Class {
             accessibility_parent as extern "C" fn(&Object, Sel) -> id,
         );
         decl.add_method(
-            sel!(accessibilityEnabled),
+            sel!(isAccessibilityEnabled),
             accessibility_enabled as extern "C" fn(&Object, Sel) -> BOOL,
         );
         decl.add_method(
-            sel!(accessibilityFocused),
+            sel!(isAccessibilityFocused),
             accessibility_focused as extern "C" fn(&Object, Sel) -> BOOL,
         );
         decl.add_method(
@@ -859,6 +859,49 @@ mod tests {
                 refused: false,
             },
         )
+    }
+    #[test]
+    fn appkit_boolean_getters_follow_snapshot_and_revocation() {
+        let (_owner, mut snapshot) = fixture();
+        snapshot.nodes[0].node.descriptor.focused = true;
+        let mut registry = Registry::default();
+        let bridge: Arc<NativeBridge> = registry.register(12, |_| ()).unwrap();
+        let descriptor = snapshot.nodes[0].node.descriptor.clone();
+        bridge.publish(snapshot);
+        unsafe {
+            let class = Class::get("GPUISemanticControl").unwrap();
+            let object: id = msg_send![class, new];
+            assert!(!object.is_null());
+            (*object).set_ivar(
+                "semanticState",
+                Box::into_raw(Box::new(ElementData {
+                    bridge: bridge.clone(),
+                    id: descriptor.id,
+                    owner: descriptor.lifetime,
+                })) as *mut c_void,
+            );
+            let enabled: BOOL = msg_send![object, isAccessibilityEnabled];
+            let focused: BOOL = msg_send![object, isAccessibilityFocused];
+            let hidden: BOOL = msg_send![object, isAccessibilityHidden];
+            let current = bridge.snapshot().unwrap();
+            let mut disabled = Snapshot {
+                nodes: current.nodes.clone(),
+                refused: current.refused,
+            };
+            disabled.nodes[0].node.descriptor.enabled = false;
+            disabled.nodes[0].node.descriptor.focused = false;
+            bridge.publish(disabled);
+            let disabled_enabled: BOOL = msg_send![object, isAccessibilityEnabled];
+            let unfocused: BOOL = msg_send![object, isAccessibilityFocused];
+            bridge.revoke();
+            let revoked_hidden: BOOL = msg_send![object, isAccessibilityHidden];
+            let revoked_enabled: BOOL = msg_send![object, isAccessibilityEnabled];
+            // Release before assertions, including on a failing negative control.
+            let _: () = msg_send![object, release];
+            assert_eq!((enabled, focused, hidden), (YES, YES, NO));
+            assert_eq!((disabled_enabled, unfocused), (NO, NO));
+            assert_eq!((revoked_hidden, revoked_enabled), (YES, NO));
+        }
     }
     #[test]
     fn choice_inventory_owner_revision_and_availability_refuse_stale_actions() {

@@ -35,8 +35,8 @@ The original AppKit candidate remains quarantined in published history/evidence.
 It upgraded weak MacWindowState on arbitrary AX query threads, permitting an off-UI
 final drop of GPUI/GPU state. Do not restore that implementation.
 
-The replacement backend is source-enabled in the excluded dependency, pending
-actual macOS compilation and native acceptance. `platform/accessibility_bridge.rs`
+The replacement backend is source-enabled in the excluded dependency, with macOS compilation and native fixture results recorded below; real-client
+acceptance remains pending. `platform/accessibility_bridge.rs`
 is a data-only transport: immutable Arc snapshots, owned scalar/text/frame data,
 actual-owner Weak<()> leases, a64-request mailbox and checked window/registration
 epochs. Its last drop cannot release App/Window/renderer/input-handler state.
@@ -82,14 +82,14 @@ The shared transport tests cover concurrent retained snapshot revocation, mailbo
 capacity/wake/refusal, stale epochs, nested-close restoration refusal, UI owner
 versus background data destruction and reentrant data-drop lock availability.
 A compile-negative control rejects moving Registry<()> to another thread. Native
-owner/inventory/domain tests are included under the Mac module but cannot run on
-Linux. These checks do not prove actual AppKit teardown or veto handling.
+owner/inventory/domain tests are included under the Mac module and execute on macOS; Linux cannot run them. These checks do not prove actual AppKit teardown or veto handling.
 
 ## coverage and remaining native acceptance
 
 The source builds mounted NumericControl/Toggle/Selector device-panel
 semantic descriptors and validates source-level actions through existing controls.
-The replacement AppKit hooks await actual Mac compilation/exposure validation; no OS accessibility pass is claimed.
+The replacement AppKit hooks compile on macOS and pass the native fixtures below;
+actual Inspector/VoiceOver exposure remains unverified.
 Unmounted controls have no fabricated frame and stale source requests refuse. A complete offscreen logical navigation/scroll-to-mount path
 is not implemented; the explicit refusal remains an accessibility coverage gap.
 Other specialized controls/graphs, complete context hierarchy and physical-input/
@@ -124,7 +124,7 @@ Its old-order negative control observes the still-exposed pointer before returni
 ownership without destruction. The fixed path's destructor performs nested actual
 bridge/element readers and another take: readers see unavailable, second take
 refuses and the two owners drop exactly once. This fixture does not open a window
-or exercise actual AppKit close; it remains unrun until the exact Mac gate.
+or exercise actual AppKit close; its macOS result is recorded below.
 Parent4308 full Linux CI is historical for the corrected head. Retain the original
 quarantined backend and default-stack failure evidence; do not relabel either.
 
@@ -139,3 +139,33 @@ The combined vendor patch is regenerated from the verified original0.2.2 archive
 and checked by applying it to that original source and comparing every declared
 patched/added file hash. These checks do not execute AppKit or satisfy the three
 Mac lifecycle tests, native compilation or AX/VoiceOver acceptance.
+
+## macOS compilation and selector regression — 17 october 2026
+
+Local continuation of PR188 compiled the AppKit backend on macOS26.6.2 arm64
+with rustc1.94.0. SDK inspection found the boolean properties use the getters
+`isAccessibilityHidden`, `isAccessibilityEnabled` and `isAccessibilityFocused`.
+The prior `accessibility…` selectors left AppKit reading superclass defaults.
+A real `GPUISemanticControl` regression queries all three getters against an
+enabled/focused snapshot, a disabled/unfocused update and revoked transport.
+Before the selector repair it returned `(false,false,false)` instead of
+`(true,true,false)`; after repair all four Mac tests pass, including the three
+previously unrun owner/inventory, clear-before-drop and data-only graph tests.
+
+Run with the same macOS renderer features as Hex:
+
+```sh
+cargo test --locked --manifest-path third_party/gpui/Cargo.toml \
+  --no-default-features --features font-kit,macos-blade,test-support \
+  --lib platform::mac::window::native_accessibility::tests -- --nocapture
+```
+
+The standalone default feature command requires the unavailable Apple `metal`
+compiler on this Command Line Tools installation. The explicit Hex feature set
+avoids changing the renderer or installing tools. The initial failing regression
+also ran with GPUI's runtime-shader feature and the same native backend.
+Retained logs are under `artifacts/native-29/`; exact final CI, source and optimized
+build identities are recorded on PR188 and in the installed test-build receipt.
+These fixtures create Objective-C objects, not a window or VoiceOver session.
+Inspector/VoiceOver tree navigation, popup choice behavior, notification timing,
+close/veto and actual input/paint acceptance remain the finite native checklist.

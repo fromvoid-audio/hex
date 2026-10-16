@@ -145,3 +145,10 @@ forwards to the existing `dispatch_event` and discards its private metadata.
 The result type stays private. No native handler, FFI, scheduling, OS-event
 injection or default behavior changes. This primary-approved adapter lets the
 explicit native timing window exercise the regular mouse dispatch path.
+
+17 October AppKit getter repair: register the SDK's isAccessibilityHidden,
+isAccessibilityEnabled and isAccessibilityFocused selectors. A Mac-only real
+semantic-object regression verifies enabled/focused snapshot changes and revoked
+hidden/unavailable state; the old selectors fail it. All four native fixtures
+pass with Hex's macos-blade features. Inspector/VoiceOver acceptance remains open;
+see docs/native-accessibility.md. Original archive identity remains unchanged.

@@ -219,6 +219,6 @@
   "added_files": {
     "src/accessibility.rs": "0cbcafade9e5a729ef9511b5d852c4d3c057eb25704186ca569900c9b32d954a",
     "src/platform/accessibility_bridge.rs": "058e85679e070373d4dab346f5fcda22c6ad89de05371f2c6cfb6cf6b3801e99",
-    "src/platform/mac/accessibility.rs": "eca75fa1bfd988788237ac6a513fb3c1a4ce7e7b8fc645adf59053254d136793"
+    "src/platform/mac/accessibility.rs": "691d4c765caf5299bb29b811353c795bdbcec16a72552750b5e7cb2d0131b566"
   }
 }

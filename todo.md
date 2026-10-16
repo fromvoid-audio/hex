@@ -3705,3 +3705,15 @@ same-owner device/context refusal, with zero total/net callback probes. A narrow
 negative control reproduces premature speculative repin. Final source evidence
 and exact full local CI are recorded externally; PR239 UI composition and original
 #24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.
+
+## 17 October 2026 — issue29 macOS accessibility verification
+
+Continued canonical PR188 locally. The AppKit backend compiles; the three original
+native accessibility tests and a new real-object selector regression pass with
+Hex's macos-blade features. The regression fails before correcting the SDK boolean
+getter selectors and passes afterward, covering enabled/focused updates and hidden
+revoked elements. External GPUI diff/provenance remain tied to the verified0.2.2
+archive; no Hex unsafe boundary or renderer changes. See docs/native-accessibility.md.
+Exact-final full local CI and optimized stable-path delivery are recorded on
+PR188/Pulse29. Real Inspector/VoiceOver, close/veto, popup choices and input/paint
+acceptance remain unverified; this entry does not claim whole-ticket completion.
