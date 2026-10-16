@@ -22,6 +22,9 @@ pub(super) fn record_outcome(
     status
         .stream_readiness_refused
         .store(outcome.readiness_refused, Release);
+    if let Some(ticket) = outcome.activated {
+        status.stream_activated_command.store(ticket, Release);
+    }
     if let Some((ticket, reason)) = outcome.action_rejection {
         status.publish_rejected_action(ticket, reason);
     }
@@ -53,10 +56,14 @@ impl Callback {
                 .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
             return;
         };
-        if let crate::candidate_custody::StageAction::Refused(reason) =
-            active.stage_stream_action(action, ticket)
-        {
-            self.status.publish_rejected_action(ticket, reason);
+        match active.stage_stream_action(action, ticket) {
+            crate::candidate_custody::StageAction::Refused(reason) => {
+                self.status.publish_rejected_action(ticket, reason)
+            }
+            crate::candidate_custody::StageAction::Scheduled => {
+                self.status.stream_scheduled_command.store(ticket, Release)
+            }
+            _ => {}
         }
     }
     pub(super) fn streamed_transport_mode(&self) -> bool {
@@ -69,6 +76,7 @@ impl Callback {
             next.cancel_stream_readiness(&mut self.domain_pages);
         }
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
+            active.revoke_launch_prewarm(&mut self.domain_pages);
             active.clear_stream_roles(&mut self.domain_pages);
         }
     }
@@ -118,6 +126,15 @@ impl Callback {
                 .publish_rejected_action(ticket, PlaybackActionRejection::SessionNotPrepared);
         }
     }
+    fn refresh_stream_schedule(&mut self) {
+        if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+            && let Some(ticket) = active.refresh_scheduled_after_command(&mut self.domain_pages)
+        {
+            self.status
+                .stream_invalidated_schedule
+                .store(ticket, Release);
+        }
+    }
     pub(super) fn consume_stream_commands(&mut self) {
         let cut = command_cut(
             self.admitted_ticket.load(Acquire),
@@ -134,6 +151,7 @@ impl Callback {
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
             self.invalidate_processor_audition_request();
             self.stream_prefix = self.stream_prefix.max(stop);
+            self.refresh_stream_schedule();
         }
         let mut consumed = None;
         for _ in 0..COMMANDS {
@@ -176,11 +194,35 @@ impl Callback {
                         crate::gain_recording::AbortReason::TransportChanged,
                     );
                 }
+                PlaybackAction::Session(SessionPlaybackCommand::CancelPending { track }) => {
+                    if let Some(ActivePublication::Eligible(active)) = self.active.as_mut() {
+                        match active.cancel_pending_routes(
+                            SessionPlaybackCommand::CancelPending { track },
+                            &mut self.domain_pages,
+                        ) {
+                            Ok(Some(ticket)) => self.status.publish_rejected_action(
+                                ticket,
+                                PlaybackActionRejection::StreamActionCancelled,
+                            ),
+                            Err(error) => self.status.publish_rejected_action(
+                                queued.ticket,
+                                error.telemetry_rejection(),
+                            ),
+                            _ => {}
+                        }
+                    } else {
+                        self.status.publish_rejected_action(
+                            queued.ticket,
+                            PlaybackActionRejection::SessionNotPrepared,
+                        );
+                    }
+                }
                 PlaybackAction::SetMetronome(_) => {
                     self.apply_stream_zero_page_action(queued.action, queued.ticket)
                 }
                 _ => self.stage_stream_action(queued.action, queued.ticket),
             }
+            self.refresh_stream_schedule();
         }
         self.publish_transport();
         self.publish_active_routes(false);

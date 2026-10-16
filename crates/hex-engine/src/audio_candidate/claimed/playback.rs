@@ -59,6 +59,21 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_pages_and_post_node_observer(output, pages, observer)
     }
+    /// Match cancellation against the same prepared action/runtime's route targets.
+    pub fn stream_action_targets_track(
+        &mut self,
+        prepared: &crate::PreparedStreamAction,
+        track: Option<hex_project::TrackId>,
+    ) -> Result<bool, crate::PlaybackActionError> {
+        if !prepared.matches_owner(self.identity(), self.source_context()) {
+            return Err(crate::PlaybackActionError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            ));
+        }
+        self.current_playback_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
+            .stream_action_targets_track(prepared, track)
+    }
     /// Prepare a correlated action without committing any runtime state.
     /// Page/custody and native command/device checks remain with the host.
     pub fn prepare_stream_action(

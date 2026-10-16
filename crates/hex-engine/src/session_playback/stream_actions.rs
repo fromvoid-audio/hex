@@ -92,6 +92,49 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    pub(crate) fn stream_action_targets_track(
+        &self,
+        prepared: &PreparedStreamAction,
+        track: Option<TrackId>,
+    ) -> Result<bool, SessionPlaybackError> {
+        self.validate_stream_action(prepared)?;
+        let Resolved::Route(_) = prepared.resolved else {
+            return Ok(false);
+        };
+        let Some(track) = track else {
+            return Ok(true);
+        };
+        if !self.routes.iter().any(|route| route.id == track) {
+            return Err(SessionPlaybackError::UnknownTrack);
+        }
+        let command = match prepared.action {
+            PlaybackAction::Session(command) | PlaybackAction::LaunchAndPlay(command) => command,
+            _ => return Ok(false),
+        };
+        Ok(match command {
+            SessionPlaybackCommand::LaunchClip { clip, .. } => {
+                self.revision
+                    .session()
+                    .audio_clip(clip)
+                    .is_some_and(|clip| clip.track == track)
+                    || self
+                        .revision
+                        .session()
+                        .midi_clip(clip)
+                        .is_some_and(|clip| clip.track == track)
+            }
+            SessionPlaybackCommand::LaunchScene { scene, .. } => self
+                .revision
+                .session()
+                .cells()
+                .iter()
+                .any(|cell| cell.scene == scene && cell.track == track),
+            SessionPlaybackCommand::StopTrack { track: target, .. } => track == target,
+            SessionPlaybackCommand::StopAllClips { .. }
+            | SessionPlaybackCommand::BackToArrangement { .. } => true,
+            _ => false,
+        })
+    }
     pub(crate) fn prepare_stream_action(
         &mut self,
         action: PlaybackAction,
@@ -278,6 +321,15 @@ impl SessionPlayback {
     }
 }
 impl crate::playback::Playback {
+    pub(crate) fn stream_action_targets_track(
+        &mut self,
+        prepared: &PreparedStreamAction,
+        track: Option<TrackId>,
+    ) -> Result<bool, PlaybackActionError> {
+        self.session_runtime_mut_for_stream_action()?
+            .stream_action_targets_track(prepared, track)
+            .map_err(PlaybackActionError::Session)
+    }
     pub(crate) fn prepare_stream_action(
         &mut self,
         action: PlaybackAction,

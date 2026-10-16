@@ -8,7 +8,7 @@ pub(crate) struct StreamInstall<'a> {
     pub(crate) command_prefix: u64,
     pub(crate) frames: usize,
 }
-fn envelope(
+pub(super) fn envelope(
     domains: &mut [Option<DomainEnvelope>; 2],
     token: AudioCandidateDomainToken,
 ) -> Result<&mut DomainEnvelope, hex_engine::Invalid> {
@@ -70,6 +70,15 @@ impl State {
         request: &mut StreamInstall<'_>,
         role: ProtectionRole,
     ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
+        self.prepare_stream_window_at(previous, request, role, None)
+    }
+    pub(super) fn prepare_stream_window_at(
+        &mut self,
+        previous: Option<&mut State>,
+        request: &mut StreamInstall<'_>,
+        role: ProtectionRole,
+        due: Option<u64>,
+    ) -> Result<Option<hex_engine::StreamChunkWindow>, hex_engine::Invalid> {
         let refs = self.domain_refs;
         let workspace = self
             .streaming
@@ -120,7 +129,9 @@ impl State {
                     ))?;
                 Workspace::insert(extents, limit, index, extent)
             };
-            if let Some(previous) = previous {
+            if let Some(due) = due {
+                runtime.visit_pending_stream_chunk(due, request.frames, &mut visit)?
+            } else if let Some(previous) = previous {
                 runtime
                     .preview_stream_handoff(
                         previous
@@ -155,10 +166,20 @@ impl State {
         {
             return Ok(None);
         }
-        if workspace.role.is_some_and(|old| old != role) {
-            workspace.cancel_pending(refs, request.domains);
+        if due.is_none() {
+            if workspace.role.is_some_and(|old| old != role) {
+                workspace.cancel_pending(refs, request.domains);
+            }
+            workspace.role = Some(role);
+            if role == ProtectionRole::Candidate {
+                workspace.candidate_role = CandidateRole::Publication;
+            }
         }
-        workspace.role = Some(role);
+        let stamps = if due.is_some() {
+            &mut workspace.prewarm_stamps
+        } else {
+            &mut workspace.stamps
+        };
         let mut complete = true;
         for token in refs.into_iter().flatten() {
             let pages = envelope(request.domains, token)?;
@@ -184,7 +205,7 @@ impl State {
             if failed_window {
                 return Err(hex_engine::Invalid("stream worker readiness failed"));
             }
-            if let Some(stamp) = workspace.stamps[token.slot] {
+            if let Some(stamp) = stamps[token.slot] {
                 let same = stamp.artifact == self.stamp.owner
                     && stamp.project_generation == context.project_generation
                     && stamp.editor_revision == context.editor_revision
@@ -195,10 +216,10 @@ impl State {
                     && stamp.window == window;
                 if !same || !loan.matches_intent(role, stamp, rows) {
                     let _ = loan.cancel(role, stamp.request_epoch);
-                    workspace.stamps[token.slot] = None;
+                    stamps[token.slot] = None;
                 }
             }
-            if workspace.stamps[token.slot].is_none() {
+            if stamps[token.slot].is_none() {
                 let epoch = pages
                     .inner
                     .epoch
@@ -218,10 +239,10 @@ impl State {
                 loan.submit(role, stamp, rows)
                     .map_err(|_| hex_engine::Invalid("stream protection reservation refused"))?;
                 pages.inner.epoch = epoch;
-                workspace.stamps[token.slot] = Some(stamp);
+                stamps[token.slot] = Some(stamp);
             }
-            let stamp = workspace.stamps[token.slot]
-                .ok_or(hex_engine::Invalid("stream intent unavailable"))?;
+            let stamp =
+                stamps[token.slot].ok_or(hex_engine::Invalid("stream intent unavailable"))?;
             if !loan.is_protected(role, stamp, rows) {
                 match loan
                     .service(role, stamp, workspace.limit, workspace.limit)
@@ -240,8 +261,8 @@ impl State {
             return Ok(None);
         }
         for token in refs.into_iter().flatten() {
-            let stamp = workspace.stamps[token.slot]
-                .ok_or(hex_engine::Invalid("stream stamp unavailable"))?;
+            let stamp =
+                stamps[token.slot].ok_or(hex_engine::Invalid("stream stamp unavailable"))?;
             if !envelope(request.domains, token)?
                 .inner
                 .loan
@@ -251,7 +272,9 @@ impl State {
                 return Err(hex_engine::Invalid("stream protected role cannot commit"));
             }
         }
-        workspace.predecessor = predecessor;
+        if due.is_none() {
+            workspace.predecessor = predecessor;
+        }
         Ok(Some(window))
     }
     pub(in crate::candidate_custody::eligible::publication) fn prepare_stream_commit<'a>(
@@ -292,6 +315,9 @@ impl State {
         if let Some(workspace) = self.streaming.as_mut() {
             workspace.active = workspace.stamps;
             workspace.stamps = [None; 2];
+            if matches!(workspace.candidate_role, CandidateRole::Publication) {
+                workspace.candidate_role = CandidateRole::None;
+            }
             workspace.role = None;
         }
     }
@@ -343,6 +369,7 @@ pub(crate) struct StreamOutcome {
     pub(crate) readiness_refused: bool,
     pub(crate) fault: Option<hex_engine::Invalid>,
     pub(crate) action_rejection: Option<(u64, hex_engine::PlaybackActionRejection)>,
+    pub(crate) activated: Option<u64>,
 }
 impl Active {
     pub(crate) fn contains_streamed_sources(&self) -> bool {
@@ -380,11 +407,14 @@ impl Active {
                     readiness_refused: false,
                     fault: None,
                     action_rejection: None,
+                    activated: None,
                 };
             }
         };
         let mut committed = 0;
         let mut play_applied = false;
+        let mut activated = None;
+        self.service_launch_prewarm(domains, command_prefix, output.len());
         while committed < output.len() {
             let mut request = StreamInstall {
                 domains,
@@ -392,9 +422,28 @@ impl Active {
                 command_prefix,
                 frames: output.len() - committed,
             };
-            let planned =
+            let mut planned =
                 self.state
                     .prepare_stream_window(None, &mut request, ProtectionRole::Transition);
+            if !matches!(planned, Ok(Some(_))) && self.revoke_launch_prewarm(request.domains) {
+                if let Some(scheduled) = self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .and_then(|w| w.scheduled.as_mut())
+                {
+                    scheduled.pressure_blocked = true;
+                }
+                // Do not re-pin on a later callback until actual old audio
+                // commits; a worker request must get a chance to use the pool.
+                // Current audio has priority over revocable future pins. One
+                // bounded retry, retaining the actual original PendingRoute due.
+                planned = self.state.prepare_stream_window(
+                    None,
+                    &mut request,
+                    ProtectionRole::Transition,
+                );
+            }
             let window = match planned {
                 Ok(Some(window)) => window,
                 result => {
@@ -409,6 +458,7 @@ impl Active {
                         readiness_refused: refused,
                         fault: None,
                         action_rejection,
+                        activated,
                     };
                 }
             };
@@ -424,6 +474,7 @@ impl Active {
                         readiness_refused: true,
                         fault: None,
                         action_rejection,
+                        activated,
                     };
                 }
             };
@@ -450,6 +501,7 @@ impl Active {
                         readiness_refused: false,
                         fault: Some(error),
                         action_rejection,
+                        activated,
                     };
                 }
                 play_applied = true;
@@ -492,6 +544,7 @@ impl Active {
                         readiness_refused: false,
                         fault: Some(error),
                         action_rejection,
+                        activated,
                     };
                 }
                 committed += window.frames;
@@ -500,6 +553,17 @@ impl Active {
                 promotion.commit();
             }
             self.state.record_stream_commit();
+            if window.frames != 0 {
+                if let Some(scheduled) = self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .and_then(|w| w.scheduled.as_mut())
+                {
+                    scheduled.pressure_blocked = false;
+                }
+                activated = self.observe_launch_activation(domains).or(activated);
+            }
             if window.frames == 0 {
                 break;
             }
@@ -510,6 +574,7 @@ impl Active {
             readiness_refused: false,
             fault: None,
             action_rejection,
+            activated,
         }
     }
 }

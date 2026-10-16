@@ -1,7 +1,7 @@
 //! Verified real-file catalog and immutable metadata; no synthetic lease.
 use hex_engine::{StreamSourceKey, StreamedSourceMetadata};
 use std::{io::Write, path::PathBuf};
-pub(super) struct Wav(PathBuf, u64);
+pub(super) struct Wav(PathBuf, u64, u32);
 impl Wav {
     pub(super) fn new() -> Self {
         Self::with_frames(8)
@@ -10,6 +10,13 @@ impl Wav {
         Self::with_samples(frames, |_| 8192)
     }
     pub(super) fn with_samples(frames: u32, sample: impl Fn(u32) -> i16) -> Self {
+        Self::with_rate_and_samples(frames, 48_000, sample)
+    }
+    pub(super) fn with_rate_and_samples(
+        frames: u32,
+        rate: u32,
+        sample: impl Fn(u32) -> i16,
+    ) -> Self {
         let data_bytes = frames.checked_mul(4).unwrap();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -31,8 +38,8 @@ impl Wav {
         bytes.extend_from_slice(&16u32.to_le_bytes());
         bytes.extend_from_slice(&1u16.to_le_bytes());
         bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&48000u32.to_le_bytes());
-        bytes.extend_from_slice(&192000u32.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&rate.checked_mul(4).unwrap().to_le_bytes());
         bytes.extend_from_slice(&4u16.to_le_bytes());
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
@@ -44,7 +51,7 @@ impl Wav {
         }
         file.write_all(&bytes).unwrap();
         file.sync_all().unwrap();
-        Self(path, u64::from(frames))
+        Self(path, u64::from(frames), rate)
     }
     pub(super) fn definition(
         &self,
@@ -58,11 +65,15 @@ impl Wav {
         let verified = hex_media::VerifiedWavReader::open(&self.0, limits).unwrap();
         let metadata = StreamedSourceMetadata::new(
             StreamSourceKey::new(context, asset),
-            48000,
+            self.2,
             48000,
             self.1,
-            self.1,
-            hex_project::IDENTITY_CONVERSION,
+            hex_project::converted_frame_count(self.1, self.2, 48_000).unwrap(),
+            if self.2 == 48_000 {
+                hex_project::IDENTITY_CONVERSION
+            } else {
+                hex_project::SINC_CONVERSION_V1
+            },
             *verified.fingerprint(),
         )
         .unwrap();

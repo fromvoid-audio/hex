@@ -4,6 +4,7 @@ use hex_engine::{PlaybackAction, PlaybackActionRejection};
 pub(crate) enum StageAction {
     Applied,
     Pending,
+    Scheduled,
     Refused(PlaybackActionRejection),
 }
 pub(super) enum ActionResolution {
@@ -22,7 +23,13 @@ impl Active {
         action: PlaybackAction,
         ticket: u64,
     ) -> StageAction {
-        if self.has_stream_action() {
+        if self.has_stream_action()
+            || self
+                .state
+                .streaming
+                .as_ref()
+                .is_some_and(|w| w.scheduled.is_some())
+        {
             return StageAction::Refused(PlaybackActionRejection::StreamActionBusy);
         }
         let Some(runtime) = self.state.runtime.as_mut() else {
@@ -32,9 +39,35 @@ impl Active {
             Ok(prepared) => prepared,
             Err(error) => return StageAction::Refused(error.telemetry_rejection()),
         };
-        if prepared.scheduled_due_frame().is_some() {
-            // Future scheduling/prewarm is connected in the next native layer.
-            return StageAction::Refused(PlaybackActionRejection::StreamActionBusy);
+        if let Some(due) = prepared.scheduled_due_frame() {
+            let Some(workspace) = self.state.streaming.as_mut() else {
+                return StageAction::Refused(PlaybackActionRejection::SessionNotPrepared);
+            };
+            if !matches!(workspace.candidate_role, CandidateRole::None) {
+                return StageAction::Refused(PlaybackActionRejection::StreamActionBusy);
+            }
+            if let Err(error) = runtime.commit_stream_action(prepared) {
+                return StageAction::Refused(error.telemetry_rejection());
+            }
+            let pending = runtime.status().is_some_and(|status| {
+                (0..status.route_count).any(|index| {
+                    runtime.session_route_status(index).is_some_and(|route| {
+                        route
+                            .pending
+                            .is_some_and(|pending| pending.performance_frame == due)
+                    })
+                })
+            });
+            if !pending {
+                return StageAction::Applied;
+            }
+            workspace.scheduled = Some(ScheduledAction {
+                ticket,
+                due,
+                allow_prewarm: true,
+                pressure_blocked: false,
+            });
+            return StageAction::Scheduled;
         }
         if !prepared.playing_after_commit() {
             return match runtime.commit_stream_action(prepared) {
@@ -55,6 +88,42 @@ impl Active {
         let pending = self.state.streaming.as_mut()?.pending_action.take()?;
         self.state.cancel_stream_pending(domains);
         Some(pending.ticket)
+    }
+    pub(crate) fn cancel_pending_routes(
+        &mut self,
+        command: hex_engine::SessionPlaybackCommand,
+        domains: &mut [Option<DomainEnvelope>; 2],
+    ) -> Result<Option<u64>, hex_engine::PlaybackActionError> {
+        let hex_engine::SessionPlaybackCommand::CancelPending { track } = command else {
+            return Err(hex_engine::PlaybackActionError::Session(
+                hex_engine::SessionPlaybackError::InvalidCommand,
+            ));
+        };
+        let runtime = self
+            .state
+            .runtime
+            .as_mut()
+            .ok_or(hex_engine::PlaybackActionError::SessionNotPrepared)?;
+        let matching = if let Some(pending) = self
+            .state
+            .streaming
+            .as_ref()
+            .and_then(|w| w.pending_action.as_ref())
+        {
+            runtime.stream_action_targets_track(&pending.prepared, track)?
+        } else {
+            false
+        };
+        runtime.apply_action(PlaybackAction::Session(
+            hex_engine::SessionPlaybackCommand::CancelPending { track },
+        ))?;
+        let cancelled = if matching {
+            self.cancel_stream_action(domains)
+        } else {
+            None
+        };
+        self.revoke_launch_prewarm(domains);
+        Ok(cancelled)
     }
     pub(super) fn resolve_stream_action(
         &mut self,
