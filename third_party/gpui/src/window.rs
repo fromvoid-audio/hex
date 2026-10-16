@@ -3614,6 +3614,12 @@ impl Window {
             .unwrap_or_else(|| action.name().to_string())
     }
 
+    /// Dispatch input through this window's existing event path, without exposing
+    /// private propagation metadata or generating operating-system input events.
+    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
+        self.dispatch_event(event, cx);
+    }
+
     /// Dispatch a mouse or keyboard event on the window.
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
