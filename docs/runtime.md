@@ -6,6 +6,29 @@ See [diagnostics](diagnostics.md) for bounded fault snapshots and per-launch log
 retention. Render errors stop/silence output as before; the first cause and
 block starting frame survive for control-side reporting until graph recovery.
 
+## Native host output commitment
+
+The prepared device adapter validates a complete chunk of up to 256 stereo
+frames through the actual channel and sample-format conversion before copying
+any host samples or confirming gain-recording delivery and spectrum capture.
+Mono conversion uses `(left + right) * 0.5` when that sum is finite, preserving
+normal rounding and subnormals, and halves the inputs first only when their
+sum would overflow. The float endpoint retains finite out-of-range values;
+CPAL's signed/unsigned 16-bit conversions retain their saturation and unsigned
+midpoint-silence semantics. Additional output channels receive silence.
+
+A renderer error, nonfinite source/conversion, or invalid final chunk layout
+silences the whole failed chunk, latches the output fault and stops transport.
+The gain take aborts with `OutputFailed`, without an applied receipt for its
+failed value; already copied prefix samples remain intact. A later silent chunk
+cannot resurrect that receipt. Spectrum capture uses the same final-output
+validity decision. Conversion validates first and copies in a deterministic
+second pass with no temporary allocation. Device tests exercise mono/stereo/
+four-channel float and integer paths, finite extremes, subnormal rounding,
+nonfinite and layout refusal, real gain receipts, and zero total and signed-net
+callback allocations/bytes. These are headless checks, not physical-device,
+listening or deadline evidence.
+
 ## Native device integration
 
 Canonical device state is an opaque versioned envelope; registered definitions

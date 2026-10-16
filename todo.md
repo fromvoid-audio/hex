@@ -11,6 +11,23 @@ the existing PR183 readiness/evidence hold remain pending. The linked Pulse task
 was resumed through Start Task; no duplicate issue was created. This follow-up
 extends PR183's existing implementation.
 
+## native host conversion commitment — #2453 / PR192, 16 october 2026
+
+The focused current-main fix validates final host channel/sample conversion
+before copying a chunk and confirming gain-recording/spectrum output evidence.
+Overflow-safe mono means preserve sum-first rounding when finite, including
+subnormals. Float range and CPAL integer saturation remain unchanged. Refused
+chunks are silent and fault/stop; failed values receive no applied gain receipt,
+and successful prefix samples remain intact. Tests cover float/i16/u16 with
+mono/stereo/four-channel layouts, extremes, nonfinite/layout refusal and actual
+gain-receipt success/abort with zero total/net allocation count and bytes.
+
+PR192's complete previous history is preserved at
+`codex/backup-2453-before-main-isolation-20261016` (`11c3ceb7`), as authorized by
+the owner; this candidate excludes the unmerged PR190 typing runtime. Exact-final
+full local CI and merge evidence are recorded by the PR continuation after
+integration. Native device/listening/deadline acceptance remains separate.
+
 ## borrowed typed DATA and unresolved obligations — #2538 / PR233
 
 The audio-only ledger borrows actual private PreparedRevision/root and caller-bank
