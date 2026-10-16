@@ -1195,12 +1195,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         assert!(control.origin.x - preview.origin.x >= px(40.0));
         assert!(control.origin.x - preview.origin.x < px(54.0));
     }
+    // Keep the narrow-window geometry checks above, then expose the right rail
+    // before testing a mouse click on the wider companion inspector.
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
     let route_link = Box::leak(
         format!("operator-preview-{}-route-link", instrument_id.value()).into_boxed_str(),
     );
     let route_bounds = visual
         .debug_bounds(route_link)
         .expect("global routing link");
+    assert!(route_bounds.origin.x + route_bounds.size.width <= px(1440.0));
     visual.simulate_click(route_bounds.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
