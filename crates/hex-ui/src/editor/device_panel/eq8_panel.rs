@@ -315,7 +315,10 @@ fn audition_toggle(
             .child(unavailable("audition toggle unavailable"));
     };
     let entity = control.entity.clone();
-    entity.update(cx, |toggle, cx| toggle.set_checked(armed, cx));
+    entity.update(cx, |toggle, cx| {
+        let _ = toggle.set_external_style(super::control_style(), cx);
+        toggle.set_checked(armed, cx);
+    });
     div()
         .id(ElementId::Name(
             format!("eq8-audition-arm-{}", device.value()).into(),

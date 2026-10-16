@@ -273,7 +273,7 @@ fn routing_link(
         .routing_focus
         .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
         .clone();
-    let colors = [0xf18428, 0x6374e8, 0x22bcb5, 0xe2cf25];
+    let colors = (0..4).rev().filter_map(theme::oscillator_identity_color);
     let mut icon = div()
         .w(px(12.0))
         .h(px(30.0))
@@ -281,7 +281,7 @@ fn routing_link(
         .flex_col()
         .items_center()
         .justify_between();
-    for (index, color) in colors.into_iter().enumerate() {
+    for (index, color) in colors.enumerate() {
         icon = icon.child(
             div()
                 .id(ElementId::Name(
@@ -459,6 +459,7 @@ pub(super) fn control(
         .get(&device)
         .map_or(spec.default, |state| state.value(field));
     control.entity.update(cx, |control, cx| {
+        let _ = control.set_external_style(control_style(), cx);
         control.set_tab_navigation(true, cx);
         let _ = control.set_external_value(value, cx);
     });
@@ -547,6 +548,9 @@ fn toggle(
     else {
         return control_error("toggle unavailable");
     };
+    toggle.entity.update(cx, |control, cx| {
+        let _ = control.set_external_style(control_style(), cx);
+    });
     div()
         .id(ElementId::Name(
             format!(
