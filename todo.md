@@ -1,3 +1,13 @@
+## Operator held-note retest preparation — #2372 / PR247, 16 october 2026
+
+The supported retest route is an authored sustained Arrangement MIDI note with
+scheduled NoteOff, leaving the pointer free for Operator a–d enable changes.
+A narrow native-project fixture helper and [finite listening checklist](docs/operator-enable-retest.md)
+cover parallel analytic, serial modulation, feedback and free/synced-LFO patches.
+No live input/recording implementation or listening acceptance is claimed.
+Exact candidate checks, optimized delivery and user results are recorded with the
+PR and Pulse issue; held/releasing-note correctness remains open until tested.
+
 ## browser sample playback — #2637 / PR254, 16 october 2026
 
 Click and result-focused Right restart one-shot WAV audition on the existing
