@@ -1,0 +1,355 @@
+use super::*;
+use hex_engine::{
+    AudioArrangementInput, AudioCandidateOwner, AudioPreparationCustody, AudioStorageReservation,
+    OwnedAudioInputs,
+};
+use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
+fn artifact() -> Option<AudioCandidateOwner> {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return None;
+    }
+    let project = hex_project::Project::new(48000).unwrap();
+    let inputs = OwnedAudioInputs::try_new(
+        vec![],
+        AudioStorageReservation {
+            allocation_items: 64,
+            handle_obligations: 256,
+            max_prepared_data_bytes: 64 * 1024 * 1024,
+            max_construction_data_bytes: 64 * 1024 * 1024,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = custody
+        .begin_input_on_control(
+            AudioArrangementInput::new(&project, 11, inputs).with_audio_prepared_revision(),
+        )
+        .ok()
+        .unwrap();
+    Some(
+        AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap(),
+    )
+}
+fn pair() -> (
+    crate::worker::tests::Fixture,
+    StreamControl,
+    StreamCallbackPages,
+    StreamSourceKey,
+) {
+    pair_with_hooks(None)
+}
+fn pair_with_hooks(
+    hooks: Option<crate::worker::TestWorkerHooks>,
+) -> (
+    crate::worker::tests::Fixture,
+    StreamControl,
+    StreamCallbackPages,
+    StreamSourceKey,
+) {
+    let wav = crate::worker::tests::Fixture::pcm16_frames(16001);
+    let limits = VerifiedWavReaderLimits::new(
+        WavReaderLimits::new(2 * 1024 * 1024, 16001, 128, 32768),
+        1024 * 1024,
+    );
+    let reader = VerifiedWavReader::open(&wav.0, limits).unwrap();
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 4).unwrap();
+    let hex_project::Created::Asset(asset) = editor
+        .execute(hex_project::Command::AddAsset {
+            path: "source.wav".into(),
+            sample_rate: 48000,
+            frames: 16001,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let key = StreamSourceKey::new(71, asset);
+    let metadata = hex_engine::StreamedSourceMetadata::new(
+        key,
+        48000,
+        48000,
+        16001,
+        16001,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .unwrap();
+    drop(reader);
+    let mut runtime = StreamRuntime::new_inner(
+        StreamConfig::with_pool_pages(4),
+        vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
+        hooks,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (control, pages) = runtime.split().ok().unwrap();
+    (wav, control, pages, key)
+}
+fn stamp(owner: &AudioCandidateOwner, epoch: u64) -> ReadinessStamp {
+    ReadinessStamp {
+        request_epoch: epoch,
+        artifact: owner.identity(),
+        project_generation: 0,
+        editor_revision: 7,
+        device_epoch: 5,
+        device_rate: 48000,
+        predecessor: None,
+        admitted_command_prefix: 9,
+        window: hex_engine::StreamChunkWindow {
+            performance_frame: 4094,
+            arrangement_frame: 4094,
+            route_generation: 0,
+            frames: 8,
+        },
+    }
+}
+fn finish(domain: &mut ConstructorStreamDomain) -> PagePoolReport {
+    for _ in 0..10 {
+        if let Some(report) = domain.advance_disposal_on_control().unwrap() {
+            return report;
+        }
+    }
+    panic!("domain disposal did not finish")
+}
+#[test]
+fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_join() {
+    let Some(mut owner) = artifact() else { return };
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (publication_tx, publication_rx) = mpsc::sync_channel(2);
+    let (_wav, control, pages, key) = pair_with_hooks(Some(crate::worker::TestWorkerHooks {
+        entered: entered_tx,
+        release: release_rx,
+        publications: publication_tx,
+    }));
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let pair_id = Arc::as_ptr(&control.pair_id);
+    let mut domain = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(
+        domain.summary().shared_handle_bound,
+        22 + domain.summary().kernel_handle_bound
+    );
+    let bytes = domain.metadata_bytes().unwrap();
+    let mut loan = domain.loan_pages_on_control().unwrap();
+    assert_eq!(Arc::as_ptr(&loan.pages.pair_id), pair_id);
+    assert!(domain.loan_pages_on_control().is_none());
+    assert_eq!(domain.metadata_bytes(), Some(bytes));
+    assert!(domain.advance_disposal_on_control().unwrap().is_none());
+    let extents = [
+        StreamPageExtent {
+            source: key,
+            page_index: 0,
+            start: 4094,
+            end: 4096,
+        },
+        StreamPageExtent {
+            source: key,
+            page_index: 1,
+            start: 0,
+            end: 6,
+        },
+    ];
+    let first = stamp(&owner, 1);
+    loan.submit(ProtectionRole::Active, first, &extents)
+        .unwrap();
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, first, &extents)
+            .is_none()
+    );
+    for extent in extents {
+        loan.pages.request_page(extent.source, extent.page_index);
+    }
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        0
+    );
+    assert_eq!(
+        publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        0
+    );
+    // Both actual decoded buffers are now queued, but neither is installed or
+    // protected. A zero-pump service cannot manufacture readiness from decode.
+    assert_eq!(
+        loan.service(ProtectionRole::Active, first, 0, 0),
+        Ok(ReadinessProgress::Pending)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, first, &extents)
+            .is_none()
+    );
+    // Decoding is actual worker work; only service's complete installed/protected
+    // transaction can publish the bounded receipt. All caller operations measured.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        #[cfg(feature = "allocation-probe")]
+        let mut result = None;
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| {
+            result = Some(loan.service(ProtectionRole::Active, first, 2, 2));
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        let result = loan.service(ProtectionRole::Active, first, 2, 2);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        #[cfg(feature = "allocation-probe")]
+        let result = result.unwrap();
+        if result.unwrap() == ReadinessProgress::InstalledProtected {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, first, &extents)
+            .is_none()
+    ); // unread receipt
+    assert_eq!(
+        loan.submit(ProtectionRole::Active, stamp(&owner, 2), &extents),
+        Err(ReadinessRefusal::ReceiptPending)
+    );
+    let mut wrong = first;
+    wrong.admitted_command_prefix += 1;
+    assert!(!loan.acknowledge(ProtectionRole::Active, wrong, &extents));
+    assert!(loan.acknowledge(ProtectionRole::Active, first, &extents));
+    assert!(!loan.acknowledge(ProtectionRole::Active, first, &extents));
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, first, &extents)
+            .unwrap()
+            .page(key, 1)
+            .is_some()
+    );
+    let second = stamp(&owner, 2);
+    let over_pool = [
+        StreamPageExtent {
+            source: key,
+            page_index: 2,
+            start: 0,
+            end: 1,
+        },
+        StreamPageExtent {
+            source: key,
+            page_index: 3,
+            start: 0,
+            end: 1,
+        },
+    ];
+    assert_eq!(
+        loan.submit(ProtectionRole::Candidate, second, &over_pool),
+        Err(ReadinessRefusal::Capacity)
+    );
+    assert!(
+        loan.protected_pages(ProtectionRole::Active, first, &extents)
+            .is_some()
+    );
+    let mut wrong_rate = second;
+    wrong_rate.device_rate = 44100;
+    assert_eq!(
+        loan.submit(ProtectionRole::Candidate, wrong_rate, &extents[..1]),
+        Err(ReadinessRefusal::InvalidExtents)
+    );
+    loan.submit(ProtectionRole::Candidate, second, &extents[..1])
+        .unwrap();
+    assert_eq!(
+        loan.service(ProtectionRole::Candidate, second, 2, 2),
+        Ok(ReadinessProgress::InstalledProtected)
+    );
+    assert!(loan.acknowledge(ProtectionRole::Candidate, second, &extents[..1]));
+    assert!(loan.cancel(ProtectionRole::Active, 1));
+    assert!(
+        loan.protected_pages(ProtectionRole::Candidate, second, &extents[..1])
+            .is_some()
+    );
+    assert_eq!(
+        loan.submit(ProtectionRole::Active, first, &extents),
+        Err(ReadinessRefusal::StaleEpoch)
+    );
+    let mut loan = Some(loan);
+    domain.return_pages_on_control(&mut loan).unwrap();
+    assert!(loan.is_none());
+    let report = finish(&mut domain);
+    assert!(report.accounting_complete && report.worker_joined);
+    assert_eq!(report.page_buffers, 4);
+    owner.dispose_on_control().unwrap();
+}
+#[test]
+fn readiness_reservation_and_wrong_pair_refusals_preserve_actual_owners() {
+    let (_wav, control, pages, _) = pair();
+    let identity = Arc::as_ptr(&control.pair_id);
+    let refusal = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 4,
+        }),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(refusal.reason, AudioStreamStorageError::ReservationExceeded);
+    assert_eq!(Arc::as_ptr(&refusal.control.pair_id), identity);
+    let mut first = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        refusal.control,
+        refusal.pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let (_other_wav, control, pages, _) = pair();
+    let mut second = ConstructorStreamDomain::try_new_with_readiness_limits_on_control(
+        control,
+        pages,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        Some(StreamReadinessReservation {
+            extents_per_role: 3,
+        }),
+    )
+    .ok()
+    .unwrap();
+    let mut a = first.loan_pages_on_control();
+    let mut b = second.loan_pages_on_control();
+    assert!(!a.as_ref().unwrap().same_catalog(b.as_ref().unwrap()));
+    assert_eq!(
+        first.return_pages_on_control(&mut b),
+        Err(AudioStreamStorageError::PairMismatch)
+    );
+    assert!(a.is_some() && b.is_some());
+    first.return_pages_on_control(&mut a).unwrap();
+    second.return_pages_on_control(&mut b).unwrap();
+    assert!(finish(&mut first).accounting_complete);
+    assert!(finish(&mut second).accounting_complete);
+}

@@ -222,3 +222,11 @@ or native-readiness authority. The opaque claimed runtime exposes no Playback,
 Arc or owning provider through this seam. Current streamed installation remains
 refused until the exact endpoint/protection transaction is connected. Legacy
 borrowed-page miss behavior is preserved.
+
+The next stream checkpoint adds one actual endpoint loan per constructor domain
+and control-reserved Active/Candidate/Transition extent/receipt storage. Its
+component tests distinguish real decoded buffers from installed protection,
+exercise short-page/role/pool/receipt refusal and exact pair return, and verify
+normal pool conservation. These component receipts still do not authorize native
+installation: binding to the captured canonical source context, exact engine
+window and real callback transaction remains required.

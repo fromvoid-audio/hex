@@ -46,7 +46,7 @@ pub(crate) struct EndpointQueues {
 
 enum CacheSlot {
     Empty,
-    Occupied { page: Box<PageBuffer>, pinned: bool },
+    Occupied { page: Box<PageBuffer>, pinned: u8 },
 }
 
 #[derive(Clone, Copy)]
@@ -223,17 +223,51 @@ impl Endpoint {
         for key in keys {
             if let Some(index) = self.cache_lookup(*key) {
                 if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
-                    *pinned = true;
+                    *pinned |= 8;
                 }
             }
         }
         true
     }
 
+    pub(crate) fn cache_capacity(&self) -> usize {
+        self.max_cached_pages
+    }
+    pub(crate) fn has_extent(&self, extent: crate::StreamPageExtent) -> bool {
+        let key = PageKey {
+            source: extent.source,
+            page_index: extent.page_index,
+        };
+        self.cache_lookup(key)
+            .and_then(|index| self.cache.get(index))
+            .is_some_and(|slot| {
+                matches!(slot, CacheSlot::Occupied { page, .. }
+                if page.key == Some(key) && extent.start < extent.end
+                    && extent.end <= page.valid_frames && page.valid_frames <= page.frames.len())
+            })
+    }
+    /// The caller validates the entire extent set before this nonfallible role
+    /// replacement. Other roles and legacy pins remain independent.
+    pub(crate) fn replace_protection(&mut self, mask: u8, extents: &[crate::StreamPageExtent]) {
+        for slot in &mut self.cache {
+            if let CacheSlot::Occupied { pinned, .. } = slot {
+                *pinned &= !mask;
+            }
+        }
+        for extent in extents {
+            if let Some(index) = self.cache_lookup(PageKey {
+                source: extent.source,
+                page_index: extent.page_index,
+            }) && let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index]
+            {
+                *pinned |= mask;
+            }
+        }
+    }
     pub fn unpin_all(&mut self) {
         for slot in &mut self.cache {
             if let CacheSlot::Occupied { pinned, .. } = slot {
-                *pinned = false;
+                *pinned &= !8;
             }
         }
     }
@@ -364,12 +398,15 @@ impl Endpoint {
             return false;
         };
         if let Some(index) = self.cache_lookup(key) {
+            // A readiness-protected page cannot be replaced by a shorter or
+            // duplicate decode while an actual protected extent depends on it.
+            if matches!(self.cache[index], CacheSlot::Occupied { pinned, .. } if pinned & 7 != 0) {
+                self.return_buffer(page);
+                return false;
+            }
             let old = std::mem::replace(
                 &mut self.cache[index],
-                CacheSlot::Occupied {
-                    page,
-                    pinned: false,
-                },
+                CacheSlot::Occupied { page, pinned: 0 },
             );
             if let CacheSlot::Occupied { page, pinned } = old {
                 if let CacheSlot::Occupied {
@@ -395,15 +432,12 @@ impl Endpoint {
             self.return_buffer(page);
             return false;
         };
-        self.cache[index] = CacheSlot::Occupied {
-            page,
-            pinned: false,
-        };
+        self.cache[index] = CacheSlot::Occupied { page, pinned: 0 };
         self.cache_count += 1;
         true
     }
 
-    fn cache_remove(&mut self, index: usize) -> Option<(Box<PageBuffer>, bool)> {
+    fn cache_remove(&mut self, index: usize) -> Option<(Box<PageBuffer>, u8)> {
         let mask = self.cache.len() - 1;
         let removed = std::mem::replace(&mut self.cache[index], CacheSlot::Empty);
         let CacheSlot::Occupied { page, pinned } = removed else {
@@ -448,7 +482,7 @@ impl Endpoint {
     fn unpinned_victim(&mut self) -> Option<usize> {
         for offset in 0..self.cache.len() {
             let index = (self.eviction_cursor + offset) & (self.cache.len() - 1);
-            if matches!(self.cache[index], CacheSlot::Occupied { pinned: false, .. }) {
+            if matches!(self.cache[index], CacheSlot::Occupied { pinned: 0, .. }) {
                 self.eviction_cursor = (index + 1) & (self.cache.len() - 1);
                 return Some(index);
             }
@@ -811,6 +845,58 @@ mod tests {
                 .iter()
                 .all(|slot| matches!(slot, CacheSlot::Empty))
         );
+    }
+
+    #[test]
+    fn exact_extent_and_role_checks_refuse_short_wrong_pages_without_replacing_protected_pcm() {
+        let mut test = endpoint(3, 4, 4);
+        let source = test.endpoint.source_keys[0];
+        let key = PageKey {
+            source,
+            page_index: 0,
+        };
+        let extent = crate::StreamPageExtent {
+            source,
+            page_index: 0,
+            start: 0,
+            end: 8,
+        };
+        let mut short = page(key);
+        short.valid_frames = 7;
+        assert!(test.endpoint.insert_ready(short));
+        assert!(!test.endpoint.has_extent(extent));
+        assert!(!test.endpoint.has_extent(crate::StreamPageExtent {
+            page_index: 1,
+            ..extent
+        }));
+        let mut complete = page(key);
+        complete.valid_frames = 8;
+        assert!(test.endpoint.insert_ready(complete));
+        assert!(test.endpoint.has_extent(extent));
+        let index = test.endpoint.cache_lookup(key).unwrap();
+        let original = match &test.endpoint.cache[index] {
+            CacheSlot::Occupied { page, .. } => page.frames.as_ptr(),
+            CacheSlot::Empty => panic!("page"),
+        };
+        test.endpoint.replace_protection(1, &[extent]);
+        test.endpoint.replace_protection(2, &[extent]);
+        test.endpoint.replace_protection(1, &[]);
+        assert!(matches!(
+            test.endpoint.cache[index],
+            CacheSlot::Occupied { pinned: 2, .. }
+        ));
+        let mut short = page(key);
+        short.valid_frames = 7;
+        assert!(!test.endpoint.insert_ready(short));
+        assert!(test.endpoint.has_extent(extent));
+        assert!(
+            matches!(&test.endpoint.cache[index], CacheSlot::Occupied { page, .. } if page.frames.as_ptr() == original)
+        );
+        test.endpoint.replace_protection(2, &[]);
+        assert!(matches!(
+            test.endpoint.cache[index],
+            CacheSlot::Occupied { pinned: 0, .. }
+        ));
     }
 
     #[test]

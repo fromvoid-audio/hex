@@ -1,4 +1,4 @@
-//! Exact factory pair retained wholly on control. This is a resource-lifetime
+//! Exact factory pair with a single reversible sealed page loan. This is a resource-lifetime
 //! boundary, not page readiness, native installation or an RSS declaration.
 use super::*;
 use std::{
@@ -17,7 +17,8 @@ pub struct StreamDomainConstructorSummary {
     pub retained_data_bytes: usize,
     pub construction_peak_data_bytes: usize,
     /// The fifteen physical factory fields, three real lease fields, one
-    /// exact-pair disposal anchor, and the actual worker kernel-plan handles.
+    /// exact-pair disposal anchor, optional readiness lease's three handles,
+    /// and the actual worker kernel-plan handles.
     pub shared_handle_bound: usize,
     pub kernel_handle_bound: usize,
     pub worker_lifetimes: usize,
@@ -38,11 +39,14 @@ enum Phase {
     Complete,
     Failed,
 }
-/// Sealed constructor-only custody. It never exports owning handles, arbitrary
-/// providers or a page endpoint. Hosts retain it through normal join/pool/
+/// Sealed constructor-only custody. One opaque loan may move its actual page
+/// endpoint, never another producer or arbitrary provider. Hosts retain it through normal join/pool/
 /// endpoint/channel destruction and consume their report before slot reuse.
 pub struct ConstructorStreamDomain {
     pair: Option<(StreamControl, StreamCallbackPages)>,
+    loaned_control: Option<StreamControl>,
+    readiness: Option<super::readiness::PreparedReadiness>,
+    readiness_bytes: usize,
     lease: Option<CatalogLease>,
     disposal: Option<PreparedStreamDisposal>,
     summary: StreamDomainConstructorSummary,
@@ -82,6 +86,25 @@ impl ConstructorStreamDomain {
         max_construction_peak_data_bytes: usize,
         max_shared_handle_bound: usize,
     ) -> Result<Self, Box<StreamDomainSealRefusal>> {
+        Self::try_new_with_readiness_limits_on_control(
+            control,
+            pages,
+            max_retained_data_bytes,
+            max_construction_peak_data_bytes,
+            max_shared_handle_bound,
+            None,
+        )
+    }
+    /// Prepare finite readiness backings while the original pair is still
+    /// reversible. A loan moves only the endpoint, never the original source bank.
+    pub fn try_new_with_readiness_limits_on_control(
+        control: StreamControl,
+        pages: StreamCallbackPages,
+        max_retained_data_bytes: usize,
+        max_construction_peak_data_bytes: usize,
+        max_shared_handle_bound: usize,
+        readiness: Option<StreamReadinessReservation>,
+    ) -> Result<Self, Box<StreamDomainSealRefusal>> {
         let result = (|| {
             let data = storage::closed_constructor_pair_data(&control, &pages)?;
             let listed_data_bytes = data
@@ -103,7 +126,8 @@ impl ConstructorStreamDomain {
                 return Err(AudioStreamStorageError::ReservationExceeded);
             }
             let shared_handle_bound = 19usize
-                .checked_add(data.worker.kernel_handles)
+                .checked_add(if readiness.is_some() { 3 } else { 0 })
+                .and_then(|handles| handles.checked_add(data.worker.kernel_handles))
                 .ok_or(AudioStreamStorageError::Overflow)?;
             if shared_handle_bound > max_shared_handle_bound {
                 return Err(AudioStreamStorageError::ReservationExceeded);
@@ -121,8 +145,18 @@ impl ConstructorStreamDomain {
             if !pages.matches_catalog(&lease) {
                 return Err(AudioStreamStorageError::PairMismatch);
             }
+            let readiness = readiness
+                .map(|reservation| {
+                    super::readiness::PreparedReadiness::try_new(&lease, &pages, reservation)
+                })
+                .transpose()?;
+            let readiness_bytes = readiness
+                .as_ref()
+                .map_or(Some(0), super::readiness::PreparedReadiness::backing_bytes)
+                .ok_or(AudioStreamStorageError::Overflow)?;
             let metadata = disposal
                 .metadata_bytes()
+                .and_then(|bytes| bytes.checked_add(readiness_bytes))
                 .ok_or(AudioStreamStorageError::Overflow)?;
             let retained_data_bytes = listed_data_bytes
                 .checked_add(metadata)
@@ -148,11 +182,14 @@ impl ConstructorStreamDomain {
                 catalog_channel_lifetimes: 1,
                 source_reader_lifetimes: lease.footprint().sources,
             };
-            Ok((disposal, lease, summary))
+            Ok((disposal, lease, readiness, readiness_bytes, summary))
         })();
         match result {
-            Ok((disposal, lease, summary)) => Ok(Self {
+            Ok((disposal, lease, readiness, readiness_bytes, summary)) => Ok(Self {
                 pair: Some((control, pages)),
+                loaned_control: None,
+                readiness,
+                readiness_bytes,
                 lease: Some(lease),
                 disposal: Some(disposal),
                 summary,
@@ -166,6 +203,52 @@ impl ConstructorStreamDomain {
             })),
         }
     }
+    pub fn loan_pages_on_control(&mut self) -> Option<ConstructorPageLoan> {
+        if self.phase != Phase::Prepared || self.loaned_control.is_some() {
+            return None;
+        }
+        match (self.pair.take(), self.readiness.take()) {
+            (Some((control, pages)), Some(readiness)) => {
+                self.loaned_control = Some(control);
+                Some(ConstructorPageLoan { pages, readiness })
+            }
+            (pair, readiness) => {
+                self.pair = pair;
+                self.readiness = readiness;
+                None
+            }
+        }
+    }
+    /// Refusal leaves both the exact original domain and supplied loan intact.
+    pub fn return_pages_on_control(
+        &mut self,
+        loan: &mut Option<ConstructorPageLoan>,
+    ) -> Result<(), AudioStreamStorageError> {
+        if self.phase != Phase::Prepared
+            || self.pair.is_some()
+            || self.readiness.is_some()
+            || self.loaned_control.is_none()
+            || !loan
+                .as_ref()
+                .zip(self.lease.as_ref())
+                .is_some_and(|(loan, lease)| loan.pages.matches_catalog(lease))
+        {
+            return Err(AudioStreamStorageError::PairMismatch);
+        }
+        // Every destination/association is validated before either owner moves.
+        match (loan.take(), self.loaned_control.take()) {
+            (Some(ConstructorPageLoan { pages, readiness }), Some(control)) => {
+                self.pair = Some((control, pages));
+                self.readiness = Some(readiness);
+            }
+            (original, control) => {
+                *loan = original;
+                self.loaned_control = control;
+                return Err(AudioStreamStorageError::PairMismatch);
+            }
+        }
+        Ok(())
+    }
     pub fn summary(&self) -> StreamDomainConstructorSummary {
         self.summary
     }
@@ -175,20 +258,27 @@ impl ConstructorStreamDomain {
         self.phase == Phase::Prepared
             && self.lease.as_ref().is_some_and(|l| l.covers_source(source))
     }
+    /// Reserved backing stays charged through a loan and report consumption.
+    /// The host additionally charges the loan's actual inline destination.
     pub fn metadata_bytes(&self) -> Option<usize> {
         let Self {
             pair: _,
+            loaned_control: _,
+            readiness: _,
+            readiness_bytes,
             lease: _,
             disposal,
             summary: _,
             phase: _,
             first_panic: _,
         } = self;
-        std::mem::size_of::<Self>().checked_add(
-            disposal
-                .as_ref()
-                .map_or(Some(0), PreparedStreamDisposal::metadata_bytes)?,
-        )
+        std::mem::size_of::<Self>()
+            .checked_add(*readiness_bytes)?
+            .checked_add(
+                disposal
+                    .as_ref()
+                    .map_or(Some(0), PreparedStreamDisposal::metadata_bytes)?,
+            )
     }
     /// Synchronous registration refusal only; no accepted/retiring domain can
     /// return a new pair or silently discard its retained cleanup state.
@@ -196,7 +286,7 @@ impl ConstructorStreamDomain {
     pub fn into_unaccepted_parts_on_control(
         mut self,
     ) -> Result<(StreamControl, StreamCallbackPages), Self> {
-        if self.phase != Phase::Prepared {
+        if self.phase != Phase::Prepared || self.loaned_control.is_some() {
             return Err(self);
         }
         let Some(pair) = self.pair.take() else {
@@ -213,7 +303,15 @@ impl ConstructorStreamDomain {
         &mut self,
     ) -> Result<Option<PagePoolReport>, StreamDisposalError> {
         if self.phase == Phase::Prepared {
+            if self.loaned_control.is_some() {
+                return Ok(None);
+            }
             self.phase = Phase::LeaseDropPending;
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.readiness.take()))) {
+                self.first_panic = Some(payload);
+                self.phase = Phase::Failed;
+                return Err(StreamDisposalError::Incomplete);
+            }
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.lease.take()))) {
                 self.first_panic = Some(payload);
                 self.phase = Phase::Failed;

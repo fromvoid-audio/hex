@@ -116,3 +116,27 @@ endpoint/channel/metadata destruction precede its report. The native host keeps
 charges until report consumption and must enforce its global two-domain limit.
 Streamed native installation/readiness remains deferred. See
 [constructor publication](../../docs/audio-candidate-publication.md).
+
+## sealed readiness and endpoint loan (PR237 checkpoint)
+
+A constructor domain may additionally reserve a finite extent capacity for each
+of Active, Candidate and Transition. Six actual Vec capacities and the internal
+readiness catalog lease's three handles are charged before consuming the original
+pair. Its move-only `ConstructorPageLoan` carries the one actual request producer
+and callback endpoint; it cannot clone another producer or export raw endpoint
+ownership. The original control/catalog/disposal owner remains on control, and
+normal disposal cannot stop or join until the exact loan returns. Returning a
+wrong pair preserves both owners. Inline capsule storage belongs to its host;
+its backing reservation remains charged through the report barrier.
+
+Decoded buffers are not readiness. Bounded service installs complete requested
+extents, validates actual valid-frame lengths, atomically replaces only its own
+protection role, and publishes one reserved unread receipt per role. A receipt
+must be acknowledged against its exact stamp/extents before borrowing protected
+samples or replacing it. Other roles survive overlapping replacement/cancellation;
+a protected PCM page cannot be replaced by a duplicate shorter decode. The union
+of protected/outstanding pages must fit the actual existing cache, with no pool
+cap increase. Stamps are correlation data, not proof of engine demand or native
+publication. Audio must bind these operations to its real constructor and engine
+window before enabling streamed installation; that integration remains PR237.
+Legacy borrowed pages retain their established miss behavior.
