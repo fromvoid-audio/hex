@@ -338,7 +338,7 @@ fn unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_construct
         let mut retirement = NativeRetirement::new(terminals, root.clone());
         // Wrong Reader is refused at the four-terminal constructor; wrong
         // Reaper is refused when persistent lifecycle custody is paired.
-        retirement.bind_spectrum_reaper(Some(&other_reaper));
+        retirement.bind_spectrum_reaper(Some(if wrong_reader { &reaper } else { &other_reaper }));
         let control = publication.control().unwrap();
         control.enable_native_custody().unwrap();
         assert!(root.native_boundary_bytes().is_none());
