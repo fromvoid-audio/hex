@@ -26,7 +26,9 @@ only speculative state; commit/rollback copies touched circular intervals.
 A late render failure silences the requested block and preserves committed DSP,
 delay, route and transport history for an exact retry. Callback scopes do not
 allocate, lock, perform I/O or destroy final graph owners. Zero-latency projects
-without authored audio/MIDI routes retain the existing block path and arithmetic.
+without authored audio feeds retain the existing block path and arithmetic.
+Logical MIDI-only routes use that block path with independent audio and MIDI
+source ownership; positive declared latency still uses the compensation graph.
 
 Exact arrangement frame, loop pass and Q32.32 performance beat history travel
 with delayed content. Native clock queries and downstream gain evaluation use
