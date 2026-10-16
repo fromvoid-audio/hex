@@ -10,7 +10,7 @@ use hex_engine::{NativeDeviceClass, NativeDeviceView, SaturatorTransferCurve};
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
-pub(super) const FRAME_WIDTH: f32 = 230.0;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::SATURATOR_FRAME_WIDTH;
 const DRIVE: ParameterId = ParameterId::from_static(1);
 const OUTPUT: ParameterId = ParameterId::from_static(2);
 const WET: ParameterId = ParameterId::from_static(3);

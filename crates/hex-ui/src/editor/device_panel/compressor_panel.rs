@@ -10,7 +10,7 @@ use hex_engine::{CompressorTransferCurve, NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
-pub(super) const FRAME_WIDTH: f32 = 326.0;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::COMPRESSOR_FRAME_WIDTH;
 const THRESHOLD: ParameterId = ParameterId::from_static(1);
 const RATIO: ParameterId = ParameterId::from_static(2);
 const ATTACK: ParameterId = ParameterId::from_static(3);
