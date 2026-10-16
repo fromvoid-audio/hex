@@ -1,0 +1,5 @@
+[workspace]
+members=["macros", "app"]
+resolver="2"
+
+# Standalone regression fixture; not a shipped Hex workspace member.

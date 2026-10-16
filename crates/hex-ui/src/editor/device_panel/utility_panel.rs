@@ -194,7 +194,7 @@ pub(super) fn render_body(
                 })
                 .child(audition),
         );
-    let input = div()
+    let input = crate::device_composition::rail_column()
         .id(("utility-input", device.value()))
         .debug_selector(|| format!("utility-input-{}", device.value()))
         .w(px(64.0))
@@ -249,7 +249,7 @@ pub(super) fn render_body(
         Some("dc"),
     );
     let mute_dc = div().flex().gap(px(2.0)).child(mute).child(dc);
-    let output = div()
+    let output = crate::device_composition::rail_column()
         .id(("utility-output", device.value()))
         .debug_selector(|| format!("utility-output-{}", device.value()))
         .w(px(64.0))
@@ -264,39 +264,15 @@ pub(super) fn render_body(
         .child(balance)
         .child(mute_dc);
 
-    div()
+    crate::device_composition::utility(input, output)
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
-        .relative()
-        .flex()
-        .w(px(140.0))
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
-        .min_h_0()
-        .overflow_hidden()
-        .gap(px(2.0))
-        .p(px(2.0))
-        .child(input)
-        .child(
-            div()
-                .w(px(1.0))
-                .h_full()
-                .bg(rgb(theme::color(theme::PaletteRole::Border))),
-        )
-        .child(output)
 }
 
 fn section_heading(label: &'static str) -> Div {
-    div()
-        .w_full()
-        .h(px(10.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text(label))
+    hex_widgets::device_caption(theme::text(label), super::control_style())
 }
 
 fn control(

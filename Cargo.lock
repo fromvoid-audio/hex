@@ -651,8 +651,6 @@ dependencies = [
 [[package]]
 name = "block"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
 
 [[package]]
 name = "block-buffer"
@@ -2553,6 +2551,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-stream",
  "rtrb",
 ]
 
@@ -2597,6 +2596,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-warp",
 ]
 
 [[package]]
@@ -2607,6 +2607,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "rustix 1.1.5",
 ]
 
 [[package]]
@@ -2658,6 +2659,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "serde_json",
 ]
 
 [[package]]
@@ -2680,6 +2682,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "rtrb",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2697,6 +2700,10 @@ dependencies = [
  "hex-session",
  "hex-widgets",
 ]
+
+[[package]]
+name = "hex-warp"
+version = "0.1.0"
 
 [[package]]
 name = "hex-widgets"
@@ -4338,8 +4345,6 @@ dependencies = [
 [[package]]
 name = "proc-macro-error2"
 version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
 dependencies = [
  "proc-macro-error-attr2",
  "proc-macro2",

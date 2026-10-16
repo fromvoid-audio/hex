@@ -199,16 +199,25 @@ fn mixed_waveform_operator_export_matches_partitioned_prepared_playback() {
 #[test]
 fn lfo_free_sync_and_feedback_export_match_registered_partitioned_playback() {
     for sync in [false, true] {
-        modulation_export(Some(sync));
+        for selected in [false, true] {
+            modulation_export(Some(sync), false, selected);
+        }
     }
 }
 
 #[test]
 fn feedback_operator_full_prepared_export_matches_registered_playback() {
-    modulation_export(None);
+    modulation_export(None, false, true);
 }
 
-fn modulation_export(lfo: Option<bool>) {
+#[test]
+fn filter_modes_export_match_registered_playback_across_blocks_and_release() {
+    for sync in [None, Some(false), Some(true)] {
+        modulation_export(sync, true, true);
+    }
+}
+
+fn modulation_export(lfo: Option<bool>, filter: bool, selected: bool) {
     let state = patch_native_device_parameter_for_class(
         NativeDeviceClass::Instrument,
         &operator_state(),
@@ -224,6 +233,24 @@ fn modulation_export(lfo: Option<bool>) {
             (84, ParameterValue::Bool(sync)),
             (85, ParameterValue::Float(100.0)),
             (87, ParameterValue::Float(100.0)),
+            (89, ParameterValue::Bool(selected)),
+        ] {
+            state = patch_native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                &state,
+                ParameterId::from_static(id),
+                value,
+            )
+            .unwrap();
+        }
+    }
+    if filter {
+        for (id, value) in [
+            (20001, ParameterValue::Bool(true)),
+            (20002, ParameterValue::Choice(4)),
+            (20005, ParameterValue::Float(777.0)),
+            (20006, ParameterValue::Float(80.0)),
+            (20007, ParameterValue::Float(35.0)),
         ] {
             state = patch_native_device_parameter_for_class(
                 NativeDeviceClass::Instrument,
@@ -251,10 +278,35 @@ fn modulation_export(lfo: Option<bool>) {
 
     let directory = TestDir::new();
     let path = directory.0.join("operator-feedback.wav");
-    let report = hex_export::render_prepared_new(&path, revision, 0, 6_500)
+    let report = hex_export::render_prepared_new(&path, Arc::clone(&revision), 0, 6_500)
         .expect("linear prepared feedback export");
     assert_eq!(report.frames, 6_500);
     let bytes = fs::read(path).expect("read exported feedback wav");
+    // Seek into both a held feedback note and its release. The selected files
+    // must exactly match the full uninterrupted export's corresponding PCM.
+    for start in [127, 5_999, 6_113] {
+        let selected = directory.0.join(format!("feedback-range-{start}.wav"));
+        let control = hex_export::ExportControl::default();
+        hex_export::render_prepared_controlled(
+            &selected,
+            Arc::clone(&revision),
+            start,
+            300,
+            hex_export::ExportSignal::Main,
+            &control,
+        )
+        .expect("stateful selected range");
+        let data = fs::read(selected).unwrap();
+        let offset = 44 + start as usize * 4;
+        assert_eq!(&data[44..], &bytes[offset..offset + 300 * 4]);
+        assert_eq!(
+            control.progress(),
+            hex_export::ExportProgress {
+                processed_frames: start + 300,
+                total_frames: start + 300
+            }
+        );
+    }
     for (frame_index, (samples, expected)) in bytes[44..].chunks_exact(4).zip(expected).enumerate()
     {
         let left = i16::from_le_bytes([samples[0], samples[1]]);

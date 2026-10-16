@@ -3,12 +3,12 @@ use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView,
     parameter_control_with_presentation,
 };
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*};
 use hex_engine::{NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::ParameterId;
 use hex_project::DeviceId;
 
-pub(super) const FRAME_WIDTH: f32 = 144.0;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::AUTO_PAN_FRAME_WIDTH;
 
 const PARAMETERS: [(ParameterId, &str); 3] = [
     (ParameterId::from_static(1), "amount"),
@@ -26,7 +26,7 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
     };
-    let mut controls = div().flex().flex_col().gap(px(2.0));
+    let mut controls = crate::device_composition::rail_column();
     for (id, label) in PARAMETERS {
         let control = device_view
             .parameters
@@ -49,15 +49,9 @@ pub(super) fn render_body(
             .unwrap_or_else(|| div().child(crate::theme::text("unsupported")));
         controls = controls.child(control);
     }
-    div()
+    crate::device_composition::centered_rails(crate::device_composition::dense_rail(controls))
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
-        .w_full()
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
-        .flex()
-        .justify_center()
-        .p(px(3.0))
-        .child(controls)
 }

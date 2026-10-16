@@ -55,6 +55,7 @@ impl Editor {
     ) -> Result<(Created, T), E> {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_playable_routes()?;
         let prepared = prepare(&candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
         if candidate == self.project {
@@ -73,6 +74,7 @@ impl Editor {
             return false;
         };
         previous.next_id = previous.next_id.max(self.project.next_id);
+        previous.retain_gain_touch_epochs_from(&self.project);
         self.redo
             .push(std::mem::replace(&mut self.project, previous));
         true
@@ -90,6 +92,7 @@ impl Editor {
         };
         let mut candidate = previous.clone();
         candidate.next_id = candidate.next_id.max(self.project.next_id);
+        candidate.retain_gain_touch_epochs_from(&self.project);
         self.redo
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve redo history")))?;
@@ -107,6 +110,7 @@ impl Editor {
             return false;
         };
         next.next_id = next.next_id.max(self.project.next_id);
+        next.retain_gain_touch_epochs_from(&self.project);
         self.undo
             .push_back(std::mem::replace(&mut self.project, next));
         true
@@ -124,6 +128,7 @@ impl Editor {
         };
         let mut candidate = next.clone();
         candidate.next_id = candidate.next_id.max(self.project.next_id);
+        candidate.retain_gain_touch_epochs_from(&self.project);
         self.undo
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
@@ -137,5 +142,77 @@ impl Editor {
         self.undo
             .push_back(std::mem::replace(&mut self.project, candidate));
         Ok(Some(prepared))
+    }
+}
+
+#[cfg(test)]
+mod gain_touch_epoch_tests {
+    use super::*;
+    #[test]
+    fn ordinary_and_prepared_history_never_rewind_surviving_owner_epoch() {
+        for prepared in [false, true] {
+            let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+            let Created::Track(id) = editor
+                .execute(Command::AddTrack {
+                    name: "touch".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor
+                .execute(Command::Gain {
+                    track: id,
+                    gain: 0.5,
+                })
+                .unwrap();
+            // Private metadata fixture: no production recording/adoption API is opened.
+            editor.project.tracks[0].gain_lane.recording_epoch = 9;
+            if prepared {
+                assert!(
+                    editor
+                        .undo_prepared::<_, Invalid>(|p| {
+                            assert_eq!(p.track(id).unwrap().gain_lane().recording_epoch(), 9);
+                            Ok(())
+                        })
+                        .unwrap()
+                        .is_some()
+                );
+            } else {
+                assert!(editor.undo());
+            }
+            assert_eq!(
+                editor
+                    .project
+                    .track(id)
+                    .unwrap()
+                    .gain_lane()
+                    .recording_epoch(),
+                9
+            );
+            editor.project.tracks[0].gain_lane.recording_epoch = 10;
+            if prepared {
+                assert!(
+                    editor
+                        .redo_prepared::<_, Invalid>(|p| {
+                            assert_eq!(p.track(id).unwrap().gain_lane().recording_epoch(), 10);
+                            Ok(())
+                        })
+                        .unwrap()
+                        .is_some()
+                );
+            } else {
+                assert!(editor.redo());
+            }
+            assert_eq!(
+                editor
+                    .project
+                    .track(id)
+                    .unwrap()
+                    .gain_lane()
+                    .recording_epoch(),
+                10
+            );
+        }
     }
 }
