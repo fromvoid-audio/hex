@@ -500,7 +500,10 @@ impl SessionPlayback {
                     .get(index)
                     .is_some_and(|chain| !chain.committed_range_is_quiescent(0..chain.len()));
             if (buffered || ordered)
-                && (has_current_route || has_current_release || has_current_effect_tail)
+                && (has_current_route
+                    || has_current_release
+                    || has_current_effect_tail
+                    || live_target)
             {
                 let mut track_buffer = [[0.0; 2]; 256];
                 let render_output = &mut track_buffer[..output.len()];
@@ -513,6 +516,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: live_target,
                             timing: &timing,
                             table,
                         },
@@ -578,6 +582,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: live_target,
                             timing: &timing,
                             table,
                         },
@@ -705,6 +710,7 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
+                                raw: false,
                                 timing: &timing,
                                 table,
                             },
@@ -729,6 +735,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
+                            raw: false,
                             timing: &timing,
                             table,
                         },
@@ -779,6 +786,11 @@ impl SessionPlayback {
                         )
                     } else {
                         track.mix()
+                    };
+                    let mix = if live_target {
+                        mix.without_effects()
+                    } else {
+                        mix
                     };
                     if already_mixed {
                         // Preserve the analytic per-voice fader summation order.
@@ -865,6 +877,7 @@ impl SessionPlayback {
                         suppressions: &self.suppression_scratch,
                         continuations: &self.analytic_continuations,
                         index,
+                        raw: false,
                         timing: &timing,
                         table,
                     },
@@ -1497,6 +1510,7 @@ struct RouteSourceContext<'a, T> {
     suppressions: &'a [MidiOccurrenceSuppression],
     continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,
+    raw: bool,
     timing: &'a T,
     table: &'a hex_devices::SineTable,
 }
@@ -1524,6 +1538,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         suppressions,
         continuations,
         index,
+        raw,
         timing,
         table,
     } = context;
@@ -1532,9 +1547,29 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
         .tracks()
         .get(index)
         .ok_or(SessionPlaybackError::UnknownTrack)?;
-    let source_mix = track.source_mix();
+    let source_mix = if raw {
+        crate::PreparedTrackMix::identity()
+    } else {
+        track.source_mix()
+    };
     match route.owner {
         RouteOwner::Arrangement => {
+            if raw && matches!(stage, SourceStage::Audio) {
+                return track
+                    .render_raw_audio(arrangement_frame, output, pages.as_deref_mut())
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
+            if raw && matches!(stage, SourceStage::Instrument) {
+                return track
+                    .render_raw_instrument(
+                        arrangement_frame,
+                        performance_frame,
+                        output,
+                        suppressions,
+                        continuations,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0));
+            }
             let has_active_suppression = suppressions
                 .iter()
                 .any(|entry| entry.track == route.id && entry.until_frame > performance_frame);
