@@ -2,6 +2,7 @@
 mod app;
 mod build_info;
 mod context_menu;
+mod device_composition;
 mod diagnostics;
 pub use diagnostics::install_session_log;
 mod editor;

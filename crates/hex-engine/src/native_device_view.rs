@@ -4,6 +4,33 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
+/// Reserved host parameter. Device codecs never own this identifier.
+pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
+    hex_lattice_contract::ParameterDescriptor {
+        id: hex_lattice_contract::ParameterId::from_static(u32::MAX),
+        label: "output gain",
+        kind: hex_lattice_contract::ParameterKind::Float {
+            min: -60.0,
+            max: 24.0,
+            unit: Some("db"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    };
+
+pub const DEVICE_INPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
+    hex_lattice_contract::ParameterDescriptor {
+        id: hex_lattice_contract::ParameterId::from_static(u32::MAX - 1),
+        label: "input gain",
+        kind: hex_lattice_contract::ParameterKind::Float {
+            min: -60.0,
+            max: 24.0,
+            unit: Some("db"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: hex_lattice_contract::ParameterPresentation::Linear,
+    };
+
 /// Distinguishes native effect processors from native track instruments.
 /// Type identifiers are resolved only inside the requested class registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +237,12 @@ fn read_parameter<D: NativeDeviceMetadata + ?Sized>(
     state: &NativeDeviceState,
     parameter: hex_lattice_contract::ParameterId,
 ) -> Result<ParameterValue, Invalid> {
+    if parameter == DEVICE_INPUT_GAIN.id {
+        return Ok(ParameterValue::Float(state.input_gain_db()));
+    }
+    if parameter == DEVICE_OUTPUT_GAIN.id {
+        return Ok(ParameterValue::Float(state.output_gain_db()));
+    }
     let descriptor = definition
         .descriptors()
         .iter()
@@ -441,7 +474,7 @@ mod tests {
             .expect("FM4 instrument is registered");
         let operator = instruments
             .iter()
-            .find(|entry| entry.name == "operator")
+            .find(|entry| entry.name == "vector")
             .expect("Operator instrument is registered");
 
         let state = crate::default_native_device_state_for_class(
@@ -502,8 +535,24 @@ mod tests {
         .unwrap();
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
-        assert_eq!(operator_view.name, "operator");
-        assert_eq!(operator_view.parameters.len(), 88);
+        assert_eq!(operator_view.name, "vector");
+        assert_eq!(operator_view.parameters.len(), 99);
+        let enables: Vec<_> = operator_view
+            .parameters
+            .iter()
+            .filter(|parameter| (513..=516).contains(&parameter.descriptor.id.value()))
+            .map(|parameter| (parameter.descriptor.id.value(), parameter.value))
+            .collect();
+        assert_eq!(
+            enables,
+            vec![
+                (513, ParameterValue::Bool(true)),
+                (514, ParameterValue::Bool(true)),
+                (515, ParameterValue::Bool(true)),
+                (516, ParameterValue::Bool(true)),
+            ],
+            "all four canonical enable facades preserve their true default"
+        );
         for parameter in operator_view
             .parameters
             .iter()

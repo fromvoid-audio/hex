@@ -1,0 +1,3 @@
+fixture device_id=hex.synthetic.configuration-profile tracks=256 returns=16 devices_per_chain=64 total_slots=17408 bytes_per_configuration=4096 configuration_bank_bytes=71303168 configuration_bank_mib=68 fixture_payload_bytes=213909504 fixture_payload_mib=204 mode=synthetic
+fixture_validation shared_arc=true separate_equal=true last_device_changed=false
+functional_check=passed timings=not_run

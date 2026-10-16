@@ -13,6 +13,9 @@ pub(super) struct Format {
     pub(super) sample_rate: u32,
     pub(super) block_align: usize,
     pub(super) bits_per_sample: u16,
+    pub(super) samples_per_block: usize,
+    pub(super) coefficients: [(i16, i16); 32],
+    pub(super) coefficient_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,20 +27,52 @@ pub(super) struct Layout {
 }
 
 impl Format {
+    pub(super) fn require_fixed_frames(self) -> Result<(), ImportError> {
+        if self.samples_per_block != 0 {
+            return Err(ImportError::Invalid(
+                "adpcm is supported by resident import only",
+            ));
+        }
+        Ok(())
+    }
+
     fn parse(bytes: &[u8]) -> Result<Self, ImportError> {
         if bytes.len() < 16 {
             return Err(ImportError::Invalid(
                 "format chunk is shorter than 16 bytes",
             ));
         }
-        let encoding = read_u16(bytes, 0)?;
+        let mut encoding = read_u16(bytes, 0)?;
         let channels = read_u16(bytes, 2)?;
         let sample_rate = read_u32(bytes, 4)?;
         let byte_rate = read_u32(bytes, 8)?;
         let block_align = usize::from(read_u16(bytes, 12)?);
         let bits_per_sample = read_u16(bytes, 14)?;
-        if encoding != 1 && encoding != 3 {
-            return Err(ImportError::Invalid("encoding is not PCM or IEEE float"));
+        if encoding == 0xfffe {
+            if bytes.len() < 40 || read_u16(bytes, 16)? < 22 {
+                return Err(ImportError::Invalid("truncated extensible format"));
+            }
+            let valid_bits = read_u16(bytes, 18)?;
+            if valid_bits == 0 || valid_bits > bits_per_sample {
+                return Err(ImportError::Invalid("invalid extensible valid bit depth"));
+            }
+            let mask = read_u32(bytes, 20)?;
+            if mask != 0 && !matches!((channels, mask), (1, 1 | 4) | (2, 3)) {
+                return Err(ImportError::Invalid("unsupported channel layout"));
+            }
+            // KSDATAFORMAT_SUBTYPE_PCM / IEEE_FLOAT: validate the entire GUID.
+            if bytes[26..40] != [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71] {
+                return Err(ImportError::Invalid("unsupported extensible subtype"));
+            }
+            encoding = read_u16(bytes, 24)?;
+            if !matches!(encoding, 1 | 3) || (encoding == 3 && valid_bits != bits_per_sample) {
+                return Err(ImportError::Invalid(
+                    "unsupported extensible subtype or depth",
+                ));
+            }
+        }
+        if !matches!(encoding, 1 | 2 | 3 | 6 | 7 | 17) {
+            return Err(ImportError::Invalid("unsupported wav encoding"));
         }
         if channels != 1 && channels != 2 {
             return Err(ImportError::Invalid("only mono and stereo are supported"));
@@ -47,9 +82,51 @@ impl Format {
                 "sample rate is outside 8 kHz..192 kHz",
             ));
         }
+        let mut samples_per_block = 0;
+        let mut coefficients = [(0, 0); 32];
+        let mut coefficient_count = 0;
+        if matches!(encoding, 2 | 17) {
+            if bits_per_sample != 4 || bytes.len() < 20 || read_u16(bytes, 16)? < 2 {
+                return Err(ImportError::Invalid("invalid adpcm format extension"));
+            }
+            samples_per_block = usize::from(read_u16(bytes, 18)?);
+            let channels = usize::from(channels);
+            let header_bytes = channels * if encoding == 2 { 7 } else { 4 };
+            if block_align < header_bytes {
+                return Err(ImportError::Invalid("adpcm block is shorter than header"));
+            }
+            let payload = block_align - header_bytes;
+            let expected_samples = payload * 2 / channels + if encoding == 2 { 2 } else { 1 };
+            if samples_per_block != expected_samples
+                || (encoding == 17 && payload % (4 * channels) != 0)
+            {
+                return Err(ImportError::Invalid("inconsistent adpcm block dimensions"));
+            }
+            if encoding == 2 {
+                coefficient_count = usize::from(read_u16(bytes, 20)?);
+                if coefficient_count == 0 || coefficient_count > coefficients.len() {
+                    return Err(ImportError::Invalid("unsupported adpcm coefficient count"));
+                }
+                let required = 22 + 4 * coefficient_count;
+                if bytes.len() < required || usize::from(read_u16(bytes, 16)?) < required - 18 {
+                    return Err(ImportError::Invalid("truncated adpcm coefficients"));
+                }
+                for (index, pair) in coefficients[..coefficient_count].iter_mut().enumerate() {
+                    *pair = (
+                        read_u16(bytes, 22 + index * 4)? as i16,
+                        read_u16(bytes, 24 + index * 4)? as i16,
+                    );
+                }
+            }
+            if byte_rate == 0 {
+                return Err(ImportError::Invalid("zero adpcm byte rate"));
+            }
+        }
         let supported_depth = match encoding {
-            1 => matches!(bits_per_sample, 16 | 24 | 32),
-            3 => bits_per_sample == 32,
+            1 => matches!(bits_per_sample, 8 | 16 | 24 | 32),
+            3 => matches!(bits_per_sample, 32 | 64),
+            6 | 7 => bits_per_sample == 8,
+            2 | 17 => bits_per_sample == 4,
             _ => false,
         };
         if !supported_depth {
@@ -64,7 +141,7 @@ impl Format {
         let expected_rate = sample_rate
             .checked_mul(expected_align as u32)
             .ok_or(ImportError::Invalid("byte rate overflow"))?;
-        if block_align != expected_align || byte_rate != expected_rate {
+        if samples_per_block == 0 && (block_align != expected_align || byte_rate != expected_rate) {
             return Err(ImportError::Invalid(
                 "inconsistent byte rate or block alignment",
             ));
@@ -75,6 +152,9 @@ impl Format {
             sample_rate,
             block_align,
             bits_per_sample,
+            samples_per_block,
+            coefficients,
+            coefficient_count,
         })
     }
 }
@@ -108,6 +188,7 @@ pub(super) fn scan<R: Read + Seek>(
     let mut header_count = 0_usize;
     let mut format_bytes = None;
     let mut data = None;
+    let mut fact_frames = None;
     while cursor < riff_end {
         header_count = header_count
             .checked_add(1)
@@ -144,9 +225,23 @@ pub(super) fn scan<R: Read + Seek>(
                 ));
             }
             reader.seek(SeekFrom::Start(payload_start))?;
-            let mut fmt = [0_u8; 16];
-            read_exact_invalid(reader, &mut fmt, "truncated format chunk")?;
-            format_bytes = Some(fmt);
+            // Only the bounded prefix is needed; skip arbitrary trailing metadata.
+            let mut fmt = [0_u8; 150];
+            let length = chunk_size.min(fmt.len() as u64) as usize;
+            read_exact_invalid(reader, &mut fmt[..length], "truncated format chunk")?;
+            if chunk_size > 16
+                && (chunk_size < 18 || u64::from(read_u16(&fmt[..length], 16)?) + 18 > chunk_size)
+            {
+                return Err(ImportError::Invalid("truncated format extension"));
+            }
+            format_bytes = Some(Format::parse(&fmt[..length])?);
+        } else if &header[..4] == b"fact" {
+            if fact_frames.is_some() || chunk_size < 4 {
+                return Err(ImportError::Invalid("invalid or duplicate fact chunk"));
+            }
+            let mut fact = [0_u8; 4];
+            read_exact_invalid(reader, &mut fact, "truncated fact chunk")?;
+            fact_frames = Some(u64::from(u32::from_le_bytes(fact)));
         } else if &header[..4] == b"data" && data.replace((payload_start, chunk_size)).is_some() {
             return Err(ImportError::Invalid("duplicate data chunk"));
         }
@@ -160,14 +255,26 @@ pub(super) fn scan<R: Read + Seek>(
     }
 
     let format_bytes = format_bytes.ok_or(ImportError::Invalid("missing format chunk"))?;
-    let format = Format::parse(&format_bytes)?;
+    let format = format_bytes;
     let (data_offset, data_bytes) = data.ok_or(ImportError::Invalid("missing data chunk"))?;
     if data_bytes == 0 || data_bytes % format.block_align as u64 != 0 {
         return Err(ImportError::Invalid(
             "data chunk is empty or not frame-aligned",
         ));
     }
-    let frames = data_bytes / format.block_align as u64;
+    let mut frames = data_bytes / format.block_align as u64;
+    if format.samples_per_block != 0 {
+        frames = frames
+            .checked_mul(format.samples_per_block as u64)
+            .ok_or(ImportError::Invalid("adpcm frame count overflow"))?;
+        if let Some(count) = fact_frames {
+            // Only the final block may contain encoder padding.
+            if count == 0 || count > frames || frames - count >= format.samples_per_block as u64 {
+                return Err(ImportError::Invalid("inconsistent adpcm fact frame count"));
+            }
+            frames = count;
+        }
+    }
     Ok(Layout {
         format,
         data_offset,
@@ -195,6 +302,9 @@ pub(super) fn decode(bytes: &[u8], max_frames: usize) -> Result<(Audio, u32, usi
     let data = bytes
         .get(start..end)
         .ok_or(ImportError::Invalid("data chunk exceeds input"))?;
+    if layout.format.samples_per_block != 0 {
+        return crate::adpcm::decode(data, layout.format, frame_count);
+    }
     decode_samples(data, layout.format, frame_count)
 }
 
@@ -228,6 +338,7 @@ pub(super) fn decode_frame(frame: &[u8], format: Format) -> Result<[f32; 2], Imp
 
 fn decode_sample(sample: &[u8], format: Format) -> Result<f32, ImportError> {
     let value = match (format.encoding, format.bits_per_sample) {
+        (1, 8) => (f32::from(sample[0]) - 128.0) / 128.0,
         (1, 16) => i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32_768.0,
         (1, 24) => {
             let raw =
@@ -243,6 +354,34 @@ fn decode_sample(sample: &[u8], format: Format) -> Result<f32, ImportError> {
             i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32
                 / 2_147_483_648.0
         }
+        (6, 8) => {
+            let code = sample[0] ^ 0x55;
+            let exponent = (code >> 4) & 7;
+            let mut magnitude = i32::from(code & 15) << 4;
+            magnitude += if exponent == 0 { 8 } else { 0x108 };
+            if exponent > 1 {
+                magnitude <<= exponent - 1;
+            }
+            (if code & 0x80 != 0 {
+                magnitude
+            } else {
+                -magnitude
+            }) as f32
+                / 32_768.0
+        }
+        (7, 8) => {
+            let code = !sample[0];
+            let magnitude = ((i32::from(code & 15) << 3) + 132) << ((code >> 4) & 7);
+            (if code & 0x80 != 0 {
+                132 - magnitude
+            } else {
+                magnitude - 132
+            }) as f32
+                / 32_768.0
+        }
+        (3, 64) => f64::from_le_bytes([
+            sample[0], sample[1], sample[2], sample[3], sample[4], sample[5], sample[6], sample[7],
+        ]) as f32,
         (3, 32) => f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]),
         _ => {
             return Err(ImportError::Invalid(

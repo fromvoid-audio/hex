@@ -12,6 +12,7 @@ instrument-test-support = []
 workspace = true
 
 [dependencies]
+hex-warp = { path = "../hex-warp" }
 hex-project = { path = "../hex-project" }
 hex-devices = { path = "../hex-devices" }
 hex-lattice = { path = "../hex-lattice" }
