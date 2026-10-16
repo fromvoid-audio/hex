@@ -166,6 +166,7 @@ fn processor_instances_with_scale(
     let scale_state = Arc::new(NativeDeviceState::new(SCALE_TYPE, 1, vec![state_value]).unwrap());
     vec![
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 20,
             device_type: HOLD_TYPE,
@@ -176,6 +177,7 @@ fn processor_instances_with_scale(
             definition: Some(Arc::new(HoldDefinition)),
         },
         PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 21,
             device_type: SCALE_TYPE,
@@ -196,6 +198,7 @@ fn tail_instances(
 ) -> Vec<PreparedProcessorInstance> {
     (0..count)
         .map(|index| PreparedProcessorInstance {
+            meter: Default::default(),
             owner: ProcessorChainOwner::Return(return_id.value()),
             device_id: 100 + index as u64,
             device_type: TAIL_TYPE,
@@ -366,6 +369,233 @@ fn warm(playback: &mut SessionPlayback) {
     playback.render(&mut output).unwrap();
 }
 
+#[test]
+fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing() {
+    for (replacement, partitions, carry) in [
+        (false, &[8][..], false),
+        (true, &[8][..], false),
+        (false, &[1, 2, 5][..], true),
+        (true, &[1, 2, 5][..], true),
+    ] {
+        let mut snapshot = prepared_return_project(true, 1.0).snapshot();
+        snapshot.session = hex_project::SessionSnapshot::default();
+        // One-frame source creates actual history, then only residuals remain.
+        snapshot.assets = vec![hex_project::AssetSnapshot {
+            id: 30,
+            path: "tail.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 32,
+            playback_frames: 32,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        }];
+        snapshot.tracks[0].content = hex_project::TrackContentSnapshot::Hybrid {
+            audio_clips: vec![hex_project::ClipSnapshot {
+                id: 31,
+                asset: 30,
+                start: 0,
+                duration: 1,
+                source_offset: 0,
+                source_length: 32,
+                looping: false,
+                source_phase: 0,
+                fade: hex_project::ClipFade::neutral(1).unwrap(),
+            }],
+            midi_clips: Vec::new(),
+        };
+        snapshot.tracks[0].gain = 0.5;
+        snapshot.tracks[0].balance = 0.5;
+        snapshot.next_id = 40;
+        let source_project = Project::from_snapshot(snapshot).unwrap();
+        let source_project = super::tests::with_utility_filter_state(&source_project, true, false);
+        let audio = crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap();
+        let media = BTreeMap::from([(source_project.assets().next().unwrap().id(), audio)]);
+        let table = Arc::new(hex_devices::SineTable::new());
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let mut old = SessionPlayback::new(prepare(&source_project)).unwrap();
+        let track_id = old.routes[0].id;
+        let return_id = old.revision.arrangement().return_buses()[0].id;
+        let mut track_instances = processor_instances(return_id, StereoMatrix::identity());
+        for instance in &mut track_instances {
+            instance.owner = ProcessorChainOwner::Track(track_id.value());
+        }
+        old.device_chains[0] = NativeRuntimeChain::new(track_instances).unwrap();
+        old.return_chains[0] = NativeRuntimeChain::new(processor_instances(
+            return_id,
+            StereoMatrix::new([[0.5, 0.5], [0.5, 0.5]]).unwrap(),
+        ))
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 1]).unwrap();
+        let donor_plan = old
+            .output_capture_plan(&[OutputCaptureId::Track(track_id)], 8)
+            .unwrap();
+        let mut candidate_snapshot = source_project.snapshot();
+        candidate_snapshot.master_gain = 0.5;
+        if replacement {
+            candidate_snapshot.tracks[0].gain = 0.25;
+            candidate_snapshot.tracks[0].balance = -0.5;
+            candidate_snapshot.tracks[0].devices.clear();
+            if let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } =
+                &mut candidate_snapshot.tracks[0].content
+            {
+                audio_clips[0].duration = 32;
+                audio_clips[0].fade = hex_project::ClipFade::neutral(32).unwrap();
+            }
+            candidate_snapshot.return_tracks[0].gain = 0.25;
+            candidate_snapshot.return_tracks[0].devices[0].state =
+                hex_devices::utility::UTILITY_DEFINITION
+                    .patch_parameter(
+                        &candidate_snapshot.return_tracks[0].devices[0].state,
+                        hex_devices::utility::parameter::DC_REMOVE,
+                        ParameterValue::Bool(false),
+                    )
+                    .unwrap();
+        } else {
+            candidate_snapshot.tracks.clear();
+            candidate_snapshot.return_tracks.clear();
+        }
+        let candidate_project = Project::from_snapshot(candidate_snapshot).unwrap();
+        let mut candidate = SessionPlayback::new(prepare(&candidate_project)).unwrap();
+        let before_inherit_plan = candidate.output_capture_plan(&[], 8).unwrap();
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        let mut donor_main = [[9.0; 2]; 8];
+        let mut donor_buffer = donor_main;
+        let mut donor_buffers: [&mut [Frame]; 1] = [&mut donor_buffer];
+        let mut donor_capture = OutputCapture::new(&donor_plan, &mut donor_buffers);
+        let donor_clock = old.performance_frame();
+        assert_eq!(
+            old.render_with_capture(&mut donor_main, &mut donor_capture),
+            Err(SessionPlaybackError::Capture(OutputCaptureError::StalePlan))
+        );
+        assert_eq!(donor_capture.valid_frames(), 0);
+        assert_eq!(old.performance_frame(), donor_clock);
+        assert!(donor_main.iter().flatten().all(|sample| *sample == 0.0));
+        assert_eq!(
+            candidate
+                .tail_track_ids
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![track_id]
+        );
+        assert_eq!(
+            candidate
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .count(),
+            1
+        );
+        let mut none: [&mut [Frame]; 0] = [];
+        let mut stale = OutputCapture::new(&before_inherit_plan, &mut none);
+        assert_eq!(
+            candidate.render_with_capture(&mut [[9.0; 2]; 8], &mut stale),
+            Err(SessionPlaybackError::Capture(OutputCaptureError::StalePlan))
+        );
+        if carry {
+            let mut next = SessionPlayback::new(prepare(&candidate_project)).unwrap();
+            next.try_inherit_state_from(&mut candidate).unwrap();
+            if !replacement {
+                assert_eq!(
+                    candidate
+                        .output_capture_plan(&[OutputCaptureId::Track(track_id)], 8)
+                        .unwrap_err(),
+                    OutputCaptureError::MissingOwner
+                );
+                assert_eq!(
+                    candidate
+                        .output_capture_plan(&[OutputCaptureId::Return(return_id)], 8)
+                        .unwrap_err(),
+                    OutputCaptureError::MissingOwner
+                );
+            }
+            candidate = next;
+            assert!(candidate.tail_track_ids.contains(&Some(track_id)));
+        }
+        let plan = candidate
+            .output_capture_plan(
+                &[
+                    OutputCaptureId::Track(track_id),
+                    OutputCaptureId::Return(return_id),
+                ],
+                512,
+            )
+            .unwrap();
+        let arrangement_before = candidate.arrangement_frame;
+        let performance_before = candidate.performance_frame;
+        candidate.arrangement_frame = u64::MAX - 300;
+        let mut refused_main = [[9.0; 2]; 512];
+        let mut refused_track = refused_main;
+        let mut refused_return = refused_main;
+        let mut refused_buffers: [&mut [Frame]; 2] = [&mut refused_track, &mut refused_return];
+        let mut refused_capture = OutputCapture::new(&plan, &mut refused_buffers);
+        assert!(
+            candidate
+                .render_with_capture(&mut refused_main, &mut refused_capture)
+                .is_err()
+        );
+        assert_eq!(refused_capture.valid_frames(), 0);
+        assert_eq!(candidate.performance_frame, performance_before);
+        assert_eq!(candidate.arrangement_frame, u64::MAX - 300);
+        assert!(refused_main.iter().flatten().all(|sample| *sample == 0.0));
+        assert!(refused_capture.output(0).unwrap().is_empty());
+        candidate.arrangement_frame = arrangement_before;
+        let mut main = [[0.0; 2]; 8];
+        let mut track = main;
+        let mut returned = main;
+        let mut offset = 0;
+        for &frames in partitions {
+            let mut buffers: [&mut [Frame]; 2] = [
+                &mut track[offset..offset + frames],
+                &mut returned[offset..offset + frames],
+            ];
+            let mut capture = OutputCapture::new(&plan, &mut buffers);
+            candidate
+                .render_with_capture(&mut main[offset..offset + frames], &mut capture)
+                .unwrap();
+            assert_eq!(capture.valid_frames(), frames);
+            offset += frames;
+        }
+        for index in 0..8 {
+            let current = if replacement { [0.1, -0.025] } else { [0.0; 2] };
+            let current_return = if replacement {
+                [(0.1 - 0.025) * 0.5 * 0.25; 2]
+            } else {
+                [0.0; 2]
+            };
+            let retired_track = if index < 4 { [0.125, -0.5] } else { [0.0; 2] };
+            let retired_return = if index < 4 { [-0.1875; 2] } else { [0.0; 2] };
+            for channel in 0..2 {
+                let expected_track = current[channel] + retired_track[channel];
+                let expected_return = current_return[channel] + retired_return[channel];
+                assert!(
+                    (track[index][channel] - expected_track).abs() < 1e-7,
+                    "track frame {index}"
+                );
+                assert!(
+                    (returned[index][channel] - expected_return).abs() < 1e-7,
+                    "return frame {index}, replacement {replacement}, actual {:?}, expected {expected_return}",
+                    returned[index]
+                );
+                // Retired track tail must NOT send into current Return.
+                assert!(
+                    (main[index][channel] - (expected_track + expected_return) * 0.5).abs() < 1e-7
+                );
+            }
+        }
+        let actual = candidate.accounted_runtime_storage_bytes().unwrap();
+        assert!(actual >= std::mem::size_of::<SessionPlayback>());
+        assert!(
+            std::mem::size_of::<SessionPlayback>()
+                >= std::mem::size_of::<[Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY]>()
+        );
+    }
+}
+
 fn assert_old_return_tail_with_candidate_chain(
     return_id: ReturnId,
     old_matrix: StereoMatrix,
@@ -414,10 +644,8 @@ fn removed_return_keeps_the_whole_old_chain_and_uses_current_master() {
     let new_project = prepared_return_project(false, 0.5);
     let return_id = old_project.return_tracks()[0].id();
     let mut previous = playback(&old_project);
-    let old_matrix = previous.revision.arrangement().return_buses()[0]
-        .matrix
-        .unwrap();
-    previous.return_chains[0] = active_chain(return_id, StereoMatrix::identity());
+    let old_matrix = previous.revision.arrangement().return_buses()[0].device_chain[0].matrix;
+    previous.return_chains[0] = active_chain(return_id, old_matrix);
     warm(&mut previous);
     assert!(!previous.return_chains[0].committed_range_is_quiescent(0..2));
 
@@ -799,14 +1027,15 @@ fn failed_block_restores_tail_history_for_the_next_render_attempt() {
 
     bank.begin_block();
     let mut failed_attempt = [[0.0; 2]; 1];
-    bank.render_chunk(&mut failed_attempt);
+    bank.render_chunk(&mut failed_attempt, 0, &mut None)
+        .unwrap();
     assert_eq!(failed_attempt[0], [0.375, -0.75]);
     bank.rollback_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);
 
     bank.begin_block();
     let mut retry = [[0.0; 2]; 1];
-    bank.render_chunk(&mut retry);
+    bank.render_chunk(&mut retry, 0, &mut None).unwrap();
     assert_eq!(retry, failed_attempt);
     bank.commit_block();
     assert!(bank.slots()[0].as_ref().unwrap().output_active);

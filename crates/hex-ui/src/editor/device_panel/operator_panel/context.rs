@@ -247,7 +247,7 @@ pub(super) fn section_listener(
                         super::Section::Oscillator(operator) => {
                             select_oscillator(view, cx, owner, operator, &excluded);
                         }
-                        super::Section::Preview("lfo")
+                        super::Section::Preview("lfo" | "filter")
                             if owner.is_current(view)
                                 && super::super::finalize_controls_except(view, cx, &excluded) =>
                         {
@@ -255,7 +255,11 @@ pub(super) fn section_listener(
                                 .operator_pages
                                 .entry(device)
                                 .or_default()
-                                .page = super::OperatorPage::Lfo;
+                                .page = if section == super::Section::Preview("filter") {
+                                super::OperatorPage::Filter
+                            } else {
+                                super::OperatorPage::Lfo
+                            };
                             cx.notify();
                         }
                         _ => {}

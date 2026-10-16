@@ -24,6 +24,11 @@ widgets = (
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
     'hex_widgets::curve_plot(',
+    # Generic device layout components accept already-themed child elements.
+    'hex_widgets::device_display(', 'hex_widgets::device_body(',
+    'hex_widgets::device_section(', 'hex_widgets::device_layout(',
+    'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
+    'hex_widgets::device_split(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
@@ -46,7 +51,7 @@ widgets = (
     'header::title_bar(', 'header::loading_toolbar(',
     'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
-    'device_drag_grip(', 'uniform_list(',
+    'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
@@ -61,6 +66,10 @@ widgets = (
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
     'gate_column(',
+    # Device-chain navigator is a typed view component; labels use theme::text.
+    'super::device_panel::bottom_bar(', 'overview)',
+    # Shared host meter strip supplies lowercase tooltip text through theme::text.
+    'gain_meters::render(', 'super::gain_meters::render(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

@@ -3,6 +3,10 @@
 Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
 Repository documents retain contracts, acceptance evidence and request order.
 
+Pulse #22 retains [native interaction acceptance](native-interaction.md): finite
+prior approvals, remaining staged user checks and exact artifact limits.
+The 16 October consolidation adds no native results or runtime behavior.
+
 ## active work unit — lattice native devices, 9 October 2026
 
 The user reprioritized the native DSP system, device panel and first devices
@@ -3809,6 +3813,17 @@ algorithmic latency. Scratch and runtimes are prepared on control, compatible
 bus history is preflighted before handoff, and removal uses the bounded release
 policy in [return tracks](return-tracks.md). General latency compensation and
 native pinned rows/interactions remain separate gates; UI2178 owns the latter.
+
+### canonical output capture prerequisite — pulse2346 / pr159
+
+The finite [capture contract](output-capture.md) is implemented independently of
+active export30 / PR152: control-built runtime/revision/generation-bound plans,
+borrowed stereo buffers, one canonical Arrangement render, original-ID retained
+tails and whole-block output validity. Interactive admission requires an
+Arrangement-only cut without loop/pending Session scheduling; linear export
+keeps its inheritance refusal. Required final-source local CI and native/manual
+acceptance remain separate gates; this implementation does not finish export30.
+Pulse cannot link the prerequisite while30's workflow is active; no bypass.
 
 
 ## Pulse25 — finite project recovery contract, 11 October2026

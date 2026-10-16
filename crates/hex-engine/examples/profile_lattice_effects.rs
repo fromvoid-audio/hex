@@ -163,6 +163,7 @@ fn profile(name: &str, states: &[NativeDeviceState]) -> Fallible<()> {
     };
     let (max_error, oracle_digest) = oracle(&project, &samples, states)?;
     let mut renderer = Renderer::new(&project);
+    renderer.set_effect_metering(std::env::args().any(|argument| argument == "--meters"));
     renderer.play();
     let mut output = [[0.0; 2]; BLOCK];
     for _ in 0..WARMUP {
