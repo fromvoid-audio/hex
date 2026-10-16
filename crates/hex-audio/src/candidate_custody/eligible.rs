@@ -599,6 +599,12 @@ mod tests {
         assert!(root.recover_domain(replacement).is_some());
         assert!(root.recover_domain(b).is_some());
         assert!(root.complete());
+        // A lifecycle observation can briefly hold this same bank even after
+        // report consumption. Unavailable is not a zero-occupancy observation.
+        let bank = lock(&root.bank);
+        assert!(root.usage().is_none());
+        drop(bank);
+        assert_eq!(root.usage().unwrap().occupied_domains, 0);
         assert_eq!(root.usage().unwrap().retained_data_reservation, 128);
     }
     #[test]

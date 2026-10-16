@@ -95,6 +95,9 @@ pub enum PlaybackActionRejection {
     Timing = 8,
     InvalidSessionAction = 9,
     MetronomeUnavailable = 10,
+    StreamActionBusy = 11,
+    StreamPagesNotReady = 12,
+    StreamActionCancelled = 13,
 }
 
 impl PlaybackActionRejection {
@@ -110,6 +113,9 @@ impl PlaybackActionRejection {
             8 => Some(Self::Timing),
             9 => Some(Self::InvalidSessionAction),
             10 => Some(Self::MetronomeUnavailable),
+            11 => Some(Self::StreamActionBusy),
+            12 => Some(Self::StreamPagesNotReady),
+            13 => Some(Self::StreamActionCancelled),
             _ => None,
         }
     }
@@ -130,6 +136,11 @@ impl PlaybackActionRejection {
             }
             Self::Timing => "session playback timing conversion failed",
             Self::InvalidSessionAction => "session playback action was rejected",
+            Self::StreamActionBusy => "stream action waits for an earlier command or publication",
+            Self::StreamPagesNotReady => "stream action page protection is unavailable",
+            Self::StreamActionCancelled => {
+                "stream action was cancelled by transport or replacement"
+            }
         }
     }
 }
@@ -1119,6 +1130,13 @@ impl Playback {
         Ok(())
     }
 
+    pub(crate) fn session_runtime_mut_for_stream_action(
+        &mut self,
+    ) -> Result<&mut SessionPlayback, PlaybackActionError> {
+        self.session_runtime
+            .as_deref_mut()
+            .ok_or(PlaybackActionError::SessionNotPrepared)
+    }
     pub(crate) fn visit_next_stream_chunk(
         &self,
         maximum_frames: usize,

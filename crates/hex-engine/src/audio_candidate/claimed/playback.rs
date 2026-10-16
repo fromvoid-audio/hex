@@ -59,6 +59,74 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::Invalid("candidate runtime is not current"))?
             .render_with_pages_and_post_node_observer(output, pages, observer)
     }
+    /// Match cancellation against the same prepared action/runtime's route targets.
+    pub fn stream_action_targets_track(
+        &mut self,
+        prepared: &crate::PreparedStreamAction,
+        track: Option<hex_project::TrackId>,
+    ) -> Result<bool, crate::PlaybackActionError> {
+        if !prepared.matches_owner(self.identity(), self.source_context()) {
+            return Err(crate::PlaybackActionError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            ));
+        }
+        self.current_playback_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
+            .stream_action_targets_track(prepared, track)
+    }
+    /// Prepare a correlated action without committing any runtime state.
+    /// Page/custody and native command/device checks remain with the host.
+    pub fn prepare_stream_action(
+        &mut self,
+        action: crate::PlaybackAction,
+    ) -> Result<crate::PreparedStreamAction, crate::PlaybackActionError> {
+        let identity = self.identity();
+        let context = self.source_context();
+        let mut prepared = self
+            .current_playback_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
+            .prepare_stream_action(action)?;
+        prepared.bind_owner(identity, context);
+        Ok(prepared)
+    }
+    pub fn visit_prepared_stream_action(
+        &mut self,
+        prepared: &crate::PreparedStreamAction,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
+        if !prepared.matches_owner(self.identity(), self.source_context()) {
+            return Err(crate::Invalid("stream action owner differs"));
+        }
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("stream current owner missing"))?
+            .visit_prepared_stream_action(prepared, maximum_frames, visit)
+    }
+    pub fn visit_pending_stream_chunk(
+        &mut self,
+        due: u64,
+        maximum_frames: usize,
+        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), crate::Invalid>,
+    ) -> Result<crate::StreamChunkWindow, crate::Invalid> {
+        self.current_playback_mut()
+            .ok_or(crate::Invalid("stream current owner missing"))?
+            .visit_pending_stream_chunk(due, maximum_frames, visit)
+    }
+    /// Recheck the exact original owner/clocks/routes, then run existing typed
+    /// semantics once. The move-only plan is consumed even on stale refusal.
+    pub fn commit_stream_action(
+        &mut self,
+        prepared: crate::PreparedStreamAction,
+    ) -> Result<(), crate::PlaybackActionError> {
+        if !prepared.matches_owner(self.identity(), self.source_context()) {
+            return Err(crate::PlaybackActionError::Session(
+                crate::SessionPlaybackError::InvalidCommand,
+            ));
+        }
+        self.current_playback_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
+            .commit_stream_action(prepared)
+    }
     pub fn set_device_metering(&mut self, enabled: bool) -> bool {
         let Some(playback) = self.current_playback_mut() else {
             return false;

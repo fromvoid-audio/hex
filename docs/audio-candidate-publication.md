@@ -191,8 +191,10 @@ latch revokes queued installation claims without revoking their physical return
 identity. Admission linearizes at the final open observation for an apply that
 wins its cancellation CAS; a decision already in flight may finish under normal
 shutdown semantics. A real queued-owner closure control verifies no install/ACK,
-zero total/net allocation and exact original-bank recovery. Fresh-runtime seek/launch policies refuse
-original inputs here and remain separate PR238 work.
+zero total/net allocation and exact original-bank recovery. Fresh-runtime publication
+policies continue to refuse original inputs. PR238 prepares bounded streamed
+actions on the same actual current runtime through
+[exact readiness](streamed-native-readiness.md), without another publication path.
 
 The real native A-to-B-to-C fixture observes physical Utility Box pairs and actual
 move-only manifests (two groups, then only x after y's real decay). B's original
