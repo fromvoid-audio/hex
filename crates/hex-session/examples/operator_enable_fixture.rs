@@ -147,7 +147,7 @@ fn save(mode: Mode, destination: &Path) -> Result<Project, Box<dyn Error>> {
         PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)?;
     hex_storage::save_new(destination, &project)?;
     println!(
-        "saved {} Operator held-note fixture to {} (48 khz, pitch 48, 30 s gate, 3 s release)",
+        "saved {} operator held-note fixture to {} (48 khz, pitch 48, 30 s gate, 3 s release)",
         mode.name(),
         destination.display()
     );
