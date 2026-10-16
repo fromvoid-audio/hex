@@ -1,5 +1,8 @@
 mod arrangement;
 mod arrangement_audio_panel;
+mod arrangement_device_drop;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod arrangement_device_drop_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod arrangement_main_track_ui_test;
 mod arrangement_seek;
@@ -25,6 +28,9 @@ mod edit_cursor;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod edit_cursor_ui_test;
 mod export;
+mod external_audio_drop;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod external_audio_drop_ui_test;
 mod fades;
 mod gain_lane;
 mod gain_recording;
@@ -512,6 +518,7 @@ pub(super) struct EditorView {
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
+    arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
@@ -532,6 +539,9 @@ pub(super) struct EditorView {
         hex_engine::NativeDeviceClass,
         hex_lattice_contract::DeviceTypeId,
     )>,
+    #[cfg(test)]
+    last_enqueued_arrangement_device_drop:
+        Option<hex_session::service::ArrangementDeviceDestination>,
     #[cfg(test)]
     last_enqueued_native_device_drop: Option<EnqueuedNativeDeviceDrop>,
     #[cfg(test)]
@@ -793,6 +803,7 @@ impl EditorView {
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_native_device_drag: None,
+            arrangement_device_preview: None,
             active_trim_drag: None,
             active_midi_trim_drag: None,
             pointer_down: None,
@@ -806,6 +817,8 @@ impl EditorView {
             last_enqueued_native_device_replace: None,
             #[cfg(test)]
             last_enqueued_native_device_drop: None,
+            #[cfg(test)]
+            last_enqueued_arrangement_device_drop: None,
             #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]
