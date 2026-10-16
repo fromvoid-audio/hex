@@ -1,3 +1,12 @@
+## unsnapped main cursor — #2647 / PR263, 16 october 2026
+
+Main gestures now retain Main-lane pointer geometry for selection updates,
+range movement and edge scrolling, with current-layout checks. Regular track
+projection is unchanged. The regression reproduces the one-pixel width mismatch
+and checks stationary cursor, range endpoints and no-op move across viewport
+changes. Exact-source checks are recorded in the PR; native unsnapped
+click/drag/resize/pan acceptance remains user-owned.
+
 ## Operator harmonic authoring — pulse2342 / PR158
 
 Canonical 64-partial painting, 16/32/64 active ranges with hidden retention,

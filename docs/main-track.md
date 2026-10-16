@@ -73,3 +73,20 @@ state and creates no history entry. Rendered pointer-sequence regressions cover
 audio, MIDI and empty lanes plus the main editing proxy, followed by idle ticks
 and Escape. Native macOS confirmation on the exact optimized candidate remains
 pending; source tests do not establish native paint timing.
+
+## unsnapped main gesture projection — pulse2647
+
+Captured Main-row selection, range movement and horizontal edge scrolling use
+current Main-lane geometry throughout the gesture, including mouse release and
+modifier updates. Regular-track gestures continue to use the nearest current
+regular lane. A stale Main layout waits for fresh geometry rather than falling
+back to a different row. This keeps an unsnapped stationary click at a zero-length
+project cursor even when Main and regular lane widths differ, and prevents
+range endpoints or move destinations from shifting by that difference.
+
+The focused regression checks a stationary click, exact range endpoints and a
+stationary move handle with differing widths and panned/resized geometry.
+Native user check: disable snap, click Main without moving, then drag a range and
+its upper-third handle after resizing/panning; verify cursor, endpoints and Undo.
+Source validation and merge evidence are retained with PR263; native input is a
+separate acceptance check.
