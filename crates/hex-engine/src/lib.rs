@@ -14,6 +14,12 @@ pub mod compensation;
 
 use std::{fmt, sync::Arc};
 
+mod audio_storage;
+pub use audio_storage::{
+    AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
+    AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
+    audio_storage_constructor_layout_supported,
+};
 mod audio_input_storage;
 mod audio_only_inputs;
 mod audio_preparation;

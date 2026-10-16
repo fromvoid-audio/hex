@@ -553,3 +553,10 @@ copy-growth overlap observed in persistent assembly custody. Main's ordinary
 touch/transform/routing/recording paths are unchanged; this private class refuses
 unrepresented touch spans, authored audio edits and playable input routes before
 source movement. It does not enable complete accounting or native publication.
+
+The control-only `AudioRootStorageLedger` borrows the actual private audio-only
+custodies and caller banks without owner clones or transfers. It separates
+anchored DATA/location/declaration rows from every physical owning handle and
+unresolved retirement; `require_complete` remains refused. Capacity pressure
+invalidates the partial ledger while original owners stay in normal custody.
+See [the bounded accounting manifest](../../docs/audio-only-storage-accounting.md).

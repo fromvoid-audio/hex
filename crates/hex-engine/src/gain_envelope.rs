@@ -357,6 +357,26 @@ impl PreparedGainEnvelope {
     }
 }
 
+impl PreparedGainEnvelope {
+    pub(crate) fn visit_audio_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            knots,
+            mix: _,
+            authored_points: _,
+            authored_units: _,
+            touch,
+            fallback: _,
+        } = self;
+        if touch.allocated_bytes() != 0 {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        ledger.vec(knots)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
