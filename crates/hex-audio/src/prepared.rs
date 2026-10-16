@@ -1235,6 +1235,8 @@ impl Control {
     ) -> Option<hex_stream::PagePoolReport> {
         self.candidate_root.recover_domain(token)
     }
+    /// Nonblocking observation. None includes temporary lifecycle contention;
+    /// it does not establish zero occupancy or release any reservation.
     pub fn audio_candidate_domain_usage(&self) -> Option<crate::AudioCandidateDomainUsage> {
         self.candidate_root.domain_usage()
     }
