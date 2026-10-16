@@ -10,6 +10,7 @@ pub(in crate::editor::device_panel) struct Control {
     _subscription: Subscription,
     mask: usize,
     focus: [gpui::FocusHandle; 4],
+    range_focus: [gpui::FocusHandle; 3],
     stroke: Option<Stroke>,
     overview: OverviewCache,
 }
@@ -299,6 +300,7 @@ pub(super) fn graph(
                 _subscription: subscription,
                 mask: 0,
                 focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true)),
+                range_focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0).tab_stop(true)),
                 stroke: None,
                 overview: OverviewCache::default(),
             }
@@ -326,16 +328,118 @@ fn overview(view: &mut EditorView, key: Key, input: OverviewInput) -> Div {
         return div();
     };
     control.overview.update(input);
+    let mut style = super::display_style();
+    style.border = style.background;
+    style.rail = style.background;
     match control.overview.points {
         Some(points) if points.builtin => {
             let short: [[f32; 2]; 32] = std::array::from_fn(|i| points.points[i]);
-            hex_widgets::curve_plot(short, super::display_style()).unwrap_or_else(div)
+            hex_widgets::curve_plot(short, style).unwrap_or_else(div)
         }
-        Some(points) => {
-            hex_widgets::curve_plot(points.points, super::display_style()).unwrap_or_else(div)
-        }
+        Some(points) => hex_widgets::curve_plot(points.points, style).unwrap_or_else(div),
         None => div(),
     }
+}
+pub(super) fn ranges(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    operator: usize,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let selected = super::value(view, device, parameters, id(349 + operator as u32));
+    let mut rail = div()
+        .id("operator-harmonic-ranges")
+        .debug_selector(|| "operator-harmonic-ranges".into())
+        .w(px(18.0))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .justify_end()
+        .pb(px(2.0))
+        .gap(px(1.0));
+    for (choice, label) in ["16", "32", "64"].into_iter().enumerate() {
+        let focus =
+            view.device_panel.operator_harmonics[&(device, operator)].range_focus[choice].clone();
+        let pointer_focus = focus.clone();
+        rail = rail.child(
+            hex_widgets::device_segment(
+                theme::text(label),
+                theme::device_segment_style(
+                    selected == Some(ParameterValue::Choice(choice as u32)),
+                ),
+            )
+            .id(ElementId::Name(
+                format!("operator-range-{}-{operator}-{label}", device.value()).into(),
+            ))
+            .debug_selector(move || format!("operator-range-{}-{operator}-{label}", device.value()))
+            .w(px(18.0))
+            .h(px(12.0))
+            .track_focus(&focus)
+            .cursor(gpui::CursorStyle::PointingHand)
+            .on_click(cx.listener(move |view, _, window, cx| {
+                pointer_focus.focus(window);
+                range_action(view, cx, device, operator, choice as u32);
+            }))
+            .on_key_down(cx.listener(
+                move |view, event: &gpui::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        range_action(view, cx, device, operator, choice as u32);
+                        cx.stop_propagation();
+                    }
+                },
+            )),
+        );
+    }
+    rail
+}
+fn range_action(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    operator: usize,
+    choice: u32,
+) {
+    if !super::context::Owner::capture(view, device).is_some_and(|owner| owner.is_current(view))
+        || !finalize_controls(view, cx)
+    {
+        return;
+    }
+    let key = super::ParameterKey {
+        device,
+        parameter: id(349 + operator as u32),
+    };
+    let previous_pending = view.device_panel.pending_values.get(&key).copied();
+    let canonical = view
+        .device_panel
+        .views
+        .get(&device)
+        .and_then(|(_, _, device_view)| device_view.as_ref().ok())
+        .and_then(|device_view| {
+            device_view
+                .parameters
+                .iter()
+                .find(|parameter| parameter.descriptor.id == key.parameter)
+        })
+        .map(|parameter| parameter.value);
+    let value = ParameterValue::Choice(choice);
+    if previous_pending.or(canonical) == Some(value) {
+        return;
+    }
+    view.device_panel.pending_values.insert(key, value);
+    if !view.enqueue_device_barrier(hex_session::service::Request::SetDeviceParameter {
+        device,
+        parameter: key.parameter,
+        value,
+    }) {
+        if let Some(previous) = previous_pending {
+            view.device_panel.pending_values.insert(key, previous);
+        } else {
+            view.device_panel.pending_values.remove(&key);
+        }
+    }
+    cx.notify();
 }
 pub(super) fn tools(
     view: &mut EditorView,
@@ -349,7 +453,7 @@ pub(super) fn tools(
         .operator_harmonics
         .get(&key)
         .map_or(0, |c| c.mask);
-    let mut row = div().flex().items_center().gap(px(3.0));
+    let mut row = div().flex().items_center().gap(px(2.0));
     for (index, label) in ["all", "odd", "even", "normalize"].into_iter().enumerate() {
         let focus = view.device_panel.operator_harmonics[&key].focus[index].clone();
         let pointer_focus = focus.clone();
@@ -359,7 +463,8 @@ pub(super) fn tools(
                     format!("harmonic-tool-{}-{operator}-{index}", device.value()).into(),
                 ))
                 .track_focus(&focus)
-                .text_size(px(9.0))
+                .cursor(gpui::CursorStyle::PointingHand)
+                .text_size(px(7.0))
                 .text_color(rgb(theme::color(if mask == index {
                     theme::PaletteRole::Primary
                 } else {
@@ -525,6 +630,32 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
     }
     cx.notify();
 }
+/// Hide the painter without discarding the small preview's cached data.
+pub(super) fn hide_painter(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    operator: usize,
+) {
+    let Some(control) = view
+        .device_panel
+        .operator_harmonics
+        .get_mut(&(device, operator))
+    else {
+        return;
+    };
+    let stroke = control.stroke.take();
+    control.entity.update(cx, |editor, cx| editor.cancel(cx));
+    if stroke.is_some_and(|stroke| {
+        view.device_gesture
+            .snapshot()
+            .is_some_and(|snapshot| snapshot.key == stroke.key)
+    }) && !view.device_gesture.has_pending_terminal()
+    {
+        let _ = view.cancel_device_gesture();
+    }
+}
+
 pub(in crate::editor::device_panel) fn retire(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,

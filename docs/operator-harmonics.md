@@ -18,11 +18,17 @@ The waveform overview follows the authored spectrum, range and Repeat.
 A stroke uses the existing 64-parameter snapshot gesture: preview is transient,
 commit adds one history entry, and save/Undo/navigation use existing gesture
 barriers. Snapshot patching preserves host input/output gain staging through
-metadata migration. The harmonic tool row stays inside the graph area, above
-the shared stationary page tabs; rendered bounds guard against overlap. The top
-field is reserved for painting; the waveform overview sits beside the wave
-selector below the tabs, with repeat beside feedback. Hex retains its semantic
-colors, controls and bundled typography. Cached User values, range and Repeat
+metadata migration. The full 86-pixel upper field is reserved for painting,
+with stacked 16/32/64 buttons at its right edge. The two stationary Envelope and
+Oscillator tabs switch the upper graph while keeping the same lower inspector:
+six canonical envelope fields on the left; wave/preview, feedback/Repeat and
+phase/velocity in three compact rows on the right. Phase shows percent of one
+cycle and feedback uses its normalized percent display. Masks/Normalize and the
+optional fixed multiplier sit below the envelope grid. LFO editing remains
+accessible from the right summary's separate focusable LFO link. Hex retains its
+semantic colors, controls and bundled typography. Rendered bounds guard field,
+range, tab and label/value containment; unsupported reference controls are not
+added as decorative substitutes. Cached User values, range and Repeat
 survive Undo, Redo and save/open.
 Painting a builtin seeds its magnitudes and selects User. Choosing a builtin
 retains the last User bank; choosing User restores it. Painting a builtin again
@@ -107,8 +113,10 @@ view. Event handling can read that cache after composition. Reading the absent
 cache during composition previously left the bars and overview stale even when
 a mouse stroke changed canonical state. The rendered regression now adjusts a
 painted bar by keyboard after a redraw and covers the restored 16-partial range.
-Theme style
-is rebuilt at render time; unchanged input does not recompute the Fourier preview.
+The curve canvas explicitly fills its display; a rendered compact-canvas
+regression catches the zero-height canvas that previously hid the preview.
+Hiding the painter cancels an active stroke while retaining the preview cache
+for the Envelope page. Theme style is rebuilt at render time; unchanged input does not recompute the Fourier preview.
 
 ## Verification and limits
 

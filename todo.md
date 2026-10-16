@@ -3358,3 +3358,21 @@ retain ownership and charges. Exhaustive present/absent location coverage refuse
 unsupported tail/context population; broader transfer fanout remains #24/177.
 Exact-source CI and remaining native evidence are recorded with PR235; no native
 admission, OS-stop success, deadline, listening or complete-cost claim is made.
+
+
+## 16 October 2026 — Operator reference layout correction
+
+The user confirmed native harmonic painting works in b41f4e18/build3021950488;
+visual acceptance failed. A read-only native screenshot showed colliding phase
+and velocity text, full-width lower rows, a range dropdown and a blank preview.
+The revised composition uses the full upper field with stacked range buttons,
+two stationary graph tabs and a common lower envelope-left/oscillator-right
+inspector on both pages. Phase/feedback use percent codecs, LFO has a separate
+summary link, and masks/Normalize/fixed multiplier remain reachable. The shared
+curve canvas's zero height was reproduced by a rendered bounds regression before
+the size fix; no native acceptance is inferred from this source repair.
+Hiding the painter explicitly cancels its stroke while retaining preview cache.
+Current main4134e33b is integrated, retaining both sides of todo.md conflicts and
+upstream vendored license/patch whitespace. New exact-source local checks,
+optimized installation and user visual confirmation are required. Dense high-rate
+FM CPU and other unverified native/listening requirements remain open.

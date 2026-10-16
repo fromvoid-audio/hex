@@ -127,24 +127,23 @@ pub(super) fn render_body(
     );
     harmonics::retire(view, cx, |key| {
         key.0 != device
-            || (state.page == OperatorPage::Oscillator && key.1 == state.selected_operator)
+            || (matches!(
+                state.page,
+                OperatorPage::Oscillator | OperatorPage::Envelope
+            ) && key.1 == state.selected_operator)
     });
+    if state.page == OperatorPage::Envelope {
+        harmonics::hide_painter(view, cx, device, state.selected_operator);
+    }
     let detail = match state.page {
-        OperatorPage::Oscillator => oscillator_detail(
+        OperatorPage::Oscillator | OperatorPage::Envelope => oscillator_envelope_detail(
             view,
             cx,
             device,
             identity,
             parameters,
             state.selected_operator,
-        ),
-        OperatorPage::Envelope => envelope_detail(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            state.selected_operator,
+            state.page,
         ),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
@@ -201,7 +200,6 @@ fn page_tabs(
         device,
         NavigationTarget::Page(OperatorPage::Envelope),
     );
-    let lfo_focus = navigation_focus(view, cx, device, NavigationTarget::Page(OperatorPage::Lfo));
     let oscillator_focus = navigation_focus(
         view,
         cx,
@@ -214,33 +212,30 @@ fn page_tabs(
         .h(px(16.0))
         .items_center()
         .justify_between()
-        .child(page_tab(
-            cx,
-            device,
-            owner,
-            OperatorPage::Envelope,
-            "envelope",
-            state.page,
-            envelope_focus,
-        ))
-        .child(page_tab(
-            cx,
-            device,
-            owner,
-            OperatorPage::Lfo,
-            "lfo",
-            state.page,
-            lfo_focus,
-        ))
-        .child(page_tab(
-            cx,
-            device,
-            owner,
-            OperatorPage::Oscillator,
-            "oscillator",
-            state.page,
-            oscillator_focus,
-        ))
+        .child(
+            page_tab(
+                cx,
+                device,
+                owner,
+                OperatorPage::Envelope,
+                "envelope",
+                state.page,
+                envelope_focus,
+            )
+            .flex_1(),
+        )
+        .child(
+            page_tab(
+                cx,
+                device,
+                owner,
+                OperatorPage::Oscillator,
+                "oscillator",
+                state.page,
+                oscillator_focus,
+            )
+            .w(px(120.0)),
+        )
 }
 
 fn operator_row(
@@ -490,13 +485,14 @@ fn page_tab(
         }))
 }
 
-fn oscillator_detail(
+fn oscillator_envelope_detail(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
+    page: OperatorPage,
 ) -> Stateful<Div> {
     let one_based = operator as u32 + 1;
     let waveform = compact_control(
@@ -509,7 +505,7 @@ fn oscillator_detail(
         ControlPresentation::CompactSelector,
         Some("wave"),
     );
-    let phase = compact_control(
+    let phase = compact_control_with_codec(
         view,
         cx,
         device,
@@ -518,6 +514,7 @@ fn oscillator_detail(
         id(operator as u32 * 3 + 3),
         ControlPresentation::InlineValue,
         Some("phase"),
+        Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
     let velocity = compact_control_with_codec(
         view,
@@ -530,7 +527,7 @@ fn oscillator_detail(
         Some("velocity"),
         Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
-    let feedback = compact_control(
+    let feedback = compact_control_with_codec(
         view,
         cx,
         device,
@@ -539,6 +536,7 @@ fn oscillator_detail(
         id(78 + operator as u32),
         ControlPresentation::InlineValue,
         Some("feedback"),
+        Some(super::numeric_display::NumericDisplayCodec::Percent),
     );
     let fixed = matches!(
         value(view, device, parameters, id(62 + operator as u32 * 3)),
@@ -558,16 +556,7 @@ fn oscillator_detail(
     });
     let (graph, waveform_preview) = harmonics::graph(view, cx, device, operator, parameters);
     let harmonic_tools = harmonics::tools(view, cx, device, operator);
-    let harmonic_range_control = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(349 + operator as u32),
-        ControlPresentation::CompactSelector,
-        Some("range"),
-    );
+    let harmonic_range_control = harmonics::ranges(view, cx, device, operator, parameters);
     let harmonic_repeat_control = compact_control(
         view,
         cx,
@@ -578,89 +567,160 @@ fn oscillator_detail(
         ControlPresentation::CompactSelector,
         Some("repeat"),
     );
-    div()
-        .id(ElementId::Name(
-            format!("operator-osc-detail-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-osc-detail-{}-{operator}", device.value()))
+    let envelope_fields = envelope_fields(view, cx, device, identity, parameters, operator);
+    let mut tools = div()
+        .id("operator-harmonic-tools")
+        .debug_selector(|| "operator-harmonic-tools".into())
         .w_full()
-        .h(px(160.0))
+        .h(px(14.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(2.0))
+        .child(harmonic_tools);
+    if let Some(multiplier) = multiplier {
+        tools = tools.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(1.0))
+                .child(detail_caption("multi"))
+                .child(multiplier),
+        );
+    }
+    let oscillator_fields = div()
+        .id("operator-oscillator-fields")
+        .debug_selector(|| "operator-oscillator-fields".into())
+        .w(px(120.0))
+        .flex_shrink_0()
         .flex()
         .flex_col()
         .child(
             div()
-                .id("operator-waveform-cycle")
-                .debug_selector(|| "operator-waveform-cycle".into())
                 .w_full()
-                .h(px(86.0))
+                .h(px(21.0))
                 .flex_shrink_0()
                 .flex()
-                .flex_col()
-                .child(div().w_full().h(px(70.0)).flex_shrink_0().child(graph))
-                .child(
-                    div()
-                        .id("operator-harmonic-tools")
-                        .debug_selector(|| "operator-harmonic-tools".into())
-                        .w_full()
-                        .h(px(16.0))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(3.0))
-                        .child(harmonic_tools)
-                        .child(harmonic_range_control),
-                ),
-        )
-        // Keep every detail page's tabs in the same fixed 86 px slot.
-        .child(div().h(px(16.0)).flex_shrink_0())
-        .child(
-            div()
-                .w_full()
-                .h(px(14.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(section_title("wave"))
-                .child(waveform)
+                .gap(px(4.0))
+                .child(detail_field(
+                    device,
+                    id(57 + operator as u32),
+                    "wave",
+                    64.0,
+                    waveform,
+                ))
                 .child(
                     div()
                         .id("operator-waveform-preview")
                         .debug_selector(|| "operator-waveform-preview".into())
-                        .w(px(64.0))
-                        .h_full()
+                        .w(px(52.0))
+                        .h(px(21.0))
                         .flex_shrink_0()
                         .child(waveform_preview),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(21.0))
+                .flex_shrink_0()
+                .flex()
+                .gap(px(4.0))
+                .child(detail_field(
+                    device,
+                    id(78 + operator as u32),
+                    "feedback",
+                    52.0,
+                    feedback,
+                ))
+                .child(detail_field(
+                    device,
+                    id(353 + operator as u32),
+                    "repeat",
+                    64.0,
+                    harmonic_repeat_control,
+                )),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(21.0))
+                .flex_shrink_0()
+                .flex()
+                .gap(px(4.0))
+                .child(detail_field(
+                    device,
+                    id(operator as u32 * 3 + 3),
+                    "phase",
+                    58.0,
+                    phase,
+                ))
+                .child(detail_field(
+                    device,
+                    id(74 + operator as u32),
+                    "velocity",
+                    58.0,
+                    velocity,
+                )),
+        );
+    let upper_display = if page == OperatorPage::Envelope {
+        let base = 33 + operator as u32 * 6;
+        let values = std::array::from_fn(|field| {
+            value(view, device, parameters, id(base + field as u32))
+                .and_then(|value| match value {
+                    ParameterValue::Float(value) if value.is_finite() => Some(value),
+                    _ => None,
+                })
+                .unwrap_or(0.0)
+        });
+        envelope::graph(view, cx, device, operator, values)
+    } else {
+        div()
+            .id("operator-waveform-cycle")
+            .debug_selector(|| "operator-waveform-cycle".into())
+            .w_full()
+            .h(px(86.0))
+            .flex_shrink_0()
+            .flex()
+            .gap(px(2.0))
+            .child(div().flex_1().min_w_0().h_full().child(graph))
+            .child(harmonic_range_control)
+    };
+    let selector = if page == OperatorPage::Envelope {
+        format!("operator-envelope-{}-{operator}", device.value())
+    } else {
+        format!("operator-osc-detail-{}-{operator}", device.value())
+    };
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .child(upper_display)
+        // Both detail pages keep the same graph and tab slots.
+        .child(div().h(px(16.0)).flex_shrink_0())
+        .child(
+            div()
+                .w_full()
+                .h(px(63.0))
+                .flex_shrink_0()
+                .flex()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id("operator-envelope-fields")
+                        .debug_selector(|| "operator-envelope-fields".into())
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(envelope_fields)
+                        .child(tools),
                 )
-                .children(fixed.then(|| section_title("multi")))
-                .children(multiplier),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(16.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(section_title("feedback"))
-                .child(feedback)
-                .child(section_title("repeat"))
-                .child(harmonic_repeat_control),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(16.0))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(3.0))
-                .child(section_title("phase"))
-                .child(phase)
-                .child(section_title("velocity"))
-                .child(velocity),
+                .child(oscillator_fields),
         )
 }
 
@@ -687,68 +747,96 @@ fn waveform_cycle(choice: u32) -> Option<[[f32; 2]; 32]> {
     }))
 }
 
-fn envelope_detail(
+fn detail_caption(label: &'static str) -> Div {
+    hex_widgets::device_inline_caption(theme::text(label), super::control_style())
+        .h(px(7.0))
+        .text_size(px(7.0))
+        .line_height(px(7.0))
+        .overflow_hidden()
+}
+
+fn detail_field(
+    device: DeviceId,
+    parameter: ParameterId,
+    label: &'static str,
+    width: f32,
+    control: Div,
+) -> Stateful<Div> {
+    let selector = format!("operator-field-{}-{}", device.value(), parameter.value());
+    let caption_selector = format!("{selector}-label");
+    let value_selector = format!("{selector}-value");
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w(px(width))
+        .h(px(21.0))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            detail_caption(label)
+                .id(ElementId::Name(caption_selector.clone().into()))
+                .debug_selector(move || caption_selector.clone()),
+        )
+        // Constrain even long typed drafts to this field's own hit/paint bounds.
+        .child(
+            div()
+                .id(ElementId::Name(value_selector.clone().into()))
+                .debug_selector(move || value_selector.clone())
+                .w_full()
+                .h(px(14.0))
+                .overflow_hidden()
+                .child(control),
+        )
+}
+
+fn envelope_fields(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
-) -> Stateful<Div> {
+) -> Div {
     let base = 33 + operator as u32 * 6;
     let labels = ["initial", "peak", "sustain", "attack", "decay", "release"];
-    let values = std::array::from_fn(|field| {
-        value(view, device, parameters, id(base + field as u32))
-            .and_then(|value| match value {
-                ParameterValue::Float(value) if value.is_finite() => Some(value),
-                _ => None,
-            })
-            .unwrap_or(0.0)
-    });
-    let graph = envelope::graph(view, cx, device, operator, values);
-    let mut fields = div().w_full().flex().flex_col().gap(px(2.0));
+    let mut fields = div().w_full().flex().flex_col();
     for indices in [[3, 4, 5], [0, 1, 2]] {
-        let mut row = div().w_full().flex().gap(px(3.0));
+        let mut row = div()
+            .w_full()
+            .h(px(21.0))
+            .flex_shrink_0()
+            .flex()
+            .gap(px(4.0));
         for field in indices {
-            row = row.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .child(section_title(labels[field]))
-                    .child(compact_control_with_codec(
-                        view,
-                        cx,
-                        device,
-                        identity,
-                        parameters,
-                        id(base + field as u32),
-                        ControlPresentation::InlineValue,
-                        None,
-                        Some(if field < 3 {
-                            super::numeric_display::NumericDisplayCodec::AmplitudeDb
-                        } else {
-                            super::numeric_display::NumericDisplayCodec::Seconds
-                        }),
-                    )),
+            let parameter = id(base + field as u32);
+            let control = compact_control_with_codec(
+                view,
+                cx,
+                device,
+                identity,
+                parameters,
+                parameter,
+                ControlPresentation::InlineValue,
+                None,
+                Some(if field < 3 {
+                    super::numeric_display::NumericDisplayCodec::AmplitudeDb
+                } else {
+                    super::numeric_display::NumericDisplayCodec::Seconds
+                }),
             );
+            row = row.child(detail_field(
+                device,
+                parameter,
+                labels[field],
+                46.0,
+                control,
+            ));
         }
         fields = fields.child(row);
     }
-    div()
-        .id(ElementId::Name(
-            format!("operator-envelope-{}-{operator}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("operator-envelope-{}-{operator}", device.value()))
-        .w_full()
-        .h(px(160.0))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(graph)
-        .child(div().h(px(16.0)).flex_shrink_0())
-        .child(fields)
+    fields
 }
 
 fn routing_detail(
@@ -1176,7 +1264,29 @@ pub(super) fn lfo_summary(
         .flex()
         .items_center()
         .gap(px(2.0));
-    row = row.child(compact_control(
+    let active = view
+        .device_panel
+        .operator_pages
+        .entry(device)
+        .or_default()
+        .page;
+    let link_focus = navigation_focus(view, cx, device, NavigationTarget::Page(OperatorPage::Lfo));
+    let link = page_tab(
+        cx,
+        device,
+        context::Owner::capture(view, device),
+        OperatorPage::Lfo,
+        "lfo",
+        active,
+        link_focus,
+    )
+    .id(ElementId::Name(
+        format!("operator-lfo-link-{}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("operator-lfo-link-{}", device.value()))
+    .w(px(40.0))
+    .h(px(14.0));
+    let enabled = compact_control(
         view,
         cx,
         device,
@@ -1184,8 +1294,21 @@ pub(super) fn lfo_summary(
         parameters,
         id(82),
         ControlPresentation::CompactButton,
-        Some("lfo"),
-    ));
+        Some(""),
+    );
+    row = row.child(
+        div()
+            .w(px(40.0))
+            .flex_shrink_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(2.0))
+            .child(link)
+            .child(enabled),
+    );
     for (parameter, label) in [
         (83, "wave"),
         (if sync { 86 } else { 85 }, "rate"),
