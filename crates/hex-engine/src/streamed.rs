@@ -109,3 +109,21 @@ pub trait MediaPages {
     fn page(&mut self, key: StreamSourceKey, page_index: u64) -> Option<BorrowedMediaPage<'_>>;
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64);
 }
+
+impl StreamedSourceMetadata {
+    pub(crate) fn inspect_scalar_owned_storage(&self) {
+        let Self {
+            key,
+            source_rate: _,
+            project_rate: _,
+            source_frames: _,
+            playback_frames: _,
+            conversion_version: _,
+            fingerprint: _,
+        } = self;
+        let StreamSourceKey {
+            generation: _,
+            asset: _,
+        } = key;
+    }
+}

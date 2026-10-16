@@ -206,10 +206,17 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         })
         .collect();
     let full_project = Project::from_snapshot(Snapshot {
+        return_feeds: Vec::new(),
+        audio_feeds: Vec::new(),
+        midi_routes: Vec::new(),
+        import_provenance: None,
         sample_rate: 48_000,
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            gain_envelope: Vec::new(),
+            gain_touch_spans: Vec::new(),
+            gain_touch_epoch: 0,
             id: 1,
             name: "full".into(),
             gain: 1.0,

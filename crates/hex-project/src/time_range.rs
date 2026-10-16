@@ -110,6 +110,7 @@ impl Project {
     /// Capture selected audible fragments on a control worker, not the UI/audio thread.
     pub fn capture_time_range(&self, range: &TimeRange) -> Result<RangeClipboard, Invalid> {
         let first = range.validate(self)?;
+        self.refuse_automation_transform(range.tracks())?;
         let mut result = RangeClipboard {
             sample_rate: self.sample_rate(),
             duration: range.duration(),
@@ -136,10 +137,22 @@ impl Project {
                 }
                 let mut fragment = clip.clone();
                 if start > fragment.start() {
-                    fragment = crate::edit::split_clip_at(&fragment, start, fragment.id())?.1;
+                    fragment = crate::edit::split_clip_at_tempo(
+                        &fragment,
+                        start,
+                        fragment.id(),
+                        self.tempo_map(),
+                    )?
+                    .1;
                 }
                 if end < clip_end {
-                    fragment = crate::edit::split_clip_at(&fragment, end, fragment.id())?.0;
+                    fragment = crate::edit::split_clip_at_tempo(
+                        &fragment,
+                        end,
+                        fragment.id(),
+                        self.tempo_map(),
+                    )?
+                    .0;
                 }
                 fragment.start = start - range.start;
                 if !result.assets.iter().any(|(id, _)| *id == clip.asset()) {
@@ -237,6 +250,7 @@ fn clear_rows(
     start: u64,
     end: u64,
 ) -> Result<(), Invalid> {
+    project.refuse_automation_transform(rows)?;
     for track in rows.iter().copied() {
         crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
         crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
@@ -362,6 +376,8 @@ pub(crate) fn paste_rows(
         clip.start = frame
             .checked_add(original.start())
             .ok_or(Invalid("paste clip start overflow"))?;
+        let target_frame = clip.start;
+        crate::audio_edit::move_clip(&mut clip, target_frame, project.tempo_map())?;
         let clips = project.audio_clips_mut(destination)?;
         reserve(clips, 1)?;
         clips.push(clip);

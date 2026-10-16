@@ -11,6 +11,7 @@ allocation-probe = ["hex-engine/instrument-test-support"]
 
 [dependencies]
 hex-engine = { path = "../hex-engine" }
+hex-stream = { path = "../hex-stream" }
 cpal = "=0.17.3"
 rtrb = "=0.3.4"
 

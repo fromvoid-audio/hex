@@ -238,7 +238,24 @@ fn resident_sources(
 
 #[test]
 fn mixed_compile_matches_resident_oracle_with_preview_and_shared_table() {
-    let (editor, streamed_asset, resident_asset, _, pcm) = fixture();
+    for gain in [0, -6_000, 24_000] {
+        mixed_compile_with_gain(gain);
+    }
+}
+
+fn mixed_compile_with_gain(millidb: i32) {
+    let (mut editor, streamed_asset, resident_asset, _, pcm) = fixture();
+    let clips: Vec<_> = editor
+        .project()
+        .tracks()
+        .iter()
+        .flat_map(|track| track.clips().iter().map(|clip| clip.id()))
+        .collect();
+    for clip in clips {
+        editor
+            .execute(Command::SetAudioClipGain { clip, millidb })
+            .unwrap();
+    }
     let oracle_sources = resident_sources(streamed_asset, resident_asset, &pcm);
     let (resident, resident_preview) =
         compile::project_with_prepared_audio_sources_and_midi_preview_and_table(

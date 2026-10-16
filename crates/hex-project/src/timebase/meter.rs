@@ -1,3 +1,7 @@
+pub use allocation_layout::MeterMapOwnedAllocationLayout;
+pub use copy_custody::{MeterMapCopyCustody, MeterMapCopyError, MeterMapCopyPhase};
+mod allocation_layout;
+mod copy_custody;
 use super::{BeatTime, MAX_METER_POINTS, Meter};
 use crate::Invalid;
 

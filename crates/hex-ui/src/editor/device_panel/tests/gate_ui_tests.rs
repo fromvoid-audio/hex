@@ -60,7 +60,10 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
                 format!("device-body-{}", device.value()).into_boxed_str(),
             ))
             .expect("gate body");
-        assert_eq!(frame.size.width, px(gate_panel::FRAME_WIDTH));
+        assert_eq!(
+            frame.size.width,
+            px(gate_panel::FRAME_WIDTH + gain_meters::WIDTH)
+        );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         for parameter in 1..=6 {
             let control = visual

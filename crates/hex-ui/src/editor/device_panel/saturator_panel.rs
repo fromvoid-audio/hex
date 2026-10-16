@@ -10,7 +10,7 @@ use hex_engine::{NativeDeviceClass, NativeDeviceView, SaturatorTransferCurve};
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
-pub(super) const FRAME_WIDTH: f32 = 230.0;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::SATURATOR_FRAME_WIDTH;
 const DRIVE: ParameterId = ParameterId::from_static(1);
 const OUTPUT: ParameterId = ParameterId::from_static(2);
 const WET: ParameterId = ParameterId::from_static(3);
@@ -135,7 +135,10 @@ pub(super) fn render_body(
         .min_h_0();
     let range = match curve {
         Ok(curve) => {
-            if let Some(plot) = hex_widgets::transfer_plot(curve.points, super::control_style()) {
+            if let Some(plot) = hex_widgets::transfer_plot(
+                curve.points,
+                theme::device_style(theme::DeviceStyleRole::Display),
+            ) {
                 graph = graph.child(plot);
             }
             format!("in ±1 · out ±{:.2}", curve.output_peak)
@@ -145,36 +148,22 @@ pub(super) fn render_body(
             "".to_owned()
         }
     };
-    div()
+    let range = div()
+        .h(px(10.0))
+        .flex_shrink_0()
+        .text_size(px(7.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(range));
+    let controls = crate::device_composition::control_row()
+        .h(px(52.0))
+        .flex_shrink_0()
+        .justify_between()
+        .child(drive)
+        .child(output)
+        .child(wet);
+    crate::device_composition::stacked_plot(chooser, graph, range, controls)
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("device-body-{}", device.value()))
-        .w_full()
-        .h(px(super::UTILITY_FRAME_BODY_HEIGHT))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .p(px(3.0))
-        .child(div().h(px(14.0)).flex_shrink_0().child(chooser))
-        .child(graph)
-        .child(
-            div()
-                .h(px(10.0))
-                .flex_shrink_0()
-                .text_size(px(7.0))
-                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(range)),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(52.0))
-                .flex_shrink_0()
-                .flex()
-                .justify_between()
-                .child(drive)
-                .child(output)
-                .child(wet),
-        )
 }
