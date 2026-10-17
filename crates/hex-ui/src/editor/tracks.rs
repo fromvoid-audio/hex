@@ -1090,10 +1090,6 @@ impl EditorView {
                     )
                 })
                 .take(midi_shape_budget);
-            let description = format!(
-                "{} source notes · {} arrangement occurrences · sampled preview",
-                preview.authored_note_count, preview.occurrence_count,
-            );
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -1127,12 +1123,6 @@ impl EditorView {
                     }),
                 );
             midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
-            midi = midi.tooltip(move |_, cx| {
-                cx.new(|_| ClipTooltip {
-                    name: description.clone(),
-                })
-                .into()
-            });
             let mut shown = 0;
             for (x, w, pitch) in note_shapes {
                 shown += 1;
@@ -1202,8 +1192,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let ClipViewTimeline { viewport, grid, .. } = timeline;
+        let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
-        let clip_duration = clip.duration();
         let trim_preview_clip = self
             .active_trim_drag
             .as_ref()
@@ -1295,8 +1285,20 @@ impl EditorView {
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+                // The immutable prepared peaks cover the retained root. Cropping
+                // changes its visible offset, never its processing/source origin.
+                let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
+                    let (_, _, offset, _) = clip
+                        .audio_edit()?
+                        .projected_domain(state.project.tempo_map())
+                        .ok()?;
+                    let mut preview = prepared.clone();
+                    preview.offset = offset;
+                    preview.length = clip.duration();
+                    Some(preview)
+                });
                 content = content.child(super::waveform::prepared_waveform_view_cached(
-                    prepared,
+                    preview.as_ref().unwrap_or(prepared),
                     clip,
                     visible_start,
                     visible_end,
@@ -1404,12 +1406,6 @@ impl EditorView {
             .child(self.clip_name_header(track, clip.id(), clip.name(), cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
-            .tooltip(move |_, cx| {
-                cx.new(|_| ClipTooltip {
-                    name: format!("clip {} · {} frames", clip_id.value(), clip_duration),
-                })
-                .into()
-            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {

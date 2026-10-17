@@ -409,3 +409,8 @@ project-tempo adaptive grid, ruler/time selection, event waveforms, drag preview
 and focus-scoped clip editing shortcuts. A `source` tab retains source/warp
 inspection. Both use the existing detail height and left control column. See
 [audio events](audio-events.md) for edit semantics, limits and native acceptance.
+
+Arrangement audio and MIDI clips do not show a container hover tooltip over
+their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
+context menus and renaming retain their existing behavior. Distinct controls,
+including fade handles and track names, retain their own descriptive tooltips.

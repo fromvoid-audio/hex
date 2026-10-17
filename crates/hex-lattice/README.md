@@ -97,6 +97,9 @@ The optional `conformance` feature exposes control-side authoring fixtures for
 codec/descriptor contracts, transactional effects and instrument capabilities.
 It uses only existing traits and allocates outside callbacks. See
 [authoring](../../docs/native-device-authoring.md) for checks and finite limits.
+The `owned_history_profile` example requires this feature explicitly; ordinary
+isolated package tests skip that conformance-only executable. Run it with
+`cargo run --release -p hex-lattice --example owned_history_profile --features conformance --locked`.
 
 The additive owned-effect capability constructs one fallible control-side owner
 of committed/speculative history. General accounting charges total pair bytes;
