@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-mts': {'hex-tuning'},
     'hex-tuning': set(),
     'hex-dsp': set(),
     'hex-midi': set(),

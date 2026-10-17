@@ -356,7 +356,15 @@ mod tests {
             );
             fs::write(&source, code).expect("write C fixture");
             let output = Command::new("cc")
-                .args(["-dynamiclib", "-fPIC", "-o"])
+                .args([
+                    if cfg!(target_os = "macos") {
+                        "-dynamiclib"
+                    } else {
+                        "-shared"
+                    },
+                    "-fPIC",
+                    "-o",
+                ])
                 .arg(&library)
                 .arg(&source)
                 .output()

@@ -80,3 +80,21 @@ CARGO_TARGET_DIR=third_party/mts-esp-master/target cargo clippy --manifest-path 
 Actual installed-library validation and connection to a compatible external
 client remain separate manual acceptance; no client connection is claimed by
 the controlled fixture tests.
+
+## Serialized desktop publisher
+
+`hex-mts` is the safe control-side owner of the excluded adapter. Its worker is
+created without registering a master; only an explicit project enable claims
+ownership. One bounded latest-value mailbox coalesces tuning publications while
+reserved epoch/attempt/shutdown state preserves disable, project switch, retry
+and process teardown. A foreign master is never reset or replaced. Unavailable
+or blocked registration requires explicit retry, including after ordinary edits.
+Native calls, registration and deregistration stay on this worker, outside all
+Hex callbacks. Desired and published revision identities remain separate; MTS
+client count is native-reported, not a promise that every client consumed a table.
+
+Linux source verification includes four injected-transport ownership/lifecycle
+tests and five actual dynamically loaded C ABI fixture tests. The fixture uses
+`-shared` on Linux and `-dynamiclib` on macOS; this does not enable the production
+system-library loader on Linux. Installed macOS runtime, signing/library validation
+and compatible-client behavior remain native acceptance requirements.
