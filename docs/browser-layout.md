@@ -105,3 +105,10 @@ covers repeated clicks, selection and Stop. A one-pixel position marker follows
 actual callback frame acknowledgements; pointer moves cannot start playback.
 Progress invalidation occurs only when the phase or visible pixel changes. The
 lower clip-editor waveform retains its own interaction contracts.
+
+
+Sample-result double-click (Pulse2780 / PR386) selects/auditions according to the
+automatic audition preference and consumes its second-click bubble. It cannot
+import into a track/Session cell or create history. Enter and deliberate drag/drop
+remain explicit import routes; device, project and directory double-click retain
+their own handlers. Manual waveform/Play/Stop controls are independent.

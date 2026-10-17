@@ -4639,3 +4639,13 @@ feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation
 locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
 focus and unavailable-output regressions cover the browser strip. Native pointer,
 listening and position acceptance remains coordinator-serial.
+
+
+## deliberate sample insertion — pulse2780 / PR386
+
+Sample-result double-click no longer imports; consume its bubble after ordinary
+selection/automatic audition. Actual second-mouse-down regression with a valid
+target track failed before repair, and verifies no import/canonical mutation with
+auto on/off while retaining manual Right/search focus and explicit Enter import.
+Existing deliberate drag/drop coverage remains required. Other file/device
+handlers unchanged. Native double-click behavior remains coordinator-serial.
