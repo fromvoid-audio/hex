@@ -171,9 +171,15 @@ impl ParameterNormalization {
             return Err(DeviceContractError::InvalidParameterValue);
         }
         let value = match (self, descriptor.kind) {
-            (Self::Linear, ParameterKind::Float { min, max, .. }) => ParameterValue::Float(
-                (f64::from(min) + (f64::from(max) - f64::from(min)) * f64::from(n)) as f32,
-            ),
+            (Self::Linear, ParameterKind::Float { min, max, .. }) => {
+                ParameterValue::Float(if n == 0.0 {
+                    min
+                } else if n == 1.0 {
+                    max
+                } else {
+                    (f64::from(min) * (1.0 - f64::from(n)) + f64::from(max) * f64::from(n)) as f32
+                })
+            }
             (Self::PositiveLogarithmic, ParameterKind::Float { min, max, .. }) if min > 0.0 => {
                 ParameterValue::Float(if n == 0.0 {
                     min

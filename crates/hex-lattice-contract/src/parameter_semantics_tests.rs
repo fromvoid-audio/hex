@@ -236,3 +236,89 @@ fn linear_denormalization_preserves_asymmetric_extreme_endpoints() {
         ParameterValue::Float(1.0)
     );
 }
+
+const ATOMIC_DESCRIPTORS: &[ParameterDescriptor] = &[
+    DESCRIPTOR,
+    ParameterDescriptor {
+        id: ParameterId::from_static(2),
+        ..DESCRIPTOR
+    },
+];
+struct AtomicDefinition {
+    patches: std::sync::atomic::AtomicUsize,
+    second: ParameterSemantics,
+}
+impl NativeDeviceMetadata for AtomicDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        DeviceTypeId::from_static("fixture.semantics")
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        ATOMIC_DESCRIPTORS
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        Definition { declaration: None }.default_state()
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Definition { declaration: None }.migrate_state(state)
+    }
+    fn read_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _id: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Ok(DESCRIPTOR.default)
+    }
+    fn patch_parameter(
+        &self,
+        state: &NativeDeviceState,
+        _id: ParameterId,
+        _value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        self.patches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(state.clone())
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        _state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+        Ok(if id == ParameterId::from_static(2) {
+            Some(self.second)
+        } else {
+            None
+        })
+    }
+}
+#[test]
+fn atomic_metadata_preflights_all_access_and_semantics_before_any_private_patch() {
+    let mut read_only = semantics();
+    read_only.access = ParameterAccess::ReadOnly;
+    let mut invalid = semantics();
+    invalid.stepping = ParameterStepping::Choice;
+    for second in [read_only, invalid] {
+        let definition = AtomicDefinition {
+            patches: std::sync::atomic::AtomicUsize::new(0),
+            second,
+        };
+        let source = definition.default_state().unwrap();
+        let snapshot = DeviceParameterSnapshot::new(&[
+            (ID, DESCRIPTOR.default),
+            (ParameterId::from_static(2), DESCRIPTOR.default),
+        ])
+        .unwrap();
+        assert!(definition.patch_parameters(&source, &snapshot).is_err());
+        assert_eq!(
+            definition
+                .patches
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+}
