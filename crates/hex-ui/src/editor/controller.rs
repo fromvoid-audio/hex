@@ -148,7 +148,11 @@ impl EditorView {
             }
             Err(error) => {
                 self.pending_restart_request = None;
-                self.error = Some(format!("could not restart audio · {error:?}").to_lowercase());
+                self.error = Some(
+                    format!("could not restart audio · {error:?}")
+                        .to_lowercase()
+                        .into(),
+                );
                 self.status = "audio unavailable".into();
                 false
             }
@@ -481,7 +485,7 @@ impl EditorView {
                     self.pending_recovery_generation = None;
                     let message = format!("audio unavailable · {}", error.to_lowercase());
                     self.status = message.clone();
-                    self.error = Some(message);
+                    self.error = Some(message.into());
                     changed = true;
                 }
                 crate::EditorAudioEvent::Publication {
@@ -567,7 +571,7 @@ impl EditorView {
                     seek_request_id: pending.seek_request_id,
                     device_preview_identity: pending.device_preview_identity,
                 });
-                self.error = Some(rejected.reason.to_lowercase());
+                self.error = Some(rejected.reason.to_lowercase().into());
             }
         }
         true
@@ -578,13 +582,16 @@ impl EditorView {
     }
 
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
-        let logging_failure = crate::diagnostics::record_state(cx, &self.status, &self.error);
+        let logging_failure =
+            crate::diagnostics::record_state(cx, &self.status, self.error.as_deref());
         let logging_changed = if let Some(failure) = logging_failure {
-            let message = self
-                .error
-                .as_ref()
-                .map_or_else(|| failure.clone(), |error| format!("{error} · {failure}"));
-            replace_error(&mut self.error, &message)
+            let message = self.error.as_ref().map_or_else(
+                || failure.clone().into(),
+                |error| error.with_context(&failure),
+            );
+            let changed = self.error.as_ref() != Some(&message);
+            self.error = Some(message);
+            changed
         } else {
             false
         };
@@ -1419,7 +1426,7 @@ impl EditorView {
                     .is_some_and(|state| state.revision == event.state.revision);
             if current {
                 if let Some(error) = event.error {
-                    self.error = Some(error);
+                    self.error = Some(error.into());
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -1569,7 +1576,7 @@ impl EditorView {
                         {
                             let message = format!("audio unavailable · {}", error.to_lowercase());
                             self.status = message.clone();
-                            self.error = Some(message);
+                            self.error = Some(message.into());
                             self.pending_restart_request = None;
                         }
                         result => result.close(),
@@ -1832,7 +1839,7 @@ impl EditorView {
             .as_ref()
             .and_then(|ack| ack.reason.as_ref())
         {
-            self.error = Some(reason.clone());
+            self.error = Some(reason.clone().into());
         }
         if super::device_gesture::actor_retired_gesture(
             event.project_replaced,
@@ -1919,14 +1926,18 @@ impl EditorView {
             self.error = None;
         }
         if let Some(error) = event.error {
-            self.error = Some(error);
+            self.error = Some(
+                event
+                    .audio_batch_failure
+                    .map_or_else(|| error.into(), Into::into),
+            );
         } else if let Some(error) = stopped_restore_error {
-            self.error = Some(error);
+            self.error = Some(error.into());
         }
         if let Some(message) = playback_capability {
             self.session_capability_message = message.clone();
             if let Some(message) = message {
-                self.error = Some(message);
+                self.error = Some(message.into());
             }
         }
         self.reconcile_publication_observation();
@@ -2418,7 +2429,8 @@ impl EditorView {
                     .and_then(|status| status.session_capability())
                     .and_then(hex_engine::SessionCapabilityStatus::message)
                     .unwrap_or("session playback is unavailable for this project")
-                    .to_lowercase(),
+                    .to_lowercase()
+                    .into(),
             );
             return;
         }
@@ -2470,7 +2482,7 @@ impl EditorView {
                 .and_then(hex_engine::SessionCapabilityStatus::message)
                 .unwrap_or("session playback is unavailable for this project")
                 .to_lowercase();
-            self.error = Some(message);
+            self.error = Some(message.into());
             return;
         }
         let token = match super::play_intent::prepare_admission(
@@ -2996,11 +3008,11 @@ fn reconcile_session_ticket(
     (Some((ticket, generation)), None)
 }
 
-fn replace_error(error: &mut Option<String>, message: &str) -> bool {
+fn replace_error(error: &mut Option<super::display_error::DisplayError>, message: &str) -> bool {
     if error.as_deref() == Some(message) {
         false
     } else {
-        *error = Some(message.to_owned());
+        *error = Some(message.into());
         true
     }
 }

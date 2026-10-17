@@ -80,12 +80,22 @@ pub struct ViewState {
     pub document_path: Option<PathBuf>,
 }
 
+/// Control-side batch failure metadata; no decoded media crosses this boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioBatchMemberFailure {
+    pub member: usize,
+    pub path: PathBuf,
+    pub explanation: String,
+}
+
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
+    /// Original failing batch member, kept separate from app-owned explanation.
+    pub audio_batch_failure: Option<AudioBatchMemberFailure>,
     pub request_complete: bool,
     pub computer_keyboard_complete: Option<u64>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
@@ -953,6 +963,7 @@ fn run_worker(
                 playback: Some(native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
+                audio_batch_failure: None,
                 request_complete: false,
                 computer_keyboard_complete: None,
                 live_expression_complete: None,
@@ -976,6 +987,7 @@ fn run_worker(
             playback: None,
             status: None,
             error: Some(error),
+            audio_batch_failure: None,
             request_complete: false,
             computer_keyboard_complete: None,
             live_expression_complete: None,
@@ -1007,6 +1019,7 @@ fn run_worker(
         let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
         let mut audio_batch_complete = None;
+        let mut audio_batch_failure = None;
         let mut open_complete = false;
         let mut save_complete = false;
         let mut project_replaced = false;
@@ -1338,6 +1351,18 @@ fn run_worker(
                         Err(reason) => {
                             control.refuse();
                             error = Some(reason.to_string());
+                            if let crate::import_batch_decode::AudioBatchError::Member {
+                                member,
+                                path,
+                                source,
+                            } = reason
+                            {
+                                audio_batch_failure = Some(AudioBatchMemberFailure {
+                                    member,
+                                    path,
+                                    explanation: source.to_string(),
+                                });
+                            }
                         }
                     }
                 }
@@ -2299,6 +2324,7 @@ fn run_worker(
             computer_keyboard_complete,
             live_expression_complete,
             audio_batch_complete,
+            audio_batch_failure,
             save_complete,
             open_complete,
             project_replaced,

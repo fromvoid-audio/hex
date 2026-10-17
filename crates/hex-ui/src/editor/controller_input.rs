@@ -188,7 +188,7 @@ impl EditorView {
                     if request_id == self.controller_input.discovery {
                         match result {
                             Ok(ports) => self.install_controller_selectors(ports, cx),
-                            Err(error) => self.error = Some(theme::text(error).to_string()),
+                            Err(error) => self.error = Some(theme::text(error).to_string().into()),
                         }
                         changed = true;
                     }
@@ -196,7 +196,7 @@ impl EditorView {
                 Some(hex_midi::Event::Connection { activation, result }) => {
                     if let Some(error) = self.controller_input.connection_event(activation, result)
                     {
-                        self.error = Some(theme::text(error).to_string());
+                        self.error = Some(theme::text(error).to_string().into());
                     }
                     changed = true;
                 }
