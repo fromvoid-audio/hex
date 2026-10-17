@@ -4320,3 +4320,17 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+
+
+## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+
+- Lower fade handles use one model-owned trim-and-envelope command, including
+  neutral `f` handles, source/retained-root limits, loop phase and musical crop
+  anchoring. Upper/curve edits keep their existing behavior.
+- Metadata-only previews resize the actual clip/header/waveform crop; release
+  recomputes grid/Command snapping and makes one undoable edit. Existing inward
+  endpoint offsets are absorbed only by a meaningful drag.
+- Focused source coverage checks source/loop laws, transformed warp/events,
+  preview/command identity, history, roundtrip, saved export/playback PCM and
+  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
+  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
