@@ -11,6 +11,18 @@
   Physical deadlines, listening, GUI interaction and backend faults remain
   unverified; source merge and installation do not complete original24 acceptance.
 
+## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
+
+- Worker batch failures retain member/path metadata through the UI boundary;
+  the status strip and error tooltip normalize app-owned explanation only,
+  preserving mixed-case source paths and keeping metadata with its error value.
+- Focused service and production editor-event regressions cover malformed and
+  conversion-limit mixed-case WAV failures, unchanged source bytes and canonical project/history;
+  display tests also cover Unicode case. Source guards pin both error surfaces.
+- Exact local-CI/build evidence is recorded with the candidate externally. Native
+  visual/user acceptance remains separate; exercise a failed `Samples/Kick.WAV`
+  drop and hover the status to confirm path casing, then perform a valid import.
+
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
 
 Native effect/instrument registries validate owned descriptors for each current
@@ -3862,3 +3874,15 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   and empty-source seals, alias refusal, cancellation/pool conservation, changed
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
+
+
+## 17 october 2026 — track header hover
+
+Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
+headers and demo Arrangement headers. Existing selection and control behavior is
+preserved. UI style and GPUI patch guards pass; architecture/build/format checks
+are blocked because this cloud environment has no Rust toolchain. Native visual
+acceptance remains open: hover selected/unselected headers and nested controls,
+then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
+The connected GitHub app provides repository access. The user explicitly requested
+merge after the missing Rust/native validation was disclosed.

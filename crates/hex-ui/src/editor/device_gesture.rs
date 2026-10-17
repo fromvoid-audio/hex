@@ -189,7 +189,8 @@ impl EditorView {
                 self.error = Some(
                     ack.reason
                         .clone()
-                        .unwrap_or_else(|| "device parameter edit could not be committed".into()),
+                        .unwrap_or_else(|| "device parameter edit could not be committed".into())
+                        .into(),
                 );
             }
             release_deferred(
@@ -206,7 +207,8 @@ impl EditorView {
             self.error = Some(
                 ack.reason
                     .clone()
-                    .unwrap_or_else(|| "device parameter edit could not start".into()),
+                    .unwrap_or_else(|| "device parameter edit could not start".into())
+                    .into(),
             );
         }
         true

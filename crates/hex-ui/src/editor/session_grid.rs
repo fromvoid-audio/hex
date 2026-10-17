@@ -424,6 +424,7 @@ impl EditorView {
                             .items_center()
                             .border_l_1()
                             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                             .text_xs()
                             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                             .child(

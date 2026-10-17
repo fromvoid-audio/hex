@@ -310,7 +310,8 @@ impl EditorView {
                     self.gain_recorder.mode = Mode::Idle;
                     self.gain_recorder.pending_gain = None;
                     self.gain_recorder.binding = None;
-                    self.error = Some(format!("gain recording arm refused · {}", reason.message()));
+                    self.error =
+                        Some(format!("gain recording arm refused · {}", reason.message()).into());
                     return true;
                 }
             }
@@ -397,7 +398,7 @@ impl EditorView {
                             }
                             Ok(_) => self.status = "empty gain touch · project unchanged".into(),
                             Err(reason) => {
-                                self.error = Some(format!("gain take refused · {reason}"))
+                                self.error = Some(format!("gain take refused · {reason}").into())
                             }
                         }
                     }
@@ -410,7 +411,8 @@ impl EditorView {
                     self.gain_recorder.binding = None;
                     self.error = Some(
                         format!("gain take aborted · {reason:?} · original lane retained")
-                            .to_lowercase(),
+                            .to_lowercase()
+                            .into(),
                     );
                 }
             }
@@ -467,7 +469,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
         let config = match config {
             Ok(value) => value.with_appearance(NumericControlAppearance::InlineValue),
             Err(reason) => {
-                view.error = Some(reason.to_string());
+                view.error = Some(reason.to_string().into());
                 return controls;
             }
         };
@@ -506,7 +508,7 @@ pub(super) fn controls(view: &mut EditorView, track: TrackId, cx: &mut Context<E
             if let Some(gain) = read_gain {
                 binding.entity.update(cx, |numeric, cx| {
                     if let Err(reason) = numeric.set_external_value(f64::from(gain) * 100.0, cx) {
-                        view.error = Some(reason.to_string());
+                        view.error = Some(reason.to_string().into());
                     }
                 });
             }
