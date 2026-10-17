@@ -8,8 +8,22 @@ edges, zoom scales and the column cap; canonical loop/one-shot trims are covered
 Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
 the existing model. Native reproduction/acceptance is pending; the running
 source label is0f99bfbc, with no captured resize. See docs/waveform-display.md.
-Full exact-source cloud checks are recorded in the PR/Pulse; launcher368 retains
-its reserved merge slot until coordinator release. No app delivery performed.
+All20 full cloud checks passed on8a787a2b; final main integration is revalidated
+and recorded in the PR/Pulse. Launcher368 is merged; no app delivery performed.
+
+## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
+
+Prepared imports and Session assets retain original-rate decoded PCM beside
+unchanged project-rate clip derivatives through single/batch/Session/Open and
+Undo/Redo paths. The same resident-frame ceiling charges unique buffer capacity;
+identity aliases count once, excess Vec capacity counts, and source+derivative
+refusal preserves canonical state/Redo. An identity-alias reload failure at zero
+remaining frames was reproduced and repaired. All113 Session tests pass. The real mixed-rate service fixture now proves
+derivative-only budget refusal and exact source+derivative Save/Open under its
+actual declared workload; targeted worker case passes. Failed full evidence is
+retained, including the second mixed-rate clip fixture reservation repair.
+The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
+resource-root/handle/callback lease admission; full W10/sampler remain open.
 
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
@@ -4529,6 +4543,19 @@ Developer full exact-candidate checks remain required before merging this change
 PR355 owns pending signing integration. One coordinator-controlled serial Mac
 thread will verify native behavior and the single combined delivery; cloud tests
 cannot establish keychain signing, installed launch or permission persistence.
+
+## terminal launch activity — pulse2760 / PR368, 17 october 2026
+
+The launcher now shows stage activity while fetching and verifying the installed
+app; the shared runner animates logged test/check steps and optimized compilation.
+Animation requires both stdout and stderr to be terminals. Redirected output stays
+plain, and no ticker writes over live child output. The worker stops, joins and
+clears before success/failure/interruption output resumes; narrow frames cannot
+wrap. Existing default fetch/build/start without tests, explicit `--test` full CI
+and installed-only `--open` remain. Focused deterministic terminal/redirected,
+failure/interrupt, diagnostic and release-guard regressions accompany the change.
+Final exact-source checks and finite Mac terminal acceptance remain with PR368;
+this cloud task does not install or restart the app.
 
 ## signing and build-only launch integration — pulse2745 / PR355, 17 october 2026
 
