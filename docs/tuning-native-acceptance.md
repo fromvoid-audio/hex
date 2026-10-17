@@ -78,11 +78,17 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    any unsupported resource-processing refusal separately: the file and current
    project must stay intact, with no silent removal of bindings or conversion.
    Resource-backed playback admission remains the native host owner's gate.
+   Loading/importing the identical scale must preserve clean state and Redo.
+   Start Undo or another canonical edit, then immediately try a new tuning edit:
+   it must wait rather than resurrect an older whole tuning value.
 5. With no selected track and project tuning disabled, audition triangle, square
    and saw; change level/attack/release and tuning while holding/releasing notes.
    Numeric/text focus must not play notes. Modified key release, deactivation,
    close, Stop and project replacement must leave no stuck note or autorepeat
-   restart. Check held/recent reference and Arrangement/Session gate highlights.
+   restart. Include a refused held high note, then retune it into the supported
+   range without releasing the physical key: it should become audible while
+   already sounding voices keep their phase/envelope. Check held/recent reference
+   and Arrangement/Session gate highlights.
 6. In sine, FM4 and Operator scratch projects, compare neutral and enabled custom
    tuning in Arrangement, Session and keyboard monitoring. Include root offsets,
    7/19-degree non-octave scales, rapid edits/Undo and held/released voices.
@@ -107,6 +113,10 @@ open; fixture success is not an installed-client pass.
    status, client count and actual compatible-client frequencies/metadata for
    the custom root/period. Compare a second publication and held-note behavior;
    record client limitations and asynchronous native/MTS revisions separately.
+   A transient preview must publish only after its exact native candidate applies;
+   a refused nonterminal preview must preserve the previous published table.
+   Check Cancel/Commit restoration and canonical commits without an audio output
+   separately. Worker preparation alone is not an applied-audio receipt.
 3. Change window focus: ownership stays explicit. Close the tuning popup:
    broadcasting continues. Disable, replace the project and quit normally:
    owned registration is released, a different master can acquire, and native
