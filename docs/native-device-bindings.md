@@ -40,3 +40,20 @@ catalog action integration and the complete production/native acceptance matrix.
 The host extraction alone does not complete those deliverables. Full local CI
 on the integrated final commit and a finite optimized native test checklist are
 separate from focused headless host regressions.
+
+The focused host regression group is `bindings_tests` under the
+`ui-test-support` feature. It exercises cross-parameter late phases, exact
+same-parameter gesture leases, unowned retirement, replaced emitter identity,
+pre-render generation retirement and same-update owner finalization. Existing
+rendered Utility/EQ/Operator and Track/Return tests remain the behavioral
+integration coverage; retain their save, Undo, invalid-input and preset cases
+rather than duplicating them in this group. A test's presence is not a recorded
+pass: consult exact-candidate local-CI evidence.
+
+For an optimized native candidate, the finite follow-up checklist is: type and
+save a Utility value then Undo; drag an EQ node and Undo once; cancel a numeric
+drag with Escape; refuse an invalid typed value on navigation/save; switch
+Track/Return owners during an edit; remove/replace the edited device; change an
+Operator mode that hides a control; exercise keyboard focus after replacement.
+Record the actual build/source and observed results separately. These checks
+have not been performed for this extraction.
