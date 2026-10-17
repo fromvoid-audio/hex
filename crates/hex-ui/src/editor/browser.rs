@@ -982,7 +982,9 @@ impl EditorView {
         if !self.browser.open {
             COLLAPSED_WIDTH
         } else {
-            clamped_panel_width(self.browser.width, f32::from(window.bounds().size.width)) + 4.0
+            let base =
+                clamped_panel_width(self.browser.width, f32::from(window.bounds().size.width));
+            base + self.browser.layout.editor_width(base) + 4.0
         }
     }
 
@@ -1007,6 +1009,8 @@ impl EditorView {
     pub(super) fn toggle_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.browser.open = !self.browser.open;
         if !self.browser.open {
+            self.browser.layout.sidebar_drag = None;
+            self.browser.resizing = false;
             self.browser.results_focused = false;
             self.focus.focus(window);
         }
@@ -1393,6 +1397,7 @@ impl EditorView {
         let preview = self.browser_selection_preview(cx);
         let sidebar = self.browser_sidebar(pane_width, cx);
         let editor = self.browser_tag_editor(pane_width, cx);
+        let editor_width = self.browser.layout.editor_width(pane_width);
         panel = div()
             .flex_1()
             .min_w_0()
@@ -1402,7 +1407,7 @@ impl EditorView {
             .child(panel.w_full().flex_1().min_h_0().min_w_0())
             .child(preview);
         panel = div()
-            .w(px(pane_width))
+            .w(px(pane_width + editor_width))
             .flex_shrink_0()
             .min_h_0()
             .flex()
@@ -1416,6 +1421,7 @@ impl EditorView {
                     .min_h_0()
                     .flex()
                     .child(sidebar)
+                    .child(self.browser_sidebar_resize(pane_width, cx))
                     .child(panel)
                     .children(editor),
             );
@@ -1459,7 +1465,9 @@ impl EditorView {
                         move_entity.update(cx, |view, cx| {
                             if view.browser.resizing {
                                 view.browser.width = clamped_panel_width(
-                                    f32::from(event.position.x) - start_x,
+                                    view.browser.layout.base_width_for_total(
+                                        f32::from(event.position.x) - start_x,
+                                    ),
                                     available,
                                 );
                                 cx.notify();

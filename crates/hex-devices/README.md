@@ -13,7 +13,8 @@ the stateless nonlinear [Saturator](../../docs/saturator.md),
 the stereo-linked [Compressor](../../docs/compressor.md),
 the original hysteresis [Gate](../../docs/gate.md),
 the free-running stereo [Auto Pan](../../docs/auto-pan.md),
-the registered eight-band stateful [eq eight](../../docs/eq-eight.md) effect,
+the sparse 64-node stateful [eq](../../docs/eq.md), with lossless explicit
+upgrade from the retained [legacy EQ8](../../docs/eq-eight.md) effect,
 prepare Hex's stateless sine instrument voice for MIDI playback, and own original
 fixed-state DC/bass-mono filters registered through the stateful lattice contract.
 Own the original four-operator phase-modulation kernel and its versioned,

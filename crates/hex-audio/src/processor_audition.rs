@@ -414,7 +414,10 @@ mod tests {
     }
 
     fn selection(index: u8) -> ProcessorAuditionSelection {
-        ProcessorAuditionSelection { index, lane: 0 }
+        ProcessorAuditionSelection {
+            index: u32::from(index),
+            lane: 0,
+        }
     }
 
     fn select(

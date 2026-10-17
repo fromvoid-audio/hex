@@ -715,6 +715,12 @@ impl Project {
                     })
             })
     }
+    /// Next never-used project identity; opaque device editors reserve IDs
+    /// with a compare-and-replace command, never by mutating this cursor.
+    pub fn next_identity(&self) -> u64 {
+        self.next_id
+    }
+
     pub(crate) fn allocate_id(&mut self) -> Result<u64, Invalid> {
         let id = self.next_id;
         self.next_id = id
