@@ -85,6 +85,25 @@ pub static EMPTY_DEVICE_RESOURCES: BorrowedDeviceResources<'static> = BorrowedDe
 /// compatibility only: it is never storage, publication or retirement proof.
 pub trait HostDeviceResourceScope: DeviceResources + Send {
     fn same_configuration(&self, other: &Self) -> bool;
+    /// Control-side configuration validation. The default validates borrowed
+    /// PCM as well as slots. A closed immutable host constructor may instead
+    /// reuse its bounded finite-PCM verification, checking all slot/source facts
+    /// here without rescanning sample buffers. Neither grants native admission.
+    fn validate_configuration_on_control(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<(), DeviceContractError>
+    where
+        Self: Sized,
+    {
+        DevicePreparationContext {
+            sample_rate,
+            tuning: &TuningTable::default(),
+            resources: self,
+        }
+        .validate_for(state)
+    }
 }
 /// Asset-free host scope with no owning storage or per-entry allocation.
 #[derive(Clone, Copy, Debug, Default)]
@@ -100,6 +119,16 @@ impl DeviceResources for NoDeviceResourceScope {
 impl HostDeviceResourceScope for NoDeviceResourceScope {
     fn same_configuration(&self, _: &Self) -> bool {
         true
+    }
+    fn validate_configuration_on_control(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<(), DeviceContractError> {
+        if sample_rate == 0 {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        state.require_asset_free_processing()
     }
 }
 

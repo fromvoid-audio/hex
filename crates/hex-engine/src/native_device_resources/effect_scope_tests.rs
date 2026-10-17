@@ -462,3 +462,49 @@ fn actual_effect_scopes_close_current_candidate_tail_and_history_union_at_exact_
         Some([0.5; 2])
     );
 }
+
+struct MustNotConstruct;
+impl PreparedNativeProcessor for MustNotConstruct {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_runtime_bytes(&self) -> usize {
+        1
+    }
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        panic!("invalid resource configuration reached runtime factory")
+    }
+}
+#[test]
+fn closed_scope_checks_actual_slots_and_rate_before_runtime_construction() {
+    let Some((owner, ids)) = owner() else { return };
+    for invalid in 0..3 {
+        let mut prepared = scoped(&owner, ids[0], false);
+        prepared.instance.definition =
+            Some(PreparedProcessorFactory::Legacy(Arc::new(MustNotConstruct)));
+        match invalid {
+            0 => prepared.instance.configuration = Some(Arc::new(tests::state(ids[1]))),
+            1 => prepared.instance.configuration = None,
+            _ => prepared.instance.sample_rate = 0,
+        }
+        let expected = if invalid == 2 {
+            hex_lattice_contract::DeviceContractError::InvalidParameterValue
+        } else {
+            hex_lattice_contract::DeviceContractError::AssetResourcesUnavailable
+        };
+        assert!(
+            matches!(NativeRuntimeChain::new_prepared(vec![prepared]), Err(error) if error == expected)
+        );
+    }
+    let resources = owner
+        .prepare_configuration_on_control(&tests::state(ids[0]), 4096)
+        .unwrap();
+    // Original rate remains independent of project/output rate.
+    hex_lattice::HostDeviceResourceScope::validate_configuration_on_control(
+        &resources,
+        &tests::state(ids[0]),
+        48_000,
+    )
+    .unwrap();
+    assert_eq!(resources.get(0).unwrap().sample_rate, 44_100);
+}

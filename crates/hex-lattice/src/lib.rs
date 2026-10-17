@@ -612,12 +612,7 @@ impl<R: HostDeviceResourceScope> NativeRuntimeChain<R> {
                 resources,
             } = scoped;
             if let Some(configuration) = &instance.configuration {
-                DevicePreparationContext {
-                    sample_rate: instance.sample_rate,
-                    tuning: &TuningTable::default(),
-                    resources: &resources,
-                }
-                .validate_for(configuration)?;
+                resources.validate_configuration_on_control(configuration, instance.sample_rate)?;
             } else if !resources.is_empty() {
                 return Err(DeviceContractError::AssetResourcesUnavailable);
             }

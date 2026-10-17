@@ -387,3 +387,11 @@ atomic publication and saturated reaper/final-drop coverage remain unfinished.
 An immutable alias anchor and selected closed handles alone cannot qualify an
 active runtime or prove retirement. Resource-backed registry processing stays
 closed until that integration is complete; no memory ceiling is raised.
+
+Closed native scopes now reuse the catalog's immutable finite-PCM verification
+when a runtime entry is constructed. They recheck every actual source token,
+slot and asset reference in bounded metadata work, without another whole-buffer
+scan per configured host. Unverified scopes retain full PCM validation. Missing
+or mismatched slots and zero output rate refuse before a runtime factory runs;
+original source rate remains independent of project/output rate. This validation
+hook is control-only and conveys no publication authority.

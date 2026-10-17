@@ -359,6 +359,32 @@ impl hex_lattice::HostDeviceResourceScope for PreparedDeviceResourceLease {
     fn same_configuration(&self, other: &Self) -> bool {
         PreparedDeviceResourceLease::same_configuration(self, other)
     }
+    fn validate_configuration_on_control(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        use hex_lattice_contract::DeviceContractError;
+        if sample_rate == 0 {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        if state.asset_references().len() != self.scope.bindings.len() {
+            return Err(DeviceContractError::AssetResourcesUnavailable);
+        }
+        // This closed root owns immutable native originals. Catalog preparation
+        // already validated every finite sample under explicit work/cancel bounds.
+        // Recheck authored slots and actual retained tokens/rate/layout/window,
+        // not every PCM frame again for each configured effect/checkpoint.
+        for (index, reference) in state.asset_references().iter().enumerate() {
+            let view = self
+                .get(index)
+                .ok_or(DeviceContractError::AssetResourcesUnavailable)?;
+            if view.slot != reference.slot || view.identity.asset != reference.asset {
+                return Err(DeviceContractError::AssetResourcesUnavailable);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Immutable configuration custody shared only by actual host owners. The
@@ -448,6 +474,17 @@ impl DeviceResources for DeviceResourceConfiguration {
 impl hex_lattice::HostDeviceResourceScope for DeviceResourceConfiguration {
     fn same_configuration(&self, other: &Self) -> bool {
         self.lease.same_configuration(&other.lease)
+    }
+    fn validate_configuration_on_control(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        hex_lattice::HostDeviceResourceScope::validate_configuration_on_control(
+            self.lease.as_ref(),
+            state,
+            sample_rate,
+        )
     }
 }
 impl<'a> AudioRootStorageLedger<'a> {
