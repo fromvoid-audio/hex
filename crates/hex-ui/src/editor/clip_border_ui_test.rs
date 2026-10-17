@@ -95,8 +95,11 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
         lane.left(),
         "left clipped clip starts at viewport"
     );
+    // The outer row reserves its right divider; frame projection uses the
+    // independently captured inner timeline width.
+    let timeline = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
     assert!(
-        (f32::from(bounds[4].right() - lane.right())).abs() < 1.0,
+        (f32::from(bounds[4].right()) - (timeline.left + timeline.width)).abs() < 0.1,
         "right clipped clip ends at viewport"
     );
     click(&mut visual, clips[0].0, Modifiers::default());
