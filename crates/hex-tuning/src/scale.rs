@@ -162,31 +162,18 @@ impl Scale {
     /// Change note count while retaining existing pitches and the selected root.
     pub fn set_count(&mut self, count: usize) {
         let target = count.clamp(3, MAX_DEGREES);
+        let original = *self;
         while self.count < target {
             let mut widest = (0.0, self.count - 1);
             for index in 0..self.count {
-                let next = if index + 1 == self.count {
-                    self.period_cents
-                } else {
-                    self.cents[index + 1]
-                };
-                let gap = next - self.cents[index];
+                let gap = self.successor_cents(index) - f64::from(self.cents[index]);
                 if gap > widest.0 {
                     widest = (gap, index);
                 }
             }
-            let insert_at = widest.1 + 1;
-            let next = if insert_at == self.count {
-                self.period_cents
-            } else {
-                self.cents[insert_at]
-            };
-            let cents = (self.cents[widest.1] + next) * 0.5;
-            self.cents.copy_within(insert_at..self.count, insert_at + 1);
-            self.cents[insert_at] = cents;
-            self.count += 1;
-            if insert_at <= self.root_degree {
-                self.root_degree += 1;
+            if self.insert_degree_after(widest.1).is_none() {
+                *self = original;
+                return;
             }
         }
         while self.count > target {
@@ -204,6 +191,14 @@ impl Scale {
         }
     }
 
+    fn successor_cents(&self, index: usize) -> f64 {
+        if index + 1 == self.count {
+            f64::from(self.period_cents) + f64::from(self.cents[0])
+        } else {
+            f64::from(self.cents[index + 1])
+        }
+    }
+
     /// Insert a degree halfway between the selected degree and its successor.
     ///
     /// The root remains attached to the same pitch when an earlier degree is
@@ -212,23 +207,30 @@ impl Scale {
         if self.count >= MAX_DEGREES || index >= self.count {
             return None;
         }
-        let insert_at = index + 1;
-        let next = if insert_at == self.count {
-            self.period_cents
-        } else {
-            self.cents[insert_at]
-        };
-        let gap = next - self.cents[index];
-        if gap < MIN_GAP_CENTS * 2.0 {
+        let next = self.successor_cents(index);
+        let gap = next - f64::from(self.cents[index]);
+        if gap < f64::from(MIN_GAP_CENTS) * 2.0 {
             return None;
         }
-        let cents = (self.cents[index] + next) * 0.5;
-        self.cents.copy_within(insert_at..self.count, insert_at + 1);
-        self.cents[insert_at] = cents;
-        self.count += 1;
-        if insert_at <= self.root_degree {
-            self.root_degree += 1;
+        let midpoint = (f64::from(self.cents[index]) + next) * 0.5;
+        let (insert_at, cents) = if midpoint > f64::from(self.period_cents) {
+            (0, (midpoint - f64::from(self.period_cents)) as f32)
+        } else {
+            (index + 1, midpoint as f32)
+        };
+        let mut candidate = *self;
+        candidate
+            .cents
+            .copy_within(insert_at..candidate.count, insert_at + 1);
+        candidate.cents[insert_at] = cents;
+        candidate.count += 1;
+        if insert_at <= candidate.root_degree {
+            candidate.root_degree += 1;
         }
+        if !candidate.valid() {
+            return None;
+        }
+        *self = candidate;
         Some(insert_at)
     }
 
@@ -248,12 +250,19 @@ impl Scale {
         {
             return None;
         }
-        self.cents.copy_within(index..self.count, index + 1);
-        self.cents[index] = cents;
-        self.count += 1;
-        if index <= self.root_degree {
-            self.root_degree += 1;
+        let mut candidate = *self;
+        candidate
+            .cents
+            .copy_within(index..candidate.count, index + 1);
+        candidate.cents[index] = cents;
+        candidate.count += 1;
+        if index <= candidate.root_degree {
+            candidate.root_degree += 1;
         }
+        if !candidate.valid() {
+            return None;
+        }
+        *self = candidate;
         Some(index)
     }
 
@@ -324,21 +333,42 @@ impl Scale {
         if index >= self.count || !cents.is_finite() {
             return false;
         }
+        let gap = f64::from(MIN_GAP_CENTS);
         let lower = if index == 0 {
-            0.0
+            (f64::from(self.cents[self.count - 1]) - f64::from(self.period_cents) + gap).max(0.0)
         } else {
-            self.cents[index - 1] + MIN_GAP_CENTS
+            f64::from(self.cents[index - 1]) + gap
         };
         let upper = if index + 1 == self.count {
-            self.period_cents
+            f64::from(self.period_cents)
+                .min(f64::from(self.period_cents) + f64::from(self.cents[0]) - gap)
         } else {
-            self.cents[index + 1] - MIN_GAP_CENTS
+            f64::from(self.cents[index + 1]) - gap
         };
-        let next = cents.clamp(lower, upper.max(lower));
+        // Round bounds inward so conversion back to f32 cannot close a gap.
+        let mut low = lower as f32;
+        if f64::from(low) < lower {
+            // Valid scale bounds are finite and nonnegative. Adjacent positive
+            // float bit patterns avoid requiring post-MSRV float helpers.
+            low = f32::from_bits(low.to_bits() + 1);
+        }
+        let mut high = upper as f32;
+        if f64::from(high) > upper {
+            high = f32::from_bits(high.to_bits() - 1);
+        }
+        if low > high {
+            return false;
+        }
+        let next = cents.clamp(low, high);
         if (next - self.cents[index]).abs() < 0.001 {
             return false;
         }
-        self.cents[index] = next;
+        let mut candidate = *self;
+        candidate.cents[index] = next;
+        if !candidate.valid() {
+            return false;
+        }
+        *self = candidate;
         true
     }
 
@@ -375,9 +405,12 @@ impl Scale {
         }
         (1..self.count).all(|index| {
             self.cents[index].is_finite()
-                && self.cents[index] >= self.cents[index - 1] + MIN_GAP_CENTS
+                && f64::from(self.cents[index]) - f64::from(self.cents[index - 1])
+                    >= f64::from(MIN_GAP_CENTS)
                 && self.cents[index] <= self.period_cents
-        })
+        }) && f64::from(self.period_cents) + f64::from(self.cents[0])
+            - f64::from(self.cents[self.count - 1])
+            >= f64::from(MIN_GAP_CENTS)
     }
 }
 
@@ -508,6 +541,60 @@ mod tests {
         assert!(scale.valid());
         assert!(scale.move_degree(0, 20.0));
         assert!(scale.valid());
+    }
+
+    #[test]
+    fn period_seam_requires_minimum_gap_in_construction_and_drag() {
+        for last in [1199.5, 1200.0] {
+            let mut cents = Scale::equal(3).cents;
+            cents[2] = last;
+            assert!(Scale::new(3, cents, 60, 220.0, 0, 1200.0).is_err());
+        }
+        let mut scale = Scale::equal(3);
+        assert!(scale.move_degree(2, 1200.0));
+        assert_eq!(scale.cents[2], 1199.0);
+        assert!(scale.valid());
+        assert!(scale.frequency(62) < scale.frequency(63));
+        assert!(scale.move_degree(0, 20.0));
+        assert!(scale.move_degree(2, 1200.0));
+        assert!(scale.valid());
+        assert!(scale.move_degree(0, 0.0));
+        assert_eq!(scale.cents[0], 1.0);
+        assert!(scale.valid());
+        assert!(scale.frequency(62) < scale.frequency(63));
+    }
+
+    #[test]
+    fn wrapped_insertion_and_note_count_keep_scale_valid_and_root_attached() {
+        let mut cents = [0.0; MAX_DEGREES];
+        cents[..3].copy_from_slice(&[1198.0, 1199.0, 1200.0]);
+        let mut scale = Scale::new(3, cents, 60, 220.0, 1, 1200.0).unwrap();
+        assert_eq!(scale.insert_degree_after(2), Some(0));
+        assert_eq!(scale.cents[0], 599.0);
+        assert_eq!(scale.cents[scale.root_degree], 1199.0);
+        assert!(scale.valid());
+        scale.set_count(48);
+        assert_eq!(scale.count, 48);
+        assert_eq!(scale.cents[scale.root_degree], 1199.0);
+        assert_eq!(scale.frequency(60), 220.0);
+        assert!(scale.valid());
+        assert!((0..127).all(|key| scale.frequency(key) < scale.frequency(key + 1)));
+        scale.set_count(3);
+        assert!(scale.valid());
+        assert_eq!(scale.frequency(60), 220.0);
+    }
+
+    #[test]
+    fn clicked_insertion_cannot_close_the_period_seam() {
+        let mut cents = [0.0; MAX_DEGREES];
+        cents[..3].copy_from_slice(&[20.0, 400.0, 1200.0]);
+        let mut scale = Scale::new(3, cents, 60, 220.0, 1, 1200.0).unwrap();
+        let before = scale;
+        assert_eq!(scale.insert_degree(0.25), None);
+        assert_eq!(scale, before);
+        assert_eq!(scale.insert_degree(2.0), Some(0));
+        assert!(scale.valid());
+        assert_eq!(scale.frequency(60), 220.0);
     }
 
     #[test]

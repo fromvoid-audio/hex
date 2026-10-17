@@ -1,3 +1,12 @@
+## tuning review precision and cyclic gaps — #2739 / PR350, 17 october 2026
+
+Review found preset float rounding and a missing period-seam gap check. Four
+regressions fail before repair and pass afterward: exact authored-float portable
+round trips, construction/drag seam refusal, safe clicked insertion, and wrapped
+insertion/count changes retaining the root. All23 tuning tests and strict scoped
+Clippy pass. Existing Rust1.85 baseline stays unchanged. The previous full-run
+checkpoint is superseded; final exact-source integration checks remain required.
+
 ## combined current project format — #2739 / PR350, 17 october 2026
 
 After asset PR297 landed, cloud5 integrates both active capabilities in one

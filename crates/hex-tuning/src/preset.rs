@@ -33,7 +33,7 @@ pub fn encode(name: &str, scale: Scale) -> Result<String, Invalid> {
         return Err(Invalid("invalid preset scale"));
     }
     let mut text = format!(
-        "FREQS 3\n{name}\n{}\n{}\n{}\n{:.9}\n{:.9}\n",
+        "FREQS 3\n{name}\n{}\n{}\n{}\n{}\n{}\n",
         scale.count(),
         scale.root_key(),
         scale.root_degree(),
@@ -41,7 +41,7 @@ pub fn encode(name: &str, scale: Scale) -> Result<String, Invalid> {
         scale.period_cents()
     );
     for cents in scale.cents() {
-        writeln!(&mut text, "{cents:.9}").map_err(|_| Invalid("cannot encode preset"))?;
+        writeln!(&mut text, "{cents}").map_err(|_| Invalid("cannot encode preset"))?;
     }
     Ok(text)
 }
@@ -113,10 +113,36 @@ mod tests {
         assert_eq!(decode(&old).unwrap().scale, scale);
     }
     #[test]
+    fn portable_round_trip_preserves_all_authored_float_bits() {
+        let mut cents = *Scale::equal(3).cents();
+        cents[0] = 1.234_567_8e-12;
+        cents[47] = f32::from_bits(1);
+        for root in [
+            261.625_565_300_598_6,
+            f64::from_bits(10.0_f64.to_bits() + 1),
+            f64::from_bits(20_000.0_f64.to_bits() - 1),
+        ] {
+            let scale = Scale::new(3, cents, 60, root, 0, 1901.955).unwrap();
+            let text = encode("precise scale", scale).unwrap();
+            assert!(text.len() <= MAX_PRESET_BYTES);
+            let restored = decode(&text).unwrap().scale;
+            assert_eq!(restored.root_hz().to_bits(), scale.root_hz().to_bits());
+            assert_eq!(
+                restored.period_cents().to_bits(),
+                scale.period_cents().to_bits()
+            );
+            for (actual, expected) in restored.cents().iter().zip(scale.cents()) {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+        }
+    }
+    #[test]
     fn refuses_truncation_nonfinite_trailing_and_oversized_data() {
         let text = encode("scale", Scale::default()).unwrap();
         assert!(decode("FREQS 3\nscale\n7\n").is_err());
-        assert!(decode(&text.replace("220.000000000", "NaN")).is_err());
+        let mut nonfinite = text.lines().collect::<Vec<_>>();
+        nonfinite[5] = "NaN";
+        assert!(decode(&nonfinite.join("\n")).is_err());
         assert!(decode(&(text.clone() + "extra\n")).is_err());
         assert!(decode(&"x".repeat(MAX_PRESET_BYTES + 1)).is_err());
         assert!(encode("../scale", Scale::default()).is_err());
