@@ -270,3 +270,10 @@ in a disposable offline native profiling root. It injects input only into that
 window and reports scene-paint/following-frame timing, with isolated preferences
 and no recovery journal. Normal startup/editing is unchanged. See
 ../../docs/time-selection-profile.md for fixture shape and timing limitations.
+
+Persistent native scalar controls and their injected panel policies live in
+`editor/device_panel/bindings.rs`; numeric Session adaptation lives in
+`gesture_adapter.rs`. The host retains project/worker lifecycle and compound
+edits. See [native panel host bindings](../../docs/native-device-bindings.md)
+for captured identity, exact gesture ownership and the remaining independent
+embedding boundary.

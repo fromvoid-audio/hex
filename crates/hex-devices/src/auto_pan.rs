@@ -151,6 +151,32 @@ impl NativeDeviceMetadata for AutoPanDefinition {
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         DESCRIPTORS
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        use hex_lattice_contract::{
+            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
+            ParameterModulation as M, ParameterNormalization as N, ParameterSemantics,
+            ParameterSmoothing as S, ParameterStepping as T,
+        };
+        decode(state)?;
+        let normalization = match id {
+            parameter::AMOUNT | parameter::RIGHT_PHASE => N::Linear,
+            parameter::RATE => N::PositiveLogarithmic,
+            _ => return Err(DeviceContractError::UnknownParameter),
+        };
+        Ok(Some(ParameterSemantics {
+            access: A::ReadWrite,
+            normalization,
+            stepping: T::Continuous,
+            automation: E::Unsupported,
+            modulation: M::Unsupported,
+            smoothing: S::DeviceManaged,
+            change_impact: I::ValueOnly,
+        }))
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         encode(AutoPanSettings::default())
     }

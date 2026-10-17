@@ -95,8 +95,10 @@ rendered gallery harness with:
 cargo test -p hex-ui --example layout_review --features ui-test-support --locked
 ```
 
-This existing gallery is a host-integrated example. A host-independent panel
-adapter and its independently embeddable gallery remain W06 work. Preserve
+This existing gallery is a host-integrated example. The shared scalar
+[host binding module](native-device-bindings.md) retains canonical lifecycle in
+hex-ui and accepts panel-specific presentation policies. A host-independent
+panel adapter and its independently embeddable gallery remain W06 work. Preserve
 canonical Begin/Change/Commit/Cancel, one-Undo behavior, preview/applied separation,
 stale-owner retirement and Track/Return styling. Do not create another widget or
 edit model to finish a device. Native interaction/listening belongs to the user
@@ -117,3 +119,11 @@ points and the independent native adapter/gallery. Those downstream proofs are
 qualified incrementally under W20; they do not prevent W03–W10 enabling contracts
 from proceeding against this bootstrap. No new catalog device, native acceptance,
 reference parity or full authoring-platform completion is claimed here.
+
+## optional parameter semantics
+
+Providers may declare state-aware normalization, stepping, access and existing
+runtime capabilities without changing descriptor literals. None means undeclared.
+Use the validated neutral queries and preserve stable subobject IDs; read-only
+providers must reject direct patches. Cached host views/report schema2 consume
+these declarations. See [contract and limits](native-parameter-semantics.md).

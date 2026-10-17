@@ -23,7 +23,8 @@ pub struct ResponseGraphNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseGraphPhase {
-    /// Owner-opted-in blank plot click; subsequent double-click presses do not create again.
+    /// Owner-opted-in blank plot press; subsequent double-click presses do not create again.
+    /// With creation dragging enabled, its pointer stream keeps node_id zero.
     Create,
     Select,
     /// Physical pointer press on a node; does not start a parameter edit.
@@ -103,6 +104,7 @@ pub struct ResponseGraph {
     press: Option<Press>,
     editable: bool,
     creation_enabled: bool,
+    creation_drag_enabled: bool,
     tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
@@ -141,6 +143,7 @@ impl ResponseGraph {
             press: None,
             editable: false,
             creation_enabled: false,
+            creation_drag_enabled: false,
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
@@ -151,6 +154,14 @@ impl ResponseGraph {
     /// keep select/drag semantics; double-click's second press is suppressed.
     pub fn set_creation_enabled(&mut self, enabled: bool) {
         self.creation_enabled = enabled;
+    }
+
+    /// Continue a blank press as Begin/Change/Commit/Release (or Cancel), using
+    /// node_id zero throughout. The owner previews and commits its own stable
+    /// identity; publication cannot redirect an already released pointer.
+    /// Disabled by default so existing click-only owners retain their behavior.
+    pub fn set_creation_drag_enabled(&mut self, enabled: bool) {
+        self.creation_drag_enabled = enabled;
     }
 
     /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
@@ -276,6 +287,15 @@ impl ResponseGraph {
             .min_by(|left, right| left.0.total_cmp(&right.0));
         let Some((_, node_id)) = hit else {
             if self.creation_enabled && event.click_count == 1 {
+                if self.creation_drag_enabled {
+                    self.press = Some(Press {
+                        node_id: 0,
+                        pointer_origin: position,
+                        node_origin: position,
+                        modifiers: event.modifiers,
+                    });
+                    self.focus.focus(window);
+                }
                 cx.emit(ResponseGraphEvent {
                     phase: ResponseGraphPhase::Create,
                     node_id: 0,
@@ -283,6 +303,7 @@ impl ResponseGraph {
                     modifiers: event.modifiers,
                 });
                 cx.stop_propagation();
+                cx.notify();
             }
             return;
         };
@@ -315,7 +336,28 @@ impl ResponseGraph {
         cx.notify();
     }
 
-    fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+    fn cancel_unfocused_creation(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let creating = self.creation_drag_enabled
+            && (self.press.is_some_and(|press| press.node_id == 0)
+                || self.drag.is_some_and(|drag| drag.node_id == 0));
+        if creating && !self.focus.is_focused(window) {
+            // Focus callbacks compare painted focus paths. A press followed by
+            // blur before the next focused paint can coalesce that callback.
+            self.cancel(cx);
+            return true;
+        }
+        false
+    }
+
+    fn pointer_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.cancel_unfocused_creation(window, cx) {
+            return true;
+        }
         let Some(position) = self.normalized_position(event.position) else {
             return false;
         };
@@ -369,9 +411,17 @@ impl ResponseGraph {
         true
     }
 
-    fn pointer_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) -> bool {
+    fn pointer_up(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if event.button != MouseButton::Left {
             return false;
+        }
+        if self.cancel_unfocused_creation(window, cx) {
+            return true;
         }
         let Some(drag) = self.drag.take() else {
             let Some(press) = self.press.take() else {
@@ -567,6 +617,7 @@ impl Focusable for ResponseGraph {
 
 impl gpui::Render for ResponseGraph {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.cancel_unfocused_creation(window, cx);
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
@@ -786,7 +837,7 @@ impl Element for ResponseGraphCaptureElement {
             if !phase.capture() {
                 return;
             }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, cx));
+            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, window, cx));
             if handled {
                 cx.stop_propagation();
                 window.refresh();
@@ -797,7 +848,7 @@ impl Element for ResponseGraphCaptureElement {
             if !phase.capture() {
                 return;
             }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, cx));
+            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, window, cx));
             if handled {
                 cx.stop_propagation();
                 window.refresh();
