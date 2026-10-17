@@ -225,7 +225,7 @@ fn synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag(cx: &mut Te
     // dial's value unchanged. Finish in the same App update, before Begin is
     // delivered to its owner.
     visual.update(|window, cx| {
-        window.dispatch_event(
+        window.dispatch_input(
             gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
                 position: point(start.x + px(12.0), start.y),
                 pressed_button: Some(MouseButton::Left),
