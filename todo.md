@@ -186,6 +186,20 @@ fails before and passes after, alongside all six rendered EQ tests. Full exact-s
 and optimized native visual/input acceptance remain required.
 See [layout contract](docs/eq.md#panel-layout).
 
+## focused eq Backspace — #2737 / PR348, 17 october 2026
+
+Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
+bindings. The owner reuses canonical stable-node removal and refuses automation
+point IDs, previews, pending/stale work and old project generations. Empty graph
+focus consumes the key; numeric/text siblings keep their own editing. A rendered
+regression fails before/passes after for removal with atomic automation cleanup,
+empty focus, Undo/Redo and current-format save/reopen identity state. All eight
+rendered EQ regressions and strict UI feature Clippy pass, including
+pending/numeric/automation-point isolation and held-pointer cancellation with
+real editor keybindings. Graph-scoped Escape preserves existing cancellation
+before ancestor editor actions. Full exact-source CI and optimized native input
+acceptance remain required.
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback
