@@ -292,10 +292,12 @@ fn composition_does_not_change_actual_feedback_lfo_gate_or_release_history() {
             let mut raw = [[0.0; 2]; 128];
             let mut next = raw;
             for runtime in [&mut original, &mut composed] {
-                runtime.preflight_events(&events, 128).unwrap();
+                runtime
+                    .preflight_events(&events, 128, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                    .unwrap();
             }
-            original.process_block(&events, &mut raw);
-            composed.process_block(&events, &mut next);
+            original.process_block(&events, &mut raw, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            composed.process_block(&events, &mut next, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             assert_eq!(
                 raw, next,
                 "gain composition must not feed back into native history"

@@ -335,6 +335,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         if output_capture::refuse_gateoff(events) {
             return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
@@ -375,6 +376,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {

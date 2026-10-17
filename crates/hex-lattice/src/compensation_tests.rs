@@ -30,7 +30,11 @@ struct FixedRuntime {
 }
 
 impl NativeProcessorRuntime for FixedRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         for frame in frames {
             let delayed = self.history[0];
             self.history.rotate_left(1);
@@ -198,16 +202,21 @@ struct ClockRuntime {
     last_beat: u64,
 }
 impl NativeProcessorRuntime for ClockRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         frames.fill([7.0, 9.0]);
     }
     fn process_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
         let Some(clock) = clock else {
-            self.process_block(frames);
+            self.process_block(frames, _resources);
             return;
         };
         for (offset, frame) in frames.iter_mut().enumerate() {
@@ -219,13 +228,18 @@ impl NativeProcessorRuntime for ClockRuntime {
             ];
         }
     }
-    fn process_bypassed_block(&mut self, _frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         self.last_beat = 99;
     }
     fn process_bypassed_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
         self.last_beat = clock
             .and_then(|clock| clock.beat_at_offset(frames.len().saturating_sub(1)))

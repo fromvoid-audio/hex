@@ -15,8 +15,12 @@ actual callback allocation probe pass with zero allocations/frees. All319 device
 and55 lattice library tests pass, including one existing device ignore; strict
 all-target Clippy and audio allocation-feature tests pass. Existing asset-free
 hosts pass an explicit empty inventory and registries continue refusing assets;
-mutable/effect processing, per-configuration root leases and retirement admission
-remain unfinished. No cap or note layout increase.
+Lower mutable-instrument preflight/processing and owned/native effect callbacks
+now require and forward the actual borrowed inventory. The synthetic effect
+consumes real mono/stereo PCM, including bypass cursor advancement; measured
+analytic and effect callbacks have zero total/net allocations and frees.
+Per-configuration host root leases, coexistence-union accounting and retirement
+admission remain unfinished. No cap or note layout increase.
 No sampler registration, full-CI or native acceptance claim. Beats clip stretching
 2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
 

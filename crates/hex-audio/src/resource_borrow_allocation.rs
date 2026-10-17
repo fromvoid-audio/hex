@@ -79,4 +79,36 @@ fn analytic_callback_consumes_borrowed_original_pcm_with_zero_allocations_or_fre
         (0, 0, 0, 0)
     );
     assert_eq!(sum, [1536.0, -1024.0]);
+
+    use hex_lattice::NativeProcessorRuntime;
+    let mut effects = [
+        resource_pcm::prepare_effect(&state, &context, 0).unwrap(),
+        resource_pcm::prepare_effect(&state, &context, 1).unwrap(),
+    ];
+    let mut output = [[[1.0_f32; 2]; 64]; 2];
+    let mut effect_sum = [0.0_f32; 2];
+    let effect_measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            for (index, effect) in effects.iter_mut().enumerate() {
+                effect.reset();
+                output[index].fill([1.0; 2]);
+                let callback: &mut dyn NativeProcessorRuntime = std::hint::black_box(effect);
+                callback.process_block(&mut output[index], std::hint::black_box(&resources));
+                for frame in &output[index] {
+                    effect_sum[0] += frame[0];
+                    effect_sum[1] += frame[1];
+                }
+            }
+        }
+    });
+    assert_eq!(
+        (
+            effect_measurement.count_total,
+            effect_measurement.bytes_total,
+            effect_measurement.count_current,
+            effect_measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(effect_sum, [1536.0, -1024.0]);
 }

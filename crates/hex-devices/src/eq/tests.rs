@@ -124,8 +124,8 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
         a[0] = [1.0, -0.25];
         a[99] = [0.5, 0.75];
         let mut b = a.clone();
-        legacy.process_block(&mut a);
-        new.process_block(&mut b);
+        legacy.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        new.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(a, b, "legacy five-bank PCM at mode {mode}");
     }
 }
@@ -264,7 +264,7 @@ fn audition_targets_stable_node_ids_and_survives_parameter_retarget() {
     assert!(old.transient_audition().unwrap().can_select(selection));
     old.transient_audition().unwrap().select(Some(selection));
     assert!(!old.is_quiescent());
-    old.process_block(&mut [[0.0; 2]; 300]);
+    old.process_block(&mut [[0.0; 2]; 300], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     state.remove(NodeId::new(100).unwrap()).unwrap();
     state.node_mut(NodeId::new(200).unwrap()).unwrap().gain_db = 3.0;
     let updated = runtime::PreparedEq::new(state, 48000).unwrap();
@@ -283,7 +283,7 @@ fn audition_targets_stable_node_ids_and_survives_parameter_retarget() {
             })
     );
     new.transient_audition().unwrap().select(None);
-    new.process_block(&mut [[0.0; 2]; 300]);
+    new.process_block(&mut [[0.0; 2]; 300], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(new.is_quiescent());
     new.transient_audition().unwrap().select(Some(selection));
     new.transient_audition().unwrap().cancel_immediately();
@@ -376,12 +376,20 @@ fn profile_max_density_eq() {
     let mut rt = prepared.create_runtime();
     let mut frames = [[0.01, -0.01]; 256];
     for b in 0..100 {
-        rt.process_block_with_clock(&mut frames, Some(&Clock(b * 256)));
+        rt.process_block_with_clock(
+            &mut frames,
+            Some(&Clock(b * 256)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
     let start = std::time::Instant::now();
     for b in 0..1000 {
         frames.fill([0.01, -0.01]);
-        rt.process_block_with_clock(&mut frames, Some(&Clock((b + 100) * 256)));
+        rt.process_block_with_clock(
+            &mut frames,
+            Some(&Clock((b + 100) * 256)),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
     let elapsed = start.elapsed();
     eprintln!(
@@ -445,7 +453,7 @@ fn stopped_frozen_clock_preserves_authored_filter_history_like_unclocked_monitor
     let mut a = [[0.0; 2]; 257];
     a[0] = [1.0, -0.3];
     let mut b = a;
-    reference.process_block(&mut a);
+    reference.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for chunk in b.chunks_mut(17) {
         clocked.process_block_with_clock(
             chunk,
@@ -454,6 +462,7 @@ fn stopped_frozen_clock_preserves_authored_filter_history_like_unclocked_monitor
                 beat: 3 << 32,
                 running: false,
             }),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
         );
     }
     assert_eq!(a, b);
@@ -482,6 +491,7 @@ fn actual_parameter_retarget_refreshes_automated_target_between_cadence_points()
             beat: 0,
             running: true,
         }),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
     // Change an inactive bank to force a real configuration publication while
     // the audible node/automation is identical. Its output must not detour to
@@ -499,8 +509,8 @@ fn actual_parameter_retarget_refreshes_automated_target_between_cadence_points()
         beat: 0,
         running: true,
     };
-    reference.process_block_with_clock(&mut a, Some(&clock));
-    retargeted.process_block_with_clock(&mut b, Some(&clock));
+    reference.process_block_with_clock(&mut a, Some(&clock), &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    retargeted.process_block_with_clock(&mut b, Some(&clock), &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(a.iter().zip(b).all(|(a, b)| (a[0] - b[0]).abs() < 0.00001));
 }
 #[test]
@@ -515,7 +525,7 @@ fn plotted_response_matches_actual_cut_impulse_transform() {
     let mut rt = prepared.create_runtime();
     let mut frames = vec![[0.0; 2]; 16384];
     frames[0] = [1.0; 2];
-    rt.process_block(&mut frames);
+    rt.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for frequency in [200.0, 1000.0, 5000.0] {
         let (mut real, mut imaginary) = (0.0, 0.0);
         for (index, frame) in frames.iter().enumerate() {

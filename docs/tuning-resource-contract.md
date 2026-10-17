@@ -129,6 +129,12 @@ zero allocations and frees. This is an ABI proof, not sampler/root admission.
 Current engine hosts remain asset-free and explicitly pass the empty inventory.
 The inventory is scoped to one prepared device configuration, so carried voices
 must later receive their original source scope when a new graph reuses slots.
-Mutable/effect processing, host lease scopes and complete coexistence-union and
-retirement proof remain pending under unchanged budgets. No neutral shared-library
+Lower mutable-instrument preflight/clock/processing and native/owned processor
+processing/bypass callbacks now also borrow and forward the actual inventory.
+The conformance effect consumes real mono/stereo PCM through the actual effect
+trait; bypass preserves dry output while advancing its source cursor. The audio
+allocation probe measures both analytic and effect callbacks with exact PCM sums
+and zero total/net allocations and frees. Outer asset-free host chains still pass
+the empty inventory: per-configuration graph lease scopes, complete coexistence
+union accounting and retirement proof remain pending under unchanged budgets. No neutral shared-library
 2773 implementation or historical-alpha compatibility work is introduced.

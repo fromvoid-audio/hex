@@ -120,9 +120,15 @@ fn compressor_renders_on_track_and_return_in_send_order_and_bypass_is_transparen
     for frame in &mut oracle {
         frame[0] /= dry_route_gain;
         frame[1] /= dry_route_gain;
-        track_processor.process_block(std::slice::from_mut(frame));
+        track_processor.process_block(
+            std::slice::from_mut(frame),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let mut send = [frame[0] * 0.5, frame[1] * 0.5];
-        return_processor.process_block(std::slice::from_mut(&mut send));
+        return_processor.process_block(
+            std::slice::from_mut(&mut send),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         frame[0] += send[0] * 0.75;
         frame[1] += send[1] * 0.75;
     }
@@ -165,9 +171,15 @@ fn compressor_parameter_revisions_keep_detector_and_gain_history_live() {
     let recover_track_source = |frame: [f32; 2]| [frame[0] / 1.375, frame[1] / 1.375];
     for frame in &dry_route[..512] {
         let mut track = recover_track_source(*frame);
-        old_track_runtime.process_block(std::slice::from_mut(&mut track));
+        old_track_runtime.process_block(
+            std::slice::from_mut(&mut track),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let mut sent = [track[0] * 0.5, track[1] * 0.5];
-        old_return_runtime.process_block(std::slice::from_mut(&mut sent));
+        old_return_runtime.process_block(
+            std::slice::from_mut(&mut sent),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
 
     let track_device = original.tracks()[0].devices()[0].id();
@@ -227,9 +239,15 @@ fn compressor_parameter_revisions_keep_detector_and_gain_history_live() {
         .copied()
         .map(|frame| {
             let mut track = recover_track_source(frame);
-            expected_track.process_block(std::slice::from_mut(&mut track));
+            expected_track.process_block(
+                std::slice::from_mut(&mut track),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
             let mut sent = [track[0] * 0.5, track[1] * 0.5];
-            expected_return.process_block(std::slice::from_mut(&mut sent));
+            expected_return.process_block(
+                std::slice::from_mut(&mut sent),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            );
             [track[0] + sent[0] * 0.75, track[1] + sent[1] * 0.75]
         })
         .collect::<Vec<_>>();
@@ -237,9 +255,15 @@ fn compressor_parameter_revisions_keep_detector_and_gain_history_live() {
     let mut fresh_return = runtime(editor.project().return_tracks()[0].devices()[0].state());
     let first_dry = recover_track_source(dry_route[512]);
     let mut fresh_track_frame = first_dry;
-    fresh_track.process_block(std::slice::from_mut(&mut fresh_track_frame));
+    fresh_track.process_block(
+        std::slice::from_mut(&mut fresh_track_frame),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let mut fresh_sent = [fresh_track_frame[0] * 0.5, fresh_track_frame[1] * 0.5];
-    fresh_return.process_block(std::slice::from_mut(&mut fresh_sent));
+    fresh_return.process_block(
+        std::slice::from_mut(&mut fresh_sent),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let fresh_first = [
         fresh_track_frame[0] + fresh_sent[0] * 0.75,
         fresh_track_frame[1] + fresh_sent[1] * 0.75,

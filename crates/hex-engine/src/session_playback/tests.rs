@@ -432,6 +432,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         let mut active = self.active;
         let mut previous_offset = 0;
@@ -463,6 +464,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -724,6 +726,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         let mut voices = self.voices;
         let mut previous_offset = 0;
@@ -773,6 +776,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -1987,7 +1991,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut output = input;
     source.render(&mut input).unwrap();
     expected.copy_from_slice(&input);
-    reference_runtime.process_block(&mut expected);
+    reference_runtime.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     old.render(&mut output).unwrap();
     assert_eq!(output, expected, "initial registered EQ8 PCM oracle");
     assert!(!old.device_chains[0].committed_range_is_quiescent(0..1));
@@ -2018,7 +2022,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         output.fill([0.0; 2]);
         source.render(&mut input).unwrap();
         expected.copy_from_slice(&input);
-        next_reference.process_block(&mut expected);
+        next_reference.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         candidate.render(&mut output).unwrap();
         assert_eq!(output, expected, "retargeted EQ8 parameter PCM oracle");
         assert!(
@@ -5317,13 +5321,23 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         velocity: 100,
     }];
     let mut oracle_prefix = [[0.0; 2]; 16];
-    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_on, &mut oracle_prefix);
+    hex_lattice::MutableInstrumentRuntime::process_block(
+        &mut oracle,
+        &note_on,
+        &mut oracle_prefix,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let note_off = [hex_lattice::NativeInstrumentEvent::NoteOff {
         frame_offset: 0,
         occurrence_id: 1,
     }];
     let mut expected = [[0.0; 2]; 16];
-    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_off, &mut expected);
+    hex_lattice::MutableInstrumentRuntime::process_block(
+        &mut oracle,
+        &note_off,
+        &mut expected,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     for frame in &mut expected {
         frame[0] *= 0.5;
         frame[1] *= 0.5;

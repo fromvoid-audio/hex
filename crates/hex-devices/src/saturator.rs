@@ -326,7 +326,11 @@ struct SaturatorRuntime {
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let settings = self.settings;
         let drive = self.drive_gain;
         let output = self.output_gain;
@@ -340,7 +344,12 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         }
     }
 
-    fn process_bypassed_block(&mut self, _frames: &mut [StereoFrame]) {}
+    fn process_bypassed_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
 
     fn reset(&mut self) {}
 

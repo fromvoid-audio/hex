@@ -149,14 +149,17 @@ fn sine_pan_has_complementary_channels_and_zero_amount_is_bit_exact_unity() {
         .expect("defaults");
     let mut pan = runtime(&state, 8_000);
     let mut samples = [[1.0, 1.0]; 6_001];
-    pan.process_block(&mut samples[..1]);
+    pan.process_block(&mut samples[..1], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(samples[0], [0.75, 0.75]);
-    pan.process_block(&mut samples[1..2_001]);
+    pan.process_block(&mut samples[1..2_001], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!((samples[2_000][0] - 1.0).abs() < 1.0e-12);
     assert!((samples[2_000][1] - 0.5).abs() < 1.0e-12);
-    pan.process_block(&mut samples[2_001..4_001]);
+    pan.process_block(
+        &mut samples[2_001..4_001],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     assert_eq!(samples[4_000], [0.75, 0.75]);
-    pan.process_block(&mut samples[4_001..]);
+    pan.process_block(&mut samples[4_001..], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!((samples[6_000][0] - 0.5).abs() < 1.0e-12);
     assert!((samples[6_000][1] - 1.0).abs() < 1.0e-12);
 
@@ -164,7 +167,7 @@ fn sine_pan_has_complementary_channels_and_zero_amount_is_bit_exact_unity() {
     let mut unity_runtime = runtime(&unity, 48_000);
     let mut values = [[f32::from_bits(0x3e80_0001), -0.75], [0.0, -0.0]];
     let original = values;
-    unity_runtime.process_block(&mut values);
+    unity_runtime.process_block(&mut values, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(
         values.map(|frame| frame.map(f32::to_bits)),
         original.map(|frame| frame.map(f32::to_bits))
@@ -181,9 +184,9 @@ fn zero_offset_tremolo_reset_and_block_partition_are_deterministic() {
     let mut split = runtime(&tremolo, 8_000);
     let mut a = [[1.0, 1.0]; 4_017];
     let mut b = a;
-    whole.process_block(&mut a);
+    whole.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for chunk in b.chunks_mut(113) {
-        split.process_block(chunk);
+        split.process_block(chunk, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     }
     assert_eq!(a, b);
     assert_eq!(a[0][0], 0.75);
@@ -192,7 +195,7 @@ fn zero_offset_tremolo_reset_and_block_partition_are_deterministic() {
     assert_eq!(a[2_000][0], a[2_000][1]);
     whole.reset();
     let mut restarted = [[1.0, 1.0]; 2];
-    whole.process_block(&mut restarted);
+    whole.process_block(&mut restarted, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(restarted[0], [0.75, 0.75]);
     assert_eq!(restarted[1], [0.750_196_35, 0.750_196_35]);
 }
@@ -206,21 +209,24 @@ fn bypass_advances_clock_and_nonfinite_frames_skip_clock_and_ramps() {
     let mut continuous = runtime(&state, 8_000);
     let mut dry = [[0.25, -0.75]; 2_000];
     let original = dry;
-    bypassed.process_bypassed_block(&mut dry);
+    bypassed.process_bypassed_block(&mut dry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(dry, original);
     let mut after_bypass = [[1.0, 1.0]; 1];
     let mut after_silence = [[1.0, 1.0]; 1];
-    bypassed.process_block(&mut after_bypass);
-    continuous.process_block(&mut [[1.0, 1.0]; 2_000]);
-    continuous.process_block(&mut after_silence);
+    bypassed.process_block(&mut after_bypass, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    continuous.process_block(
+        &mut [[1.0, 1.0]; 2_000],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    continuous.process_block(&mut after_silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(after_bypass, after_silence);
 
     let mut with_bad = runtime(&state, 8_000);
     let mut untouched = runtime(&state, 8_000);
     let mut bad = [[f32::NAN, 0.25], [1.0, 1.0]];
-    with_bad.process_block(&mut bad);
+    with_bad.process_block(&mut bad, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut baseline = [[1.0, 1.0]];
-    untouched.process_block(&mut baseline);
+    untouched.process_block(&mut baseline, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(bad[0][0].is_nan());
     assert_eq!(bad[0][1], 0.25);
     assert_eq!(bad[1], baseline[0]);
@@ -246,7 +252,7 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
     assert_eq!(target_pan.amount.remaining, 40);
 
     let mut first = [[1.0, 1.0]; 10];
-    target.process_block(&mut first);
+    target.process_block(&mut first, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let in_flight = target
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
@@ -293,7 +299,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     edited.copy_history_from(source.as_ref());
 
     let mut first_ramp_frames = [[1.0, 1.0]; 39];
-    edited.process_block(&mut first_ramp_frames);
+    edited.process_block(&mut first_ramp_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let ramp = edited
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
@@ -301,7 +307,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     assert_eq!(ramp.amount.remaining, 1);
     assert!((ramp.amount.current - (0.5 + 0.5 * 39.0 / 40.0)).abs() < 1.0e-14);
     let mut final_ramp_frame = [[1.0, 1.0]];
-    edited.process_block(&mut final_ramp_frame);
+    edited.process_block(&mut final_ramp_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let ramp = edited
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
@@ -309,7 +315,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     assert_eq!(ramp.amount.current, 1.0);
     assert_eq!(ramp.amount.remaining, 0);
     let mut held_frame = [[1.0, 1.0]];
-    edited.process_block(&mut held_frame);
+    edited.process_block(&mut held_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(
         edited
             .as_any()
@@ -325,7 +331,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     let mut rate_edit = runtime(&rate_two, 8_000);
     rate_edit.copy_history_from(rate_source.as_ref());
     let mut rate_ramp = [[1.0, 1.0]; 40];
-    rate_edit.process_block(&mut rate_ramp);
+    rate_edit.process_block(&mut rate_ramp, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let rate_state = rate_edit
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
@@ -335,7 +341,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     assert!((rate_state.phase_cycles - 60.5 / 8_000.0).abs() < 1.0e-14);
     let phase = rate_state.phase_cycles;
     let mut after_rate_ramp = [[1.0, 1.0]];
-    rate_edit.process_block(&mut after_rate_ramp);
+    rate_edit.process_block(&mut after_rate_ramp, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let expected_left = (0.5 + 0.5 * (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5) as f32;
     assert_eq!(after_rate_ramp[0][0], expected_left);
 
@@ -344,7 +350,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     let phase_source = runtime(&defaults, 8_000);
     phase_edit.copy_history_from(phase_source.as_ref());
     let mut first = [[1.0, 1.0]; 20];
-    phase_edit.process_block(&mut first);
+    phase_edit.process_block(&mut first, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let phase = phase_edit
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
@@ -361,7 +367,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
     let mut retargeted = runtime(&phase_ninety, 8_000);
     retargeted.copy_history_from(phase_edit.as_ref());
     let mut retarget_first = [[1.0, 1.0]];
-    retargeted.process_block(&mut retarget_first);
+    retargeted.process_block(&mut retarget_first, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let retargeted = retargeted
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
@@ -405,8 +411,8 @@ fn reset_clears_phase_and_ramps_and_360_degrees_matches_zero() {
     let mut phase_full = runtime(&patch(&defaults, parameter::RIGHT_PHASE, 360.0), 8_000);
     let mut a = [[1.0, 1.0]; 17];
     let mut b = a;
-    phase_zero.process_block(&mut a);
-    phase_full.process_block(&mut b);
+    phase_zero.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    phase_full.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(a, b);
 
     let changed = patch(&defaults, parameter::AMOUNT, 1.0);

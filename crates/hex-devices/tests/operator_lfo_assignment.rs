@@ -111,8 +111,10 @@ fn check(
             });
         }
         let mut pcm = vec![[0.0; 2]; end - at];
-        runtime.preflight_events(&events, pcm.len()).unwrap();
-        runtime.process_block(&events, &mut pcm);
+        runtime
+            .preflight_events(&events, pcm.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        runtime.process_block(&events, &mut pcm, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         for (offset, actual) in pcm.iter().enumerate() {
             let age = at + offset;
             let envelope = if age < 768 {

@@ -50,6 +50,65 @@ fn sample(
         .unwrap_or([0.0; 2])
 }
 
+/// Synthetic resource-consuming effect for callback ABI conformance. No native
+/// device registration or host resource admission is provided by this fixture.
+#[derive(Clone)]
+pub struct BorrowedPcmEffect {
+    note: PreparedAnalyticNote,
+    key: (usize, crate::DeviceResourceIdentity, usize, u32),
+    age: u64,
+}
+pub fn prepare_effect(
+    state: &NativeDeviceState,
+    context: &DevicePreparationContext<'_>,
+    index: usize,
+) -> Result<BorrowedPcmEffect, DeviceContractError> {
+    let note = prepare_note(state, context, index)?;
+    let view = context
+        .resources
+        .get(index)
+        .ok_or(DeviceContractError::AssetResourcesUnavailable)?;
+    Ok(BorrowedPcmEffect {
+        note,
+        key: (index, view.identity, view.pcm.frames(), view.sample_rate),
+        age: 0,
+    })
+}
+impl crate::NativeProcessorRuntime for BorrowedPcmEffect {
+    fn process_block(&mut self, frames: &mut [StereoFrame], resources: &dyn DeviceResources) {
+        for frame in frames {
+            let gain = self.note.sample(self.age, u64::MAX, resources);
+            frame[0] *= gain[0];
+            frame[1] *= gain[1];
+            self.age = self.age.saturating_add(1);
+        }
+    }
+    fn reset(&mut self) {
+        self.age = 0;
+    }
+    fn is_quiescent(&self) -> bool {
+        self.age >= self.key.2 as u64
+    }
+    fn can_copy_history_from(&self, previous: &dyn crate::NativeProcessorRuntime) -> bool {
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|previous| self.key == previous.key)
+    }
+    fn copy_history_from(&mut self, previous: &dyn crate::NativeProcessorRuntime) {
+        if let Some(previous) = previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .filter(|previous| self.key == previous.key)
+        {
+            self.age = previous.age;
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +176,24 @@ mod tests {
             let direct: Vec<_> = (0..4).map(|age| note.sample(age, 4, &resources)).collect();
             assert_eq!(partitioned, direct);
             assert_eq!(note.sample(2, 4, &resources), direct[2]);
+            // Actual effect trait callbacks consume the same borrowed PCM;
+            // default bypass advances history while preserving the dry block.
+            use crate::NativeProcessorRuntime;
+            let mut effect = prepare_effect(&state, &context, 0).unwrap();
+            let mut first = [[2.0_f32, 3.0]; 2];
+            effect.process_block(&mut first, &resources);
+            for (index, frame) in first.iter().enumerate() {
+                let gain = pcm.frame(index).unwrap();
+                assert_eq!(*frame, [2.0 * gain[0], 3.0 * gain[1]]);
+            }
+            effect.reset();
+            let mut dry = [[2.0_f32, 3.0]; 2];
+            effect.process_bypassed_block(&mut dry, &resources);
+            assert_eq!(dry, [[2.0, 3.0]; 2]);
+            let mut after_bypass = [[2.0_f32, 3.0]];
+            effect.process_block(&mut after_bypass, &resources);
+            let gain = pcm.frame(2).unwrap();
+            assert_eq!(after_bypass, [[2.0 * gain[0], 3.0 * gain[1]]]);
             assert!(prepare_note(&state, &context, 1).is_err());
             let bad = [DeviceResourceView {
                 identity: DeviceResourceIdentity {

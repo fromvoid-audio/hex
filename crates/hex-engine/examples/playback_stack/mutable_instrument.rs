@@ -149,6 +149,7 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         if events.len() > 256 || frame_count > 256 {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -212,7 +213,12 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         Ok(())
     }
 
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {

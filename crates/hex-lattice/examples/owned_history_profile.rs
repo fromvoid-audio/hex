@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut expected = actual;
             let start = Instant::now();
             owned.begin_block();
-            owned.process_block(black_box(&mut actual));
+            owned.process_block(black_box(&mut actual), &hex_lattice::EMPTY_DEVICE_RESOURCES);
             owned.commit_block();
             let own_ns = start.elapsed().as_nanos();
             let start = Instant::now();

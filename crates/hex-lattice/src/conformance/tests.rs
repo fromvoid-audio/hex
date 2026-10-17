@@ -134,7 +134,11 @@ struct Runtime {
     calls: u32,
 }
 impl NativeProcessorRuntime for Runtime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         self.calls += 1;
         if self.broken {
             for frame in frames {

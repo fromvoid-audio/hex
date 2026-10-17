@@ -351,7 +351,11 @@ struct SquareRuntime {
     scale: f32,
 }
 impl NativeProcessorRuntime for SquareRuntime {
-    fn process_block(&mut self, frames: &mut [hex_lattice::StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [hex_lattice::StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let [left, right] = *frame;
             *frame = [

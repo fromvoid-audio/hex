@@ -88,8 +88,10 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
             let mut y = x;
             a.begin_block();
             b.begin_block();
-            a.process_block(&events, &mut x).unwrap();
-            b.process_block(&events, &mut y).unwrap();
+            a.process_block(&events, &mut x, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            b.process_block(&events, &mut y, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
             assert_eq!(x, y);
         } else {
             let a = old.prepare_note(60, 100).unwrap();

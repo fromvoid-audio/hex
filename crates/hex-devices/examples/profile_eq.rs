@@ -261,9 +261,13 @@ fn profile(scenario: &Scenario, block_frames: usize) -> Result<()> {
             frames.copy_from_slice(&template);
             clock.frame = frame_origin;
             if scenario.clocked {
-                runtime.process_block_with_clock(&mut frames, Some(&clock));
+                runtime.process_block_with_clock(
+                    &mut frames,
+                    Some(&clock),
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
             } else {
-                runtime.process_block(&mut frames);
+                runtime.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             }
             frame_origin = frame_origin
                 .checked_add(block_frames as u64)
@@ -277,9 +281,13 @@ fn profile(scenario: &Scenario, block_frames: usize) -> Result<()> {
         for block in black_box(&mut workload).chunks_exact_mut(block_frames) {
             clock.frame = frame_origin;
             if scenario.clocked {
-                runtime.process_block_with_clock(block, Some(black_box(&clock)));
+                runtime.process_block_with_clock(
+                    block,
+                    Some(black_box(&clock)),
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
             } else {
-                runtime.process_block(block);
+                runtime.process_block(block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             }
             black_box(block);
             frame_origin = frame_origin
@@ -330,8 +338,8 @@ fn legacy_pcm_difference(scenarios: &[Scenario]) -> Result<f32> {
     let mut eq_frames = legacy_frames.clone();
     let mut legacy = legacy;
     let mut eq = eq;
-    legacy.process_block(&mut legacy_frames);
-    eq.process_block(&mut eq_frames);
+    legacy.process_block(&mut legacy_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    eq.process_block(&mut eq_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let _ = check_output(&legacy_frames)?;
     let _ = check_output(&eq_frames)?;
     Ok(legacy_frames

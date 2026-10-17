@@ -301,6 +301,7 @@ impl ComputerKeyboardRuntime {
                                     velocity,
                                 }],
                                 1,
+                                &hex_lattice::EMPTY_DEVICE_RESOURCES,
                             )
                             .is_ok();
                     continue;
@@ -843,7 +844,12 @@ impl ComputerKeyboardRuntime {
         }
         if let Some(runtime) = &mut self.mutable {
             runtime
-                .process_block_with_clock(&events[..len], output, clock)
+                .process_block_with_clock(
+                    &events[..len],
+                    output,
+                    clock,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
                 .map_err(|_| Invalid("computer keyboard runtime refused a note block"))?;
         } else {
             for voice in self.scratch.iter().flatten() {

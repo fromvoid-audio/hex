@@ -950,7 +950,7 @@ mod tests {
             for _ in 0..512 {
                 let mut frame = [[0.75, -0.25]];
                 matrix.apply_block(&mut frame);
-                source.process_block(&mut frame);
+                source.process_block(&mut frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             }
 
             let muted_state = UTILITY_DEFINITION
@@ -976,14 +976,14 @@ mod tests {
 
             let mut silence = [[0.5, -0.125]; 16];
             muted_matrix.apply_block(&mut silence);
-            candidate.process_block(&mut silence);
+            candidate.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             assert!(
                 silence.iter().all(|frame| *frame == [0.0, 0.0]),
                 "mute leaked filter residual for dc={dc_remove}, bass={bass_mono}, audition={audition}"
             );
 
             let mut oracle_silence = [[0.0, 0.0]; 16];
-            source.process_block(&mut oracle_silence);
+            source.process_block(&mut oracle_silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             let mut unmuted = UTILITY_DEFINITION
                 .prepare_processor(
                     &state,
@@ -1002,8 +1002,8 @@ mod tests {
                 let input = [[0.2 + frame as f32 * 0.001, -0.4 + frame as f32 * 0.002]];
                 let mut actual = input;
                 let mut expected = input;
-                unmuted.process_block(&mut actual);
-                source.process_block(&mut expected);
+                unmuted.process_block(&mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                source.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 assert_eq!(actual, expected);
             }
         }

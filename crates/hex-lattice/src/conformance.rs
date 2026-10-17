@@ -410,8 +410,12 @@ fn render_instrument<D: NativeDeviceMetadata + ?Sized>(
             });
         }
         pair.begin_block();
-        pair.process_block(&events, &mut output[offset..end])
-            .map_err(|_| fail(definition, "instrument event processing"))?;
+        pair.process_block(
+            &events,
+            &mut output[offset..end],
+            &crate::EMPTY_DEVICE_RESOURCES,
+        )
+        .map_err(|_| fail(definition, "instrument event processing"))?;
         pair.commit_block();
         offset = end;
     }

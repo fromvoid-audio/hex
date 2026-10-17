@@ -87,6 +87,7 @@ fn start(runtime: &mut Runtime) {
             velocity: 100,
         }],
         &mut [[0.0; 2]; 80],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
 }
 
@@ -103,6 +104,7 @@ fn lfo_enable_levels_match_prepared_carrier_modulator_oracle_with_feedback_and_r
                     occurrence_id: 1,
                 }],
                 &mut [[0.0; 2]; 3],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
             );
             let mut target = runtime(factory(&enabled(&original, operator, false)));
             assert!(!target.can_copy_history_from(&source));
@@ -138,7 +140,7 @@ fn lfo_enable_levels_match_prepared_carrier_modulator_oracle_with_feedback_and_r
                     )
                     .0;
                 let mut actual = [[0.0; 2]; 1];
-                target.process_block(&[], &mut actual);
+                target.process_block(&[], &mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 assert!(
                     (actual[0][0] - expected).abs() < 3e-6,
                     "feedback {feedback}, operator {operator}, elapsed {elapsed}: {:?} vs {expected}",
@@ -160,7 +162,11 @@ fn lfo_reversal_copy_new_onsets_partition_and_pair_budget_preserve_current_bound
         &source,
         &Retarget(off.factory.configuration.configuration_id()),
     );
-    off.process_block(&[], &mut [[0.0; 2]; 60]);
+    off.process_block(
+        &[],
+        &mut [[0.0; 2]; 60],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let boundary = off.current_levels();
     let mut back = runtime(factory(&original));
     back.retarget_history_from(
@@ -192,7 +198,11 @@ fn lfo_reversal_copy_new_onsets_partition_and_pair_budget_preserve_current_bound
         velocity: 80,
     };
     let mut together = [[0.0; 2]; 300];
-    back.process_block(&[event], &mut together);
+    back.process_block(
+        &[event],
+        &mut together,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let mut divided = [[0.0; 2]; 300];
     for (at, frame) in divided.iter_mut().enumerate() {
         let events = if at == 17 {
@@ -205,7 +215,11 @@ fn lfo_reversal_copy_new_onsets_partition_and_pair_budget_preserve_current_bound
         } else {
             Vec::new()
         };
-        copy.process_block(&events, std::slice::from_mut(frame));
+        copy.process_block(
+            &events,
+            std::slice::from_mut(frame),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
     }
     assert_eq!(together, divided);
     assert!(back.enable_ramp.is_none());

@@ -233,7 +233,11 @@ impl OwnedProcessorRuntime for DelayRuntime {
         self.dirty_len = 0;
         self.open = true;
     }
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         if !self.open {
             self.begin_block();
         }

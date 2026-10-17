@@ -38,7 +38,7 @@ fn runtime(state: &NativeDeviceState) -> Box<dyn NativeProcessorRuntime> {
 }
 
 fn render(state: &NativeDeviceState, frames: &mut [StereoFrame]) {
-    runtime(state).process_block(frames);
+    runtime(state).process_block(frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
 }
 
 #[test]

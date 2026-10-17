@@ -776,7 +776,11 @@ fn active_band_flags(
 }
 
 impl NativeProcessorRuntime for Eq8Runtime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         self.process(frames);
     }
     fn reset(&mut self) {

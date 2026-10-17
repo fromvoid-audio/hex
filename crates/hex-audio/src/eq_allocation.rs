@@ -59,9 +59,17 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
     let mut frames = [[0.001, -0.001]; 1024];
     let clock = Clock;
     let measurement = allocation_counter::measure(|| {
-        a.process_block_with_clock(&mut frames, Some(&clock));
+        a.process_block_with_clock(
+            &mut frames,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         b.copy_history_from(a.as_ref());
-        b.process_bypassed_block_with_clock(&mut frames, Some(&clock));
+        b.process_bypassed_block_with_clock(
+            &mut frames,
+            Some(&clock),
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         b.reset();
         a.reset();
     });

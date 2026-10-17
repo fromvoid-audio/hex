@@ -166,12 +166,16 @@ fn run(variant: Variant, path: &Path) -> Result<(), Box<dyn Error>> {
         )?;
         let mut output = [[0.0; 2]; FRAMES];
         pair.begin_block();
-        pair.process_block(&events, &mut output)?;
+        pair.process_block(&events, &mut output, &hex_lattice::EMPTY_DEVICE_RESOURCES)?;
         pair.commit_block();
         for _ in 0..WARMUPS {
             output.fill([0.0; 2]);
             pair.begin_block();
-            pair.process_block(&[], black_box(&mut output))?;
+            pair.process_block(
+                &[],
+                black_box(&mut output),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )?;
             pair.commit_block();
             black_box(&output);
         }
@@ -180,7 +184,11 @@ fn run(variant: Variant, path: &Path) -> Result<(), Box<dyn Error>> {
             let started = Instant::now();
             pair.begin_block();
             // process_block performs its ordinary generic/event/clock preflight.
-            pair.process_block(&[], black_box(&mut output))?;
+            pair.process_block(
+                &[],
+                black_box(&mut output),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )?;
             pair.commit_block();
             let elapsed = started.elapsed();
             samples.push(elapsed);

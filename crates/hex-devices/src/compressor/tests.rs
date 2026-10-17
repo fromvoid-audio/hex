@@ -174,7 +174,7 @@ fn one_sample_step_matches_an_independent_detector_and_gain_smoothing_calculatio
     let gain_alpha = (-1.0_f64 / 240.0).exp();
     let expected_gain_db = (1.0 - gain_alpha) * reduction_db;
     let expected_gain = 10.0_f64.powf(expected_gain_db / 20.0);
-    runtime.process_block(&mut frame);
+    runtime.process_block(&mut frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!((f64::from(frame[0][0]) - expected_gain).abs() < 1.0e-7);
     assert!((f64::from(frame[0][1]) + 0.25 * expected_gain).abs() < 1.0e-7);
 }
@@ -186,14 +186,14 @@ fn linked_peak_detector_preserves_stereo_balance_and_ratio_one_is_uncompressed()
         .expect("defaults");
     let mut linked = runtime(&defaults, 48_000);
     let mut frame = [[0.75, -0.1875]];
-    linked.process_block(&mut frame);
+    linked.process_block(&mut frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!((f64::from(frame[0][0]) / f64::from(frame[0][1]) + 4.0).abs() < 1.0e-6);
 
     let ratio_one = patch(&defaults, parameter::RATIO, 1.0);
     let mut identity = runtime(&ratio_one, 48_000);
     let mut frames = [[0.75, -0.1875], [0.5, -0.125]];
     let original = frames;
-    identity.process_block(&mut frames);
+    identity.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(frames, original);
 }
 
@@ -208,12 +208,12 @@ fn release_and_makeup_controls_change_the_audible_envelope() {
     let mut slow = runtime(&slow_release, 48_000);
     let mut loud_fast = [[1.0, 0.0]; 200];
     let mut loud_slow = loud_fast;
-    fast.process_block(&mut loud_fast);
-    slow.process_block(&mut loud_slow);
+    fast.process_block(&mut loud_fast, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    slow.process_block(&mut loud_slow, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut quiet_fast = [[0.1, 0.0]];
     let mut quiet_slow = quiet_fast;
-    fast.process_block(&mut quiet_fast);
-    slow.process_block(&mut quiet_slow);
+    fast.process_block(&mut quiet_fast, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    slow.process_block(&mut quiet_slow, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_ne!(quiet_fast, quiet_slow);
 
     let ratio_one = patch(&defaults, parameter::RATIO, 1.0);
@@ -221,7 +221,7 @@ fn release_and_makeup_controls_change_the_audible_envelope() {
     let mut boosted = runtime(&makeup, 48_000);
     let mut frames = [[0.25, -0.125]; 256];
     let original = frames;
-    boosted.process_block(&mut frames);
+    boosted.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(frames.last().unwrap()[0] > original[0][0]);
 }
 
@@ -234,45 +234,45 @@ fn reset_partitioning_and_bypass_preserve_the_fixed_runtime_lifecycle() {
     let mut partitioned = runtime(&defaults, 48_000);
     let mut whole_frames = [[0.9, -0.3]; 257];
     let mut partition_frames = whole_frames;
-    whole.process_block(&mut whole_frames);
+    whole.process_block(&mut whole_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for chunk in partition_frames.chunks_mut(31) {
-        partitioned.process_block(chunk);
+        partitioned.process_block(chunk, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     }
     assert_eq!(whole_frames, partition_frames);
 
     let mut bypassed = runtime(&defaults, 48_000);
     let mut active = runtime(&defaults, 48_000);
     let mut prime = [[0.9, -0.3]; 80];
-    bypassed.process_block(&mut prime);
+    bypassed.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut prime = [[0.9, -0.3]; 80];
-    active.process_block(&mut prime);
+    active.process_block(&mut prime, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut untouched = [[0.6, -0.2]; 8];
     let original = untouched;
-    bypassed.process_bypassed_block(&mut untouched);
+    bypassed.process_bypassed_block(&mut untouched, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(untouched, original);
     let mut active_signal = [[0.6, -0.2]; 8];
-    active.process_block(&mut active_signal);
+    active.process_block(&mut active_signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut next_a = [[0.4, 0.1]; 1];
     let mut next_b = next_a;
-    bypassed.process_block(&mut next_a);
-    active.process_block(&mut next_b);
+    bypassed.process_block(&mut next_a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    active.process_block(&mut next_b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(next_a, next_b);
     assert!(bypassed.is_quiescent());
 
     let mut zero_after_signal = [[0.0, 0.0]; 16];
-    bypassed.process_block(&mut zero_after_signal);
+    bypassed.process_block(&mut zero_after_signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(zero_after_signal.iter().all(|frame| *frame == [0.0, 0.0]));
     assert!(bypassed.is_quiescent());
 
     let mut reset = runtime(&defaults, 48_000);
     let mut fresh = runtime(&defaults, 48_000);
     let mut history = [[1.0, 0.0]; 200];
-    reset.process_block(&mut history);
+    reset.process_block(&mut history, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     reset.reset();
     let mut after_reset = [[0.5, -0.25]; 1];
     let mut after_fresh = after_reset;
-    reset.process_block(&mut after_reset);
-    fresh.process_block(&mut after_fresh);
+    reset.process_block(&mut after_reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    fresh.process_block(&mut after_fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(after_reset, after_fresh);
 }
 
@@ -285,7 +285,7 @@ fn compatible_retarget_copies_only_history_and_rejects_a_different_rate() {
     let old = prepared(&defaults, 48_000).create_runtime();
     let mut old = old;
     let mut signal = [[0.9, -0.4]; 96];
-    old.process_block(&mut signal);
+    old.process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let new_prepared = prepared(&updated, 48_000);
     let mut candidate = new_prepared.create_runtime();
     assert!(candidate.can_retarget_parameters_from(old.as_ref()));
@@ -311,13 +311,13 @@ fn invalid_frames_are_visible_and_do_not_poison_valid_following_history() {
     let mut invalid_then_valid = runtime(&state, 48_000);
     let mut valid_only = runtime(&state, 48_000);
     let mut invalid = [[f32::NAN, f32::INFINITY]];
-    invalid_then_valid.process_block(&mut invalid);
+    invalid_then_valid.process_block(&mut invalid, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(invalid[0][0].is_nan());
     assert_eq!(invalid[0][1], f32::INFINITY);
     let mut a = [[0.5, -0.25]];
     let mut b = a;
-    invalid_then_valid.process_block(&mut a);
-    valid_only.process_block(&mut b);
+    invalid_then_valid.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    valid_only.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(a, b);
 }
 

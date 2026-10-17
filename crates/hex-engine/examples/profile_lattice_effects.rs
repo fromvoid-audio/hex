@@ -127,7 +127,7 @@ fn oracle(
             *frame = samples[(block * BLOCK + i) % SOURCE];
         }
         for processor in &mut processors {
-            processor.process_block(&mut expected);
+            processor.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         }
         renderer.render(&mut actual)?;
         if block >= WARMUP {

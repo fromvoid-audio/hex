@@ -54,8 +54,10 @@ fn filter_retargets_reverse_and_bypass_keep_boundary_state_and_legacy_pcm() {
         velocity: 100,
     }];
     let mut prefix = [[0.0; 2]; 123];
-    runtime.preflight_events(&on, prefix.len()).unwrap();
-    runtime.process_block(&on, &mut prefix);
+    runtime
+        .preflight_events(&on, prefix.len(), &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    runtime.process_block(&on, &mut prefix, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let mut age = 123;
     for frequency in [20.0, 20000.0, 333.0, 12000.0] {
         let changed = OPERATOR_METADATA
@@ -76,14 +78,14 @@ fn filter_retargets_reverse_and_bypass_keep_boundary_state_and_legacy_pcm() {
         next.retarget_history_from(runtime.as_ref(), proof.as_ref());
         let mut expected = [[0.0; 2]; 1];
         let mut actual = expected;
-        runtime.process_block(&[], &mut expected);
-        next.process_block(&[], &mut actual);
+        runtime.process_block(&[], &mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        next.process_block(&[], &mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(
             actual, expected,
             "first sample uses exact current ramp boundary"
         );
         let mut more = [[0.0; 2]; 16];
-        next.process_block(&[], &mut more);
+        next.process_block(&[], &mut more, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert!(more.iter().flatten().all(|x| x.is_finite()));
         age += 17;
         runtime = next;
@@ -104,14 +106,14 @@ fn filter_retargets_reverse_and_bypass_keep_boundary_state_and_legacy_pcm() {
     };
     next.retarget_history_from(runtime.as_ref(), proof.as_ref());
     let mut ramp = [[0.0; 2]; 240];
-    next.process_block(&[], &mut ramp);
+    next.process_block(&[], &mut ramp, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     age += 240;
     let settings = OperatorSettings::from_state(&off).unwrap();
     let configuration = settings.prepare_configuration(48000).unwrap();
     let note = configuration.prepare_note(69, 100).unwrap();
     for n in 0..128 {
         let mut x = [[0.0; 2]; 1];
-        next.process_block(&[], &mut x);
+        next.process_block(&[], &mut x, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         let expected = configuration.sample(crate::shared_sine_table(), &note, age + n, u64::MAX);
         assert_eq!(x[0], [expected; 2]);
     }
@@ -128,25 +130,31 @@ fn filter_output_gate_has_exact_finite_quiescence_and_reuse_resets_history() {
         pitch: 69,
         velocity: 127,
     }];
-    r.preflight_events(&on, 64).unwrap();
-    r.process_block(&on, &mut [[0.0; 2]; 64]);
+    r.preflight_events(&on, 64, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    r.process_block(
+        &on,
+        &mut [[0.0; 2]; 64],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let off = [NativeInstrumentEvent::NoteOff {
         frame_offset: 0,
         occurrence_id: 1,
     }];
     let frames = f.max_release_tail_frames() as usize;
     let mut release = vec![[0.0; 2]; frames];
-    r.preflight_events(&off, frames).unwrap();
-    r.process_block(&off, &mut release);
+    r.preflight_events(&off, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    r.process_block(&off, &mut release, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(r.is_quiescent());
     let mut zero = [[0.0; 2]; 64];
-    r.process_block(&[], &mut zero);
+    r.process_block(&[], &mut zero, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(zero, [[0.0; 2]; 64]);
     let mut fresh = f.create_runtime();
     let mut a = [[0.0; 2]; 64];
     let mut b = a;
-    r.process_block(&on, &mut a);
-    fresh.process_block(&on, &mut b);
+    r.process_block(&on, &mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    fresh.process_block(&on, &mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(a, b);
 }
 #[test]
@@ -202,6 +210,7 @@ fn filter_level_carrier_and_feedback_edits_keep_actual_in_flight_boundary() {
             velocity: 100,
         }],
         &mut [[0.0; 2]; 123],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
     for (id, value) in [
         (2, ParameterValue::Float(0.3)),
@@ -227,13 +236,17 @@ fn filter_level_carrier_and_feedback_edits_keep_actual_in_flight_boundary() {
         next.retarget_history_from(runtime.as_ref(), proof.as_ref());
         let mut expected = [[0.0; 2]; 1];
         let mut actual = expected;
-        runtime.process_block(&[], &mut expected);
-        next.process_block(&[], &mut actual);
+        runtime.process_block(&[], &mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        next.process_block(&[], &mut actual, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(
             actual, expected,
             "parameter {id} must start at actual boundary"
         );
-        next.process_block(&[], &mut [[0.0; 2]; 16]);
+        next.process_block(
+            &[],
+            &mut [[0.0; 2]; 16],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         runtime = next;
     }
 }
@@ -255,6 +268,7 @@ fn activating_filter_during_feedback_ramp_keeps_its_actual_boundary() {
             velocity: 100,
         }],
         &mut [[0.0; 2]; 123],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
     );
     let changed = OPERATOR_METADATA
         .patch_parameter(&s, ParameterId::from_static(2), ParameterValue::Float(0.3))
@@ -268,7 +282,11 @@ fn activating_filter_during_feedback_ramp_keeps_its_actual_boundary() {
     };
     assert!(ramping.can_retarget_history_from(old.as_ref(), proof.as_ref()));
     ramping.retarget_history_from(old.as_ref(), proof.as_ref());
-    ramping.process_block(&[], &mut [[0.0; 2]; 17]);
+    ramping.process_block(
+        &[],
+        &mut [[0.0; 2]; 17],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let enabled = OPERATOR_METADATA
         .patch_parameter(
             &changed,
@@ -287,8 +305,8 @@ fn activating_filter_during_feedback_ramp_keeps_its_actual_boundary() {
     filtered.retarget_history_from(ramping.as_ref(), proof.as_ref());
     let mut a = [[0.0; 2]; 1];
     let mut b = a;
-    filtered.process_block(&[], &mut a);
-    ramping.process_block(&[], &mut b);
+    filtered.process_block(&[], &mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    ramping.process_block(&[], &mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(a, b);
 }
 
@@ -363,19 +381,34 @@ fn speculative_filter_history_rolls_back_both_carriers_and_transition_clock() {
     }];
     for pair in [&mut active, &mut reference] {
         pair.begin_block();
-        pair.process_block(&on, &mut [[0.0; 2]; 123]).unwrap();
+        pair.process_block(
+            &on,
+            &mut [[0.0; 2]; 123],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
         pair.commit_block();
     }
     active.begin_block();
-    active.process_block(&[], &mut [[0.0; 2]; 128]).unwrap();
+    active
+        .process_block(
+            &[],
+            &mut [[0.0; 2]; 128],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
     active.rollback_block();
     let mut a = [[0.0; 2]; 256];
     let mut b = a;
     active.begin_block();
-    active.process_block(&[], &mut a).unwrap();
+    active
+        .process_block(&[], &mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
     active.commit_block();
     reference.begin_block();
-    reference.process_block(&[], &mut b).unwrap();
+    reference
+        .process_block(&[], &mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
     reference.commit_block();
     assert_eq!(a, b);
 }

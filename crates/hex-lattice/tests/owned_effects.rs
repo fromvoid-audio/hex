@@ -65,7 +65,12 @@ fn registered_owned_factory_uses_real_chain_and_refuses_legacy_interface()
 // Only a type for checking that owned storage cannot pass a legacy physical proof.
 struct NeverLegacy;
 impl hex_lattice::NativeProcessorRuntime for NeverLegacy {
-    fn process_block(&mut self, _frames: &mut [[f32; 2]]) {}
+    fn process_block(
+        &mut self,
+        _frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
     fn reset(&mut self) {}
     fn can_copy_history_from(&self, _previous: &dyn hex_lattice::NativeProcessorRuntime) -> bool {
         false

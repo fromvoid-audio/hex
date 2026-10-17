@@ -91,7 +91,11 @@ struct Runtime {
     cursor: usize,
 }
 impl NativeProcessorRuntime for Runtime {
-    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             std::mem::swap(frame, &mut self.ring[self.cursor]);
             self.cursor = (self.cursor + 1) % 7;
