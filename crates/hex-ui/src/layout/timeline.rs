@@ -157,6 +157,7 @@ impl Daw {
             } else {
                 theme::color(theme::PaletteRole::Surface)
             }))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .border_l_2()
             .border_color(rgb(TRACK_COLORS[track]))
             .text_xs()
