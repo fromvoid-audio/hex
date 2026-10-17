@@ -1909,74 +1909,82 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     };
     let old_revision = prepare(&old_project);
 
-    let start_old = || {
-        let mut playback = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    // Each transition owns the same two real playback values, but their
+    // lifetime is one helper call. Keeping all four pairs in this debug test
+    // frame exceeded the ordinary test-thread stack before rendering.
+    fn start_old(revision: Arc<PreparedRevision>) -> SessionPlayback {
+        let mut playback = SessionPlayback::new(revision).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
         let mut prefix = [[0.0; 2]; 32];
         playback.render(&mut prefix).unwrap();
         assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
         assert!(!playback.device_chains[0].committed_range_is_quiescent(0..1));
         playback
-    };
-
-    let mut reference = start_old();
-    let mut expected = [[0.0; 2]; 256];
-    let mut offset = 0;
-    for size in [1, 7, 31, 64, 153] {
-        reference
-            .render(&mut expected[offset..offset + size])
-            .unwrap();
-        offset += size;
     }
-    assert_eq!(offset, expected.len());
+    fn reference_output(revision: Arc<PreparedRevision>) -> [Frame; 256] {
+        let mut reference = start_old(revision);
+        let mut expected = [[0.0; 2]; 256];
+        let mut offset = 0;
+        for size in [1, 7, 31, 64, 153] {
+            reference
+                .render(&mut expected[offset..offset + size])
+                .unwrap();
+            offset += size;
+        }
+        assert_eq!(offset, expected.len());
+        expected
+    }
+    fn transition_output(
+        old: Arc<PreparedRevision>,
+        candidate: Arc<PreparedRevision>,
+        detached: bool,
+    ) -> [Frame; 256] {
+        let mut previous = start_old(old);
+        let mut current = SessionPlayback::new(candidate).unwrap();
+        current.try_inherit_state_from(&mut previous).unwrap();
+        assert_eq!(
+            current.tail_groups.iter().flatten().count(),
+            usize::from(detached)
+        );
+        if detached {
+            assert!(current.tail_output_active[0]);
+        }
+        let mut output = [[0.0; 2]; 256];
+        current.render(&mut output).unwrap();
+        output
+    }
 
+    let expected = reference_output(Arc::clone(&old_revision));
     // A non-device edit preserves the same owner; history transfers once to
     // the candidate and does not create a second retained old suffix.
-    let mut unchanged_previous = start_old();
-    let mut unchanged = SessionPlayback::new(prepare(&unchanged_project)).unwrap();
-    unchanged
-        .try_inherit_state_from(&mut unchanged_previous)
-        .unwrap();
-    assert_eq!(unchanged.tail_groups.iter().flatten().count(), 0);
-    let mut unchanged_output = [[0.0; 2]; 256];
-    unchanged.render(&mut unchanged_output).unwrap();
-    assert_eq!(unchanged_output, expected);
-
-    // A bypass/device-configuration edit detaches the old output settings.
-    let mut old_for_bypass = start_old();
-    let mut bypassed = SessionPlayback::new(prepare(&bypassed_project)).unwrap();
-    bypassed
-        .try_inherit_state_from(&mut old_for_bypass)
-        .unwrap();
-    assert_eq!(bypassed.tail_groups.iter().flatten().count(), 1);
-    assert!(bypassed.tail_output_active[0]);
-    let mut bypassed_output = [[0.0; 2]; 256];
-    bypassed.render(&mut bypassed_output).unwrap();
-    assert_eq!(bypassed_output, expected);
-
-    // A compatible runtime can inherit physical filter history across a
-    // parameter edit, but that history belongs to the old configuration for
-    // outgoing residual audio and must not also be copied into the candidate.
-    let mut old_for_configuration = start_old();
-    let mut changed = SessionPlayback::new(prepare(&changed_configuration)).unwrap();
-    changed
-        .try_inherit_state_from(&mut old_for_configuration)
-        .unwrap();
-    assert_eq!(changed.tail_groups.iter().flatten().count(), 1);
-    assert!(changed.tail_output_active[0]);
-    let mut changed_output = [[0.0; 2]; 256];
-    changed.render(&mut changed_output).unwrap();
-    assert_eq!(changed_output, expected);
-
-    let mut old_for_mix = start_old();
-    let mut changed_mix = SessionPlayback::new(prepare(&changed_mix_project)).unwrap();
-    changed_mix
-        .try_inherit_state_from(&mut old_for_mix)
-        .unwrap();
-    assert_eq!(changed_mix.tail_groups.iter().flatten().count(), 1);
-    let mut changed_mix_output = [[0.0; 2]; 256];
-    changed_mix.render(&mut changed_mix_output).unwrap();
-    assert_eq!(changed_mix_output, expected);
+    assert_eq!(
+        transition_output(
+            Arc::clone(&old_revision),
+            prepare(&unchanged_project),
+            false
+        ),
+        expected
+    );
+    // Bypass detaches the old output settings.
+    assert_eq!(
+        transition_output(Arc::clone(&old_revision), prepare(&bypassed_project), true),
+        expected
+    );
+    // A compatible runtime inherits filter history for outgoing residual audio
+    // without also copying that old-configuration history into the new chain.
+    assert_eq!(
+        transition_output(
+            Arc::clone(&old_revision),
+            prepare(&changed_configuration),
+            true
+        ),
+        expected
+    );
+    // The retained old suffix also preserves its captured mix.
+    assert_eq!(
+        transition_output(old_revision, prepare(&changed_mix_project), true),
+        expected
+    );
 }
 
 #[test]
