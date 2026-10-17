@@ -9,7 +9,9 @@ See [instrument slots](../../docs/lattice-instruments.md) for the separate note 
 
 ## Dependencies
 
-This crate uses the Rust standard library and `hex-lattice-contract`. It defines stereo frames,
+This crate uses the Rust standard library, `hex-lattice-contract` and `hex-dsp`.
+It reexports the existing stereo frame/matrix API from host-independent `hex-dsp`,
+which owns that arithmetic without device or host contracts. It defines
 immutable finite 2×2 matrices, ordered composition, and explicit memoryless
 latency metadata, plus the borrowed native-device definition registry and
 preconstructed transactional effect and instrument twins with checked compatible

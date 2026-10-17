@@ -45,7 +45,7 @@ device state or changing the ordinary EQ cascade.
 
 ## Dependencies
 
-This crate depends on the standard library, `hex-lattice`, and
+This crate depends on the standard library, `hex-lattice`, `hex-dsp` and
 `hex-lattice-contract` for validated linear stereo coefficients and the native
 device codec/metadata contract. The caller supplies the project sample rate and
 absolute note-relative frame positions; Utility and Saturator process

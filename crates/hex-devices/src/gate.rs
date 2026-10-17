@@ -289,9 +289,9 @@ impl NativeDeviceDefinition for GateDefinition {
         Ok(Some(Box::new(PreparedGate {
             settings,
             sample_rate,
-            threshold: db_to_gain(settings.threshold_db),
-            return_level: db_to_gain(settings.return_db),
-            floor_gain: db_to_gain(settings.floor_db),
+            threshold: db_to_gain(settings.threshold_db)?,
+            return_level: db_to_gain(settings.return_db)?,
+            floor_gain: db_to_gain(settings.floor_db)?,
             attack_frames,
             hold_frames,
             release_frames,
@@ -299,8 +299,11 @@ impl NativeDeviceDefinition for GateDefinition {
     }
 }
 
-fn db_to_gain(db: f32) -> f64 {
-    10.0_f64.powf(f64::from(db) / 20.0)
+fn db_to_gain(db: f32) -> Result<f64, DeviceContractError> {
+    hex_dsp::Decibels::new(f64::from(db))
+        .and_then(hex_dsp::Decibels::linear_amplitude)
+        .map(hex_dsp::LinearAmplitude::value)
+        .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
 fn checked_frames(

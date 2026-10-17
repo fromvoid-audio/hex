@@ -1,3 +1,10 @@
+# shared kernel extraction — 17 october 2026
+
+[W03 kernel evidence](native-dsp.md) retains exact before/after source and raw
+release profiles: all five admitted 100-track case PCM digests match exactly;
+the 300-processor chain remains refused. Concurrent load prevents a speedup or
+physical callback deadline claim.
+
 ## Vector global processing — 17 october 2026
 
 The optimized headless `profile_vector_globals` example compares identical authored

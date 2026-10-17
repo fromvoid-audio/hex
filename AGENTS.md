@@ -75,7 +75,8 @@ claim hosted CI or automatic enforcement is configured.
 Cargo.toml                   workspace configuration and safety/style lints
 Cargo.lock                   pinned resolved dependencies
 crates/
-  hex-lattice/               validated memoryless stereo DSP primitives
+  hex-dsp/                   host-independent stereo kernels and validated gain units
+  hex-lattice/               native registry/runtime contracts and stereo compatibility reexports
   hex-lattice-contract/      neutral native device metadata and versioned state
   hex-devices/               independently testable original instrument DSP
   hex-project/               canonical control-side IDs, edits, history and snapshots
@@ -125,8 +126,9 @@ Current direction: `hex-lattice-contract` has no workspace dependency;
 `hex-project` depends only on its neutral device metadata/state contract, never
 DSP implementations. This deliberate shared-contract edge supports modular
 devices without per-device storage branches. `hex-lattice` depends on the contract
-and owns native processing/registration and stereo primitives; `hex-devices`
-owns registered algorithms and depends on lattice and its contract.
+and `hex-dsp`, and owns native processing/registration; `hex-dsp` owns
+host-independent mathematical kernels with no workspace dependencies; `hex-devices`
+owns registered algorithms and depends on lattice, its contract and hex-dsp.
 The native DSP system is named **lattice**; read
 `docs/lattice.md` for staged device integration and stateful lifecycle gates.
 `hex-engine` depends
