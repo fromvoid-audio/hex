@@ -6,6 +6,10 @@ round trips, construction/drag seam refusal, safe clicked insertion, and wrapped
 insertion/count changes retaining the root. All23 tuning tests and strict scoped
 Clippy pass. Existing Rust1.85 baseline stays unchanged. The previous full-run
 checkpoint is superseded; final exact-source integration checks remain required.
+Extended existing fractional-root and combined device-manifest fixtures also
+reproduced a one-ulp JSON parser error. The pinned serde_json dependency now
+enables float_roundtrip, preserving current-format authored root precision.
+Both owning storage fixtures pass after the repair, including all device owners.
 
 ## combined current project format — #2739 / PR350, 17 october 2026
 
