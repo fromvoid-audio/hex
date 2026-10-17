@@ -395,7 +395,14 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f down");
-    editor.read_with(visual, |view, _| assert!(view.browser.results_focused));
+    let generation = editor.read_with(visual, |view, _| {
+        assert!(view.browser.results_focused);
+        assert_eq!(
+            view.browser.playback_generation, 1,
+            "Down auto-auditions the sample"
+        );
+        view.browser.playback_generation
+    });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     visual.update(|window, cx| {
@@ -407,7 +414,10 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("right");
     visual.simulate_input("loop");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.playback_generation, 0);
+        assert_eq!(
+            view.browser.playback_generation, generation,
+            "Right in the search field must only move the caret"
+        );
         assert_eq!(view.browser.search.read(cx).content, "loop");
     });
 }
