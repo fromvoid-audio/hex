@@ -262,7 +262,7 @@ fn prepared_steps_frequency(
         if !frequency.is_finite() || frequency <= 0.0 || frequency >= f64::from(sample_rate) * 0.5 {
             return Err(Invalid("fm oscillator frequency must be below nyquist"));
         }
-        steps[index] = (frequency / f64::from(sample_rate) * PHASE_SCALE).round() as u64;
+        steps[index] = crate::quantized_phase_step(sample_rate, frequency)?;
     }
     Ok(steps)
 }

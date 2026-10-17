@@ -1,6 +1,5 @@
 //! Control-side oscillator tuning. No frequency conversion occurs while sampling.
 use super::{Invalid, OPERATORS};
-use crate::PHASE_SCALE;
 
 /// Original fixed-frequency bounds, distinct from measured reference laws.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,7 +78,7 @@ pub(super) fn prepared_steps_with_table(
                 "operator oscillator frequency must be below nyquist",
             ));
         }
-        steps[index] = (frequency / f64::from(sample_rate) * PHASE_SCALE).round() as u64;
+        steps[index] = crate::quantized_phase_step(sample_rate, frequency)?;
     }
     Ok(steps)
 }
