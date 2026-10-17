@@ -1,3 +1,15 @@
+## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
+
+- Worker batch failures retain member/path metadata through the UI boundary;
+  the status strip and error tooltip normalize app-owned explanation only,
+  preserving mixed-case source paths and keeping metadata with its error value.
+- Focused service and production editor-event regressions cover malformed and
+  conversion-limit mixed-case WAV failures, unchanged source bytes and canonical project/history;
+  display tests also cover Unicode case. Source guards pin both error surfaces.
+- Exact local-CI/build evidence is recorded with the candidate externally. Native
+  visual/user acceptance remains separate; exercise a failed `Samples/Kick.WAV`
+  drop and hover the status to confirm path casing, then perform a valid import.
+
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
 - Create-new canonical workload generator writes100 independent120s original

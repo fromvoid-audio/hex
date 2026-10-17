@@ -309,7 +309,7 @@ impl super::EditorView {
                     )
                 }),
             ) {
-                self.error = Some(error.to_string());
+                self.error = Some(error.to_string().into());
                 input.cancel();
                 break;
             }
