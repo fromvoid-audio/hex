@@ -2740,6 +2740,7 @@ dependencies = [
  "hex-lattice-contract",
  "hex-project",
  "hex-tuning",
+ "libc",
  "serde",
  "serde_json",
 ]

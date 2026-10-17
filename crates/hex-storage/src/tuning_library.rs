@@ -5,7 +5,7 @@ use hex_tuning::{
     preset::{self, MAX_PRESET_BYTES, Preset},
 };
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -26,7 +26,23 @@ fn slot_path(directory: &Path, slot: usize) -> Result<PathBuf, String> {
     Ok(directory.join(format!("slot-{slot}.freqs")))
 }
 pub fn read_file(path: &Path) -> Result<Preset, String> {
-    let file = File::open(path).map_err(|e| format!("cannot open tuning preset · {e}"))?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|e| format!("cannot inspect tuning preset · {e}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("tuning preset is not a regular file".into());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Also refuse a last-component symlink/FIFO swapped in after inspection.
+        // Only constants are used: no workspace FFI or unsafe code.
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .map_err(|e| format!("cannot open tuning preset · {e}"))?;
     if !file
         .metadata()
         .map_err(|e| format!("cannot inspect tuning preset · {e}"))?
@@ -186,7 +202,7 @@ fn publish_with_link(
                 .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
         }
         #[cfg(unix)]
-        File::open(parent)
+        fs::File::open(parent)
             .and_then(|f| f.sync_all())
             .or_else(|error| {
                 if matches!(
@@ -225,6 +241,82 @@ mod tests {
         ));
         fs::create_dir(&p).unwrap();
         Directory(p)
+    }
+    #[cfg(unix)]
+    #[test]
+    fn review_followup_nonregular_preset_child() {
+        let Some(directory) = std::env::var_os("HEX_TUNING_NONREGULAR_FIXTURE") else {
+            return;
+        };
+        let slots = list(Path::new(&directory));
+        assert!(slots[0].error.is_some());
+        fs::write(Path::new(&directory).join("refused"), b"refused").unwrap();
+        assert!(fs::symlink_metadata(Path::new(&directory).join("slot-1.freqs")).is_ok());
+    }
+    #[cfg(unix)]
+    fn check_nonregular_preset(kind: &str) {
+        use std::{
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        {
+            let d = directory();
+            let path = d.0.join("slot-1.freqs");
+            if kind == "fifo" {
+                assert!(
+                    Command::new("mkfifo")
+                        .arg(&path)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            } else {
+                let source = d.0.join("original.freqs");
+                fs::write(
+                    &source,
+                    preset::encode("original", Scale::equal(12)).unwrap(),
+                )
+                .unwrap();
+                std::os::unix::fs::symlink(&source, &path).unwrap();
+            }
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tuning_library::tests::review_followup_nonregular_preset_child",
+                ])
+                .env("HEX_TUNING_NONREGULAR_FIXTURE", &d.0)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let result = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(
+                result.is_some_and(|status| status.success()),
+                "{kind} must refuse promptly without reading the target"
+            );
+            assert!(d.0.join("refused").exists());
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn review_followup_fifo_preset_never_blocks_the_worker() {
+        check_nonregular_preset("fifo");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn review_followup_symlink_preset_preserves_the_target() {
+        check_nonregular_preset("symlink");
     }
     #[test]
     fn review_create_new_export_does_not_require_hardlinks_or_replace_existing_files() {

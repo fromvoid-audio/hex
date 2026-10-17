@@ -26,6 +26,7 @@ hex-project for model validation, hex-tuning for validated scale/audition values
 hex-lattice-contract for bounded device state,
 serde/serde_json for versioned project JSON,
 fs2 0.4.3 for nonblocking control-side advisory file locks (Rust1.85-compatible),
+libc 0.2.190 on Unix for nonblocking/no-follow open constants only (no workspace FFI),
 and std for bounded file access and same-directory publication.
 
 ## Does not own

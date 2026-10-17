@@ -20,7 +20,7 @@ fn quick_scores(scale: Scale) -> (f32, f32) {
     )
 }
 
-pub(super) fn variations(base: Scale, max_move: f32) -> Vec<Scale> {
+pub(super) fn variations(base: Scale, max_move: f32, seed: u64) -> Vec<Scale> {
     let mut choices = vec![base];
     for direction in [-1.0_f32, 1.0] {
         for amount in [0.2, 0.4, 0.7, 1.0].map(|fraction| fraction * max_move) {
@@ -58,8 +58,21 @@ pub(super) fn variations(base: Scale, max_move: f32) -> Vec<Scale> {
         }
     }
     let anchors = choices.clone();
+    let mut entropy = seed;
     for anchor in anchors.iter().skip(1) {
         for amount in [0.25_f32, 0.5, 0.75] {
+            // SplitMix64 makes a reproducible field for each UI-owned dice seed.
+            // It is control-worker work; selection remains a canonical command.
+            let amount = if seed == 0 {
+                amount
+            } else {
+                entropy = entropy.wrapping_add(0x9e3779b97f4a7c15);
+                let mut word = entropy;
+                word = (word ^ (word >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                word = (word ^ (word >> 27)).wrapping_mul(0x94d049bb133111eb);
+                word ^= word >> 31;
+                0.1 + 0.8 * ((word >> 40) as f32 / 16_777_216.0)
+            };
             let mut between = base;
             for index in 1..base.count() {
                 between.move_degree(
@@ -349,7 +362,7 @@ mod tests {
     #[test]
     fn variation_field_is_bounded_ordered_and_preserves_reference() {
         let s = Scale::default();
-        let choices = variations(s, 200.0);
+        let choices = variations(s, 200.0, 0);
         assert_eq!(choices[0], s);
         assert!(choices.len() <= 65);
         assert!(choices.iter().all(|c| c.valid()

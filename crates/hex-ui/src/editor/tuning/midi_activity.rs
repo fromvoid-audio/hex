@@ -60,9 +60,10 @@ impl EditorView {
             let spans = self.tuning.midi_spans.as_mut()?;
             let mut keys = [0; 2];
             for track in audible.state.project.tracks() {
+                let route_track = prepared.midi_activity_route_track(track.id()).ok()?;
                 let route =
                     self.session_routes
-                        .entry_for_track(snapshot, true, track.id().value())?;
+                        .entry_for_track(snapshot, true, route_track.value())?;
                 let owner =
                     match route.owner {
                         SessionRouteOwner::Arrangement => SessionPlaybackOwner::Arrangement,
@@ -70,7 +71,7 @@ impl EditorView {
                         SessionRouteOwner::Session { clip_id } => {
                             // Audio Session cells carry no MIDI gates.
                             let Some(clip) = prepared.session().midi_clips().iter().find(|clip| {
-                                clip.track == track.id() && clip.id.value() == clip_id
+                                clip.track == route_track && clip.id.value() == clip_id
                             }) else {
                                 continue;
                             };

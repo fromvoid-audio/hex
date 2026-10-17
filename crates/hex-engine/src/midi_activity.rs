@@ -3,6 +3,22 @@ use crate::{Invalid, MidiSpanBuffer, PreparedRevision, SessionPlaybackOwner};
 use hex_project::{BeatTime, TrackId};
 
 impl PreparedRevision {
+    /// Stable track whose applied transport owner drives this instrument's MIDI.
+    pub fn midi_activity_route_track(&self, track: TrackId) -> Result<TrackId, Invalid> {
+        let tracks = self.arrangement().tracks();
+        let compiled = tracks
+            .iter()
+            .find(|candidate| candidate.canonical_track_id() == Some(track))
+            .ok_or(Invalid("midi activity track is unavailable"))?;
+        match compiled.midi_source_index {
+            Some(index) => tracks
+                .get(index)
+                .and_then(|source| source.canonical_track_id())
+                .ok_or(Invalid("midi activity source track is unavailable")),
+            None => Ok(track),
+        }
+    }
+
     /// Query every admitted gate at one transport cursor, rather than the
     /// drawing preview's deliberately sampled subset. This does not measure
     /// acoustic loudness or synth release tails. Caller supplies reusable fixed

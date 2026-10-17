@@ -134,6 +134,14 @@ Stop cancels the reference input lease even while preparation is queued. Canonic
 edits rebasing an active gesture publish the actual preview graph alongside its
 preview identity; canonical history remains separate.
 
+Dice advances an ephemeral worker seed so repeated regeneration changes choices
+without editing the project. Gate highlights resolve the applied graph's effective
+MIDI source owner, including routed Session clips. The 16-voice reference monitor
+explicitly refuses excess held physical notes without stealing an existing held
+owner; releasing/repressing after capacity is available recovers. Preset reads
+reject symlinks and nonregular files before opening, with nonblocking/no-follow
+Unix opens and a post-open regular-file check.
+
 Slot replacement retains staged same-directory rename. Create-new exports and
 duplicates never replace a destination: where hard links are unavailable, an
 exclusive file creation writes the validated bounded preset. A failed write can
