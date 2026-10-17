@@ -160,14 +160,6 @@ impl ClipClipboard {
             });
         }
         prepared.sort_by_key(|copy| (copy.track, copy.frame));
-        // A tempo-dependent full clip may outgrow the captured gap. Refuse that
-        // target rather than overwriting another member of the same paste.
-        if prepared
-            .windows(2)
-            .any(|pair| pair[0].track == pair[1].track && pair[0].end > pair[1].frame)
-        {
-            return Err(Invalid("copied clips overlap at the destination tempo"));
-        }
         Ok(prepared)
     }
 }
@@ -196,15 +188,59 @@ pub(crate) fn paste(
         };
         crate::time_range::insert_empty(project, tracks, frame, duration)?;
     }
-    // Existing clip-copy overlap policy replaces only the copied clip extents;
-    // empty gaps are not an unrelated time-rectangle selection.
-    for copy in prepared {
-        match copy.content {
-            Content::Audio(clip) => {
-                crate::clip_copy::audio_owned_to(project, clip, copy.track, copy.frame)?;
+    // Apply the existing replacement policy only to old destination content.
+    // Batch members may overlap in a valid project and must not erase each other.
+    // Empty gaps remain outside the replacement, just as with a single clip copy.
+    for copy in &prepared {
+        match &copy.content {
+            Content::Audio(_) => {
+                crate::edit::overwrite_audio_interval(
+                    project,
+                    copy.track,
+                    copy.frame,
+                    copy.end,
+                    ClipId(0),
+                )?;
+                crate::midi::overwrite_midi_in_frames(
+                    project,
+                    copy.track,
+                    copy.frame,
+                    copy.end,
+                    ClipId(0),
+                )?;
             }
             Content::Midi(clip) => {
-                crate::clip_copy::midi_owned_to(project, clip, copy.track, copy.beat)?;
+                let end = BeatTime::from_raw(
+                    copy.beat
+                        .raw()
+                        .checked_add(clip.length().raw())
+                        .ok_or(Invalid("midi timeline end overflow"))?,
+                );
+                crate::edit::overwrite_audio_in_beats(
+                    project,
+                    copy.track,
+                    copy.beat,
+                    end,
+                    ClipId(0),
+                )?;
+                crate::midi::overwrite_midi_interval(
+                    project,
+                    copy.track,
+                    copy.beat,
+                    end,
+                    ClipId(0),
+                )?;
+            }
+        }
+    }
+    for copy in prepared {
+        match copy.content {
+            Content::Audio(mut clip) => {
+                crate::audio_edit::move_clip(&mut clip, copy.frame, project.tempo_map())?;
+                crate::clip_copy::append_audio(project, clip, copy.track)?;
+            }
+            Content::Midi(clip) => {
+                crate::clip_copy::append_midi(project, clip, copy.track, copy.beat)?;
             }
         }
     }
@@ -421,6 +457,45 @@ mod tests {
         equal_audio_content(&original_audio, second_audio);
         equal_midi_content(&original_midi, second_midi);
     }
+    #[test]
+    fn overlapping_whole_members_survive_without_erasing_each_other() {
+        let (editor, _, target, audio, midi, _) = fixture();
+        let mut snapshot = editor.project().snapshot();
+        for track in &mut snapshot.tracks {
+            for clip in &mut track.content.midi_clips {
+                if clip.id == midi.value() {
+                    clip.start_raw = beat(1).raw();
+                }
+            }
+        }
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let original_audio = project.clip(audio).unwrap().clone();
+        let original_midi = project.midi_clip(midi).unwrap().clone();
+        let clipboard = Arc::new(project.capture_clips(&[audio, midi]).unwrap());
+        let mut editor = Editor::new(project, 8).unwrap();
+        editor
+            .execute(Command::PasteClips {
+                clipboard,
+                track: target,
+                frame: 240_000,
+                insert: false,
+            })
+            .unwrap();
+        let destination = editor.project().track(target).unwrap();
+        let a = destination
+            .clips()
+            .iter()
+            .find(|c| c.start() == 240_000)
+            .unwrap();
+        let m = destination
+            .midi_clips()
+            .iter()
+            .find(|c| c.start() == beat(11))
+            .unwrap();
+        equal_audio_content(&original_audio, a);
+        equal_midi_content(&original_midi, m);
+    }
+
     #[test]
     fn multi_track_normal_and_ripple_keep_original_track_ids_and_refuse_overflow_atomically() {
         for insert in [false, true] {

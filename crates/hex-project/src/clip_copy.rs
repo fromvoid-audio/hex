@@ -35,6 +35,15 @@ pub(crate) fn audio_owned_to(
 
     crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
+    append_audio(project, copied, track)
+}
+
+/// Append an already projected whole clip after the batch cleared old content.
+pub(crate) fn append_audio(
+    project: &mut Project,
+    mut copied: crate::Clip,
+    track: TrackId,
+) -> Result<ClipId, Invalid> {
     if clip_count(project) >= MAX_CLIPS {
         return Err(Invalid("clip limit reached"));
     }
@@ -74,7 +83,7 @@ pub(crate) fn midi_to(
 
 pub(crate) fn midi_owned_to(
     project: &mut Project,
-    mut copied: crate::MidiClip,
+    copied: crate::MidiClip,
     track: TrackId,
     start: crate::BeatTime,
 ) -> Result<ClipId, Invalid> {
@@ -86,9 +95,19 @@ pub(crate) fn midi_owned_to(
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
-    let added_notes = copied.source.notes.len();
     crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_interval(project, track, start, end, ClipId(0))?;
+    append_midi(project, copied, track, start)
+}
+
+/// Keep batch members intact, including overlaps already present in the source.
+pub(crate) fn append_midi(
+    project: &mut Project,
+    mut copied: crate::MidiClip,
+    track: TrackId,
+    start: crate::BeatTime,
+) -> Result<ClipId, Invalid> {
+    let added_notes = copied.source.notes.len();
     if clip_count(project) >= MAX_CLIPS {
         return Err(Invalid("clip limit reached"));
     }
