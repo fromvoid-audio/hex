@@ -494,18 +494,6 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                     visual.simulate_mouse_down(target, MouseButton::Left, modifiers);
                     visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
                     assert!(editor.read_with(&visual, |view, _| view.last_enqueued_edit.is_none()));
-                    // Outward drags cannot reveal media beyond the source bounds.
-                    visual.simulate_mouse_down(target, MouseButton::Left, modifiers);
-                    let beyond_source = point(target.x - px(200_000.0 * direction), target.y);
-                    visual.simulate_mouse_move(beyond_source, MouseButton::Left, modifiers);
-                    visual.run_until_parked();
-                    editor.read_with(&visual, |view, _| {
-                        assert!(view.fade_trim_preview(clip).is_none());
-                        assert!(view.active_fade_drag.as_ref().unwrap().trim_frame.is_none());
-                        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
-                    });
-                    visual.simulate_mouse_up(beyond_source, MouseButton::Left, modifiers);
-                    assert!(editor.read_with(&visual, |view, _| view.last_enqueued_edit.is_none()));
                 }
                 visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
                 let dx = editor.read_with(&visual, |view, _| {
@@ -569,6 +557,22 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                     visual.simulate_modifiers_change(command);
                     visual.run_until_parked();
                 }
+                visual.update(|window, cx| {
+                    editor.read_with(cx, |view, _| {
+                        let drag = view
+                            .active_fade_drag
+                            .as_ref()
+                            .expect("active before release");
+                        assert!(
+                            view.focus.is_focused(window),
+                            "{kind:?}/{grid:?}/{release_snapped}: focus before release"
+                        );
+                        assert!(
+                            view.fade_drag_current(drag),
+                            "{kind:?}/{grid:?}/{release_snapped}: current before release"
+                        );
+                    })
+                });
                 visual.simulate_mouse_up(
                     moved,
                     MouseButton::Left,
@@ -580,7 +584,9 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 );
                 let edit = editor.read_with(&visual, |view, _| {
                     assert!(view.active_fade_drag.is_none());
-                    view.last_enqueued_edit.clone().unwrap()
+                    view.last_enqueued_edit.clone().unwrap_or_else(|| {
+                        panic!("{kind:?}/{grid:?}/{release_snapped}: release must enqueue")
+                    })
                 });
                 assert!(matches!(edit, Command::TrimClipFadeEdge { .. }));
                 canonical.execute(edit).unwrap();
@@ -590,6 +596,59 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 assert_eq!(canonical.project(), &original);
                 assert!(canonical.redo());
                 assert_eq!(canonical.project().clip(clip), Some(expected));
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn lower_source_limits_are_noops_with_and_without_command(cx: &mut TestAppContext) {
+    use super::super::musical_time::SnapGrid;
+    for grid in [SnapGrid::Quarter, SnapGrid::Off] {
+        for kind in [Handle::InBottom, Handle::OutBottom] {
+            for platform in [false, true] {
+                // A pending edit from another gesture must not mask source bounds.
+                // Keep the pointer inside the window so mouse-up is delivered.
+                let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+                let mut canonical = hex_project::Editor::new(project, 8).unwrap();
+                canonical
+                    .execute(Command::SetClipFadeEnvelope {
+                        clip,
+                        fade: ClipFade::new(96_000, 0, 40_000, 40_000).unwrap(),
+                    })
+                    .unwrap();
+                let original = canonical.project().clone();
+                let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+                    cx,
+                    original.clone(),
+                    Arc::default(),
+                );
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                editor.update(&mut visual, |view, _| view.snap_grid = grid);
+                visual.run_until_parked();
+                let selector: &'static str =
+                    Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+                let target = visual.debug_bounds(selector).unwrap().center();
+                let modifiers = Modifiers {
+                    platform,
+                    ..Modifiers::default()
+                };
+                visual.simulate_mouse_down(target, MouseButton::Left, modifiers);
+                let direction = if kind == Handle::InBottom { -1.0 } else { 1.0 };
+                let beyond_source = point(target.x + px(40.0 * direction), target.y);
+                visual.simulate_mouse_move(beyond_source, MouseButton::Left, modifiers);
+                visual.run_until_parked();
+                editor.read_with(&visual, |view, _| {
+                    assert!(view.fade_trim_preview(clip).is_none());
+                    assert!(view.active_fade_drag.as_ref().unwrap().trim_frame.is_none());
+                    assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+                });
+                visual.simulate_mouse_up(beyond_source, MouseButton::Left, modifiers);
+                editor.read_with(&visual, |view, _| {
+                    assert!(view.active_fade_drag.is_none());
+                    assert!(view.last_enqueued_edit.is_none());
+                    assert_eq!(view.worker_requests_pending, 0);
+                });
             }
         }
     }

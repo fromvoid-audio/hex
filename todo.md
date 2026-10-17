@@ -10,7 +10,7 @@ produces frame24000 instead of the requested18000). Expanded coverage checks
 both edges, grid on/off, stationary press/release and both mouse-up disagreement
 directions, no-motion clicks and canonical single Undo/Redo. Existing cancellation
 coverage now exercises both lower edges; canonical model tests retain loop/source
-bounds and opposite-edge/fade-shape coverage. All eight focused fade tests pass;
+bounds and opposite-edge/fade-shape coverage. All nine focused fade tests pass;
 required final cloud CI is pending.
 
 Native acceptance remains pending through the coordinator's single Mac lane:
