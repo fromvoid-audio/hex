@@ -44,3 +44,24 @@ not established. Raw red/green/UI/build/Clippy/report logs remain under
 
 Independent source review accepts the repair and benchmark. Fresh full local CI
 on the final candidate remains necessary before readiness or merge.
+
+## user-paused local checkpoint
+
+The user stopped all local work on17 October2026. The final attempted full run
+at exact `07ce5cadf7813fd77dbfc4e765ab88825be02dca` was gracefully interrupted,
+not passed: session2140 / Python39335 and its owned descendants57909/58536
+exited after SIGINT. No user application was signaled. Goal3 is paused locally.
+The user subsequently authorized checkpoint pushes and primary-dispatched cloud
+continuation only; local builds/tests/installations must not restart automatically.
+
+[Portable interrupted receipt](interrupted-local-ci-07ce5cad.json), SHA256
+`e0dddaab4afcf5e6eea29527079afe367051e159c8b8d4af09f2b846eda8e4ff`,
+records1239.110seconds, `interrupted`, `stale=false`, clean identical start/end
+digest `fa186d414bab82fd0ecbae13453fd3eee2d072b46130fcd94777226452ea472d`.
+Steps1–10 passed, including workspace tests and prepared-export instrument
+tests. Step11 UI-feature tests was interrupted with exit130; steps12–20 did not
+run. This is not merge evidence. The earlier failed full run remains preserved.
+Raw logs stay in the Mac verification checkout's
+`artifacts/local-ci/20261017T115430Z-14ec116c/`; they are not silently available
+in cloud. New checkpoint commits contain evidence only and need their own final
+source validation. Preserve canonical PR290 and its source history.
