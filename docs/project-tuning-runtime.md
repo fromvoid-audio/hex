@@ -22,6 +22,15 @@ does not rewrite their authored parameters. Actual voiced pitches must satisfy
 the instrument's sample-rate/Nyquist rules. Unused unsupported keys do not cause
 blanket rejection of a valid scale.
 
+Operator event admission uses the same custom-table note preparation as its
+selected harmonic runtime, including LFO excursion validation. A focused
+regression reproduces both excessive tuned pitches admitted under the neutral
+law and playable lowered pitches rejected under that law, with LFO off/on.
+Oscillator preparation also refuses positive pitches whose quantized phase step
+is zero or reaches the Nyquist step. Sine, FM4, mixed fixed/ratio Operator and
+velocity-modulated Operator share that control-side representability check;
+fixed-only voices remain independent of an unusably low mapped pitch.
+
 ## continuation and refusal
 
 Sine/FM4 inline notes carry a static provider authority. Providers validate

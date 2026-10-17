@@ -2,6 +2,32 @@ use super::*;
 use crate::SineTable;
 use parameter::EnvelopeField;
 
+#[test]
+fn custom_tuning_note_admission_matches_operator_runtime_nyquist_law() {
+    for lfo in [false, true] {
+        let mut settings = legacy_settings();
+        for operator in 0..4 {
+            settings.fields[operator * 3] = 4.0;
+        }
+        if lfo {
+            settings.lfo.0[0] = 1;
+            settings.lfo.0[5] = 0.2f32.to_bits();
+        }
+        let state = settings.to_state().unwrap();
+        for (pitch, hz, supported) in [(69, 30_000.0, false), (127, 220.0, true)] {
+            let tuning = hex_lattice::TuningTable::new([hz; 128]).unwrap();
+            let instrument = OPERATOR_METADATA
+                .prepare_instrument_with_tuning(&state, 48_000, &tuning)
+                .unwrap();
+            assert_eq!(
+                instrument.validate_event_note(pitch, 100).is_ok(),
+                supported,
+                "lfo={lfo}, pitch={pitch}, custom Hz={hz}"
+            );
+        }
+    }
+}
+
 fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDeviceState {
     OPERATOR_METADATA
         .patch_parameter(state, id, ParameterValue::Float(value))

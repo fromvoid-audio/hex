@@ -986,6 +986,30 @@ fn run_tuning_library_operation(
     operation: TuningLibraryOperation,
     previous: Option<&Arc<PreparedRevision>>,
 ) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
+    match tuning_library_directory() {
+        Ok(directory) => {
+            run_tuning_library_operation_in(session, context, operation, previous, &directory)
+        }
+        Err(reason) => (
+            TuningLibraryResult {
+                operation_id: context.operation_id,
+                slots: Vec::new(),
+                selected_slot: None,
+                loaded_name: None,
+                error: Some(reason),
+            },
+            None,
+        ),
+    }
+}
+
+fn run_tuning_library_operation_in(
+    session: &mut Session,
+    context: TuningLibraryContext,
+    operation: TuningLibraryOperation,
+    previous: Option<&Arc<PreparedRevision>>,
+    directory: &Path,
+) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
     let mut result = TuningLibraryResult {
         operation_id: context.operation_id,
         slots: Vec::new(),
@@ -993,20 +1017,19 @@ fn run_tuning_library_operation(
         loaded_name: None,
         error: None,
     };
-    let directory = match tuning_library_directory() {
-        Ok(directory) => directory,
-        Err(reason) => {
-            result.error = Some(reason);
-            return (result, None);
-        }
-    };
     let mut prepared = None;
     let operation_result = match operation {
+        TuningLibraryOperation::Save { .. } | TuningLibraryOperation::Export { .. }
+            if context.request_generation != context.current_generation
+                || context.request_revision != context.current_revision =>
+        {
+            Err("tuning save or export belongs to a changed project revision".into())
+        }
         TuningLibraryOperation::List => Ok(()),
         TuningLibraryOperation::Save { slot, name } => {
             result.selected_slot = Some(slot);
             hex_storage::tuning_library::save(
-                &directory,
+                directory,
                 slot,
                 &name,
                 session.project().tuning().scale(),
@@ -1019,7 +1042,7 @@ fn run_tuning_library_operation(
             {
                 Err("tuning load belongs to a changed project revision".into())
             } else {
-                match hex_storage::tuning_library::load(&directory, slot) {
+                match hex_storage::tuning_library::load(directory, slot) {
                     Ok(preset) => {
                         result.loaded_name = Some(preset.name);
                         match ProjectTuning::new(
@@ -1046,10 +1069,10 @@ fn run_tuning_library_operation(
         }
         TuningLibraryOperation::Rename { slot, name } => {
             result.selected_slot = Some(slot);
-            hex_storage::tuning_library::rename(&directory, slot, &name)
+            hex_storage::tuning_library::rename(directory, slot, &name)
         }
         TuningLibraryOperation::Duplicate { slot } => {
-            match hex_storage::tuning_library::duplicate(&directory, slot) {
+            match hex_storage::tuning_library::duplicate(directory, slot) {
                 Ok(new_slot) => {
                     result.selected_slot = Some(new_slot);
                     Ok(())
@@ -1095,7 +1118,7 @@ fn run_tuning_library_operation(
         ),
     };
     result.error = operation_result.err();
-    result.slots = hex_storage::tuning_library::list(&directory);
+    result.slots = hex_storage::tuning_library::list(directory);
     (result, prepared)
 }
 

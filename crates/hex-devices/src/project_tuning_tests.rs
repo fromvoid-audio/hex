@@ -4,6 +4,31 @@ use hex_lattice::TuningTable;
 fn table(hz: f64) -> TuningTable {
     TuningTable::new([hz; 128]).unwrap()
 }
+#[test]
+fn review_extreme_custom_tuning_refuses_unrepresentable_phase_steps() {
+    // Lowest keys of a valid 3-degree, 2400-cent scale rooted at key127/10Hz.
+    let hz = 10.0 * 2.0_f64.powf(-84.0);
+    let mut admitted = Vec::new();
+    for kind in [
+        SINE_INSTRUMENT_TYPE_ID,
+        fm4::device::FM4_TYPE_ID,
+        operator_state::OPERATOR_TYPE_ID,
+    ] {
+        let provider = instrument(kind, &table(hz));
+        let accepted = if provider.prefers_mutable_continuation() {
+            provider.validate_event_note(0, 100).is_ok()
+        } else {
+            provider.prepare_note(0, 100).is_ok()
+        };
+        if accepted {
+            admitted.push(kind);
+        }
+    }
+    assert!(
+        admitted.is_empty(),
+        "stationary oscillators admitted: {admitted:?}"
+    );
+}
 fn instrument(kind: DeviceTypeId, table: &TuningTable) -> Box<dyn PreparedNativeInstrument> {
     let registry = native_instrument_registry().unwrap();
     let state = registry.default_state(kind).unwrap();
