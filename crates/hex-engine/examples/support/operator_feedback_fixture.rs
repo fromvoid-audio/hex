@@ -59,6 +59,7 @@ pub fn project_with_operators(
             });
         }
         track_snapshots.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -77,6 +78,7 @@ pub fn project_with_operators(
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: clip_length,

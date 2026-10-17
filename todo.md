@@ -1,3 +1,22 @@
+## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
+
+Ten shared theme colors replace custom per-clip colors. Track-header menus choose
+one identity, inherited by Arrangement/Session audio and MIDI clips; clip menus
+switch muted/accent flavor. Canonical history, schema27 persistence and explicit
+legacy defaults are source implemented; copy/split/trim/conversion retain flavor.
+Project/storage tests, context-menu/cache repaint tests and source guards pass.
+Exact full local-CI evidence is recorded with the PR; native acceptance is separate.
+Native macOS acceptance is pending. See [element colors](docs/element-colors.md).
+
+## browser outward tag editor and resizable picker — 17 october 2026
+
+The tag editor adds a right column without consuming results/preview width.
+The picker has its own drag divider, an icons-only mode and lowercase hover
+labels for collections, sections and places. Width/settings remain session-only.
+See [browser layout](docs/browser-layout.md) for the finite native checklist.
+Automated validation results are recorded with this change; native macOS
+resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
+
 ## 17 october 2026 — indexed samples library (Pulse #2699 / PR317)
 
 Samples combines WAVs recursively discovered in Music and added places, with
@@ -13,17 +32,10 @@ native paths, overlapping roots, depth limits and file reconciliation. Integrate
 UI compilation, all 30 focused browser tests and all 20 local CI checks passed on
 initial source 8cdc6ef4. Current-main integration preserves flexible EQ and the
 outward tag editor/resizable picker; both browser test groups and dated note
-sections are retained. Final integration checks are recorded in PR/Pulse evidence. Native macOS visual/listening/restart acceptance remains open;
+sections are retained. Schema27/shared colors from PR315 are preserved. Final
+integration checks are recorded in PR/Pulse evidence. Native macOS
+visual/listening/restart acceptance remains open;
 no exact Live parity, extra audio codec, or large-library timing claim.
-
-## browser outward tag editor and resizable picker — 17 october 2026
-
-The tag editor adds a right column without consuming results/preview width.
-The picker has its own drag divider, an icons-only mode and lowercase hover
-labels for collections, sections and places. Width/settings remain session-only.
-See [browser layout](docs/browser-layout.md) for the finite native checklist.
-Automated validation results are recorded with this change; native macOS
-resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
 
 ## held-clip intersection accent — #2696 / PR314, 17 october 2026
 

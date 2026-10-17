@@ -2768,6 +2768,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2786,6 +2787,7 @@ mod tests {
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -2898,6 +2900,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2916,6 +2919,7 @@ mod tests {
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -3016,6 +3020,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -3034,6 +3039,7 @@ mod tests {
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -3146,6 +3152,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -3164,6 +3171,7 @@ mod tests {
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                     name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -5893,6 +5901,7 @@ mod tests {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             }],
             tracks: vec![TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -5917,6 +5926,7 @@ mod tests {
                     track: 1,
                     scene: 2,
                     content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                        flavor: hex_project::ClipFlavor::default(),
                         gain: hex_project::ClipGain::UNITY,
                         id: 3,
                         name: "one shot".into(),
@@ -6346,6 +6356,7 @@ mod tests {
             next_id: track_id + 1,
             assets: Vec::new(),
             tracks: vec![TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,

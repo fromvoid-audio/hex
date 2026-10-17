@@ -28,6 +28,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         let instrument_id = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -68,6 +69,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 track,
                 scene,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    flavor: hex_project::ClipFlavor::default(),
                     id: clip,
                     name: format!("pattern {index:03}.{scene}"),
                     source: MidiSourceSnapshot {

@@ -698,6 +698,7 @@ fn arrangement_to_session_copy_respects_combined_clip_limit_atomically() {
     while clips.len() + 2 < hex_project::MAX_CLIPS {
         clips.push(ClipSnapshot {
             name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id,
