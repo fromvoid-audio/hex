@@ -232,7 +232,7 @@ pub(crate) fn apply(
             ensure_clip_room(project, 1)?;
             reserve_cell(project)?;
             let id = ClipId(project.allocate_id()?);
-            let name = format!("audio {}", source.value());
+            let name = original.name().to_owned();
             crate::edit::name_valid(&name)?;
             project.session.cells.push(SessionCell {
                 track,
@@ -282,7 +282,7 @@ pub(crate) fn apply(
                 scene,
                 content: SessionCellContent::Midi(SessionMidiClip {
                     id,
-                    name: "midi copy".to_owned(),
+                    name: original.name.clone(),
                     source: Arc::new(source),
                 }),
             });

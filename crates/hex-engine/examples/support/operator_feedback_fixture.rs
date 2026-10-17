@@ -76,6 +76,7 @@ pub fn project_with_operators(
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: clip_length,

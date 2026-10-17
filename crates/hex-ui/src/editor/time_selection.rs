@@ -107,6 +107,7 @@ impl EditorView {
     pub(super) fn begin_main_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -183,6 +184,7 @@ impl EditorView {
         if !self.time_selection_project_scope
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -239,6 +241,7 @@ impl EditorView {
     pub(super) fn begin_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -313,6 +316,7 @@ impl EditorView {
     pub(super) fn begin_time_range_move_gesture(&mut self, x: f32, y: f32) -> bool {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -381,6 +385,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project
@@ -464,6 +469,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|state| state.revision != gesture.revision)
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -694,6 +700,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project

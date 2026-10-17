@@ -136,6 +136,7 @@ fn isolated_source(
             source.source_length()
         };
         MidiClipSnapshot {
+            name: item.name().to_owned(),
             id: clip.value(),
             start_raw: 0,
             length_raw: end.raw() - source.source_start().raw(),

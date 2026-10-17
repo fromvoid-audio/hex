@@ -199,20 +199,6 @@ pub(super) fn clip_grid_layer(
         .children(children)
 }
 
-fn clip_header_layer() -> Div {
-    div()
-        .absolute()
-        .top(px(-1.0))
-        .left(px(-1.0))
-        .right(px(-1.0))
-        .h(px(
-            TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION
-        ))
-        .bg(gpui::black().opacity(0.24))
-        .border_b_1()
-        .border_color(gpui::black().opacity(0.35))
-}
-
 pub(super) struct ClipViewTimeline<'a> {
     pub(super) viewport: Viewport,
     pub(super) grid: &'a [super::musical_time::GridLine],
@@ -1069,7 +1055,7 @@ impl EditorView {
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
-            midi = midi.children([clip_header_layer()]);
+            midi = midi.child(self.clip_name_header(clip.id(), clip.name()));
             if let Some((payload, lane)) = midi_drag_payload {
                 let move_surface = self
                     .clip_drag_surface(
@@ -1305,7 +1291,7 @@ impl EditorView {
             cx,
         );
         let mut content = content
-            .children([clip_header_layer()])
+            .child(self.clip_name_header(clip.id(), clip.name()))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .tooltip(move |_, cx| {
@@ -1346,7 +1332,8 @@ impl EditorView {
     }
 
     fn drag_available(&self) -> bool {
-        !self.opening_project
+        self.clip_name_edit.is_none()
+            && !self.opening_project
             && !self.close_prompt_open
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
