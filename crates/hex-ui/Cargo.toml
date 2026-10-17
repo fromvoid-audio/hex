@@ -22,5 +22,8 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-widgets = { path = "../hex-widgets" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
+[dev-dependencies]
+hex-media = { path = "../hex-media" }
+
 [lints]
 workspace = true

@@ -4954,3 +4954,9 @@ target track failed before repair, and verifies no import/canonical mutation wit
 auto on/off while retaining manual Right/search focus and explicit Enter import.
 Existing deliberate drag/drop coverage remains required. Other file/device
 handlers unchanged. Native double-click behavior remains coordinator-serial.
+
+- 2026-10-17 tuning follow-up: preserve pending reference-audition preparation
+  ownership across UI ticks until its matching completion; verified-mode real
+  worker/key-handler regression fails before repair (9541ec14), passes afterward
+  (cdb30fde). Explicit cancellation/stale owners remain terminal. Final combined
+  full CI and native interaction acceptance remain separate and pending.

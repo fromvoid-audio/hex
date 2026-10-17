@@ -210,3 +210,8 @@ refused under one table is retried on a valid retune without restarting voices
 that actually continued. New tuning gestures wait for pending canonical edits;
 Cancel remains available. Loading or importing an identical scale still updates
 preset metadata, but preserves project revision, clean state, Redo and audio.
+
+Reference audition retains a pending preparation owner until its matching worker
+completion is consumed, so cancellation before event delivery cannot hide a
+preparation error. Stop, focus loss, close and replacement still cancel ownership
+immediately; stale completions cannot report over a newer owner.

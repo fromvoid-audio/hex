@@ -57,6 +57,7 @@ pub(super) struct TuningState {
     audition_keyboard: super::computer_keyboard::ComputerKeyboard,
     pub(super) audition_input:
         Option<std::sync::Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
+    pub(super) audition_preparing: bool,
     held_keys: [u64; 2],
     midi_keys: [u64; 2],
     midi_last_query: Option<Instant>,
@@ -112,6 +113,7 @@ impl TuningState {
             open: false,
             audition_keyboard: super::computer_keyboard::ComputerKeyboard::default(),
             audition_input: None,
+            audition_preparing: false,
             held_keys: [0; 2],
             midi_keys: [0; 2],
             midi_last_query: None,

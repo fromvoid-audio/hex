@@ -39,6 +39,8 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Verified-mode source limits for real worker/key-handler failure fixtures only.
+    'hex-ui': {'hex-media'},
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
