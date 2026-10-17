@@ -45,6 +45,16 @@ Required exact-source checks and native acceptance are recorded in Pulse/PR.
 Track layout resizing was delivered separately by launcher2714/PR330.
 
 
+## supersession fixture command readiness — pulse2774 / PR381, 17 october 2026
+
+The rapid native-worker test now observes command readiness on its real worker
+endpoint as well as the applied callback source before issuing its single Play.
+Eight generations, exact PCM, zero callback allocation/deallocation and the same
+five-second deadline remain. This test-only synchronization addresses a missing
+precondition; no runtime/client/publication behavior changes. Old full-bin failures
+and focused checks remain retained; final exact-source CI is recorded in Pulse.
+See docs/local-ci.md. No native app operation or delivery performed.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
