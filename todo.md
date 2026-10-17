@@ -1,3 +1,18 @@
+## second current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `f0ef237d` after candidate `37b7832e`, preserving clip conversion,
+Arrangement clip painting, track-header hover and source-case batch errors beside
+PR188's window-aware retained controls and accessibility/cache epochs. The new
+conversion selection helper and window-bearing detail-view signature coexist;
+paint previews remain outside cached content and retain live composition.
+
+All56 focused clip-paint/detail/cache/error/project-replacement/accessibility/
+row/window/meter/controller tests pass. UI test compilation, architecture, style,
+device-layout, formatting and diff checks pass. No additional behavior repair was
+needed. Prior exact-source CI remains historical; the combined candidate still
+requires its own commit and full local CI before merge. Optimized delivery and
+native acceptance remain separate evidence.
+
 ## current-main accessibility integration — #29 / PR188, 17 october 2026
 
 Integrated main `ebb55d08`, preserving the streaming constructor/status contracts,
@@ -41,7 +56,40 @@ control against replacing that surface. Current source checks are retained in
 the PR; exact Mac compilation, the three AppKit lifecycle tests and actual
 AX/VoiceOver/input/paint acceptance remain required. No native acceptance claim.
 
+## arrangement clip painting — 17 october 2026
+
+Double-click empty track space, hold the second press, drag right, then release
+creates an empty MIDI clip through the existing undoable placement command.
+Snapped/free preview and cancellation are source implemented. Four focused rendered
+UI tests and the source/format guards pass; native user acceptance is pending. See [clip painting](docs/clip-paint.md)
+for scope and the finite native checklist.
+
+## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
+
+- Worker batch failures retain member/path metadata through the UI boundary;
+  the status strip and error tooltip normalize app-owned explanation only,
+  preserving mixed-case source paths and keeping metadata with its error value.
+- Focused service and production editor-event regressions cover malformed and
+  conversion-limit mixed-case WAV failures, unchanged source bytes and canonical project/history;
+  display tests also cover Unicode case. Source guards pin both error surfaces.
+- Exact local-CI/build evidence is recorded with the candidate externally. Native
+  visual/user acceptance remains separate; exercise a failed `Samples/Kick.WAV`
+  drop and hover the status to confirm path casing, then perform a valid import.
+
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
+
+## Clip conversion — #2658 / PR274, 17 october 2026
+
+- User request: MIDI → audio bounces in place; audio → MIDI removes audio and
+  yields an empty editable source. Note detection is explicitly out of scope.
+- Source implements Arrangement/Session identity-preserving atomic replacement,
+  float32 generated WAV publication, worker preparation, undo/redo and Clip View
+  conversion controls. Effects/mixer stay live; source loops/tempo and bounded
+  mutable preroll use the canonical renderer. See docs/clip-conversion.md for
+  finite duration semantics, media ownership, refusals and native checklist.
+- Focused controller/PCM/history/save-reopen/refusal tests pass at the source
+  milestone. Exact full local-CI evidence is retained with PR274; native macOS
+  interaction/listening remains pending. No macOS bundle was built in Linux.
 
 Native effect/instrument registries validate owned descriptors for each current
 state; patches, availability and engine read-only views resolve dynamic IDs.
@@ -3904,3 +3952,14 @@ archive; no Hex unsafe boundary or renderer changes. See docs/native-accessibili
 Exact-final full local CI and optimized stable-path delivery are recorded on
 PR188/Pulse29. Real Inspector/VoiceOver, close/veto, popup choices and input/paint
 acceptance remain unverified; this entry does not claim whole-ticket completion.
+
+## 17 october 2026 — track header hover
+
+Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
+headers and demo Arrangement headers. Existing selection and control behavior is
+preserved. UI style and GPUI patch guards pass; architecture/build/format checks
+are blocked because this cloud environment has no Rust toolchain. Native visual
+acceptance remains open: hover selected/unselected headers and nested controls,
+then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
+The connected GitHub app provides repository access. The user explicitly requested
+merge after the missing Rust/native validation was disclosed.

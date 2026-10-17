@@ -17,7 +17,9 @@ const FRAMES_PER_BLOCK: usize = 256;
 const MAX_TEMP_ATTEMPTS: usize = 16;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+mod bounce;
 mod controlled;
+pub use bounce::render_bounce_new;
 mod publication;
 mod stems;
 pub use controlled::render_prepared_with_policy;
@@ -249,6 +251,40 @@ fn publish<R: BlockRenderer>(
     publication: &Publication,
     prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
 ) -> Result<ExportReport, ExportError> {
+    publish_encoded(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        WavEncoding::Pcm16,
+        prepare_renderer,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum WavEncoding {
+    Pcm16,
+    Float32,
+}
+impl WavEncoding {
+    fn frame_bytes(self) -> u32 {
+        match self {
+            Self::Pcm16 => 4,
+            Self::Float32 => 8,
+        }
+    }
+}
+
+fn publish_encoded<R: BlockRenderer>(
+    path: &Path,
+    sample_rate: u32,
+    start: u64,
+    frames: u64,
+    publication: &Publication,
+    encoding: WavEncoding,
+    prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
+) -> Result<ExportReport, ExportError> {
     if sample_rate == 0 {
         return Err(ExportError::Invalid("sample rate is zero"));
     }
@@ -256,12 +292,12 @@ fn publish<R: BlockRenderer>(
         .checked_add(frames)
         .ok_or(ExportError::Invalid("frame range overflows"))?;
     let data_bytes = frames
-        .checked_mul(4)
+        .checked_mul(u64::from(encoding.frame_bytes()))
         .and_then(|bytes| u32::try_from(bytes).ok())
         .filter(|bytes| *bytes <= u32::MAX - 36)
         .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
     let byte_rate = sample_rate
-        .checked_mul(4)
+        .checked_mul(encoding.frame_bytes())
         .ok_or(ExportError::Invalid("sample rate is too large"))?;
     if path.file_name().is_none() {
         return Err(ExportError::Invalid("destination has no file name"));
@@ -300,6 +336,7 @@ fn publish<R: BlockRenderer>(
             data_bytes,
             byte_rate,
             &mut renderer,
+            encoding,
         )?;
         renderer.before_publication()
     });
@@ -407,9 +444,10 @@ fn write_wav(
     data_bytes: u32,
     byte_rate: u32,
     renderer: &mut impl BlockRenderer,
+    encoding: WavEncoding,
 ) -> Result<(), ExportError> {
     let mut writer = BufWriter::new(file);
-    write_header(&mut writer, sample_rate, data_bytes, byte_rate)?;
+    write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
 
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut remaining = frames;
@@ -421,8 +459,15 @@ fn write_wav(
                 if !sample.is_finite() {
                     return Err(ExportError::Invalid("render produced a non-finite sample"));
                 }
-                let pcm = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-                write_all(&mut writer, &pcm.to_le_bytes(), "write PCM samples")?;
+                match encoding {
+                    WavEncoding::Pcm16 => {
+                        let pcm = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                        write_all(&mut writer, &pcm.to_le_bytes(), "write PCM samples")?;
+                    }
+                    WavEncoding::Float32 => {
+                        write_all(&mut writer, &sample.to_le_bytes(), "write float samples")?
+                    }
+                }
             }
         }
         remaining -= count as u64;
@@ -465,17 +510,33 @@ fn write_header(
     data_bytes: u32,
     byte_rate: u32,
 ) -> Result<(), ExportError> {
+    write_header_encoded(writer, rate, data_bytes, byte_rate, WavEncoding::Pcm16)
+}
+
+fn write_header_encoded(
+    writer: &mut impl Write,
+    rate: u32,
+    data_bytes: u32,
+    byte_rate: u32,
+    encoding: WavEncoding,
+) -> Result<(), ExportError> {
     let mut header = [0_u8; 44];
     header[..4].copy_from_slice(b"RIFF");
     header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
     header[8..16].copy_from_slice(b"WAVEfmt ");
     header[16..20].copy_from_slice(&16_u32.to_le_bytes());
-    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    header[20..22].copy_from_slice(
+        &(match encoding {
+            WavEncoding::Pcm16 => 1_u16,
+            WavEncoding::Float32 => 3,
+        })
+        .to_le_bytes(),
+    );
     header[22..24].copy_from_slice(&2_u16.to_le_bytes());
     header[24..28].copy_from_slice(&rate.to_le_bytes());
     header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
-    header[32..34].copy_from_slice(&4_u16.to_le_bytes());
-    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[32..34].copy_from_slice(&(encoding.frame_bytes() as u16).to_le_bytes());
+    header[34..36].copy_from_slice(&((encoding.frame_bytes() * 4) as u16).to_le_bytes());
     header[36..40].copy_from_slice(b"data");
     header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
     write_all(writer, &header, "write the WAV header")

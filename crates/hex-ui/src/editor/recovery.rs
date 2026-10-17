@@ -116,7 +116,7 @@ impl EditorView {
         self.pending_restart_request = None;
         self.clear_audio_accounting();
         self.status = "audio unavailable · editing and saving remain available".into();
-        self.error = Some(error);
+        self.error = Some(error.into());
     }
 
     fn clear_audio_accounting(&mut self) {

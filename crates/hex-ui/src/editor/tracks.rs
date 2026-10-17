@@ -497,6 +497,9 @@ impl EditorView {
                     .opacity(0.035),
             );
         }
+        if let Some(preview) = self.clip_paint_overlay(track_id, viewport) {
+            clip_area = clip_area.child(preview);
+        }
         if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor) {
             clip_area = clip_area.children([selection]);
         }
@@ -791,6 +794,7 @@ impl EditorView {
                 })),
             );
         let header = div()
+            .id(("arrangement-track-header", track_id.value()))
             .w(px(TRACK_HEADER_WIDTH))
             .h(px(TRACK_ROW_HEIGHT))
             .flex_shrink_0()
@@ -811,6 +815,7 @@ impl EditorView {
             } else {
                 theme::color(theme::PaletteRole::Surface)
             }))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .child(track_name_view)
             .child(track_controls);
         div()

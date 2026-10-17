@@ -74,6 +74,25 @@ impl EditorView {
         self.focus_clip_details(window, cx)
     }
 
+    fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
+        let project = &self.state.as_ref()?.project;
+        if self.mode == EditorMode::Session {
+            let (track, scene) = self.selected_cell?;
+            match project.session_cell(track, scene)? {
+                hex_project::SessionCellContent::Midi(clip) => Some((clip.id(), true)),
+                hex_project::SessionCellContent::Audio(clip) => Some((clip.id(), false)),
+                hex_project::SessionCellContent::Stop => None,
+            }
+        } else {
+            let clip = self.selected_clip?;
+            if project.midi_clip(clip).is_some() {
+                Some((clip, true))
+            } else {
+                project.clip(clip).map(|_| (clip, false))
+            }
+        }
+    }
+
     pub(super) fn clip_detail_view(
         &mut self,
         window: &gpui::Window,
@@ -188,6 +207,68 @@ impl EditorView {
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(label)),
         );
+        if !self.device_panel_active
+            && let Some((clip, to_audio)) = self.conversion_selection()
+        {
+            let enabled = !self.edit_pending();
+            let generation = self.project_generation;
+            let revision = self.state.as_ref().map_or(0, |state| state.revision);
+            row = row.child(
+                div()
+                    .id("convert-clip")
+                    .debug_selector(|| "convert-clip".into())
+                    .h(px(18.0))
+                    .px(px(5.0))
+                    .flex()
+                    .items_center()
+                    .text_color(rgb(theme::color(if enabled {
+                        theme::PaletteRole::SecondaryText
+                    } else {
+                        theme::PaletteRole::Muted
+                    })))
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+                    .child(theme::text(if to_audio { "→ audio" } else { "→ midi" }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            description: if to_audio {
+                                "bounce clip to audio in place"
+                            } else {
+                                "convert to empty editable midi clip"
+                            }
+                            .into(),
+                        })
+                        .into()
+                    })
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        if !enabled
+                            || view.edit_pending()
+                            || view.project_generation != generation
+                            || view.conversion_selection() != Some((clip, to_audio))
+                        {
+                            return;
+                        }
+                        if !view.focus_clip_details(window, cx) {
+                            return;
+                        }
+                        view.cancel_time_selection_gesture();
+                        view.clip_view_open = true;
+                        if view.enqueue(hex_session::service::Request::ConvertClip {
+                            project_generation: generation,
+                            revision,
+                            clip,
+                            to_audio,
+                        }) {
+                            view.status = if to_audio {
+                                "bouncing clip to audio"
+                            } else {
+                                "converting clip to midi"
+                            }
+                            .into();
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
         row = row.child(
             div()
                 .id("clip-detail-tab")

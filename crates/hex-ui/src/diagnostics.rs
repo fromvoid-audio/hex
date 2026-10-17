@@ -93,19 +93,16 @@ fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
     ));
 }
 
-pub(crate) fn record_state(cx: &mut App, status: &str, error: &Option<String>) -> Option<String> {
+pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {
     cx.try_global::<SessionDiagnostics>()?;
     cx.update_global::<SessionDiagnostics, _>(|diagnostics, _| {
         let failure = match &diagnostics.handle {
             Ok(handle) => {
-                if status != diagnostics.last_status || error != &diagnostics.last_error {
-                    let event = format!(
-                        "status={status}; error={}",
-                        error.as_deref().unwrap_or("none")
-                    );
+                if status != diagnostics.last_status || error != diagnostics.last_error.as_deref() {
+                    let event = format!("status={status}; error={}", error.unwrap_or("none"));
                     if handle.record(&event).is_ok() {
                         diagnostics.last_status = status.to_owned();
-                        diagnostics.last_error.clone_from(error);
+                        diagnostics.last_error = error.map(str::to_owned);
                     }
                 }
                 handle.failure()
@@ -136,8 +133,8 @@ mod tests {
             Some("audio stopped · invalid event batch · frame 128 · audio rev 3".to_owned());
         cx.update(|cx| {
             install_session_log(cx, Ok(log.handle()));
-            assert!(record_state(cx, "audio render fault · stopped", &fault).is_none());
-            assert!(record_state(cx, "audio render fault · stopped", &fault).is_none());
+            assert!(record_state(cx, "audio render fault · stopped", fault.as_deref()).is_none());
+            assert!(record_state(cx, "audio render fault · stopped", fault.as_deref()).is_none());
         });
         log.shutdown().expect("flush log");
         let contents = std::fs::read_to_string(log.path()).expect("read log");
@@ -146,10 +143,10 @@ mod tests {
         cx.update(|cx| {
             install_session_log(cx, Err("disk unavailable".to_owned()));
             assert_eq!(
-                record_state(cx, "stopped", &fault).as_deref(),
+                record_state(cx, "stopped", fault.as_deref()).as_deref(),
                 Some("session logging unavailable: disk unavailable")
             );
-            assert!(record_state(cx, "stopped", &fault).is_none());
+            assert!(record_state(cx, "stopped", fault.as_deref()).is_none());
         });
         std::fs::remove_dir_all(directory).expect("remove fixture");
     }
