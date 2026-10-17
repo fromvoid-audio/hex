@@ -190,10 +190,13 @@ impl ComputerKeyboardRuntime {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("instrument registry is unavailable"))?;
         let instrument = registry
-            .prepare_instrument_with_tuning(
+            .prepare_instrument(
                 device.state(),
-                project.sample_rate(),
-                &project.tuning().table().map_err(|e| Invalid(e.0))?,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: &project.tuning().table().map_err(|e| Invalid(e.0))?,
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .map_err(|_| Invalid("computer keyboard instrument preparation failed"))?;
         let mut runtime =
@@ -298,6 +301,7 @@ impl ComputerKeyboardRuntime {
                                     velocity,
                                 }],
                                 1,
+                                &hex_lattice::EMPTY_DEVICE_RESOURCES,
                             )
                             .is_ok();
                     continue;
@@ -401,7 +405,14 @@ impl ComputerKeyboardRuntime {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("instrument registry is unavailable"))?;
         let instrument = registry
-            .prepare_instrument_with_tuning(device.state(), project.sample_rate(), &tuning)
+            .prepare_instrument(
+                device.state(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: &tuning,
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .map_err(|_| Invalid("computer keyboard tuning preparation failed"))?;
         let mut result = Self::prepare_instrument_with_continuation(
             track,
@@ -840,7 +851,12 @@ impl ComputerKeyboardRuntime {
         }
         if let Some(runtime) = &mut self.mutable {
             runtime
-                .process_block_with_clock(&events[..len], output, clock)
+                .process_block_with_clock(
+                    &events[..len],
+                    output,
+                    clock,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
                 .map_err(|_| Invalid("computer keyboard runtime refused a note block"))?;
         } else {
             for voice in self.scratch.iter().flatten() {
@@ -858,12 +874,14 @@ impl ComputerKeyboardRuntime {
                         .ok_or(Invalid("computer keyboard age overflow"))?;
                     let gate = voice.gate.unwrap_or(u64::MAX);
                     let sample = match sampler {
-                        Sampler::Inline(note) => note.sample(age, gate),
+                        Sampler::Inline(note) => {
+                            note.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                        }
                         Sampler::Shared(note) => self
                             .context
                             .as_ref()
                             .ok_or(Invalid("computer keyboard context missing"))?
-                            .sample(&note, age, gate),
+                            .sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
                     };
                     target[0] += sample[0];
                     target[1] += sample[1];
@@ -997,8 +1015,8 @@ mod tests {
                 playback.render(chunk).unwrap();
             }
             for (age, actual) in output.into_iter().enumerate() {
-                let x = a.sample(age as u64, u64::MAX);
-                let y = b.sample(age as u64, u64::MAX);
+                let x = a.sample(age as u64, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                let y = b.sample(age as u64, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 assert_eq!(actual, [x[0] + y[0], x[1] + y[1]]);
             }
             input.set_key(0, None).unwrap();
@@ -1008,8 +1026,16 @@ mod tests {
                 playback.render(chunk).unwrap();
             }
             for (offset, actual) in release.into_iter().enumerate() {
-                let x = a.sample(512 + offset as u64, 512);
-                let y = b.sample(512 + offset as u64, 512);
+                let x = a.sample(
+                    512 + offset as u64,
+                    512,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
+                let y = b.sample(
+                    512 + offset as u64,
+                    512,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
                 assert_eq!(actual, [x[0] + y[0], x[1] + y[1]]);
             }
             assert!(!playback.playing());
@@ -1318,13 +1344,15 @@ mod integration_tests {
             let mut output = [[0.0; 2]; 512];
             runtime.render(&mut output).unwrap();
             for (age, actual) in output.iter().enumerate() {
-                let sample = (live.sample(age as u64, u64::MAX)[0]
-                    + if playing {
-                        authored.sample(age as u64, 48000)[0]
-                    } else {
-                        0.0
-                    })
-                    * 0.25;
+                let sample =
+                    (live.sample(age as u64, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES)[0]
+                        + if playing {
+                            authored.sample(age as u64, 48000, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                                [0]
+                        } else {
+                            0.0
+                        })
+                        * 0.25;
                 assert!(
                     (actual[0] - sample).abs() < 1e-6,
                     "playing={playing} age={age} actual={actual:?} expected={sample}"
@@ -1368,7 +1396,10 @@ mod integration_tests {
         let instrument = hex_devices::prepare_legacy_sine_instrument(48000).unwrap();
         let note = instrument.prepare_note(60, 100).unwrap();
         for (age, actual) in output.iter().enumerate() {
-            assert_eq!(*actual, note.sample(age as u64, u64::MAX));
+            assert_eq!(
+                *actual,
+                note.sample(age as u64, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            );
         }
         assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
     }
@@ -1421,7 +1452,7 @@ mod integration_tests {
         let instrument = hex_devices::prepare_legacy_sine_instrument(48_000).unwrap();
         let note = instrument.prepare_note(60, 100).unwrap();
         for (age, actual) in output.into_iter().enumerate() {
-            let sample = note.sample(age as u64, u64::MAX)[0];
+            let sample = note.sample(age as u64, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES)[0];
             assert!(
                 (actual[0] + sample * 1.5).abs() < 1e-6,
                 "left at {age}: {actual:?} vs {sample}"
