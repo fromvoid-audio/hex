@@ -1,3 +1,32 @@
+## native parameter semantics — #2674 / PR290, 17 october 2026
+
+Optional validated state-aware semantics preserve descriptor literals and authored
+state. Auto Pan and dynamic EQ declare their real normalization/access/stepping/
+smoothing and existing capability boundaries. Cached host views and the standalone
+schema2 report consume them; unknown/deleted IDs and read-only edits refuse.
+Focused numeric, identity, legacy shelf, registry and view tests accompany it.
+See [contract](docs/native-parameter-semantics.md). The first integrated full run
+failed a harmonic-editor worker wait. Batch preflight now avoids redundant
+descriptor scans while each private candidate still rechecks membership, domain
+and access. Both new regressions fail before/pass after; focused contract15,
+registry2, unchanged harmonic UI case and strict affected Clippy pass. A release
+64-parameter profile measured median11.089ms before/4.004ms after; see
+[provenance](research/observations/parameter-semantics-2674/README.md) for limits.
+Fresh full final-source CI remains required. Generic sample-offset
+automation/modulation and full W05/W20 acceptance
+remain open; no DSP, codec or EQ envelope evaluator changes.
+
+## eq edge creation and held-pointer drag — #2729 / PR342, 17 october 2026
+
+Blank presses preview a stable-ID low/high cut in the outer 5% of the logarithmic
+plot or an interior bell. The same held pointer moves it; release atomically
+commits its final position and identity reservation as one history edit. Escape,
+focus loss and stale source/allocator/selection/project discard the preview.
+Existing node and automation-point gestures retain their paths. Targeted rendered
+regressions and source checks are recorded with PR342; full exact-source CI,
+optimized delivery and native interaction/listening remain separate evidence.
+See [eq editing contract](docs/eq.md).
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback
