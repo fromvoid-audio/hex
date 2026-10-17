@@ -219,3 +219,51 @@ Its dirty user edits and ignored reference patch were NOT pushed by this task.
 Preserve them; do not claim cloud access to unpublished reference contents or Mac
 credentials/user libraries. Ported Hex source and hashed feature inventory are
 checkpointed. No unrelated worktrees, libraries, user app or media were altered.
+
+## pushed source identities and runtime checkpoint report
+
+- PR350/foundation: `ac29a1add5a036c220e0ea0059cd37288ff6462b`.
+- PR351/runtime: `abe18dda1df0b38fc562962c205fa4c823f487ca`, WIP commit
+  “checkpoint native project tuning runtime and Session continuation”; 51 owned
+  files committed, clean worktree, remote confirmed. Runtime branch incorporates
+  foundation source, but the foundation PR itself has NOT merged into main.
+- PR352/editor implementation checkpoint: `96c7fe0c` (full head is recorded by the
+  coordinating handoff after push); this document is a later handoff-only commit
+  on that same existing canonical branch. No implementation fixes during pause.
+- PR353/adapter: `8936ed7364d62ef32aa961a65819964c0707d9cb`, WIP safe adapter
+  boundary; only seven source/manifest/license/docs files, remote confirmed.
+
+All branch names are in the canonical table above. Preserve these histories when
+integrating. WIP source is intentionally published with known failures visible.
+
+Runtime's final safe-stop report adds these precise evidence/repair details:
+
+| runtime check before pause | result | Mac-only log |
+| --- | --- | --- |
+| device library suite | 312 passed, 1 ignored | /tmp/hex-2740-kernels-latest.log |
+| keyboard tuning tests | 3 passed (skipped/Undo phase, callback refusal PCM, ordinary/Open family refusal) | /tmp/hex-2740-keyboard-tuning.log |
+| Session production check | passed, twice before latest additions | /tmp/hex-2740-session-check.log, /tmp/hex-2740-session-check2.log |
+| earlier engine test build | failed private Scale::neutral fixture; fixture corrected, broad rerun outstanding | /tmp/hex-2740-engine-latest.log |
+| latest Operator fixture | KNOWN compile failure: nonexistent MutableInstrumentRuntime::preflight call; UNFIXED | /tmp/hex-2740-operator-tuning.log |
+
+Newest lattice authority tests, Arrangement/Session integration matrix, and
+Service transaction tests are unverified; latest additions also need formatting.
+Do not accept enabled-tuning guard removal before complete runtime acceptance.
+Finish routed MIDI/export PCM, callback total/net-zero allocation probes, release
+keyboard copy measurement, stack/footprint review, docs and full exact-source CI.
+The phase formula is wrapping `offset_new = offset_old + (step_old-step_new)*age`.
+Static provider descriptor pointer identity is authority; no function-address
+comparison. Old context identity must propagate through every cache path.
+
+Adapter pre-pause standalone package `cargo test --locked`: 5 passed;
+`cargo clippy --all-targets --locked -- -D warnings`: passed. No durable log retained;
+command outputs exist in its agent chat only. The 16-byte scale-name cap follows
+pinned client's 17-byte NUL-terminated buffer; master header itself gives no max.
+Root/app integration and real installed-library/client/signing verification remain
+open. Ignore its package-owned target directory, retained only on the Mac.
+
+All primary/agent-owned Cargo/rustc/test/profiler jobs were confirmed stopped.
+No active tool goal existed to pause. No user app was quit. Source worktrees are
+clean after checkpoint commits except ignored build/evidence artifacts. Freqs
+unpublished user work remains excluded. The coordinator owns cloud dispatch;
+this chat remains locally paused and has created no cloud task.
