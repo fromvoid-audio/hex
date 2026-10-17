@@ -475,13 +475,20 @@ impl PreparedSessionInventory {
             let slot = track.instrument();
             let config = slot
                 .map(|device| {
+                    let resources = shared_contexts.owner_for_device(device.id()).and_then(
+                        crate::shared_analytic::SharedContextOwner::resource_configuration,
+                    );
                     instrument_registry
                         .prepare_instrument(
                             device.state(),
                             &hex_lattice::DevicePreparationContext {
                                 sample_rate: project.sample_rate(),
                                 tuning: shared_contexts.tuning(),
-                                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                                resources: resources.map_or(
+                                    &hex_lattice::EMPTY_DEVICE_RESOURCES
+                                        as &dyn hex_lattice::DeviceResources,
+                                    |configuration| configuration,
+                                ),
                             },
                         )
                         .map_err(|_| crate::Invalid("track instrument state is unsupported"))
@@ -1223,6 +1230,27 @@ impl PreparedSessionInventory {
     /// Number of compact indices stored by all Session source templates.
     pub fn midi_note_bank_reference_count(&self) -> usize {
         self.midi_note_bank_reference_count
+    }
+
+    pub(crate) fn clone_mutable_resources_on_control(
+        &self,
+        track: TrackId,
+    ) -> Result<
+        Option<crate::native_device_resources::DeviceResourceConfiguration>,
+        crate::mutable_instrument::MutableInstrumentRuntimeError,
+    > {
+        self.shared_contexts
+            .index_for_track(track)
+            .and_then(|index| self.shared_contexts.owner(index))
+            .and_then(crate::shared_analytic::SharedContextOwner::resource_configuration)
+            .map(|configuration| {
+                configuration
+                    .try_clone_on_control(std::mem::size_of::<
+                        crate::native_device_resources::DeviceResourceConfiguration,
+                    >())
+                    .map_err(|_| crate::mutable_instrument::MutableInstrumentRuntimeError::Budget)
+            })
+            .transpose()
     }
 
     pub(crate) fn mutable_instrument_factory(

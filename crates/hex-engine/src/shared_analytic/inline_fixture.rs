@@ -77,7 +77,10 @@ impl InlineResourceHostFixture {
                         state: configuration.state,
                         sample_rate,
                     },
-                    configuration.resources,
+                    configuration
+                        .resources
+                        .try_into_configuration_on_control(4096)
+                        .map_err(|_| Invalid("fixture configuration preparation refused"))?,
                     4096,
                 )?,
             );

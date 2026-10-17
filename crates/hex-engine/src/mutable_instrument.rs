@@ -301,6 +301,7 @@ impl MutableInstrumentTrackRuntime {
         pair_bytes.checked_add(ledger_bytes)
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,

@@ -507,6 +507,9 @@ impl PreparedDeviceResourceLease {
     }
 }
 impl DeviceResourceConfiguration {
+    pub(crate) fn source_scope_identity(&self) -> u64 {
+        self.lease.source_scope_identity()
+    }
     pub(crate) fn same_configuration(&self, other: &Self) -> bool {
         self.lease.same_configuration(&other.lease)
     }

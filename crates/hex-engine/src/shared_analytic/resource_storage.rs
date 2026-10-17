@@ -15,7 +15,7 @@ pub(super) struct InlineStateStorage {
 }
 pub(super) fn prepare_state_on_control(
     source: &NativeDeviceState,
-    resources: &crate::native_device_resources::PreparedDeviceResourceLease,
+    resources: &crate::native_device_resources::DeviceResourceConfiguration,
     max_metadata_bytes: usize,
 ) -> Result<(NativeDeviceState, InlineStateStorage), Invalid> {
     let refused = || Invalid("inline resource owner metadata preparation refused");

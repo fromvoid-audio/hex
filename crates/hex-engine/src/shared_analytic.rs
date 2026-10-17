@@ -135,7 +135,7 @@ pub(crate) struct SharedContextOwner {
     identity: SharedContextIdentity,
     declared_bytes: usize,
     context: Option<Arc<dyn PreparedSharedAnalyticContext>>,
-    resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     state_storage: Option<resource_storage::InlineStateStorage>,
 }
 
@@ -155,7 +155,7 @@ impl SharedContextOwner {
         mut identity: SharedContextIdentity,
         declared_bytes: usize,
         context: Box<dyn PreparedSharedAnalyticContext>,
-        resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     ) -> Self {
         identity.resource_scope = resources
             .as_ref()
@@ -172,7 +172,7 @@ impl SharedContextOwner {
     fn from_inline_resources_on_control(
         id: SharedContextId,
         mut identity: SharedContextIdentity,
-        resources: crate::native_device_resources::PreparedDeviceResourceLease,
+        resources: crate::native_device_resources::DeviceResourceConfiguration,
         max_metadata_bytes: usize,
     ) -> Result<Self, Invalid> {
         identity.resource_scope = resources.source_scope_identity();
@@ -220,6 +220,12 @@ impl SharedContextOwner {
     }
     pub(crate) fn is_inline_resource_scope(&self) -> bool {
         self.context.is_none() && self.resources.is_some()
+    }
+
+    pub(crate) fn resource_configuration(
+        &self,
+    ) -> Option<&crate::native_device_resources::DeviceResourceConfiguration> {
+        self.resources.as_ref()
     }
 
     pub(crate) fn resources(&self) -> &dyn hex_lattice::DeviceResources {
@@ -404,7 +410,7 @@ impl SharedAnalyticContextTable {
             };
             let resources = match resource_preparation {
                 Some(preparation) => preparation
-                    .configuration_lease_on_control(device.state())
+                    .configuration_on_control(device.state())
                     .map_err(|_| Invalid("instrument resource scope preparation refused"))?,
                 None if device.state().asset_references().is_empty() => None,
                 None => return Err(Invalid("instrument resource source plan is unavailable")),
@@ -423,6 +429,7 @@ impl SharedAnalyticContextTable {
                     },
                 )
                 .map_err(|_| Invalid("track instrument state is unsupported"))?;
+            let mut mutable_continuation = false;
             if prepared.prefers_mutable_continuation()
                 || previous.is_some_and(|old| {
                     old.mutable_continuations
@@ -435,15 +442,22 @@ impl SharedAnalyticContextTable {
                     .is_some()
                 {
                     mutable_continuations.push((track.id(), device.id()));
-                    continue;
+                    mutable_continuation = true;
+                    if resources.is_none() {
+                        continue;
+                    }
                 }
-                if prepared.prefers_mutable_continuation() {
+                if !mutable_continuation && prepared.prefers_mutable_continuation() {
                     return Err(Invalid("mutable continuation capability disappeared"));
                 }
             }
-            let context = prepared
-                .prepare_shared_analytic_context()
-                .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?;
+            let context = if mutable_continuation {
+                None
+            } else {
+                prepared
+                    .prepare_shared_analytic_context()
+                    .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?
+            };
             if context.is_none() && resources.is_none() {
                 continue;
             }

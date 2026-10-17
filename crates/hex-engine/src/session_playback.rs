@@ -937,10 +937,11 @@ impl SessionPlayback {
                 .session()
                 .mutable_instrument_factory(id)
                 .map(|factory| {
-                    MutableInstrumentTrackRuntime::new(
+                    let resources = revision.session().clone_mutable_resources_on_control(id)?;
+                    MutableInstrumentTrackRuntime::new_with_configuration(
                         factory,
                         revision.arrangement().sample_rate(),
-                        None,
+                        resources,
                     )
                 })
                 .transpose()

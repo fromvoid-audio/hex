@@ -67,7 +67,7 @@ fn owner(
         },
         bytes,
         context,
-        Some(lease),
+        Some(lease.try_into_configuration_on_control(4096).ok().unwrap()),
     ))
 }
 
@@ -99,7 +99,7 @@ fn inline_owner(
                 state,
                 sample_rate: 48_000,
             },
-            lease,
+            lease.try_into_configuration_on_control(4096).ok().unwrap(),
             4096,
         )
         .unwrap(),
@@ -568,7 +568,9 @@ fn raw_outer_arc_and_opaque_provider_context_cannot_gain_native_inline_metadata_
                 state: state.clone(),
                 sample_rate: 48_000,
             },
-            source.prepare_lease_on_control(&state, 4096).unwrap(),
+            source
+                .prepare_configuration_on_control(&state, 4096)
+                .unwrap(),
             4096,
         )
         .unwrap(),
@@ -607,5 +609,126 @@ fn raw_outer_arc_and_opaque_provider_context_cannot_gain_native_inline_metadata_
             .resident_frames()
             .unwrap()[0],
         [0.25, -0.75]
+    );
+}
+
+#[test]
+fn actual_prepared_context_and_mutable_host_share_one_configuration_body_until_control_retirement()
+{
+    use crate::mutable_instrument::{
+        MAX_MUTABLE_EVENTS_PER_QUERY, MutableInstrumentTrackRuntime, MutableOnsetBuffer,
+    };
+    use crate::native_device_resources::retained::RETIRED_RESOURCE_ROOTS;
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let ids = fixtures::ids();
+    let Some(inputs) = fixtures::bank(&ids) else {
+        return;
+    };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &inputs,
+        &fixtures::specs(&ids),
+        fixtures::limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let bank = DeviceResourceBank::try_new_on_control(
+        inputs,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "prepared resource anchor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let state = fixtures::state(ids[0]);
+    let (anchor, _) = inline_owner(
+        state.clone(),
+        bank.prepare_lease_on_control(&state, 4096).unwrap(),
+        track,
+        device,
+    );
+    let configuration = anchor.resource_configuration().unwrap();
+    let factory = hex_lattice::conformance::resource_pcm::mutable::prepare(
+        &state,
+        &DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: configuration,
+        },
+        0,
+    )
+    .unwrap();
+    let configuration = configuration
+        .try_clone_on_control(std::mem::size_of_val(configuration))
+        .unwrap();
+    let mut host = MutableInstrumentTrackRuntime::new_with_configuration(
+        &factory,
+        48_000,
+        Some(configuration),
+    )
+    .unwrap();
+    let retired = RETIRED_RESOURCE_ROOTS.with(std::cell::Cell::get);
+    drop(bank);
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        data_rows: 128,
+        handle_rows: 64,
+        root_rows: 16,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    })
+    .unwrap();
+    ledger
+        .mutate(|ledger| resource_storage::visit_owner(&anchor, ledger, AudioStorageRole::Archive))
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    let before = ledger.summary().unwrap();
+    ledger
+        .mutate(|ledger| host.visit_resource_owner_on_control(ledger, AudioStorageRole::Current))
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    let after = ledger.summary().unwrap();
+    assert_eq!(after.data_allocations, before.data_allocations);
+    assert_eq!(
+        after.data_bytes - before.data_bytes,
+        std::mem::size_of::<crate::native_device_resources::DeviceResourceConfiguration>()
+    );
+    drop(ledger);
+    let mut output = [[0.0; 2]; 2];
+    let mut onsets = MutableOnsetBuffer::default();
+    let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+    host.begin_block();
+    host.process_segment(track, 0, 0, &mut output, &mut onsets, &[], &mut events)
+        .unwrap();
+    host.commit_block();
+    assert_eq!(output, fixtures::PCM[..2]);
+    assert_eq!(RETIRED_RESOURCE_ROOTS.with(std::cell::Cell::get), retired);
+    drop(anchor);
+    host.begin_block();
+    output.fill([0.0; 2]);
+    host.process_segment(track, 2, 2, &mut output, &mut onsets, &[], &mut events)
+        .unwrap();
+    host.commit_block();
+    assert_eq!(output, fixtures::PCM[2..]);
+    assert_eq!(RETIRED_RESOURCE_ROOTS.with(std::cell::Cell::get), retired);
+    drop(host); // Calling control thread owns the final actual configuration.
+    assert_eq!(
+        RETIRED_RESOURCE_ROOTS.with(std::cell::Cell::get),
+        retired + 1
     );
 }

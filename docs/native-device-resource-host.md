@@ -455,3 +455,18 @@ all 64 frames across 17-frame partitions and ends in silence. Deliberately
 committing speculative state fails that oracle; restored rollback passes. This
 fixture uses the unregistered resource ABI conformance provider, not Sampler note
 semantics, a native publication permit or a final reaper-drop receipt.
+
+Prepared-context configuration unification uses the same existing immutable
+configuration body as effects and mutable tracks. Actual Arrangement/Session
+instrument preparation borrows the source owner's view; mutable runtime creation
+retains a bounded alias from the immutable prepared-context table. Mutable
+continuations with resources retain that source anchor instead of discarding it
+when selecting the continuation path. An actual inline owner and mutable host
+close one shared body only when both physical handles are inventoried; either
+can retire on control without invalidating the other's PCM.
+
+This is source wiring, not opened registry admission. Referenced registry
+processing still refuses, opaque provider contexts remain Unknown, and a complete
+resource-aware closed graph constructor plus publication/reaper proof is still
+required. No raw Arc, source identity or provider byte declaration upgrades that
+missing physical proof.

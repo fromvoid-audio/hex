@@ -23,15 +23,15 @@ pub struct DeviceResourcePreparation<'a> {
     pub max_scope_metadata_bytes: usize,
 }
 impl DeviceResourcePreparation<'_> {
-    pub(crate) fn configuration_lease_on_control(
+    pub(crate) fn configuration_on_control(
         self,
         state: &NativeDeviceState,
-    ) -> Result<Option<PreparedDeviceResourceLease>, ResourcePreparationError> {
+    ) -> Result<Option<DeviceResourceConfiguration>, ResourcePreparationError> {
         if state.asset_references().is_empty() {
             return Ok(None);
         }
         self.bank
-            .prepare_lease_on_control(state, self.max_scope_metadata_bytes)
+            .prepare_configuration_on_control(state, self.max_scope_metadata_bytes)
             .map(Some)
     }
 }

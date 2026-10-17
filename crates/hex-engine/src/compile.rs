@@ -353,7 +353,14 @@ fn compile_project_inner<'a>(
             .instrument()
             .map(|slot| {
                 instrument_registry
-                    .prepare_instrument(slot.state(), &device_context)
+                    .prepare_instrument(slot.state(), &hex_lattice::DevicePreparationContext {
+                        sample_rate: snapshot.sample_rate(),
+                        tuning: shared_contexts.tuning(),
+                        resources: shared_contexts.owner_for_device(slot.id())
+                            .and_then(crate::shared_analytic::SharedContextOwner::resource_configuration)
+                            .map_or(&hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+                                |configuration| configuration),
+                    })
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
