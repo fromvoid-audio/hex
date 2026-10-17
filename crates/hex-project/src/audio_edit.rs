@@ -602,3 +602,5 @@ pub(crate) use commands::{
 
 mod stretch;
 pub use stretch::preview_audio_clip_stretch;
+
+mod warp_projection;
