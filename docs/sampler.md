@@ -156,6 +156,24 @@ round-trip, one Undo/Redo, original/project-rate frame metadata and full binding
 capacity are covered. This model transaction performs no decoding or resource
 admission; the actual worker/media-loading and usable device request remain open.
 
+Session residency now permits an original-only media entry without a project-rate
+stereo derivative. Existing clip constructors continue preparing that derivative;
+device-only originals are omitted from the legacy clip media bank until one is
+prepared. Actual mono/source-waveform ownership tests cover this representation
+without copying PCM. Candidate resource preparation can borrow one pending
+decoded original together with existing media, using the actual candidate Asset
+metadata and unchanged bank/catalog family. It rejects metadata mismatch,
+unrequested pending media and current-entry collisions. The still-live decoded
+temporary must join the selected physical union; a successful catalog alone is
+insufficient. This staging does not commit the model/media or grant playback.
+
+The focused Session library suite and strict all-target Clippy pass. The broader
+cloud Session package run encountered linker SIGBUS while the filesystem had
+63 MiB free; that failed run is retained and is not claimed green. Full current
+integration/native qualification and usable loading remain open. Existing clip
+imports/reopen/batches retain their prepared derivative behavior. A device-only
+asset needs worker-side clip preparation before it can also serve an audio clip.
+
 The kernel implements these original laws, pending reference measurement:
 
 | Area | Implemented contract |

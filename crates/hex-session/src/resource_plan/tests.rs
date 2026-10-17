@@ -4,6 +4,7 @@ use hex_engine::{Audio, AudioStorageLedgerReservation};
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };
+use std::sync::Arc;
 
 fn limits() -> ResidentResourcePlanReservation {
     ResidentResourcePlanReservation {
@@ -90,6 +91,226 @@ fn state(ids: &[AssetId]) -> NativeDeviceState {
             .collect(),
     )
     .unwrap()
+}
+
+#[test]
+fn device_only_mono_residency_keeps_original_and_waveform_without_stereo_derivative() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let cancel = AtomicBool::new(false);
+    let mut session = Session::new(48_000, 8, 1024).unwrap();
+    let hex_project::Created::Asset(asset) = session
+        .editor
+        .execute(hex_project::Command::AddAsset {
+            path: "device-original.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let source = OwnedAudioSource::try_resident_mono(48_000, vec![0.25, -0.5, 0.75, -1.0])
+        .ok()
+        .unwrap();
+    let alias = source
+        .alias_for_resource_plan_on_control(std::mem::size_of::<OwnedAudioSource>())
+        .unwrap();
+    let inputs = OwnedAudioInputs::try_new(vec![(asset, alias)], limits().inputs)
+        .ok()
+        .unwrap()
+        .prepare_input_storage_on_control()
+        .ok()
+        .unwrap();
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &inputs,
+        &[OriginalResourceSource {
+            asset,
+            sample_rate: 48_000,
+            frames: 4,
+            layout: OriginalResourceLayout::Mono,
+        }],
+        limits().catalog,
+        &cancel,
+    )
+    .unwrap();
+    let backing =
+        DeviceResourceBank::try_new_on_control(inputs, catalog, 65_536, 1_000_000, &cancel)
+            .ok()
+            .unwrap();
+    let waveform = hex_media::waveform::summarize_original(
+        &backing
+            .borrow_original_source_on_control(asset, 4096)
+            .unwrap(),
+        4,
+        4,
+        4096,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(waveform.source_frames, 4);
+    let bins = waveform.cached_bin_count();
+    let original_capacity = source.resident_pcm_capacity_frames().unwrap();
+    session.media.insert(
+        asset,
+        crate::ResidentAsset {
+            source_audio: OriginalAudio::Mono(source),
+            audio: None,
+            waveform: Arc::new(waveform),
+            frames: 4,
+        },
+    );
+    session.resident_frames = original_capacity as u64;
+    session.resident_waveform_bins = bins;
+    session.resident_waveform_bytes = bins * std::mem::size_of::<[hex_media::waveform::Peak; 2]>();
+    drop(backing); // The accepted immutable waveform retains this same source root.
+    assert!(session.audio(asset).is_none());
+    assert!(session.media_bank().resident.is_empty());
+    assert_eq!(session.media.get(&asset).unwrap().pcm().count(), 1);
+    assert_eq!(session.resident_frames(), original_capacity as u64);
+    assert_eq!(
+        session
+            .source_mono(asset)
+            .unwrap()
+            .resident_mono_samples()
+            .unwrap(),
+        &[0.25, -0.5, 0.75, -1.0]
+    );
+    let bank = session
+        .prepare_resident_resource_bank_on_control(&[asset], limits(), &cancel)
+        .unwrap();
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits())?;
+            ledger.borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Caller)?;
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            inventory.visit_on_control(&mut ledger, AudioStorageRole::Current)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            assert!(ledger.summary()?.require_complete().is_err());
+            Ok(())
+        })
+        .unwrap();
+    let retained = bank.borrow_original_source_on_control(asset, 4096).unwrap();
+    drop(session);
+    drop(bank);
+    assert_eq!(
+        retained.view().unwrap().resident_mono_samples().unwrap()[3],
+        -1.0
+    );
+}
+
+#[test]
+fn pending_decoded_original_joins_existing_bank_without_publishing_or_omitting_temporary_owner() {
+    let Some((session, mut ids)) = fixture() else {
+        return;
+    };
+    let before = session.project().clone();
+    let resident_frames = session.resident_frames();
+    let mut candidate = hex_project::Editor::new(before.clone(), 8).unwrap();
+    let hex_project::Created::Asset(asset) = candidate
+        .execute(hex_project::Command::AddAsset {
+            path: "pending-device.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let metadata = candidate.project().asset(asset).unwrap();
+    let pending = OriginalAudio::Mono(
+        OwnedAudioSource::try_resident_mono(48_000, vec![0.125, -0.25, 0.5, -1.0])
+            .ok()
+            .unwrap(),
+    );
+    let cancel = AtomicBool::new(false);
+    // No ignored pending buffer, shadowed current asset, or mismatched metadata.
+    assert!(
+        session
+            .prepare_resident_resource_bank_with_pending_on_control(
+                &ids,
+                Some((metadata, &pending)),
+                limits(),
+                &cancel,
+            )
+            .is_err()
+    );
+    let wrong_rate = OriginalAudio::Mono(
+        OwnedAudioSource::try_resident_mono(44_100, vec![0.5; 4])
+            .ok()
+            .unwrap(),
+    );
+    ids.push(asset);
+    assert!(
+        session
+            .prepare_resident_resource_bank_with_pending_on_control(
+                &ids,
+                Some((metadata, &wrong_rate)),
+                limits(),
+                &cancel,
+            )
+            .is_err()
+    );
+    let existing = session.project().asset(ids[0]).unwrap();
+    assert!(
+        session
+            .prepare_resident_resource_bank_with_pending_on_control(
+                &ids,
+                Some((existing, &wrong_rate)),
+                limits(),
+                &cancel,
+            )
+            .is_err()
+    );
+    drop(wrong_rate);
+    let mut reservation = limits();
+    reservation.catalog.hash_frames = 12;
+    let bank = session
+        .prepare_resident_resource_bank_with_pending_on_control(
+            &ids,
+            Some((metadata, &pending)),
+            reservation,
+            &cancel,
+        )
+        .unwrap();
+    assert_eq!(*session.project(), before);
+    assert_eq!(session.resident_frames(), resident_frames);
+    assert!(!session.media.contains_key(&asset));
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits())?;
+            ledger.borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Caller)?;
+            inventory.visit_on_control(&mut ledger, AudioStorageRole::Current)?;
+            // A successful bank/catalog is insufficient: the still-live decoded
+            // temporary is an actual physical owner until commit or cancellation.
+            assert!(
+                ledger
+                    .validate_selected_shared_handles_on_control()
+                    .is_err()
+            );
+            let OriginalAudio::Mono(source) = &pending else {
+                panic!("mono")
+            };
+            ledger.borrow_native_source_on_control(source, AudioStorageRole::Caller)?;
+            ledger.validate_selected_shared_handles_on_control()?;
+            assert!(ledger.summary()?.require_complete().is_err());
+            Ok(())
+        })
+        .unwrap();
+    let retained = bank.borrow_original_source_on_control(asset, 4096).unwrap();
+    drop(candidate);
+    drop(session);
+    drop(pending);
+    drop(bank);
+    assert_eq!(
+        retained.view().unwrap().resident_mono_samples().unwrap(),
+        &[0.125, -0.25, 0.5, -1.0]
+    );
 }
 
 #[test]

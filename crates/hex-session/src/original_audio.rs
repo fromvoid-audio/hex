@@ -157,8 +157,8 @@ impl ResidentPcm<'_> {
 }
 
 impl crate::ResidentAsset {
-    pub(crate) fn pcm(&self) -> [ResidentPcm<'_>; 2] {
-        [self.source_audio.pcm(), ResidentPcm::Stereo(&self.audio)]
+    pub(crate) fn pcm(&self) -> impl Iterator<Item = ResidentPcm<'_>> + Clone {
+        std::iter::once(self.source_audio.pcm()).chain(self.audio.as_ref().map(ResidentPcm::Stereo))
     }
 }
 impl crate::PreparedImport {

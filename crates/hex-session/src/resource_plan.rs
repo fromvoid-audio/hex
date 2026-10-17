@@ -51,7 +51,9 @@ impl ResidentPcmInventory<'_> {
                     ledger.borrow_native_source_on_control(source, role)?
                 }
             }
-            ledger.borrow_native_audio_on_control(&resident.audio, role)?;
+            if let Some(audio) = &resident.audio {
+                ledger.borrow_native_audio_on_control(audio, role)?;
+            }
             visit_waveform(ledger, &resident.waveform, role)?;
         }
         for waveform in self.waveforms.values() {
@@ -114,12 +116,51 @@ impl Session {
         reservation: ResidentResourcePlanReservation,
         cancel: &AtomicBool,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
+        self.prepare_resident_resource_bank_with_pending_on_control(
+            assets,
+            None,
+            reservation,
+            cancel,
+        )
+    }
+
+    /// Borrow one actual unpublished decoded original while preparing the
+    /// candidate's catalog. The canonical asset must be fresh and requested;
+    /// this never inserts media or publishes a model/audio revision.
+    pub(crate) fn prepare_resident_resource_bank_with_pending_on_control(
+        &self,
+        assets: &[AssetId],
+        pending: Option<(&hex_project::Asset, &OriginalAudio)>,
+        reservation: ResidentResourcePlanReservation,
+        cancel: &AtomicBool,
+    ) -> Result<DeviceResourceBank, ResourcePreparationError> {
         check(cancel)?;
         if assets.len() > hex_project::MAX_ASSETS
             || assets.windows(2).any(|a| a[0].value() >= a[1].value())
         {
             return Err(ResourcePreparationError::InvalidSource);
         }
+        if pending.is_some_and(|(asset, original)| {
+            self.media.contains_key(&asset.id())
+                || assets
+                    .binary_search_by_key(&asset.id().value(), |id| id.value())
+                    .is_err()
+                || asset.source_sample_rate() != original.sample_rate()
+                || usize::try_from(asset.source_frames()).ok() != Some(original.frames())
+        }) {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        let original = |asset| {
+            pending
+                .filter(|(metadata, _)| metadata.id() == asset)
+                .map(|(_, original)| original)
+                .or_else(|| {
+                    self.media
+                        .get(&asset)
+                        .map(|resident| &resident.source_audio)
+                })
+                .ok_or(ResourcePreparationError::InvalidSource)
+        };
         let minimum_metadata = assets
             .len()
             .checked_mul(
@@ -161,11 +202,7 @@ impl Session {
         // unpublished control aliases. Unknown/derived Audio stays unknown.
         for asset in assets {
             check(cancel)?;
-            let original = &self
-                .media
-                .get(asset)
-                .ok_or(ResourcePreparationError::InvalidSource)?
-                .source_audio;
+            let original = original(*asset)?;
             let layout = match original {
                 OriginalAudio::Stereo(_) => OriginalResourceLayout::Stereo,
                 OriginalAudio::Mono(_) => OriginalResourceLayout::Mono,
@@ -179,11 +216,7 @@ impl Session {
         }
         for (asset, fact) in assets.iter().zip(&expected) {
             check(cancel)?;
-            let original = &self
-                .media
-                .get(asset)
-                .ok_or(ResourcePreparationError::InvalidSource)?
-                .source_audio;
+            let original = original(*asset)?;
             let source = match original {
                 OriginalAudio::Stereo(audio) => OwnedAudioSource::alias_native_audio_on_control(
                     audio,

@@ -153,7 +153,7 @@ impl Session {
             }
             residents.push(ResidentAsset {
                 source_audio: member.source_audio,
-                audio: member.audio,
+                audio: Some(member.audio),
                 waveform: Arc::new(member.waveform),
                 frames,
             });
@@ -170,7 +170,16 @@ impl Session {
                             ));
                         };
                         if candidate_media
-                            .insert(*asset, resident.audio.clone())
+                            .insert(
+                                *asset,
+                                resident
+                                    .audio
+                                    .as_ref()
+                                    .ok_or(SessionError::Invalid(
+                                        "audio batch is missing its prepared clip derivative",
+                                    ))?
+                                    .clone(),
+                            )
                             .is_some()
                         {
                             return Err(SessionError::Invalid(

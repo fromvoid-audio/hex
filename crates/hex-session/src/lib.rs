@@ -176,7 +176,9 @@ impl PreparedImport {
 
 struct ResidentAsset {
     source_audio: OriginalAudio,
-    audio: Audio,
+    // Device-only originals need no project-rate stereo derivative. Clip
+    // imports still prepare it before publication; never decode on playback.
+    audio: Option<Audio>,
     waveform: Arc<Waveform>,
     frames: u64,
 }
@@ -380,7 +382,7 @@ impl Session {
                     asset_id,
                     ResidentAsset {
                         source_audio: prepared.source_audio,
-                        audio,
+                        audio: Some(audio),
                         waveform: Arc::new(waveform),
                         frames,
                     },
@@ -506,7 +508,7 @@ impl Session {
             id,
             ResidentAsset {
                 source_audio,
-                audio,
+                audio: Some(audio),
                 waveform: Arc::new(waveform),
                 frames,
             },
@@ -1020,7 +1022,7 @@ impl Session {
         )?;
         let resident = ResidentAsset {
             source_audio: prepared.source_audio,
-            audio: staged_audio,
+            audio: Some(staged_audio),
             waveform: Arc::new(prepared.waveform),
             frames,
         };
@@ -1147,7 +1149,7 @@ impl Session {
             asset_id,
             ResidentAsset {
                 source_audio: prepared.source_audio,
-                audio: staged_audio,
+                audio: Some(staged_audio),
                 waveform: Arc::new(prepared.waveform),
                 frames,
             },
@@ -1367,7 +1369,9 @@ impl Session {
     }
 
     pub fn audio(&self, asset: AssetId) -> Option<&Audio> {
-        self.media.get(&asset).map(|resident| &resident.audio)
+        self.media
+            .get(&asset)
+            .and_then(|resident| resident.audio.as_ref())
     }
 
     /// Stereo original, borrowed on control; native mono uses source_mono.
@@ -1478,7 +1482,9 @@ impl Session {
             resident: self
                 .media
                 .iter()
-                .map(|(id, resident)| (*id, resident.audio.clone()))
+                .filter_map(|(id, resident)| {
+                    resident.audio.as_ref().map(|audio| (*id, audio.clone()))
+                })
                 .collect(),
             verified: self.verified_sources.clone(),
         }
