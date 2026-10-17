@@ -1,7 +1,7 @@
 //! Control-side semantic declarations. None means undeclared, never guessed.
 use crate::{
-    DeviceContractError, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterId,
-    ParameterKind, ParameterValue, validated_state_descriptors,
+    DeviceContractError, DeviceParameterSnapshot, NativeDeviceMetadata, NativeDeviceState,
+    ParameterDescriptor, ParameterId, ParameterKind, ParameterValue, validated_state_descriptors,
 };
 
 macro_rules! semantic_enum {
@@ -97,12 +97,71 @@ pub fn validated_parameter_semantics<D: NativeDeviceMetadata + ?Sized>(
         .iter()
         .find(|d| d.id == id)
         .ok_or(DeviceContractError::UnknownParameter)?;
-    let semantics = definition.parameter_semantics_for_state(state, id)?;
+    semantics_for_descriptor(definition, state, descriptor)
+}
+
+fn semantics_for_descriptor<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
+    state: &NativeDeviceState,
+    descriptor: ParameterDescriptor,
+) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+    let semantics = definition.parameter_semantics_for_state(state, descriptor.id)?;
     if let Some(value) = semantics {
         value.validate(descriptor)?;
     }
     Ok(semantics)
 }
+
+fn require_descriptor_writable<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
+    state: &NativeDeviceState,
+    descriptor: ParameterDescriptor,
+) -> Result<(), DeviceContractError> {
+    if semantics_for_descriptor(definition, state, descriptor)?
+        .is_some_and(|s| s.access == ParameterAccess::ReadOnly)
+    {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    Ok(())
+}
+
+/// Validate every value and access declaration before any private batch patch.
+/// The complete current descriptor set is enumerated once for this preflight;
+/// private sequential candidates still require fresh validation before mutation.
+pub fn validate_parameter_snapshot_for_write<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
+    state: &NativeDeviceState,
+    snapshot: &DeviceParameterSnapshot,
+) -> Result<(), DeviceContractError> {
+    let descriptors = validated_state_descriptors(definition, state)?;
+    snapshot.validate(&descriptors)?;
+    for &(id, _) in snapshot.entries() {
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+            .ok_or(DeviceContractError::UnknownParameter)?;
+        require_descriptor_writable(definition, state, *descriptor)?;
+    }
+    Ok(())
+}
+
+/// Validate one write against its current private candidate, including dynamic
+/// membership, value domain and access. No earlier state's metadata is reused.
+pub fn validate_parameter_write<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
+    state: &NativeDeviceState,
+    id: ParameterId,
+    value: ParameterValue,
+) -> Result<(), DeviceContractError> {
+    let descriptors = validated_state_descriptors(definition, state)?;
+    let descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == id)
+        .ok_or(DeviceContractError::UnknownParameter)?;
+    descriptor.validate(value)?;
+    require_descriptor_writable(definition, state, *descriptor)
+}
+
 /// Enumerate once on control, retaining real stable parameter identities.
 pub fn validated_state_parameters<D: NativeDeviceMetadata + ?Sized>(
     definition: &D,
@@ -111,11 +170,10 @@ pub fn validated_state_parameters<D: NativeDeviceMetadata + ?Sized>(
     validated_state_descriptors(definition, state)?
         .into_iter()
         .map(|descriptor| {
-            let semantics = definition.parameter_semantics_for_state(state, descriptor.id)?;
-            if let Some(value) = semantics {
-                value.validate(descriptor)?;
-            }
-            Ok((descriptor, semantics))
+            Ok((
+                descriptor,
+                semantics_for_descriptor(definition, state, descriptor)?,
+            ))
         })
         .collect()
 }
