@@ -53,6 +53,21 @@ confirmed rightward painting works. Native leftward/reversal acceptance remains
 pending. See [clip painting](docs/clip-paint.md)
 for scope and the finite native checklist.
 
+## clip grab headers and editable bodies — pulse2695, 17 october 2026
+
+- Arrangement audio/MIDI clips use a shaded upper-third grab header and open-hand
+  cursor; clicking the header selects the clip and dragging moves/copies it.
+- Lower bodies share empty-lane point/range selection and double-click-hold MIDI
+  clip painting. Visible edge trims and existing time-area move priority remain.
+- Focused rendered input regression covers both clip kinds, body selection,
+  paint preview/release, canonical placement and Undo. Native macOS acceptance
+  remains user-owned: header hover/move/copy, body selection/paint and edge trim.
+  Validation results and the focused PR are retained with Pulse2695.
+- PR review regressions cover one-click header selection during pending work or
+  another clip's rename, and visible body input across obscured audio/MIDI edges.
+  Header selection stays independent of drag admission; hit routing follows
+  reverse paint order. Both reproducers fail before the repair and pass after.
+
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
 
 - Worker batch failures retain member/path metadata through the UI boundary;

@@ -11,9 +11,9 @@ candidates must not change the project. An unchanged edge is a no-op.
 The former 20-pixel eligibility threshold is removed. Invisible full-height
 left/right edge strips use up to 4 pixels each, narrowing with the rendered
 clip width (minimum 3 pixels for audio, 4 for MIDI) to preserve at least one
-pixel of central move target. The clip body between edges remains a full-height
-move target. Distinct original left/right bracket cursors identify each edge on macOS; no
-colored handles or extracted reference cursor assets are used.
+pixel of central move target. Between the edges, the upper-third header moves
+the clip; the lower two thirds accepts time selection and clip painting. Distinct
+original left/right bracket cursors identify each edge on macOS; no colored handles or extracted reference cursor assets are used.
 
 During a gesture, the fixed original hit geometry stays active but transparent;
 a separate in-track clip preview redraws its geometry and waveform/note marks.
@@ -34,8 +34,8 @@ Authored notes remain intact when hidden by the resized Arrangement region.
 
 ## native review
 
-1. At a wide and a zoomed-out clip, drag the body to move it; use either full-height
-   resize edge to adjust its edge. Body movement must remain easy to grab.
+1. At a wide and a zoomed-out clip, drag the header to move it; use either full-height
+   resize edge to adjust its edge. Header movement must remain easy to grab.
 2. While holding the edge, check that clip geometry and waveform update before
    release. Resize inward and outward within the source limits.
 3. Check grid-aligned resizing; press and release Command while holding still,

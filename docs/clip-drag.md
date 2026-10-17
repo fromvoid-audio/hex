@@ -3,7 +3,11 @@
 User-selected update, 9 October 2026: implemented; native user acceptance pending.
 
 Audio and MIDI clips move within or between hybrid tracks through one
-metadata-only native gesture. Audio start/duration remain project-rate frames;
+metadata-only native gesture, started from the shaded upper-third clip header
+with an open-hand cursor. Clicking the header selects the clip, including while
+worker edits are pending or when leaving another clip's inline name editor. The lower two
+thirds behaves as empty track space for time selection and double-click painting;
+narrow full-height edges still trim. Audio start/duration remain project-rate frames;
 MIDI start/length remain canonical beats. The UI preview resolves a typed
 destination and its rendered frame bounds using the canonical tempo map.
 Release uses the same destination resolver and dispatches one validated
