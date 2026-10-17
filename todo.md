@@ -4300,6 +4300,30 @@ new-node controls pass in the rendered fixture, alongside strict UI Clippy and
 page-boundary checks. The prior full run was interrupted for this repair; only
 the next unchanged full candidate may supply merge evidence.
 
+## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+
+- Lower fade handles use one model-owned trim-and-envelope command, including
+  neutral `f` handles, source/retained-root limits, loop phase and musical crop
+  anchoring. Upper/curve edits keep their existing behavior.
+- Metadata-only previews resize the actual clip/header/waveform crop; release
+  recomputes grid/Command snapping and makes one undoable edit. Existing inward
+  endpoint offsets are absorbed only by a meaningful drag.
+- Focused source coverage checks source/loop laws, transformed warp/events,
+  preview/command identity, history, roundtrip, saved export/playback PCM and
+  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
+  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
+
+Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
+integrated main `070cacc3` without changing the separate tooltip PR362 scope.
+A rendered regression reproduces the missing stationary Command refresh before
+the repair; the production modifier event now recomputes at the current pointer,
+while mouse-up still uses its own current modifiers. Both lower edges, Command
+press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
+pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
+CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
+native physical input/listening and optimized coordinated Mac delivery remain
+pending with the coordinator's serial follow-up workflow.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -4351,18 +4375,40 @@ Targeted mode/error/configuration regressions and final source/build/actual-star
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
 
 
-## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+## 17 October 2026 — W06 host binding extraction in progress
 
-- Lower fade handles use one model-owned trim-and-envelope command, including
-  neutral `f` handles, source/retained-root limits, loop phase and musical crop
-  anchoring. Upper/curve edits keep their existing behavior.
-- Metadata-only previews resize the actual clip/header/waveform crop; release
-  recomputes grid/Command snapping and makes one undoable edit. Existing inward
-  endpoint offsets are absorbed only by a meaningful drag.
-- Focused source coverage checks source/loop laws, transformed warp/events,
-  preview/command identity, history, roundtrip, saved export/playback PCM and
-  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
-  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
+Pulse2675 / PR291 factors persistent scalar controls into
+`device_panel/bindings.rs` and numeric Session adaptation into
+`gesture_adapter.rs`, with Utility, EQ and descriptor panels using the same
+host path. Operator-specific Begin/choice/Tab policy stays in composition.
+The host captures generation/owner/class/type/parameter/emitter identity and
+numeric widgets retain only the exact gesture token they began. Retirement
+cannot cancel a newer same-parameter gesture; synchronous finalization retires
+stale or disabled drafts before submission. Project/session/worker lifecycle
+and compound controls remain in their existing owners; no new UI crate.
+
+Focused original-dispatch and retired-control regressions fail before their
+repairs; the three lease/target tests pass at ab20b1f1. Later identity and
+same-update queued-Begin regression candidates remain unverified while the
+shared native cache checks corrected fade PR309. Architecture/style guards
+pass. The layout guard now follows the extracted production style helper;
+its four source-mutation tests pass. This is incomplete draft work: queued-event
+ordering, final integrated full local CI, final review and native acceptance
+remain open. Independent embedding/catalog/full W06 acceptance is not claimed.
+
+W06 follow-up: at exact8ac4e149 the six-test binding group reports five passes
+and one real rendered ordering failure: a queued Begin reopens a no-op drag
+synchronously finalized in the same App update. Stale-generation and retired
+emitter tests pass. Exacte1abd20a adds a local successful-finish delivery fence;
+independent source review finds no actionable issue. Its positive/later-drag
+checks remain pending while W04 final CI owns the native cache. No GPUI or
+other dependency patch was required; the existing dispatch_input seam is used.
+
+W06 positive ordering proof: exacte009db34 passes all six focused host binding
+tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
+drag stays finalized and a later real drag works. Final integration/review/full
+local CI and broader W06 deliverables remain pending; no native result claimed.
+
 ## latest-main launch by default — pulse2749 / PR359, 17 october 2026
 
 The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
@@ -4383,17 +4429,6 @@ target ownership after the Python suite, guards and formatting passed. No comple
 macOS CI, signing, installation or native acceptance is established. Mac execution
 remains paused until the user explicitly resumes it; PR355 owns signing and sample
 permissions, and the eventual combined app uses one exact verified source.
-
-Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
-integrated main `070cacc3` without changing the separate tooltip PR362 scope.
-A rendered regression reproduces the missing stationary Command refresh before
-the repair; the production modifier event now recomputes at the current pointer,
-while mouse-up still uses its own current modifiers. Both lower edges, Command
-press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
-pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
-CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
-native physical input/listening and optimized coordinated Mac delivery remain
-pending with the coordinator's serial follow-up workflow.
 
 ## optional runtime launcher tests — pulse2755 / PR364, 17 october 2026
 
