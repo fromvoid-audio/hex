@@ -10,7 +10,9 @@ track reached receives a subtle background highlight. One-track selection focuse
 that track. Audio and MIDI clips have a visibly shaded upper-third header with
 an open-hand cursor for clip selection and movement. Their lower two thirds
 accept point/time selection and double-click-and-hold clip painting, just like
-empty track space. Narrow full-height resize edges retain trim priority.
+empty track space. Narrow full-height resize edges retain trim priority. Only
+the topmost rendered clip reserves its handles; obscured edges do not block
+selection or painting through the visible body.
 Inside a selected area, its upper third is a move handle, including over clips;
 dragging below that handle replaces the selection.
 A highlighted area is steady translucent cyan; only a zero-width point selection

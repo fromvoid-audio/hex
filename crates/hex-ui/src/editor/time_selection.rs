@@ -847,7 +847,7 @@ impl EditorView {
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             if visible_start >= visible_end {
-                return false;
+                return None;
             }
             let left = lane.left
                 + lane.width
@@ -855,29 +855,32 @@ impl EditorView {
             let fraction = (visible_end - visible_start) as f64 / viewport.length as f64;
             let width = super::trim::rendered_clip_width(lane.width, fraction, minimum);
             if x < left || x >= left + width {
-                return false;
+                return None;
             }
             let edge = super::trim::handle_width(width);
-            y < lane.top + lane.height * SELECTION_HANDLE_FRACTION
-                || (visible_start == start && x < left + edge)
-                || (visible_end == end && x >= left + width - edge)
+            Some(
+                y < lane.top + lane.height * SELECTION_HANDLE_FRACTION
+                    || (visible_start == start && x < left + edge)
+                    || (visible_end == end && x >= left + width - edge),
+            )
         };
-        track.clips().iter().any(|clip| {
-            clip.start()
-                .checked_add(clip.duration())
-                .is_some_and(|end| handle_hit(clip.start(), end, 3.0))
-        }) || track.midi_clips().iter().any(|clip| {
-            let start = state.project.tempo_map().beat_to_frame(clip.start()).ok();
-            let end = clip
-                .start()
-                .raw()
-                .checked_add(clip.length().raw())
-                .map(hex_project::BeatTime::from_raw)
-                .and_then(|end| state.project.tempo_map().beat_to_frame(end).ok());
-            start
-                .zip(end)
-                .is_some_and(|(start, end)| handle_hit(start, end, 4.0))
-        })
+        // MIDI is drawn after audio; later clips cover earlier clips of each kind.
+        // A visible body must win over any obscured header or resize edge.
+        track
+            .midi_clips()
+            .iter()
+            .rev()
+            .find_map(|clip| {
+                let preview = state.midi_preview.get(clip.id())?;
+                handle_hit(preview.frame_start, preview.frame_end, 4.0)
+            })
+            .or_else(|| {
+                track.clips().iter().rev().find_map(|clip| {
+                    let end = clip.start().checked_add(clip.duration())?;
+                    handle_hit(clip.start(), end, 3.0)
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub(super) fn time_selection_overlay(

@@ -1118,7 +1118,7 @@ impl EditorView {
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
-            midi = midi.child(self.clip_name_header(clip.id(), clip.name()));
+            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), cx));
             if let Some((payload, lane)) = midi_drag_payload {
                 let move_surface = self
                     .clip_drag_surface(
@@ -1354,7 +1354,7 @@ impl EditorView {
             cx,
         );
         let mut content = content
-            .child(self.clip_name_header(clip.id(), clip.name()))
+            .child(self.clip_name_header(track, clip.id(), clip.name(), cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .tooltip(move |_, cx| {

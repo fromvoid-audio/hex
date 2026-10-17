@@ -8,6 +8,10 @@
   paint preview/release, canonical placement and Undo. Native macOS acceptance
   remains user-owned: header hover/move/copy, body selection/paint and edge trim.
   Validation results and the focused PR are retained with Pulse2695.
+- PR review regressions cover one-click header selection during pending work or
+  another clip's rename, and visible body input across obscured audio/MIDI edges.
+  Header selection stays independent of drag admission; hit routing follows
+  reverse paint order. Both reproducers fail before the repair and pass after.
 
 ## browser outward tag editor and resizable picker — 17 october 2026
 

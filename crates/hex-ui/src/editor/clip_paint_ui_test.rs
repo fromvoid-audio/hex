@@ -253,3 +253,145 @@ fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestA
         assert!(canonical.project().midi_clip(painted).is_some());
     }
 }
+
+#[gpui::test]
+fn clip_review_header_selects_while_pending_and_when_leaving_rename(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    for renaming in [false, true] {
+        let (project, source, target, clip) = audio_project();
+        let mut model = Editor::new(project, 8).unwrap();
+        let asset = model.project().clip(clip).unwrap().asset();
+        let Created::Clip(other) = model
+            .execute(Command::PlaceClip {
+                track: target,
+                asset,
+                start: 0,
+                duration: 96_000,
+                source_offset: 0,
+                source_length: 96_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.set_selected_clip(source, clip, window, cx);
+                if renaming {
+                    view.begin_clip_name(window, cx);
+                } else {
+                    view.worker_requests_pending = 1;
+                }
+                cx.notify();
+            })
+        });
+        if renaming {
+            visual.simulate_input("new name");
+        }
+        visual.run_until_parked();
+        let header = visual
+            .debug_bounds(Box::leak(
+                format!("clip-name-{}", other.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        visual.simulate_mouse_down(header.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(header.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.selected_clip(), Some(other), "one click selects even without a drag surface");
+            assert!(view.active_clip_drag.is_none());
+            if renaming {
+                assert!(view.clip_name_edit.is_none());
+                assert!(matches!(view.last_enqueued_edit, Some(Command::RenameClip { clip: id, .. }) if id == clip));
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        let (project, track, _, clip) = if midi {
+            super::clip_drag_ui_test::midi_project()
+        } else {
+            audio_project()
+        };
+        let mut model = Editor::new(project, 8).unwrap();
+        let edge = if midi {
+            model
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::from_quarters(2).unwrap(),
+                    length: BeatTime::from_quarters(4).unwrap(),
+                })
+                .unwrap();
+            120_000
+        } else {
+            let asset = model.project().clip(clip).unwrap().asset();
+            model
+                .execute(Command::PlaceClip {
+                    track,
+                    asset,
+                    start: 48_000,
+                    duration: 96_000,
+                    source_offset: 0,
+                    source_length: 96_000,
+                    looping: false,
+                })
+                .unwrap();
+            96_000
+        };
+        let preview = if midi {
+            hex_engine::compile::project_with_midi_preview(model.project(), &Default::default())
+                .unwrap()
+                .1
+        } else {
+            Default::default()
+        };
+        let (handle, editor) = editor_window(cx, model.project().clone(), Arc::new(preview));
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        // One pixel before the obscured earlier clip's right edge, inside the top body.
+        let body = point(
+            lane.origin.x + lane.size.width * (edge as f32 / 384_000.0) - px(1.0),
+            lane.origin.y + lane.size.height * 0.75,
+        );
+        visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.time_selection_gesture.is_some(),
+                "visible body accepts selection across hidden trim edge"
+            )
+        });
+        visual.simulate_mouse_up(body, MouseButton::Left, Modifiers::default());
+        visual.simulate_event(MouseDownEvent {
+            position: body,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::default(),
+            first_mouse: false,
+        });
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.clip_paint_gesture.is_some(),
+                "visible body accepts paint across hidden trim edge"
+            )
+        });
+        visual.simulate_mouse_up(body, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(matches!(
+                view.last_enqueued_edit,
+                Some(Command::PlaceMidiClip { .. })
+            ))
+        });
+    }
+}
