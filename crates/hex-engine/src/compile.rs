@@ -485,10 +485,14 @@ fn compile_project_inner<'a>(
                     .checked_add(1)
                     .ok_or(Invalid("stateful device count overflow"))?;
                 stateful_bytes = stateful_bytes
-                    .checked_add(definition.declared_runtime_bytes())
+                    .checked_add(
+                        definition
+                            .declared_pair_bytes()
+                            .ok_or(Invalid("stateful pair byte count overflow"))?,
+                    )
                     .ok_or(Invalid("stateful device runtime budget overflow"))?;
                 if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                    || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES
+                    || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
                 {
                     return Err(Invalid(
                         "stateful device runtime exceeds its bounded budget",
@@ -556,10 +560,14 @@ fn compile_project_inner<'a>(
                     .checked_add(1)
                     .ok_or(Invalid("stateful device count overflow"))?;
                 stateful_bytes = stateful_bytes
-                    .checked_add(definition.declared_runtime_bytes())
+                    .checked_add(
+                        definition
+                            .declared_pair_bytes()
+                            .ok_or(Invalid("stateful pair byte count overflow"))?,
+                    )
                     .ok_or(Invalid("stateful device runtime budget overflow"))?;
                 if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                    || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES
+                    || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
                 {
                     return Err(Invalid(
                         "stateful device runtime exceeds its bounded budget",
@@ -622,7 +630,7 @@ struct CompiledEffectPlan {
     fused: Option<hex_lattice::StereoMatrix>,
     prefix: Option<hex_lattice::StereoMatrix>,
     suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
+    device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
 }
 
 fn compile_device_effects(
@@ -657,9 +665,9 @@ fn compile_effect_devices(
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
         let prepared_device = registry
-            .prepare_device(&migrated, sample_rate)
+            .prepare_runtime_device(&migrated, sample_rate)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
-        let processor = prepared_device.processor.map(std::sync::Arc::from);
+        let processor = prepared_device.processor;
 
         let prepared = if device.bypassed() {
             hex_lattice::StereoMatrix::identity()
@@ -679,7 +687,7 @@ fn compile_effect_devices(
                 .then(trim)
                 .map_err(|error| Invalid(error.0))?;
         }
-        devices.push(hex_lattice::PreparedProcessorInstance {
+        devices.push(hex_lattice::PreparedRuntimeInstance {
             meter: Default::default(),
             owner,
             device_id: device.id().value(),

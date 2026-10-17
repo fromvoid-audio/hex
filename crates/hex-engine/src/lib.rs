@@ -698,7 +698,7 @@ pub struct Track {
     instrument_position: usize,
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
     ordered_suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
+    device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -725,7 +725,7 @@ pub(crate) struct ReturnBus {
     pub gain: f32,
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
-    pub device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
+    pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -869,7 +869,7 @@ impl Track {
         effects: Option<hex_lattice::StereoMatrix>,
         ordered_prefix: Option<hex_lattice::StereoMatrix>,
         ordered_suffix: Option<hex_lattice::StereoMatrix>,
-        device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
+        device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
     ) -> Result<Self, Invalid> {
         let stateful = !device_chain.is_empty();
         let ordered = instrument_position != 0;
@@ -983,11 +983,11 @@ impl Track {
             .try_reserve_exact(self.device_chain.len())
             .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
         instances.extend(self.device_chain.iter().cloned());
-        hex_lattice::NativeRuntimeChain::new(instances)
+        hex_lattice::NativeRuntimeChain::new_prepared(instances)
     }
 
     pub(crate) fn device_runtime_storage_preflight_bytes(&self) -> Option<usize> {
-        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_instances(
+        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
             &self.device_chain,
         )
     }
@@ -1020,7 +1020,7 @@ impl Track {
             .iter()
             .filter_map(|device| device.definition.as_ref())
             .try_fold(0_usize, |total, definition| {
-                total.checked_add(definition.declared_runtime_bytes().checked_mul(2)?)
+                total.checked_add(definition.declared_pair_bytes()?)
             })
     }
 
@@ -2120,7 +2120,7 @@ impl RendererRuntime {
                         };
                     }
                     instances.extend(bus.device_chain.iter().cloned());
-                    match hex_lattice::NativeRuntimeChain::new(instances) {
+                    match hex_lattice::NativeRuntimeChain::new_prepared(instances) {
                         Ok(chain) => {
                             return_chains.push(chain);
                             return_scratch.push([[0.0; 2]; 256]);
@@ -2385,7 +2385,32 @@ impl RendererRuntime {
         position: &mut u64,
         playing: bool,
         output: &mut [Frame],
+        pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        let mut began = false;
+        let result =
+            self.render_with_pages_inner(project, position, playing, output, pages, &mut began);
+        if result.is_err() && began {
+            for chain in self
+                .device_chains
+                .iter_mut()
+                .chain(self.return_chains.iter_mut())
+            {
+                chain.rollback_block();
+            }
+            output.fill([0.0; 2]);
+        }
+        result
+    }
+
+    fn render_with_pages_inner<P: MediaPages + ?Sized>(
+        &mut self,
+        project: &Project,
+        position: &mut u64,
+        playing: bool,
+        output: &mut [Frame],
         mut pages: Option<&mut P>,
+        began: &mut bool,
     ) -> Result<(), Invalid> {
         if let Some(message) = self.runtime_error {
             return Err(Invalid(message));
@@ -2413,6 +2438,7 @@ impl RendererRuntime {
             return Ok(());
         }
         let block_start = *position;
+        *began = true;
         if self.compensation.is_some() {
             self.render_compensated(project, block_start, output, pages.as_deref_mut())?;
             *position = next;

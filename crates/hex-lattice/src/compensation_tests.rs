@@ -325,18 +325,20 @@ fn bypass_private_clock_uses_offsets_while_audible_samples_are_preserved() {
             .unwrap();
         assert_eq!(frames, [[1.0, -0.5]; 4]);
         let runtime = chain.entries[0]
-            .scratch
-            .as_ref()
+            .runtime
+            .legacy()
             .unwrap()
+            .1
             .as_any()
             .downcast_ref::<ClockRuntime>()
             .unwrap();
         assert_eq!(runtime.last_beat, 13);
         chain.process_range(0..1, &mut frames).unwrap();
         let runtime = chain.entries[0]
-            .scratch
-            .as_ref()
+            .runtime
+            .legacy()
             .unwrap()
+            .1
             .as_any()
             .downcast_ref::<ClockRuntime>()
             .unwrap();
