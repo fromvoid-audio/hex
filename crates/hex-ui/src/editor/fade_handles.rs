@@ -3,7 +3,7 @@
 use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
 use crate::theme;
 use gpui::{Context, Div, MouseButton, Pixels, Point, Window, div, prelude::*, px, relative, rgb};
-use hex_project::{Clip, ClipFade, ClipId, Command, TrackId};
+use hex_project::{Clip, ClipFade, ClipId, Command, TrackId, TrimEdge};
 use hex_session::service::Request;
 use std::rc::Rc;
 
@@ -48,12 +48,15 @@ pub(super) struct FadeDrag {
     original: ClipFade,
     pub(super) preview: ClipFade,
     moved: bool,
+    preview_clip: Option<Clip>,
+    trim_frame: Option<u64>,
+    snap_grid: super::musical_time::SnapGrid,
 }
 
 fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Option<ClipFade> {
     let span = fade.span();
-    let mut start = fade.in_start();
-    let mut end_offset = fade.out_end_offset();
+    let start = fade.in_start();
+    let end_offset = fade.out_end_offset();
     let mut fade_in = fade.fade_in();
     let mut fade_out = fade.fade_out();
     let mut in_curve = fade.in_curve();
@@ -70,26 +73,7 @@ fn edited_fade(fade: ClipFade, handle: Handle, frames: i128, bend: i16) -> Optio
                 .saturating_sub(frames)
                 .clamp(0, i128::from(span - end_offset)) as u64
         }
-        Handle::InBottom => {
-            let top = start + fade_in.saturating_sub(1);
-            start = shift(start, top);
-            fade_in = if fade_in == 0 && start == top {
-                0
-            } else {
-                top - start + 1
-            };
-        }
-        Handle::OutBottom => {
-            let original_end = span - end_offset - 1;
-            let top = (span - end_offset - fade_out).min(original_end);
-            let end = shift(original_end, span - 1).max(top);
-            end_offset = span - 1 - end;
-            fade_out = if fade_out == 0 && end == top {
-                0
-            } else {
-                end + 1 - top
-            };
-        }
+        Handle::InBottom | Handle::OutBottom => return None,
         Handle::InCurve => in_curve = in_curve.saturating_add(bend).clamp(-1000, 1000),
         Handle::OutCurve => out_curve = out_curve.saturating_add(bend).clamp(-1000, 1000),
     }
@@ -134,7 +118,9 @@ impl EditorView {
                 let entity = entity.clone();
                 window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
                     if phase.capture() {
-                        entity.update(cx, |view, cx| view.update_fade_gesture(event.position, cx));
+                        entity.update(cx, |view, cx| {
+                            view.update_fade_gesture(event.position, event.modifiers.platform, cx)
+                        });
                     }
                 });
             },
@@ -216,7 +202,12 @@ impl EditorView {
             self.active_fade_drag = None;
         }
     }
-    pub(super) fn update_fade_gesture(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn update_fade_gesture(
+        &mut self,
+        position: Point<Pixels>,
+        free_modifier: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(drag) = self.active_fade_drag.as_ref() else {
             return;
         };
@@ -233,13 +224,62 @@ impl EditorView {
         let frames = (f64::from(dx) / f64::from(drag.lane.width) * drag.viewport.length as f64)
             .round() as i128;
         let bend = (dy * 25.0).round().clamp(-2000.0, 2000.0) as i16;
-        let Some(next) = edited_fade(drag.original, drag.handle, frames, bend) else {
-            return;
+        let lower_edge = match drag.handle {
+            Handle::InBottom => Some(hex_project::TrimEdge::Left),
+            Handle::OutBottom => Some(hex_project::TrimEdge::Right),
+            _ => None,
+        };
+        let (next, preview_clip, trim_frame) = if let Some(edge) = lower_edge {
+            let Some(state) = self.state.as_ref() else {
+                return;
+            };
+            let Some(asset) = state.project.asset(drag.clip.asset()) else {
+                return;
+            };
+            // Delta is measured from the actual lower knot, including authored
+            // inward offsets. Zero horizontal displacement is a true no-op.
+            if frames == 0 {
+                (drag.original, None, None)
+            } else {
+                let endpoint = match edge {
+                    TrimEdge::Left => drag.clip.start() + drag.original.in_start(),
+                    TrimEdge::Right => {
+                        drag.clip.start() + drag.clip.duration() - drag.original.out_end_offset()
+                    }
+                };
+                let frame = i128::from(endpoint)
+                    .saturating_add(frames)
+                    .clamp(0, i128::from(u64::MAX)) as u64;
+                let Some(frame) = drag
+                    .snap_grid
+                    .with_platform_modifier(free_modifier)
+                    .snap_frame(&state.project, frame, drag.viewport, drag.lane.width)
+                else {
+                    return;
+                };
+                match drag.clip.preview_fade_edge_trim(
+                    edge,
+                    frame,
+                    asset.playback_frames(),
+                    state.project.tempo_map(),
+                ) {
+                    Ok(clip) if clip == *drag.clip => (drag.original, None, None),
+                    Ok(clip) => (clip.retained_fade(), Some(clip), Some(frame)),
+                    Err(_) => (drag.original, None, None),
+                }
+            }
+        } else {
+            let Some(next) = edited_fade(drag.original, drag.handle, frames, bend) else {
+                return;
+            };
+            (next, None, None)
         };
         if let Some(drag) = self.active_fade_drag.as_mut() {
             drag.moved |= dx.abs() >= 1.0 || dy.abs() >= 1.0;
-            if drag.preview != next {
+            drag.trim_frame = trim_frame;
+            if drag.preview != next || drag.preview_clip != preview_clip {
                 drag.preview = next;
+                drag.preview_clip = preview_clip;
                 cx.notify();
             }
         }
@@ -251,12 +291,28 @@ impl EditorView {
         if self.focus.is_focused(window)
             && self.fade_drag_current(&drag)
             && drag.moved
-            && drag.preview != drag.original
+            && (drag.preview != drag.original
+                || drag
+                    .preview_clip
+                    .as_ref()
+                    .is_some_and(|clip| clip != drag.clip.as_ref()))
         {
-            self.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
-                clip: drag.clip.id(),
-                fade: drag.preview,
-            }));
+            let command = match (drag.handle, drag.trim_frame) {
+                (Handle::InBottom | Handle::OutBottom, Some(frame)) => Command::TrimClipFadeEdge {
+                    clip: drag.clip.id(),
+                    edge: if drag.handle == Handle::InBottom {
+                        TrimEdge::Left
+                    } else {
+                        TrimEdge::Right
+                    },
+                    frame,
+                },
+                _ => Command::SetClipFadeEnvelope {
+                    clip: drag.clip.id(),
+                    fade: drag.preview,
+                },
+            };
+            self.enqueue(Request::Edit(command));
         }
         cx.notify();
     }
@@ -270,6 +326,12 @@ impl EditorView {
                     && self.fade_drag_current(drag)
             })
             .map(|drag| drag.preview)
+    }
+    pub(super) fn fade_trim_preview(&self, clip: ClipId) -> Option<&Clip> {
+        self.active_fade_drag
+            .as_ref()
+            .filter(|drag| drag.clip.id() == clip && drag.moved && self.fade_drag_current(drag))
+            .and_then(|drag| drag.preview_clip.as_ref())
     }
     fn fade_controls(
         &self,
@@ -421,6 +483,9 @@ impl EditorView {
                 original: local_fade,
                 preview: local_fade,
                 moved: false,
+                preview_clip: None,
+                trim_frame: None,
+                snap_grid: self.snap_grid,
             };
             handles.push(
                 div()
@@ -481,38 +546,27 @@ impl EditorView {
 mod tests {
     use super::*;
     #[test]
-    fn neutral_bottom_handles_and_extreme_drags_cannot_cross_their_top_endpoint() {
-        for span in [1, 100, u64::MAX] {
-            let fade = ClipFade::neutral(span).unwrap();
-            assert_eq!(
-                edited_fade(fade, Handle::InBottom, i128::MAX, 0),
-                Some(fade)
-            );
-            assert_eq!(
-                edited_fade(fade, Handle::OutBottom, i128::MIN, 0),
-                Some(fade)
-            );
-            assert!(edited_fade(fade, Handle::InTop, i128::MAX, 0).is_some());
-            assert!(edited_fade(fade, Handle::OutTop, i128::MIN, 0).is_some());
-        }
-    }
-    #[test]
-    fn endpoints_move_independently_and_bends_do_not_change_lengths() {
-        let fade = ClipFade::new(100, 0, 40, 30).unwrap();
-        let fade = edited_fade(fade, Handle::InBottom, 10, 0).unwrap();
-        assert_eq!((fade.in_start(), fade.fade_in()), (10, 30));
-        let fade = edited_fade(fade, Handle::OutBottom, -10, 0).unwrap();
-        assert_eq!((fade.out_end_offset(), fade.fade_out()), (10, 20));
+    fn upper_lengths_and_curves_remain_independent() {
+        let fade = ClipFade::new(100, 0, 40, 30)
+            .unwrap()
+            .with_shape(10, 10, 0, 0)
+            .unwrap();
         let bent = edited_fade(fade, Handle::InCurve, 0, 700).unwrap();
         assert_eq!(
             (bent.in_start(), bent.fade_in(), bent.fade_out()),
-            (10, 30, 20)
+            (10, 40, 30)
         );
         assert!(bent.gain_at(20) < fade.gain_at(20));
         assert_eq!(
             edited_fade(bent, Handle::InTop, i128::MAX - 100, 0)
                 .unwrap()
                 .fade_in(),
+            90
+        );
+        assert_eq!(
+            edited_fade(bent, Handle::OutTop, i128::MIN, 0)
+                .unwrap()
+                .fade_out(),
             90
         );
     }

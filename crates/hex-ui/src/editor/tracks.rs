@@ -1192,6 +1192,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let ClipViewTimeline { viewport, grid, .. } = timeline;
+        let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
         let trim_preview_clip = self
             .active_trim_drag
@@ -1284,8 +1285,20 @@ impl EditorView {
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+                // The immutable prepared peaks cover the retained root. Cropping
+                // changes its visible offset, never its processing/source origin.
+                let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
+                    let (_, _, offset, _) = clip
+                        .audio_edit()?
+                        .projected_domain(state.project.tempo_map())
+                        .ok()?;
+                    let mut preview = prepared.clone();
+                    preview.offset = offset;
+                    preview.length = clip.duration();
+                    Some(preview)
+                });
                 content = content.child(super::waveform::prepared_waveform_view_cached(
-                    prepared,
+                    preview.as_ref().unwrap_or(prepared),
                     clip,
                     visible_start,
                     visible_end,

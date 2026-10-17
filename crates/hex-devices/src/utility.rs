@@ -638,6 +638,7 @@ impl UtilityDefinition {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<Option<PreparedUtilityFilterRuntime>, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let settings = decode_state(state)?;
         if !settings.dc_remove && !settings.bass_mono {
             return Ok(None);
@@ -809,6 +810,27 @@ fn matrix_from_f64(values: [[f64; 2]; 2]) -> Result<StereoMatrix, UtilityError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concrete_memoryless_preparation_refuses_unresolved_asset_bindings() {
+        use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+        let source = UTILITY_DEFINITION.default_state().unwrap();
+        assert!(
+            UtilityDefinition::prepare_owned_filter(&source, 48000)
+                .unwrap()
+                .is_none()
+        );
+        let bound = source
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(42).unwrap(),
+            }])
+            .unwrap();
+        assert!(matches!(
+            UtilityDefinition::prepare_owned_filter(&bound, 48000),
+            Err(DeviceContractError::AssetResourcesUnavailable)
+        ));
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn settings(

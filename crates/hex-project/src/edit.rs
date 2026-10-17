@@ -359,6 +359,12 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
+    /// Resize an Arrangement audio clip with its lower fade endpoint as one edit.
+    TrimClipFadeEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        frame: u64,
+    },
     MoveClip {
         clip: ClipId,
         track: TrackId,
@@ -1920,6 +1926,9 @@ impl Project {
                     .map(Created::Asset)
             }
             Command::RemoveAsset(id) => {
+                if self.device_uses_asset(id) {
+                    return Err(Invalid("media is still referenced by a device"));
+                }
                 if self
                     .tracks
                     .iter()
@@ -2103,6 +2112,17 @@ impl Project {
                 } else {
                     preview_edge_trim(original, edge, frame, asset_frames)?
                 };
+                *self.clip_mut(clip)? = trimmed;
+                Ok(Created::None)
+            }
+            Command::TrimClipFadeEdge { clip, edge, frame } => {
+                let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+                let asset_frames = self
+                    .asset(original.asset)
+                    .ok_or(Invalid("media no longer exists"))?
+                    .playback_frames;
+                let trimmed =
+                    original.preview_fade_edge_trim(edge, frame, asset_frames, self.tempo_map())?;
                 *self.clip_mut(clip)? = trimmed;
                 Ok(Created::None)
             }
