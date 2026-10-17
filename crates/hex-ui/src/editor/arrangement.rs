@@ -1,11 +1,11 @@
 use super::drag::BrowserAudioDrag;
-use super::tracks::{TRACK_HEADER_WIDTH, TRACK_ROW_HEIGHT};
+use super::tracks::TRACK_ROW_HEIGHT;
 use super::viewport::Viewport;
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
     Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, relative, rgb, list,
+    ScrollWheelEvent, Window, canvas, div, list, point, prelude::*, px, relative, rgb,
 };
 
 impl EditorView {
@@ -19,6 +19,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.loop_rail_gesture.is_some()
+            || self.track_resize_active()
             || self.arrangement_bounds.is_none()
             || !x.is_finite()
             || !y.is_finite()
@@ -28,7 +29,7 @@ impl EditorView {
         let Some(bounds) = self.arrangement_bounds else {
             return false;
         };
-        let timeline_width = (bounds.width - TRACK_HEADER_WIDTH).max(0.0);
+        let timeline_width = (bounds.width - self.track_header_width()).max(0.0);
         if timeline_width <= 0.0 {
             return false;
         }
@@ -66,7 +67,7 @@ impl EditorView {
         pan.last_x = x;
         pan.last_y = y;
         if let Some(bounds) = self.arrangement_bounds {
-            let width = (bounds.width - TRACK_HEADER_WIDTH).max(0.0);
+            let width = (bounds.width - self.track_header_width()).max(0.0);
             if width > 0.0 {
                 pan.timeline_width = width;
             }
@@ -97,6 +98,17 @@ impl EditorView {
     }
 
     pub(super) fn arrangement(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let available_width =
+            (f32::from(window.bounds().size.width) - self.browser_content_width(window)).max(0.0);
+        if self
+            .track_layout
+            .available_width
+            .is_some_and(|previous| previous != available_width)
+        {
+            self.cancel_track_resize(cx);
+            self.track_scroll.remeasure();
+        }
+        self.track_layout.available_width = Some(available_width);
         let Some(state) = self.state.as_ref().cloned() else {
             let viewport = Viewport {
                 start: 0,
@@ -110,10 +122,11 @@ impl EditorView {
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
+        self.sync_track_layout(state.project.tracks());
         let ruler_width = (f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
-            - TRACK_HEADER_WIDTH)
-            .max(0.0);
+            - self.track_header_width())
+        .max(0.0);
         if state.project.tracks().is_empty() {
             let empty_viewport = self.visible_viewport(state.timeline_frames);
             let grid = super::musical_time::grid_lines(
@@ -130,6 +143,7 @@ impl EditorView {
             let overview = super::overview::widget(
                 super::overview::cached(&self.overview_cache, self.project_generation, &state),
                 empty_viewport,
+                self.track_header_width(),
                 cx.entity(),
             );
             let upper = div()
@@ -154,7 +168,12 @@ impl EditorView {
                         .min_h_0()
                         .flex()
                         .flex_col()
-                        .children([timeline_grid_layer(&bands, &grid, empty_viewport)])
+                        .children([timeline_grid_layer(
+                            &bands,
+                            &grid,
+                            empty_viewport,
+                            self.track_header_width(),
+                        )])
                         .child(
                             div()
                                 .flex_1()
@@ -180,31 +199,54 @@ impl EditorView {
         let overview = super::overview::widget(
             super::overview::cached(&self.overview_cache, self.project_generation, &state),
             viewport,
+            self.track_header_width(),
             cx.entity(),
         );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
         let playhead = self.cursor_position();
-        self.sync_track_layout(state.project.tracks());
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
-            rows_entity.update(cx, |this, cx| {
-                let Some(state) = this.state.as_ref().cloned() else { return div(); };
-                let Some(track) = state.project.tracks().get(index) else { return div(); };
-                let selected = this.selected_track() == Some(track.id());
-                this.track_row(&state,track,index,selected,super::tracks::ClipViewTimeline {
-                    viewport: rows_viewport, grid: &rows_grid, scale_factor: track_scale_factor,
-                },cx)
-            }).into_any_element()
-        }).w_full().flex_1().min_h_0();
+            rows_entity
+                .update(cx, |this, cx| {
+                    let Some(state) = this.state.as_ref().cloned() else {
+                        return div();
+                    };
+                    let Some(track) = state.project.tracks().get(index) else {
+                        return div();
+                    };
+                    let selected = this.selected_track() == Some(track.id());
+                    this.track_row(
+                        &state,
+                        track,
+                        index,
+                        selected,
+                        super::tracks::ClipViewTimeline {
+                            viewport: rows_viewport,
+                            grid: &rows_grid,
+                            scale_factor: track_scale_factor,
+                        },
+                        cx,
+                    )
+                })
+                .into_any_element()
+        })
+        .w_full()
+        .flex_1()
+        .min_h_0();
         let mut content = div()
             .relative()
             .flex_1()
             .min_h_0()
             .flex()
             .bg(rgb(theme::color(theme::PaletteRole::Background)))
-            .children([timeline_grid_layer(&bands, &grid, viewport)])
+            .children([timeline_grid_layer(
+                &bands,
+                &grid,
+                viewport,
+                self.track_header_width(),
+            )])
             .child(rows);
         if let Some(position) = viewport.fraction(playhead) {
             content = content.child(
@@ -213,7 +255,7 @@ impl EditorView {
                     .top_0()
                     .bottom_0()
                     .left_0()
-                    .right(px(TRACK_HEADER_WIDTH))
+                    .right(px(self.track_header_width()))
                     .child(
                         div()
                             .absolute()
@@ -264,6 +306,7 @@ impl EditorView {
                     view.open_track_context_menu(event.position, None, window, cx);
                 }),
             );
+        let header_width = self.track_header_width();
         let measure_entity = cx.entity();
         body = body.child(
             canvas(
@@ -284,7 +327,7 @@ impl EditorView {
                             || !bounds.contains(&event.position)
                             || f32::from(event.position.x)
                                 >= f32::from(bounds.origin.x)
-                                    + (f32::from(bounds.size.width) - TRACK_HEADER_WIDTH).max(0.0)
+                                    + (f32::from(bounds.size.width) - header_width).max(0.0)
                         {
                             return;
                         }
@@ -300,7 +343,7 @@ impl EditorView {
                             view.zoom_timeline_wheel_at(
                                 event.position.x,
                                 f32::from(bounds.origin.x),
-                                (f32::from(bounds.size.width) - TRACK_HEADER_WIDTH).max(0.0),
+                                (f32::from(bounds.size.width) - header_width).max(0.0),
                                 delta_y,
                             )
                         });
@@ -316,8 +359,7 @@ impl EditorView {
                             || !pan_bounds.contains(&event.position)
                             || f32::from(event.position.x)
                                 >= f32::from(pan_bounds.origin.x)
-                                    + (f32::from(pan_bounds.size.width) - TRACK_HEADER_WIDTH)
-                                        .max(0.0)
+                                    + (f32::from(pan_bounds.size.width) - header_width).max(0.0)
                         {
                             return;
                         }
@@ -555,6 +597,7 @@ impl EditorView {
             .child(upper.flex_1().min_h_0())
             .child(returns)
             .child(main)
+            .child(self.track_resize_events(cx))
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
                 let Some(payload) = event
                     .dragged_item()
@@ -668,8 +711,10 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .relative()
+                    .child(self.track_width_resize_handle(None, cx))
                     .debug_selector(|| "main-track-header".to_owned())
-                    .w(px(TRACK_HEADER_WIDTH))
+                    .w(px(self.track_header_width()))
                     .h_full()
                     .flex_shrink_0()
                     .flex()
@@ -882,6 +927,7 @@ fn timeline_grid_layer(
     bands: &[super::musical_time::GridBand],
     lines: &[super::musical_time::GridLine],
     viewport: super::viewport::Viewport,
+    header_width: f32,
 ) -> Div {
     div()
         .debug_selector(|| "arrangement-grid".to_owned())
@@ -889,7 +935,7 @@ fn timeline_grid_layer(
         .top_0()
         .bottom_0()
         .left_0()
-        .right(px(TRACK_HEADER_WIDTH))
+        .right(px(header_width))
         .children(timeline_band_elements(bands, viewport))
         .children(timeline_grid_elements(lines, viewport))
 }

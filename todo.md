@@ -4544,3 +4544,16 @@ stages on Linux and Mac, including real signing; those reports do not certify
 this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+
+## track header width and row height — pulse2714 / PR330
+
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.

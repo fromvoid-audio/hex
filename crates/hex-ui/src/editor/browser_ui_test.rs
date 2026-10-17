@@ -1968,9 +1968,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
     );
     visual.simulate_mouse_move(outside, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
-    let top_offset = editor.read_with(cx, |view, _| {
-        view.track_scroll.offset().y
-    });
+    let top_offset = editor.read_with(cx, |view, _| view.track_scroll.offset().y);
     assert_eq!(top_offset, px(0.0), "vertical pan clamps at the first row");
     visual.simulate_mouse_up(outside, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();

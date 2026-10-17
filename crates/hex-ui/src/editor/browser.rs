@@ -22,9 +22,9 @@ use std::{
 
 mod layout;
 
-const DEFAULT_WIDTH: f32 = 480.0;
+pub(super) const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
-const MIN_WORKSPACE_WIDTH: f32 = 560.0;
+pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
@@ -828,7 +828,7 @@ impl EditorView {
             let state = self.state.as_ref()?;
             let body = self.arrangement_bounds?;
             let viewport = self.visible_viewport(state.timeline_frames);
-            let timeline_width = body.width - super::tracks::TRACK_HEADER_WIDTH;
+            let timeline_width = body.width - self.track_header_width();
             if !timeline_width.is_finite() || timeline_width <= 0.0 || viewport.length == 0 {
                 return None;
             }
