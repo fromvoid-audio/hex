@@ -35,7 +35,7 @@ fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
         let project = decode(original).unwrap();
         let encoded = encode(&project).unwrap();
         let doc = value(&encoded);
-        assert_eq!(doc["version"], 27);
+        assert_eq!(doc["version"], 28);
         assert_eq!(decode(&encoded).unwrap(), project);
         assert_eq!(
             doc["tracks"][0]["devices"][0]["payload"],

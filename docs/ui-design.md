@@ -403,3 +403,9 @@ Equal 208 px title insets reserve space for the readout and keep project names
 centered and ellipsized at the 880 px minimum width. The demo header uses the
 same label. Typography and colors follow the bundled font and muted theme token.
 Native visual/resize acceptance remains separate from rendered source tests.
+
+The Arrangement audio detail pane opens on a compact `events` tab, with its own
+project-tempo adaptive grid, ruler/time selection, event waveforms, drag previews
+and focus-scoped clip editing shortcuts. A `source` tab retains source/warp
+inspection. Both use the existing detail height and left control column. See
+[audio events](audio-events.md) for edit semantics, limits and native acceptance.
