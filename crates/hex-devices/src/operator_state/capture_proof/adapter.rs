@@ -73,7 +73,10 @@ impl Root {
             .analytic_continuation()?
             .validate_note(note)
             .ok()?;
-        Some(self.context.sample(note, age, gate))
+        Some(
+            self.context
+                .sample(note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        )
     }
     pub fn compatible(&self, target: &Self) -> bool {
         let a = self.operator();

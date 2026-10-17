@@ -108,7 +108,14 @@ fn held_keyboard_uses_actual_source_phase_across_skipped_tuning_revisions_and_un
     let mut out = [[0.0; 2]; 136];
     next.render(&mut out).unwrap();
     for (offset, actual) in out.into_iter().enumerate() {
-        assert_eq!(actual, carried.sample(777 + offset as u64, u64::MAX));
+        assert_eq!(
+            actual,
+            carried.sample(
+                777 + offset as u64,
+                u64::MAX,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            )
+        );
     }
     input.set_key(0, None).unwrap();
     // Return to neutral while this occurrence is already releasing.
@@ -119,7 +126,14 @@ fn held_keyboard_uses_actual_source_phase_across_skipped_tuning_revisions_and_un
     let mut release = [[0.0; 2]; 333];
     restored.render(&mut release).unwrap();
     for (offset, actual) in release.into_iter().enumerate() {
-        assert_eq!(actual, restored_note.sample(913 + offset as u64, 913));
+        assert_eq!(
+            actual,
+            restored_note.sample(
+                913 + offset as u64,
+                913,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES
+            )
+        );
     }
     assert!(!input.rejected());
 }

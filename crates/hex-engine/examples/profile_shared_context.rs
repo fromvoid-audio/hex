@@ -176,7 +176,13 @@ impl PreparedSharedAnalyticContext for ProfileContext {
         Ok(PreparedSharedAnalyticNote::new(payload, RELEASE_FRAMES))
     }
 
-    fn sample(&self, note: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> StereoFrame {
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> StereoFrame {
         sample_payload(
             note.payload()[0],
             note.payload()[1] as u8,
@@ -224,6 +230,7 @@ fn sample_inline(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> StereoFrame {
     sample_payload(payload[0], payload[1] as u8, age, gate, release)
 }

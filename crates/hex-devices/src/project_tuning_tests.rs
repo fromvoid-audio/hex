@@ -53,7 +53,10 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
             let a = old.prepare_note(60, 100).unwrap();
             let b = new.prepare_note(60, 100).unwrap();
             for age in 0..2048 {
-                assert_eq!(old.sample(&a, age, 777), new.sample(&b, age, 777));
+                assert_eq!(
+                    old.sample(&a, age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                    new.sample(&b, age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                );
             }
         } else if let (Some(old), Some(new)) = (
             old.prepare_mutable_runtime().unwrap(),
@@ -92,7 +95,10 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
             let a = old.prepare_note(60, 100).unwrap();
             let b = new.prepare_note(60, 100).unwrap();
             for age in 0..2048 {
-                assert_eq!(a.sample(age, 777), b.sample(age, 777));
+                assert_eq!(
+                    a.sample(age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                    b.sample(age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                );
             }
         }
     }
@@ -126,11 +132,20 @@ fn sine_custom_pitch_and_rapid_held_or_released_edits_follow_independent_phase_o
             let expected = lookup.sample_phase(step(196.0).wrapping_mul(age).wrapping_add(offset))
                 * amplitude
                 * 0.1;
-            assert_eq!(c.sample(age, gate), [expected; 2]);
+            assert_eq!(
+                c.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                [expected; 2]
+            );
         }
     }
-    assert_eq!(a.sample(777, 800), b.sample(777, 800));
-    assert_eq!(b.sample(913, 800), c.sample(913, 800));
+    assert_eq!(
+        a.sample(777, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        b.sample(777, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    );
+    assert_eq!(
+        b.sample(913, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        c.sample(913, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    );
 }
 #[test]
 fn fm4_continuation_preserves_all_oscillator_phases_and_refuses_other_law_changes() {
@@ -154,7 +169,10 @@ fn fm4_continuation_preserves_all_oscillator_phases_and_refuses_other_law_change
     let b = prepare(&state, 333.0);
     let continued = b.continue_from(&a, 777).unwrap();
     for gate in [700, 9000] {
-        assert_eq!(a.sample(777, gate), continued.sample(777, gate));
+        assert_eq!(
+            a.sample(777, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            continued.sample(777, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        );
     }
     let changed = registry
         .patch_parameter(

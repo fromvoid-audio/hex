@@ -47,7 +47,10 @@ pub struct DeviceResourceView<'a> {
     pub sample_rate: u32,
     pub pcm: DeviceResourcePcm<'a>,
 }
-/// Implementations return a stable ordered inventory for the lifetime of a root.
+/// Inventory for one prepared device configuration, not the entire graph's slot namespace.
+/// Implementations return a stable ordered inventory for the lifetime of its retained root.
+/// Carried voices must borrow their actual source configuration's inventory, even
+/// when a target device reuses the same authored slot numbers.
 /// Queries must be bounded, allocation-free and free of I/O, waits and control locks.
 /// The host retains/charges exact immutable owners before exposing this interface;
 /// it must never use an identity or a borrowed view as a substitute for that proof.

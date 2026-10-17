@@ -263,7 +263,9 @@ fn per_operator_velocity_is_prepared_and_matches_independent_fm_oracle() {
                         let oracle = expected(age, gate, velocity);
                         let direct = standalone.sample(crate::shared_sine_table(), age, gate);
                         let compact_sample = configuration.sample(table, &compact, age, gate);
-                        let shared_sample = shared.sample(&note, age, gate)[0];
+                        let shared_sample =
+                            shared.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                                [0];
                         assert_eq!(direct.to_bits(), compact_sample.to_bits());
                         assert_eq!(direct.to_bits(), shared_sample.to_bits());
                         assert!(
@@ -647,19 +649,28 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
             expected.to_bits(),
             "standalone/compact mismatch at {age}"
         );
-        assert_eq!(context.sample(&note, age, 4096), [expected, expected]);
+        assert_eq!(
+            context.sample(&note, age, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            [expected, expected]
+        );
         assert!(expected.is_finite());
     }
     let mut malformed = *note.payload();
     malformed[5] = (malformed[5] & !0xff) | 10;
     let malformed = PreparedSharedAnalyticNote::new(malformed, note.release_frames());
-    assert_eq!(context.sample(&malformed, 0, 4096), [0.0; 2]);
+    assert_eq!(
+        context.sample(&malformed, 0, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        [0.0; 2]
+    );
     let mut noncanonical = *note.payload();
     let selected = (noncanonical[5] & 0xff) as u8;
     assert!(selected > 0);
     noncanonical[5] = (noncanonical[5] & !0xff) | u64::from(selected - 1);
     let noncanonical = PreparedSharedAnalyticNote::new(noncanonical, note.release_frames());
-    assert_eq!(context.sample(&noncanonical, 0, 4096), [0.0; 2]);
+    assert_eq!(
+        context.sample(&noncanonical, 0, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        [0.0; 2]
+    );
 
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.25, 1.25] {
         let mut malformed = *note.payload();
@@ -702,7 +713,10 @@ fn mixed_waveforms_render_through_the_registered_shared_context() {
     let decoded = PreparedOperatorNote::from_shared_payload(zero_scale.payload())
         .expect("active all-zero scales are valid");
     assert_eq!(decoded.into_shared_payload(), zero_scale_payload);
-    assert_eq!(zero_scale_context.sample(&zero_scale, 0, 4096), [0.0; 2]);
+    assert_eq!(
+        zero_scale_context.sample(&zero_scale, 0, 4096, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        [0.0; 2]
+    );
 }
 
 #[test]
@@ -1162,7 +1176,10 @@ fn operator_metadata_is_a_builtin_shared_analytic_instrument() {
                 age,
                 gate,
             );
-            assert_eq!(context.sample(&note, age, gate), [expected, expected]);
+            assert_eq!(
+                context.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                [expected, expected]
+            );
         }
     }
 }

@@ -1297,6 +1297,7 @@ impl PreparedSharedAnalyticContext for PreparedOperatorContext {
         note: &PreparedSharedAnalyticNote,
         age_frames: u64,
         gate_frames: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> StereoFrame {
         if note.release_frames() != self.configuration.release_frames() {
             return [0.0; 2];

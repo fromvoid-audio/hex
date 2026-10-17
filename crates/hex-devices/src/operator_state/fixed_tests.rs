@@ -167,8 +167,8 @@ fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
     let high = context.prepare_note(127, 100).expect("high");
     for age in 0..8192 {
         assert_eq!(
-            context.sample(&low, age, 6000),
-            context.sample(&high, age, 6000)
+            context.sample(&low, age, 6000, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            context.sample(&high, age, 6000, &hex_lattice::EMPTY_DEVICE_RESOURCES)
         );
     }
     let ratio = patch(&state, parameter::fixed(1), ParameterValue::Bool(false));
@@ -188,9 +188,17 @@ fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
         .expect("shared");
     let low = context.prepare_note(48, 100).expect("low");
     let high = context.prepare_note(60, 100).expect("high");
-    assert!(
-        (1000..4000).any(|age| context.sample(&low, age, 6000) != context.sample(&high, age, 6000))
-    );
+    assert!((1000..4000).any(|age| context.sample(
+        &low,
+        age,
+        6000,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES
+    ) != context.sample(
+        &high,
+        age,
+        6000,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES
+    )));
 }
 
 #[test]

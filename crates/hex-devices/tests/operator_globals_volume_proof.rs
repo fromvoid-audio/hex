@@ -210,7 +210,7 @@ fn registered_operator_carrier_pcm_has_exact_neutral_identity_and_independent_ga
         let attenuated = Volume::new(prepared(-20.0, rate), 0);
         let mut audible = false;
         for age in 0..2048 {
-            let raw = context.sample(&note, age, 513);
+            let raw = context.sample(&note, age, 513, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             audible |= raw.iter().any(|sample| *sample != 0.0);
             assert_eq!(
                 neutral.apply(raw, age).unwrap().map(f32::to_bits),
@@ -346,7 +346,12 @@ fn profile_original_carrier_and_volume_composition() {
                 }
                 for offset in 0..128 {
                     // Finite original authored gate, not a fabricated open-gate horizon.
-                    let raw = black_box(context.sample(&note, (frame + offset) % 128, 513));
+                    let raw = black_box(context.sample(
+                        &note,
+                        (frame + offset) % 128,
+                        513,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    ));
                     let output = if path == 0 {
                         raw
                     } else {

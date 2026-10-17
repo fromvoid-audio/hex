@@ -451,7 +451,7 @@ impl hex_lattice::PreparedNativeInstrument for Instrument {
         Ok(hex_lattice::PreparedAnalyticNote::new(
             [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
             5,
-            |_, age, _, _| if age == 5 { [0.25, -0.5] } else { [0.0; 2] },
+            |_, age, _, _, _| if age == 5 { [0.25, -0.5] } else { [0.0; 2] },
         ))
     }
 }

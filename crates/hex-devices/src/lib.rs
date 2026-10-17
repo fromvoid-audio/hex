@@ -205,6 +205,7 @@ fn sample_sine_note(
     age_frames: u64,
     gate_frames: u64,
     release_frames: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> StereoFrame {
     let voice = PreparedVoice {
         phase_step: payload[0],
@@ -452,7 +453,10 @@ mod tests {
                 gate + 2_400,
             ] {
                 let expected = table.sample(legacy, age, gate);
-                assert_eq!(note.sample(age, gate), [expected, expected]);
+                assert_eq!(
+                    note.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                    [expected, expected]
+                );
             }
         }
     }

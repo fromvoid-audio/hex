@@ -80,6 +80,7 @@ pub trait PreparedSharedAnalyticContext: Send + Sync {
         note: &PreparedSharedAnalyticNote,
         age_frames: u64,
         gate_frames: u64,
+        _resources: &dyn crate::DeviceResources,
     ) -> StereoFrame;
 }
 
@@ -112,7 +113,13 @@ pub struct PreparedAnalyticNote {
     payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
     release_frames: u64,
     continuation: Option<&'static AnalyticNoteContinuation>,
-    sample_fn: fn(&[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], u64, u64, u64) -> StereoFrame,
+    sample_fn: fn(
+        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+        u64,
+        u64,
+        u64,
+        &dyn crate::DeviceResources,
+    ) -> StereoFrame,
 }
 
 impl fmt::Debug for PreparedAnalyticNote {
@@ -130,7 +137,13 @@ impl PreparedAnalyticNote {
     pub const fn new(
         payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
         release_frames: u64,
-        sample_fn: fn(&[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], u64, u64, u64) -> StereoFrame,
+        sample_fn: fn(
+            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            u64,
+            u64,
+            u64,
+            &dyn crate::DeviceResources,
+        ) -> StereoFrame,
     ) -> Self {
         Self {
             payload,
@@ -169,8 +182,19 @@ impl PreparedAnalyticNote {
 
     /// Sample one stereo frame by authored age and gate duration, both in
     /// frames. The instrument definition owns the deterministic transfer law.
-    pub fn sample(&self, age_frames: u64, gate_frames: u64) -> StereoFrame {
-        (self.sample_fn)(&self.payload, age_frames, gate_frames, self.release_frames)
+    pub fn sample(
+        &self,
+        age_frames: u64,
+        gate_frames: u64,
+        resources: &dyn crate::DeviceResources,
+    ) -> StereoFrame {
+        (self.sample_fn)(
+            &self.payload,
+            age_frames,
+            gate_frames,
+            self.release_frames,
+            resources,
+        )
     }
 }
 
@@ -590,11 +614,23 @@ mod tests {
 
     struct TestToneDefinition {
         id: &'static str,
-        sampler: fn(&[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], u64, u64, u64) -> StereoFrame,
+        sampler: fn(
+            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            u64,
+            u64,
+            u64,
+            &dyn crate::DeviceResources,
+        ) -> StereoFrame,
         payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
     }
     struct TestTonePrepared {
-        sampler: fn(&[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], u64, u64, u64) -> StereoFrame,
+        sampler: fn(
+            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            u64,
+            u64,
+            u64,
+            &dyn crate::DeviceResources,
+        ) -> StereoFrame,
         payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
     }
 
@@ -675,6 +711,7 @@ mod tests {
         age: u64,
         gate: u64,
         release: u64,
+        _resources: &dyn crate::DeviceResources,
     ) -> StereoFrame {
         if age < gate + release {
             [f32::from_bits(payload[0] as u32), 0.0]
@@ -687,6 +724,7 @@ mod tests {
         age: u64,
         gate: u64,
         release: u64,
+        _resources: &dyn crate::DeviceResources,
     ) -> StereoFrame {
         if age < gate + release {
             [0.0, f32::from_bits(payload[0] as u32)]
@@ -729,9 +767,15 @@ mod tests {
                 )
                 .unwrap();
             let note = instrument.prepare_note(60, 100).unwrap();
-            assert_eq!(note.sample(0, 32), expected);
-            assert_eq!(note.sample(39, 32), expected);
-            assert_eq!(note.sample(40, 32), [0.0, 0.0]);
+            assert_eq!(note.sample(0, 32, &crate::EMPTY_DEVICE_RESOURCES), expected);
+            assert_eq!(
+                note.sample(39, 32, &crate::EMPTY_DEVICE_RESOURCES),
+                expected
+            );
+            assert_eq!(
+                note.sample(40, 32, &crate::EMPTY_DEVICE_RESOURCES),
+                [0.0, 0.0]
+            );
         }
     }
     #[test]

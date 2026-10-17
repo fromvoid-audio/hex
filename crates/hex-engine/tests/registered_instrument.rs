@@ -120,7 +120,13 @@ impl PreparedSharedAnalyticContext for ConstantSharedContext {
         Ok(PreparedSharedAnalyticNote::new(payload, 4))
     }
 
-    fn sample(&self, note: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> StereoFrame {
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> StereoFrame {
         if age < gate.saturating_add(note.release_frames()) {
             [
                 f32::from_bits(note.payload()[0] as u32),
@@ -136,6 +142,7 @@ fn constant_sample(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> StereoFrame {
     if age < gate.saturating_add(release) {
         [

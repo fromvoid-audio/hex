@@ -170,7 +170,13 @@ impl hex_lattice::PreparedSharedAnalyticContext for SharedContextFixture {
         payload[0] = u64::from(self.level.to_bits());
         Ok(hex_lattice::PreparedSharedAnalyticNote::new(payload, 8))
     }
-    fn sample(&self, note: &hex_lattice::PreparedSharedAnalyticNote, age: u64, gate: u64) -> Frame {
+    fn sample(
+        &self,
+        note: &hex_lattice::PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Frame {
         if age < gate.saturating_add(note.release_frames()) {
             [f32::from_bits(note.payload()[0] as u32); 2]
         } else {

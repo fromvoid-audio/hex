@@ -1319,7 +1319,7 @@ mod tests {
                 Ok(PreparedAnalyticNote::new(
                     [0; ANALYTIC_NOTE_PAYLOAD_WORDS],
                     0,
-                    |_, _, _, _| [0.0, 0.0],
+                    |_, _, _, _, _| [0.0, 0.0],
                 ))
             }
         }

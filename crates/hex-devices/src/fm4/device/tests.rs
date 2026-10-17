@@ -273,7 +273,10 @@ fn explicit_definition_prepares_analytic_notes_matching_the_standalone_kernel() 
                     gate + note.release_frames(),
                 ] {
                     let sample = expected.sample(&table, age, gate);
-                    assert_eq!(note.sample(age, gate), [sample, sample]);
+                    assert_eq!(
+                        note.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                        [sample, sample]
+                    );
                 }
             }
         }

@@ -54,14 +54,23 @@ fn exact_pcm_and_provider(
         a.validate_note(&note).unwrap();
         for age in [0, 1, 517, 800, 24_001] {
             for gate in [u64::MAX, 600] {
-                let observed = actual.sample(&note, age, gate);
+                let observed =
+                    actual.sample(&note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 nonzero |= observed[0] != 0.0;
-                let wanted = expected.sample(&oracle, age, gate);
+                let wanted =
+                    expected.sample(&oracle, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES);
                 assert_eq!(observed.map(f32::to_bits), wanted.map(f32::to_bits));
                 assert_eq!(
-                    a.sample_with_parameters(id, &start, &note, age, gate)
-                        .unwrap()
-                        .map(f32::to_bits),
+                    a.sample_with_parameters(
+                        id,
+                        &start,
+                        &note,
+                        age,
+                        gate,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    )
+                    .unwrap()
+                    .map(f32::to_bits),
                     observed.map(f32::to_bits)
                 );
             }
@@ -91,7 +100,9 @@ fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     );
     assert_eq!(operator(prepared.as_ref()).authored_state.payload(), bytes);
     let note = prepared.prepare_note(60, 100).unwrap();
-    assert!(prepared.sample(&note, 517, u64::MAX)[0].is_finite());
+    assert!(
+        prepared.sample(&note, 517, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES)[0].is_finite()
+    );
 }
 
 #[test]

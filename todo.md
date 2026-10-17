@@ -9,8 +9,14 @@ All319 device and54 lattice library tests pass (one existing device test ignored
 strict affected all-target Clippy and audio/export/allocation-feature compilation
 pass. Actual registry tests prove a valid borrowed PCM view alone cannot bypass
 root admission, and stale extra views refuse before provider migration.
-Processing-side borrows, real PCM consumer fixtures and retained-root admission
-remain unfinished; existing nonempty asset refusal and caps remain unchanged.
+Analytic inline/shared/continuation callbacks now borrow the resource inventory
+through their actual sample ABI. A real mono/stereo PCM conformance callback and
+actual callback allocation probe pass with zero allocations/frees. All319 device
+and55 lattice library tests pass, including one existing device ignore; strict
+all-target Clippy and audio allocation-feature tests pass. Existing asset-free
+hosts pass an explicit empty inventory and registries continue refusing assets;
+mutable/effect processing, per-configuration root leases and retirement admission
+remain unfinished. No cap or note layout increase.
 No sampler registration, full-CI or native acceptance claim. Beats clip stretching
 2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
 

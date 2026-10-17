@@ -69,8 +69,8 @@ fn canonical_notes_reconstruct_every_word_and_actual_native_pcm_exactly() {
                 let restored = PreparedSharedAnalyticNote::new(decoded, original.release_frames());
                 for age in [0, 1, 239, 240, 1001, 4800, 8000] {
                     assert_eq!(
-                        context.sample(&original, age, 400),
-                        context.sample(&restored, age, 400)
+                        context.sample(&original, age, 400, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                        context.sample(&restored, age, 400, &hex_lattice::EMPTY_DEVICE_RESOURCES)
                     );
                 }
             }

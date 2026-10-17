@@ -293,7 +293,13 @@ impl hex_lattice::PreparedSharedAnalyticContext for OversizedSharedContext {
         Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 0))
     }
 
-    fn sample(&self, _: &hex_lattice::PreparedSharedAnalyticNote, _: u64, _: u64) -> [f32; 2] {
+    fn sample(
+        &self,
+        _: &hex_lattice::PreparedSharedAnalyticNote,
+        _: u64,
+        _: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> [f32; 2] {
         [0.0; 2]
     }
 }
@@ -322,6 +328,7 @@ impl hex_lattice::PreparedSharedAnalyticContext for ContinuitySharedContext {
         note: &hex_lattice::PreparedSharedAnalyticNote,
         age: u64,
         gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         if age < gate.saturating_add(note.release_frames()) {
             let level = f32::from_bits(note.payload()[0] as u32);
@@ -337,6 +344,7 @@ fn continuity_sample(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     if age < gate.saturating_add(release) {
         let level = f32::from_bits(payload[0] as u32);
