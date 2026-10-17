@@ -125,6 +125,7 @@ pub struct AudioFadeProjection {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipDomain {
+    pub events: Option<Arc<crate::AudioEvents>>,
     pub source_offset: u64,
     pub source_length: u64,
     pub source_phase: u64,
@@ -294,6 +295,7 @@ impl AudioClipEdit {
     pub(crate) fn capture(clip: &Clip) -> Self {
         Self {
             domain: Arc::new(AudioClipDomain {
+                events: None,
                 source_offset: clip.source_offset,
                 source_length: clip.source_length,
                 source_phase: clip.source_phase,
@@ -311,6 +313,38 @@ impl AudioClipEdit {
             view_end: clip.duration,
             musical_start: None,
         }
+    }
+    pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
+        if position > self.domain.clock.length() {
+            return Err(Invalid("audio event position exceeds its root"));
+        }
+        match self.domain.clock {
+            AudioDomainClock::Frames(_) => Ok(position),
+            AudioDomainClock::Beats(_) => {
+                let origin = self.projection_origin()?;
+                u64::try_from(
+                    audio_projection_frame(tempo, origin + i128::from(position))?
+                        - audio_projection_frame(tempo, origin)?,
+                )
+                .map_err(|_| Invalid("audio event frame projection overflow"))
+            }
+        }
+    }
+    pub fn root_position_at(&self, frame: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
+        let position = match self.domain.clock {
+            AudioDomainClock::Frames(_) => frame,
+            AudioDomainClock::Beats(_) => {
+                let origin = self.projection_origin()?;
+                u64::try_from(
+                    audio_projection_beat(
+                        tempo,
+                        audio_projection_frame(tempo, origin)? + i128::from(frame),
+                    )? - origin,
+                )
+                .map_err(|_| Invalid("audio event clock projection overflow"))?
+            }
+        };
+        Ok(position.min(self.domain.clock.length()))
     }
     pub fn projection_origin(&self) -> Result<i128, Invalid> {
         self.musical_start
@@ -347,6 +381,9 @@ impl AudioClipEdit {
         asset_frames: u64,
     ) -> Result<(), Invalid> {
         let domain = &self.domain;
+        if let Some(events) = &domain.events {
+            events.validate(domain.clock.length())?;
+        }
         let source_end = domain
             .source_offset
             .checked_add(domain.source_length)
@@ -461,6 +498,11 @@ impl AudioClipEdit {
         if self.musical_start.is_some() {
             return Ok(());
         }
+        if self.domain.events.is_some() {
+            return Err(Invalid(
+                "timing mode cannot change after audio event edits; undo those edits first",
+            ));
+        }
         let origin_frame = i128::from(clip_start) - i128::from(self.view_start);
         let origin_beat = audio_projection_beat(tempo, origin_frame)?;
         let beat_at = |frame: u64| -> Result<u64, Invalid> {
@@ -487,6 +529,11 @@ impl AudioClipEdit {
         Ok(())
     }
     pub(crate) fn unanchor(&mut self, tempo: &TempoMap) -> Result<(), Invalid> {
+        if self.musical_start.is_some() && self.domain.events.is_some() {
+            return Err(Invalid(
+                "timing mode cannot change after audio event edits; undo those edits first",
+            ));
+        }
         if self.musical_start.is_some() && !self.domain.fade.is_neutral() {
             return Err(Invalid(
                 "musical audio with a retained fade cannot switch to frame anchoring; clear the fade first",

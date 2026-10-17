@@ -1,3 +1,27 @@
+## nested audio events — pulse2692 / PR308, 17 october 2026
+
+Arrangement audio clips retain their outer editing behavior while a lower event
+editor cuts/reorders non-destructive root intervals. Independent adaptive BPM grid,
+time selection/range movement, trim, cursor/range split, clipboard, duplicate,
+insert-paste, zoom/pan and focused hotkeys use canonical one-step commands.
+Later events overwrite covered audio; gaps are silence. Schema28 preserves event
+state and strict legacy migration; resident worker composition precedes outer
+fades/gain and charges temporary storage. See [contract](docs/audio-events.md).
+
+Focused model, storage, PCM and real-input GPUI tests accompany this change.
+Native macOS interaction/listening, streamed event composition, cross-root paste
+and conversion of event-bearing clocks remain explicitly open. Final validation
+results and source identity are recorded in PR308 and Pulse2692.
+## native device installed inventory — #2668 / PR284, 17 october 2026
+
+Read-only bounded metadata inventory and machine-readable coverage ledger retain
+85 manual seeds, all 67 discovered Max files and eight legacy preset families
+as 142 accountable identities. Reference executable matches the pinned hash.
+Seven current effects, Vector v15 and the unregistered sampler kernel are
+reconciled against source. See [catalog](docs/native-device-catalog.md).
+Inventory fixture tests pass. Full per-feature/browser/native/reference acceptance
+remains open; this is the W02 bootstrap, not W01 or goal completion.
+
 ## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
 
 Ten shared theme colors replace custom per-clip colors. Track-header menus choose
@@ -37,7 +61,7 @@ Arrangement audio clips expose upper/lower fade endpoints and middle curve handl
 while holding f; non-default envelopes stay visible. Pointer previews submit one
 canonical history edit on release, with Escape/focus/stale-state cancellation.
 The coordinate-based rational curve keeps zero-bend legacy PCM and split/musical
-projection continuity. Schema28 retains shapes through strict ID-bound metadata;
+projection continuity. Schema29 retains shapes through strict ID-bound metadata;
 older schemas receive linear edge defaults. See [contract and native checklist](docs/clip-fades.md).
 
 Focused regression results and final source checks are recorded in PR309. Native macOS
@@ -4183,3 +4207,14 @@ metadata and continued rejection of changed/missing/added source, lookalikes
 and symlinks. Full optimized-delivery verification remains required by launch.
 Exact final CI, merged-source launcher delivery and native launch evidence are
 recorded with PR319 and Pulse2703; not inferred from these source fixtures.
+
+## additive release-cache handoff — pulse2704 / PR320, 17 october 2026
+
+Actual primary launch passed all20 checks at0a9a4de6, then release preparation
+falsely classified four new workspace crates as removed/renamed packages.
+The release guard now permits additions only while every recorded member retains
+its name/version; it cleans the complete current workspace with the existing
+lock, scope, source and artifact checks. Real-Cargo regression fails before the
+fix and verifies added dependency output plus removal/rename/version-change
+refusals and preserved external/dev artifacts. Final exact checks and actual
+merged-source launch evidence remain recorded on PR320/Pulse2704.

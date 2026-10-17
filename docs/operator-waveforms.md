@@ -1,5 +1,10 @@
 # native Operator periodic waveforms
 
+Historical implementation evidence below retains its original state/version and
+limits. Current Vector is v15 with globals, controllers, eleven algorithms and
+selected polyphony up to 32; see [current globals](vector-global.md),
+[state](operator-state.md) and [catalog reconciliation](native-device-catalog.md).
+
 Pulse2183 adds four independently selectable oscillator shapes to native
 Operator: `sine`, `saw`, `square` and `triangle`. Choice metadata uses IDs57–60
 and the generic native-device parameter contract. State version2 keeps the
@@ -64,7 +69,7 @@ route, envelope, rate and release tests remain in place. The shared context and
 packed note stay under the4096-byte and64-byte contract ceilings.
 
 The implementation was informed by the installed Ableton Live12.4.6 reference
-build recorded in [reference identity](../research/reference.md) and the public
+build recorded in [reference identity](research/reference.md) and the public
 [Live 12 Operator manual](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#operator).
 The reference describes periodic oscillator shapes and harmonic-count variants;
 it does not establish the table formulas, cap ladder, interpolation, defaults,

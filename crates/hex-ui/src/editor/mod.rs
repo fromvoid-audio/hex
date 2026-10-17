@@ -7,6 +7,7 @@ mod arrangement_device_drop_ui_test;
 mod arrangement_main_track_ui_test;
 mod arrangement_seek;
 mod audio_admission;
+mod audio_event_editor;
 mod browser;
 mod browser_input;
 mod clip_content_cache;
@@ -220,6 +221,7 @@ actions!(
     [
         TogglePlay,
         ToggleBrowser,
+        ToggleSnapGrid,
         ThemeSettingsEscape,
         BrowserPrevious,
         BrowserNext,
@@ -420,6 +422,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor")),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_midi")),
+        KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_audio_events")),
+        KeyBinding::new("cmd-4", ToggleSnapGrid, Some("hex_editor")),
         KeyBinding::new("b", ToggleMidiDrawMode, Some("hex_midi")),
         KeyBinding::new("shift-up", MidiOctaveUp, Some("hex_midi")),
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
@@ -566,6 +570,9 @@ pub(super) struct EditorView {
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
+    audio_event_editor: audio_event_editor::State,
+    audio_event_focus: FocusHandle,
+    _audio_event_blur: gpui::Subscription,
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
@@ -793,6 +800,11 @@ impl EditorView {
                 cx.notify();
             }
         });
+        let audio_event_focus = cx.focus_handle();
+        let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
+            view.audio_event_editor.gesture = None;
+            cx.notify();
+        });
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
             view.cancel_computer_keyboard();
@@ -807,6 +819,7 @@ impl EditorView {
                 view.cancel_fade_gesture(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
+                view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 let paint_cancelled = view.cancel_clip_paint();
@@ -821,6 +834,7 @@ impl EditorView {
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
             view.cancel_fade_gesture(cx);
+            view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
             }
@@ -923,6 +937,9 @@ impl EditorView {
             controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
+            audio_event_editor: audio_event_editor::State::default(),
+            audio_event_focus,
+            _audio_event_blur: audio_event_blur,
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
             _scrub_focus_lifecycle: scrub_focus_blur,

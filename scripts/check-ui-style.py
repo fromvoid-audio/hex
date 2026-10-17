@@ -101,6 +101,10 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Audio-event editor components keep their text at the themed boundary.
+    'super::audio_event_editor::view(', 'waveform::button(',
+    'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
+    'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
     # Fade pointer capture is a typed canvas listener with no rendered text.
     'self.fade_pointer_events(',

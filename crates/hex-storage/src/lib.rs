@@ -129,11 +129,11 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the complete schema28 envelope, preserving device host gains, import
-/// provenance, typed routing and complete gain-lane metadata together.
+/// Encode the complete schema29 envelope, preserving fade shapes, nested audio
+/// events, appearance, names, routing, device gains and gain-lane metadata.
 /// Historical readers remain explicit.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::fade_shapes::DocumentV28::from_project(project)?)
+    encode_document(&schema::fade_shapes::DocumentV29::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.

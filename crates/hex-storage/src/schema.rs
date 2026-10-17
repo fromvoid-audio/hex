@@ -1,4 +1,5 @@
 pub(crate) mod appearance;
+pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
@@ -2033,14 +2034,22 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
+        if header.version == 29 {
+            return fade_shapes::DocumentV29::decode(bytes);
+        }
         if header.version == 28 {
-            return fade_shapes::DocumentV28::decode(bytes);
+            return audio_events::decode(bytes);
         }
         if header.version == 26 {
             return clip_names::DocumentV26::decode(bytes);
         }
         if header.version == 27 {
-            return appearance::DocumentV27::decode(bytes);
+            let shape: serde_json::Value = serde_json::from_slice(bytes)?;
+            return if shape.get("audio_event_state").is_some() {
+                audio_events::decode_legacy(bytes)
+            } else {
+                appearance::DocumentV27::decode(bytes)
+            };
         }
         if header.version == 25 {
             return musical_audio::DocumentV25::decode(bytes);

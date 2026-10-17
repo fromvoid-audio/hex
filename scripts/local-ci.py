@@ -759,7 +759,11 @@ class LocalCiRunner:
                     malformed = True
             if record is not None:
                 old_scope = [(p["name"], p["version"]) for p in record["packages"]]
-                if old_scope != [(p["name"], p["version"]) for p in scope]:
+                old_names = {name for name, _version in old_scope}
+                retained_scope = [(p["name"], p["version"]) for p in scope if p["name"] in old_names]
+                # New members are cleanable through the current workspace; every
+                # old member must still be present with its original name/version.
+                if old_scope != retained_scope:
                     raise TargetCacheError("removed, renamed or version-changed workspace packages require a fresh release target")
                 if record["state"] == "pending" and not adopt:
                     raise TargetCacheError("release handoff is pending; explicit adoption/recovery required")

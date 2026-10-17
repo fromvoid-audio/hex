@@ -9,40 +9,40 @@ use std::{collections::BTreeSet, fmt};
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentV27 {
     #[serde(deserialize_with = "super::clip_names::bounded_names")]
-    pub(super) clip_names: Vec<super::clip_names::ClipName>,
-    pub(super) format: String,
+    clip_names: Vec<super::clip_names::ClipName>,
+    format: String,
     pub(super) version: u32,
-    pub(super) sample_rate: u32,
-    pub(super) next_id: u64,
-    pub(super) assets: Vec<AssetV2>,
+    sample_rate: u32,
+    next_id: u64,
+    assets: Vec<AssetV2>,
     #[serde(deserialize_with = "gain_touch::bounded_tracks")]
-    pub(super) tracks: Vec<gain_touch::TrackV22>,
-    pub(super) return_tracks: Vec<ReturnTrackDtoV17>,
+    tracks: Vec<gain_touch::TrackV22>,
+    return_tracks: Vec<ReturnTrackDtoV17>,
     #[serde(deserialize_with = "deserialize_required_loop_region")]
-    pub(super) loop_region: Option<LoopRegionDto>,
-    pub(super) master_gain: f32,
-    pub(super) tempo_points: Vec<TempoPointDto>,
-    pub(super) meter_points: Vec<MeterPointDto>,
-    pub(super) session: SessionDtoV12,
+    loop_region: Option<LoopRegionDto>,
+    master_gain: f32,
+    tempo_points: Vec<TempoPointDto>,
+    meter_points: Vec<MeterPointDto>,
+    session: SessionDtoV12,
     #[serde(deserialize_with = "provenance::required_provenance")]
-    pub(super) import_provenance: Option<provenance::ProvenanceDto>,
+    import_provenance: Option<provenance::ProvenanceDto>,
     #[serde(deserialize_with = "return_feeds::bounded_feeds")]
-    pub(super) routing: Vec<return_feeds::FeedDto>,
+    routing: Vec<return_feeds::FeedDto>,
     #[serde(deserialize_with = "bounded_audio")]
-    pub(super) audio_feeds: Vec<AudioDto>,
+    audio_feeds: Vec<AudioDto>,
     #[serde(deserialize_with = "bounded_midi")]
-    pub(super) midi_routes: Vec<MidiDto>,
+    midi_routes: Vec<MidiDto>,
     #[serde(deserialize_with = "bounded_states")]
-    pub(super) audio_clip_state: Vec<AudioState>,
+    audio_clip_state: Vec<AudioState>,
     #[serde(deserialize_with = "bounded_track_colors")]
-    pub(super) track_colors: Vec<TrackColor>,
+    track_colors: Vec<TrackColor>,
     #[serde(deserialize_with = "bounded_accents")]
-    pub(super) accented_clips: Vec<u64>,
+    accented_clips: Vec<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TrackColor {
+struct TrackColor {
     track: u64,
     color: String,
 }
@@ -72,14 +72,12 @@ where
     }
     d.deserialize_seq(Items::<T, MAX>(std::marker::PhantomData))
 }
-pub(super) fn bounded_track_colors<'de, D: serde::Deserializer<'de>>(
+fn bounded_track_colors<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Vec<TrackColor>, D::Error> {
     bounded::<D, TrackColor, { hex_project::MAX_TRACKS }>(d)
 }
-pub(super) fn bounded_accents<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<Vec<u64>, D::Error> {
+fn bounded_accents<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u64>, D::Error> {
     bounded::<D, u64, { hex_project::MAX_CLIPS + hex_project::MAX_SESSION_CELLS }>(d)
 }
 impl DocumentV27 {
@@ -151,10 +149,6 @@ impl DocumentV27 {
                 "unsupported project format or version",
             ));
         }
-        doc.into_project()
-    }
-    pub(super) fn into_project(self) -> Result<Project, StorageError> {
-        let doc = self;
         let base = clip_names::DocumentV26 {
             clip_names: doc.clip_names,
             format: doc.format,
