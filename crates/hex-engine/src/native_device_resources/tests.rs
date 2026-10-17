@@ -62,6 +62,7 @@ pub(crate) fn specs(ids: &[AssetId]) -> Vec<OriginalResourceSource> {
     ids[..2]
         .iter()
         .map(|&asset| OriginalResourceSource {
+            layout: OriginalResourceLayout::Stereo,
             asset,
             sample_rate: 44_100,
             frames: 4,
@@ -411,4 +412,168 @@ fn retained_root_refusals_preserve_native_bank_and_leave_no_extra_owning_handle(
         .unwrap();
     ledger.validate_closed_shared_handles().unwrap();
     assert_eq!(ledger.summary().unwrap().unresolved_handles, 3);
+}
+
+#[test]
+fn native_mono_custody_preserves_actual_layout_and_deduplicates_bounded_aliases() {
+    let ids = ids();
+    let mut samples = Vec::with_capacity(9);
+    samples.extend([0.25, -0.5, 0.75, -1.0]);
+    let pointer = samples.as_ptr();
+    let result = OwnedAudioSource::try_resident_mono(44_100, samples);
+    if !crate::pcm_arc::native_layout_known() {
+        assert_eq!(
+            result.err().unwrap().reason,
+            AudioStorageError::UnsupportedConstructor
+        );
+        return;
+    }
+    let source = result.ok().unwrap();
+    let reservation = AudioStorageReservation {
+        allocation_items: 8,
+        handle_obligations: 4,
+        max_prepared_data_bytes: 65_536,
+        max_construction_data_bytes: 65_536,
+        caller_retained_bytes: 0,
+        caller_construction_bytes: 0,
+    };
+    let mut bank = OwnedAudioInputs::try_new(vec![(ids[0], source)], reservation)
+        .ok()
+        .unwrap();
+    let token = bank.source_token(ids[0]).unwrap();
+    assert!(
+        bank.source_view(&token)
+            .unwrap()
+            .resident_frames()
+            .is_none()
+    );
+    assert_eq!(
+        bank.source_view(&token)
+            .unwrap()
+            .resident_mono_samples()
+            .unwrap()
+            .as_ptr(),
+        pointer
+    );
+    for _ in 0..3 {
+        bank.alias_on_control(&token).unwrap();
+    }
+    assert_eq!(
+        bank.alias_on_control(&token).err(),
+        Some(AudioStorageError::Capacity)
+    );
+    let bank = bank.prepare_input_storage_on_control().ok().unwrap();
+    assert_eq!(bank.summary().unique_allocations, 2);
+    assert_eq!(bank.summary().unresolved_handles, 4);
+    let expected = [OriginalResourceSource {
+        asset: ids[0],
+        sample_rate: 44_100,
+        frames: 4,
+        layout: OriginalResourceLayout::Mono,
+    }];
+    let mut wrong_layout = expected;
+    wrong_layout[0].layout = OriginalResourceLayout::Stereo;
+    assert!(matches!(
+        DeviceResourceCatalog::prepare_on_control(
+            &bank,
+            &wrong_layout,
+            limits(),
+            &AtomicBool::new(false)
+        ),
+        Err(ResourcePreparationError::InvalidSource)
+    ));
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &expected,
+        limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let expected_hash: [u8; 32] = [
+        0x1d, 0xdf, 0x45, 0xd7, 0x99, 0xd2, 0x24, 0x11, 0x06, 0x68, 0xae, 0x17, 0x69, 0xcf, 0xac,
+        0xba, 0x98, 0x47, 0x82, 0xe7, 0xb5, 0x20, 0x2d, 0x3b, 0x7a, 0x04, 0x1e, 0x2d, 0xc4, 0x3a,
+        0x6e, 0xf1,
+    ];
+    assert_eq!(catalog.identity(ids[0]).unwrap().content, expected_hash);
+    let owner = DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let lease = owner
+        .prepare_lease_on_control(&state(ids[0]), 4096)
+        .unwrap();
+    let view = lease.get(0).unwrap();
+    assert_eq!(view.sample_rate, 44_100);
+    let DeviceResourcePcm::Mono(actual) = view.pcm else {
+        panic!("actual mono layout was substituted")
+    };
+    assert_eq!(actual.as_ptr(), pointer);
+    assert_eq!(actual, [0.25, -0.5, 0.75, -1.0]);
+    let note = hex_lattice::conformance::resource_pcm::prepare_note(
+        &state(ids[0]),
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &lease,
+        },
+        0,
+    )
+    .unwrap();
+    for (age, sample) in actual.iter().copied().enumerate() {
+        assert_eq!(note.sample(age as u64, 4, &lease), [sample; 2]);
+    }
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 16,
+            root_rows: 8,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        })
+        .unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&owner, crate::AudioStorageRole::Caller)
+        .unwrap();
+    ledger
+        .borrow_device_resource_lease_on_control(&lease, crate::AudioStorageRole::Current)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    assert_eq!(ledger.summary().unwrap().unresolved_handles, 6);
+}
+
+#[test]
+fn mono_constructor_numeric_refusals_return_the_actual_caller_buffer() {
+    for (rate, values, expected) in [
+        (0, vec![0.25], AudioStorageError::InvalidRate),
+        (44_100, vec![], AudioStorageError::InvalidSamples),
+        (44_100, vec![f32::NAN], AudioStorageError::InvalidSamples),
+        (
+            44_100,
+            vec![f32::INFINITY],
+            AudioStorageError::InvalidSamples,
+        ),
+    ] {
+        let pointer = values.as_ptr();
+        let capacity = values.capacity();
+        let bits: Vec<_> = values.iter().map(|sample| sample.to_bits()).collect();
+        let refusal = OwnedAudioSource::try_resident_mono(rate, values)
+            .err()
+            .unwrap();
+        assert_eq!(refusal.reason, expected);
+        assert_eq!(refusal.samples.as_ptr(), pointer);
+        assert_eq!(refusal.samples.capacity(), capacity);
+        assert_eq!(
+            refusal
+                .samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            bits
+        );
+    }
 }

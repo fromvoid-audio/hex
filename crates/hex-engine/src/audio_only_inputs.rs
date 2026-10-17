@@ -48,6 +48,14 @@ pub struct ResidentSourceRefusal {
     pub reason: AudioStorageError,
     pub frames: Vec<Frame>,
 }
+pub struct ResidentMonoSourceRefusal {
+    pub reason: AudioStorageError,
+    pub samples: Vec<f32>,
+}
+pub(crate) struct MonoSourceData {
+    pub(crate) sample_rate: u32,
+    pub(crate) samples: Vec<f32>,
+}
 pub struct StreamedSourceRefusal {
     pub reason: AudioStorageError,
     pub metadata: StreamedSourceMetadata,
@@ -60,9 +68,65 @@ pub struct OwnedAudioSource {
 }
 pub(crate) enum SourceKind {
     Resident(Audio),
+    ResidentMono(OwnedShared<MonoSourceData>),
     Streamed(OwnedShared<StreamedSourceMetadata>),
 }
+/// Borrowed leaf layout for the existing source/clip custody visitors.
+/// This confers no owner, constructor declaration or retirement authority.
+pub(crate) enum SourceStorageKind<'a> {
+    Resident(&'a Audio),
+    ResidentMono(&'a OwnedShared<MonoSourceData>),
+    Streamed(&'a OwnedShared<StreamedSourceMetadata>),
+}
+pub(crate) trait SourceStorage: std::any::Any {
+    fn storage_kind(&self) -> SourceStorageKind<'_>;
+    fn storage_handle(&self) -> u64;
+}
+impl SourceStorage for OwnedAudioSource {
+    fn storage_kind(&self) -> SourceStorageKind<'_> {
+        match &self.kind {
+            SourceKind::Resident(audio) => SourceStorageKind::Resident(audio),
+            SourceKind::ResidentMono(source) => SourceStorageKind::ResidentMono(source),
+            SourceKind::Streamed(source) => SourceStorageKind::Streamed(source),
+        }
+    }
+    fn storage_handle(&self) -> u64 {
+        self.handle
+    }
+}
 impl OwnedAudioSource {
+    /// Exact mono custody in the existing native source/bank ownership family.
+    /// Refusals precede the owning wrapper allocation and return the same Vec.
+    pub fn try_resident_mono(
+        sample_rate: u32,
+        samples: Vec<f32>,
+    ) -> Result<Self, ResidentMonoSourceRefusal> {
+        let checked = (|| {
+            if sample_rate == 0 {
+                return Err(AudioStorageError::InvalidRate);
+            }
+            if samples.is_empty() || samples.iter().any(|v| !v.is_finite()) {
+                return Err(AudioStorageError::InvalidSamples);
+            }
+            OwnedShared::<MonoSourceData>::declared_parts()
+                .ok_or(AudioStorageError::UnsupportedConstructor)?;
+            samples
+                .capacity()
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or(AudioStorageError::Overflow)?;
+            handle()
+        })();
+        match checked {
+            Err(reason) => Err(ResidentMonoSourceRefusal { reason, samples }),
+            Ok(handle) => Ok(Self {
+                kind: SourceKind::ResidentMono(OwnedShared::new_owned(MonoSourceData {
+                    sample_rate,
+                    samples,
+                })),
+                handle,
+            }),
+        }
+    }
     /// All reported refusals precede the Arc wrapper allocation; original pointer/capacity survive.
     /// Process-fatal allocator OOM/abort is outside API-reported recovery.
     pub fn try_resident(rate: u32, frames: Vec<Frame>) -> Result<Self, ResidentSourceRefusal> {
@@ -128,12 +192,14 @@ impl OwnedAudioSource {
     pub fn sample_rate(&self) -> u32 {
         match &self.kind {
             SourceKind::Resident(a) => a.sample_rate(),
+            SourceKind::ResidentMono(source) => source.sample_rate,
             SourceKind::Streamed(s) => s.project_rate(),
         }
     }
     pub fn frames(&self) -> u64 {
         match &self.kind {
             SourceKind::Resident(a) => a.frames.len() as u64,
+            SourceKind::ResidentMono(source) => source.samples.len() as u64,
             SourceKind::Streamed(s) => s.playback_frames(),
         }
     }
@@ -162,12 +228,19 @@ impl<'a> OwnedAudioSourceView<'a> {
     pub fn sample_rate(&self) -> u32 {
         match self.kind {
             SourceKind::Resident(a) => a.sample_rate(),
+            SourceKind::ResidentMono(source) => source.sample_rate,
             SourceKind::Streamed(s) => s.project_rate(),
         }
     }
     pub fn resident_frames(&self) -> Option<&'a [Frame]> {
         match self.kind {
             SourceKind::Resident(a) => Some(a.frames()),
+            _ => None,
+        }
+    }
+    pub fn resident_mono_samples(&self) -> Option<&'a [f32]> {
+        match self.kind {
+            SourceKind::ResidentMono(source) => Some(&source.samples),
             _ => None,
         }
     }
@@ -317,7 +390,7 @@ impl OwnedAudioInputs {
             {
                 allocation_count = allocation_count
                     .checked_add(match &source.kind {
-                        SourceKind::Resident(_) => 2,
+                        SourceKind::Resident(_) | SourceKind::ResidentMono(_) => 2,
                         SourceKind::Streamed(_) => 1,
                     })
                     .ok_or(AudioStorageError::Overflow)?;
@@ -410,6 +483,7 @@ impl OwnedAudioInputs {
         let handle = handle()?;
         let kind = match &self.checked_source(token)?.kind {
             SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
+            SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
             SourceKind::Streamed(source) => SourceKind::Streamed(source.clone_on_control()),
         };
         self.aliases[index] = AliasRow {

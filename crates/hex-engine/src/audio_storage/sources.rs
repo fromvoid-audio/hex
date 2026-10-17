@@ -1,5 +1,5 @@
 use super::*;
-use crate::audio_only_inputs::{OwnedAudioSource, SourceKind};
+use crate::audio_only_inputs::{SourceStorage, SourceStorageKind};
 impl<'a> AudioRootStorageLedger<'a> {
     pub(crate) fn inputs(&mut self, inputs: &'a OwnedAudioInputs) -> Result<(), AudioStorageError> {
         self.vec(&inputs.sources)?;
@@ -32,18 +32,35 @@ impl<'a> AudioRootStorageLedger<'a> {
         }
         Ok(())
     }
-    pub(crate) fn source(&mut self, source: &'a OwnedAudioSource) -> Result<(), AudioStorageError> {
-        match &source.kind {
-            SourceKind::Resident(audio) => {
-                self.resident(audio, Owner::exclusive(source), source.handle)
+    pub(crate) fn source(
+        &mut self,
+        source: &'a impl SourceStorage,
+    ) -> Result<(), AudioStorageError> {
+        match source.storage_kind() {
+            SourceStorageKind::Resident(audio) => {
+                self.resident(audio, Owner::exclusive(source), source.storage_handle())
             }
-            SourceKind::Streamed(owner) => {
+            SourceStorageKind::ResidentMono(owner) => {
+                self.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(source),
+                    source.storage_handle(),
+                    None,
+                )?;
+                let crate::audio_only_inputs::MonoSourceData {
+                    sample_rate: _,
+                    samples,
+                } = owner.as_ref();
+                self.vec(samples)
+            }
+            SourceStorageKind::Streamed(owner) => {
                 owner.inspect_scalar_owned_storage();
                 self.shared(
                     owner.arc(),
                     owner.parts(),
                     Owner::exclusive(source),
-                    source.handle,
+                    source.storage_handle(),
                     Some(owner.as_ref()),
                 )
             }

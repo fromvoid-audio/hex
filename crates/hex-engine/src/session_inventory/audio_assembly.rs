@@ -1,9 +1,10 @@
 //! Sealed control-only final Session targets. No public inventory/clip reference,
 //! Arc, Deref, raw adoption or mutable graph escape is provided by this package.
 use super::*;
+use crate::audio_clip_source::{ClipSourceKind, OwnedAudioClipSource};
 use crate::{
     AudioStorageError,
-    audio_only_inputs::{OwnedAudioInputs, OwnedAudioSource, SourceKind},
+    audio_only_inputs::{OwnedAudioInputs, SourceKind},
     owned_shared::{OwnedShared, SharedDeclaration},
     session_audio_preparation::SessionSourceConstruction,
     session_shared_preparation::SessionSharedConstruction,
@@ -85,11 +86,11 @@ impl AudioTarget {
     pub(crate) fn vacant(&self) -> bool {
         self.clip.is_none() && self.actual_handle.is_none() && self.declaration.is_none()
     }
-    pub(crate) fn commit(&mut self, owner: OwnedAudioSource, name: String) {
-        let OwnedAudioSource { kind, handle } = owner;
+    pub(crate) fn commit(&mut self, owner: OwnedAudioClipSource, name: String) {
+        let OwnedAudioClipSource { kind, handle } = owner;
         let source = match kind {
-            SourceKind::Resident(audio) => PreparedAudioSource::Resident(audio),
-            SourceKind::Streamed(metadata) => {
+            ClipSourceKind::Resident(audio) => PreparedAudioSource::Resident(audio),
+            ClipSourceKind::Streamed(metadata) => {
                 let (arc, declaration) = metadata.into_paired_parts_on_control();
                 self.declaration = Some(declaration);
                 PreparedAudioSource::Streamed(arc)

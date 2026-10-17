@@ -16,11 +16,17 @@ mod ingress;
 pub use ingress::ResidentAudioIngressRefusal;
 
 /// Expected original decoded source facts, captured by the media owner on control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalResourceLayout {
+    Mono,
+    Stereo,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct OriginalResourceSource {
     pub asset: AssetId,
     pub sample_rate: u32,
     pub frames: u64,
+    pub layout: OriginalResourceLayout,
 }
 /// Caller-reserved metadata and finite control work; no new global ceiling.
 #[derive(Clone, Copy, Debug)]
@@ -116,13 +122,22 @@ impl DeviceResourceCatalog {
             cancellation(cancel)?;
             let token = bank.source_token(expected.asset)?;
             let source = bank.source_view(&token)?;
-            let pcm = source
-                .resident_frames()
-                .ok_or(ResourcePreparationError::InvalidSource)?;
+            let pcm = match expected.layout {
+                OriginalResourceLayout::Mono => DeviceResourcePcm::Mono(
+                    source
+                        .resident_mono_samples()
+                        .ok_or(ResourcePreparationError::InvalidSource)?,
+                ),
+                OriginalResourceLayout::Stereo => DeviceResourcePcm::Stereo(
+                    source
+                        .resident_frames()
+                        .ok_or(ResourcePreparationError::InvalidSource)?,
+                ),
+            };
             if expected.sample_rate == 0
                 || source.sample_rate() != expected.sample_rate
-                || u64::try_from(pcm.len()).ok() != Some(expected.frames)
-                || pcm.is_empty()
+                || u64::try_from(pcm.frames()).ok() != Some(expected.frames)
+                || pcm.frames() == 0
             {
                 return Err(ResourcePreparationError::InvalidSource);
             }
@@ -130,14 +145,30 @@ impl DeviceResourceCatalog {
                 .checked_sub(expected.frames)
                 .ok_or(ResourcePreparationError::WorkCapacity)?;
             let mut hash = Sha256::new();
-            hash.update(b"hex.device-resource.original-stereo.v1\0");
+            let prefix: &[u8] = match expected.layout {
+                OriginalResourceLayout::Mono => b"hex.device-resource.original-mono.v1\0",
+                OriginalResourceLayout::Stereo => b"hex.device-resource.original-stereo.v1\0",
+            };
+            hash.update(prefix);
             hash.update(expected.sample_rate.to_le_bytes());
             hash.update(expected.frames.to_le_bytes());
-            for chunk in pcm.chunks(256) {
-                cancellation(cancel)?;
-                for frame in chunk {
-                    for sample in frame {
-                        hash.update(sample.to_bits().to_le_bytes());
+            match pcm {
+                DeviceResourcePcm::Stereo(pcm) => {
+                    for chunk in pcm.chunks(256) {
+                        cancellation(cancel)?;
+                        for frame in chunk {
+                            for sample in frame {
+                                hash.update(sample.to_bits().to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                DeviceResourcePcm::Mono(pcm) => {
+                    for chunk in pcm.chunks(256) {
+                        cancellation(cancel)?;
+                        for sample in chunk {
+                            hash.update(sample.to_bits().to_le_bytes());
+                        }
                     }
                 }
             }
@@ -146,7 +177,7 @@ impl DeviceResourceCatalog {
                     .map_err(|_| ResourcePreparationError::InvalidSource)?,
                 content: hash.finalize().into(),
                 derivation_version: 1,
-                derivation: Sha256::digest(b"hex.device-resource.original-stereo.v1\0").into(),
+                derivation: Sha256::digest(prefix).into(),
             };
             sources.push(SourceFact {
                 expected: *expected,
@@ -250,9 +281,14 @@ impl<'a> ScopedDeviceResources<'a> {
         let fact = self.catalog.sources.get(binding.source)?;
         let bank: &'a AudioInputStorageAndObligations = self.bank;
         let source = bank.source_view(&fact.token).ok()?;
-        let pcm = source.resident_frames()?;
+        let pcm = match fact.expected.layout {
+            OriginalResourceLayout::Mono => {
+                DeviceResourcePcm::Mono(source.resident_mono_samples()?)
+            }
+            OriginalResourceLayout::Stereo => DeviceResourcePcm::Stereo(source.resident_frames()?),
+        };
         if source.sample_rate() != fact.expected.sample_rate
-            || pcm.len() as u64 != fact.expected.frames
+            || pcm.frames() as u64 != fact.expected.frames
         {
             return None;
         }
@@ -260,7 +296,7 @@ impl<'a> ScopedDeviceResources<'a> {
             slot: binding.slot,
             identity: fact.identity,
             sample_rate: fact.expected.sample_rate,
-            pcm: DeviceResourcePcm::Stereo(pcm),
+            pcm,
         })
     }
 }

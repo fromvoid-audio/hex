@@ -30,11 +30,13 @@ bank owners. The declaration includes value/header and vector backing capacity;
 it is not physical allocator/RSS, lifetime or publication proof. Existing root
 storage accounting must charge actual allocations and handles before admission.
 
-The initial source family is the existing immutable **stereo** native constructor.
-The primitive reports that actual layout and does not claim a mono native owner
-or streamed-device support. Explicit native mono ownership, source delivery,
-actual root/union accounting and host callback wiring remain required work here.
-Unsupported channels must never be silently substituted.
+The first checkpoint used the immutable stereo native constructor. The current
+source family also has an explicit mono native constructor, with original mono
+samples stored once in a retained Vec<f32>. Both use the existing source/bank
+custody and constructor-paired shared allocation family. OriginalResourceLayout
+must match the actual mono/stereo owner; mismatches refuse rather than substitute
+channels. Source delivery, complete graph accounting/wiring and streamed-device
+admission remain separate required work.
 
 ## current normalized pcm identity
 
@@ -45,7 +47,11 @@ pattern in left/right order as little-endian u32. Asset IDs are not part of cont
 Derivation version is1; its digest is SHA256 of that prefix including the NUL.
 This describes normalized original-rate decoded stereo PCM, not encoded file bytes.
 Native file verification remains the media owner's separate responsibility.
-The exact existing sha2 0.10.9 dependency is reused; no new hashing algorithm.
+Mono uses the byte prefix `hex.device-resource.original-mono.v1` plus NUL,
+the same rate/frame fields, then one little-endian f32 bit pattern per source
+frame. Its derivation digest uses that mono prefix. The distinct prefixes keep
+actual layouts distinct; this is the current decoded-data protocol, with no
+historical format conversion. The exact existing sha2 0.10.9 dependency is reused.
 
 A Python hashlib/struct fixture independently pins the content digest. Actual
 native-constructor tests check stereo samples/rate, configuration slot reuse,
@@ -58,7 +64,7 @@ sealed input storage through these scoped typed borrows. It observes exact
 stereo PCM sums and zero total/net callback allocations and frees, then verifies
 unchanged bank accounting and unresolved-handle integrity on control. This proves
 the borrow/query boundary only; it does not prove graph publication, carried-root
-retention or final-owner retirement. Both actual original sources are stereo.
+retention or final-owner retirement. The actual constructor probe now covers one mono and one stereo source.
 
 ## remaining admission work
 
@@ -110,7 +116,8 @@ native constructor without copying PCM. The old raw Arc is destroyed on control;
 its receipt is never upgraded. Shared/weak/derived inputs refuse intact. Frame
 work and cancellation are checked before consuming the source; positive tests
 verify the actual buffer pointer/capacity, rate, samples and new declaration.
-Media import integration and true native mono custody remain required work.
+Media import integration remains required; true native mono custody now uses
+the extended existing source family described above.
 
 Independent negative host oracles substitute the prior empty-resource sampling
 path and fail; restoring actual owner borrows passes. Mutable host cases cover
@@ -119,3 +126,24 @@ refusal before PCM changes and equal-content foreign-root history refusal.
 Full engine tests and strict joint engine/audio allocation-feature Clippy are
 run at each coherent source boundary. The readonly harmonic accounting proposal
 also charges the actual new host lease header; no memory limit was raised.
+
+
+## native mono and clip restriction
+
+Native mono constructors retain the actual mono buffer, return it unchanged on
+numeric refusal and use the existing bounded bank alias/handle machinery. The
+real ledger charges its constructor-paired shared payload and actual mono buffer
+once across aliases. Tests pin original layout/rate/buffer, an independent Python
+PCM hash, alias saturation, exact handle closure and typed sample output. Actual
+mono/stereo bank and retained-lease analytic/effect/mutable probes preserve their
+PCM oracles with zero total/net callback allocation or free.
+
+Clip constructor/commit accepts a private two-variant restriction of the existing
+source ownership family: resident stereo or streamed metadata. The generic
+storage visitors borrow either source/clip custody without minting ownership.
+Native mono resource bindings refuse in Arrangement and Session preflight before
+alias creation or transfer; commit remains exhaustive and infallible over its
+supported types. Existing source/claim/cancellation/retirement tests are retained.
+The Session refusal fixture's pre-existing caller alias was removed when building
+its new mono bank; its original failed assertion is retained as fixture evidence.
+This does not expand the audio-only native publication support matrix.

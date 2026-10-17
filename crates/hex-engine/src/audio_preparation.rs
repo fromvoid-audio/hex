@@ -1,6 +1,7 @@
 //! Preparation-only Arrangement and opt-in sealed Session/revision assembly.
 //! Not a storage-complete graph, publication admission or lifetime authority.
 //! The audio host must retain this custody through cancellation and abandonment.
+use crate::audio_clip_source::{ClipSourceKind, OwnedAudioClipSource};
 use crate::audio_only_inputs::*;
 mod arrangement_clips;
 mod storage;
@@ -255,7 +256,7 @@ struct SourceSlot {
     gain: f32,
     looping: bool,
     fade: hex_project::ClipFade,
-    owner: Option<OwnedAudioSource>,
+    owner: Option<OwnedAudioClipSource>,
     disposal: Disposal,
     #[cfg(test)]
     probe: Option<DropProbe>,
@@ -961,6 +962,9 @@ impl AudioPreparationCustody {
                     .asset(clip.asset())
                     .ok_or(AudioStorageError::SourceMismatch)?;
                 let owner = &inputs.sources[source].1;
+                if matches!(&owner.kind, SourceKind::ResidentMono(_)) {
+                    return Err(AudioStorageError::UnsupportedGraph);
+                }
                 if owner.sample_rate() != project.sample_rate()
                     || owner.frames() != asset.playback_frames()
                 {
@@ -1029,11 +1033,8 @@ impl AudioPreparationCustody {
                 .ok_or(AudioStorageError::SourceMismatch)?
                 .sources[slot.source]
                 .1;
-            let kind = match &source.kind {
-                SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
-                SourceKind::Streamed(meta) => SourceKind::Streamed(meta.clone_on_control()),
-            };
-            slot.owner = Some(OwnedAudioSource {
+            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind)?;
+            slot.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: slot.handle,
             });

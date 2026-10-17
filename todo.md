@@ -4943,3 +4943,20 @@ No full389 qualification, registry asset admission, usable sampler or full goal3
 completion is claimed. Mono ingress and complete current/candidate/outgoing/
 checkpoint/history/pending accounting, source-plan loading and remaining host
 wiring/retirement acceptance remain in progress under the same canonical PR.
+
+
+### 17 october 2026 — pulse2783: native mono custody and typed clip commit
+
+PR389 extends existing native source/bank custody with actual mono PCM; no
+alternate cache/owner system or source-limit raise. OriginalResourceLayout must
+match actual mono/stereo storage. Layout-separated PCM identity has an independent
+mono SHA256 oracle. Bounded aliases deduplicate the real mono allocation, retain
+every handle and refuse saturation. Numeric failures return the original Vec.
+Actual retained mono/stereo callback probes preserve exact PCM and total/net-zero
+allocation/free evidence. A private clip-source restriction preserves the existing
+resident-stereo/streamed infallible commit; resource-only mono Arrangement and
+Session bindings refuse before aliases/transfer. The broad engine suite and joint
+strict Clippy pass; no native publication/sampler registration is newly admitted.
+The original Session refusal fixture had an old caller alias; rebuilding a valid
+mono bank fixed that test setup. Media source-plan loading, complete all-role
+union and remaining host wiring/retirement still continue in canonical389.

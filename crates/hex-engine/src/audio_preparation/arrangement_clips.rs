@@ -292,7 +292,7 @@ impl ArrangementClips {
                 .get(s.source)
                 .ok_or(AudioStorageError::SourceMismatch)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
-            let required = matches!(&owner.kind, SourceKind::Streamed(_))
+            let required = matches!(&owner.kind, ClipSourceKind::Streamed(_))
                 || s.phase != 0
                 || !s.fade.is_neutral();
             if r.binding
@@ -327,9 +327,9 @@ impl ArrangementClips {
         // Batch preflight plus exclusive borrows make all following owner moves
         // infallible. No legacy consuming builder, allocation, clone or helper.
         for (index, (r, s)) in self.rows.iter_mut().zip(slots.iter_mut()).enumerate() {
-            if let Some(OwnedAudioSource { kind, handle }) = s.owner.take() {
+            if let Some(OwnedAudioClipSource { kind, handle }) = s.owner.take() {
                 match kind {
-                    SourceKind::Resident(audio) => {
+                    ClipSourceKind::Resident(audio) => {
                         r.clip = Some(Clip {
                             audio: Some(audio),
                             start: s.start,
@@ -340,7 +340,7 @@ impl ArrangementClips {
                             metadata: r.metadata.take(),
                         });
                     }
-                    SourceKind::Streamed(metadata) => {
+                    ClipSourceKind::Streamed(metadata) => {
                         let (arc, receipt) = metadata.into_paired_parts_on_control();
                         r.declaration = Some(receipt);
                         r.stream = Some(arc);

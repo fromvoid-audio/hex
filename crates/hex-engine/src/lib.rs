@@ -37,6 +37,7 @@ pub use audio_storage::{
     AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
     audio_storage_constructor_layout_supported,
 };
+mod audio_clip_source;
 mod audio_input_storage;
 mod audio_only_inputs;
 mod audio_preparation;
@@ -65,7 +66,7 @@ pub use audio_input_storage::{
 pub use audio_only_inputs::{
     AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
     AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
-    ResidentSourceRefusal, StreamedSourceRefusal,
+    ResidentMonoSourceRefusal, ResidentSourceRefusal, StreamedSourceRefusal,
 };
 pub mod native_device_resources;
 mod owned_shared;

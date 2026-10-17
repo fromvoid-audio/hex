@@ -165,7 +165,7 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     };
     use hex_engine::{AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource};
     use std::sync::atomic::AtomicBool;
-    let first = match OwnedAudioSource::try_resident(44_100, vec![[0.25; 2]; 64]) {
+    let first = match OwnedAudioSource::try_resident_mono(44_100, vec![0.25; 64]) {
         Ok(source) => source,
         Err(refusal) => {
             assert_eq!(
@@ -214,7 +214,13 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     .unwrap();
     let sources: Vec<_> = ids
         .iter()
-        .map(|&asset| OriginalResourceSource {
+        .enumerate()
+        .map(|(index, &asset)| OriginalResourceSource {
+            layout: if index == 0 {
+                hex_engine::native_device_resources::OriginalResourceLayout::Mono
+            } else {
+                hex_engine::native_device_resources::OriginalResourceLayout::Stereo
+            },
             asset,
             sample_rate: 44_100,
             frames: 64,
