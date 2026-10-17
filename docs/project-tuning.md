@@ -124,6 +124,8 @@ optimized user-test delivery remain required goal work. No user-facing tuning
 completion, listening pass, compatible-client pass, physical deadline or plugin
 hosting claim follows from these source tests. Full exact-candidate local CI and
 focused PR review precede merge; later source changes require fresh evidence.
+The queued [finite native acceptance](tuning-native-acceptance.md) records the
+Mac fixture commands, launcher-owned delivery and user/client checklist.
 The complete feature uses repository-owned optimized stable-path delivery with
 exact source/build/CI provenance and a finite user interaction/listening list.
 
