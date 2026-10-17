@@ -255,6 +255,67 @@ fn assert_native_source(bytes: &[u8], expected: &[[f32; 2]], channels: usize) {
         assert!(view.resident_mono_samples().is_none());
         assert_eq!(view.resident_frames().unwrap(), expected);
     }
+    // The real decoder result must survive the native bank/catalog/root handoff;
+    // a media snapshot keeps that same allocation after caller bank retirement.
+    let pointer = if channels == 1 {
+        view.resident_mono_samples().unwrap().as_ptr() as usize
+    } else {
+        view.resident_frames().unwrap().as_ptr() as usize
+    };
+    use hex_engine::native_device_resources::{
+        DeviceResourceBank, DeviceResourceCatalog, OriginalResourceLayout, OriginalResourceSource,
+        OriginalSourceLease, ResourceCatalogReservation,
+    };
+    let sealed = bank.prepare_input_storage_on_control().ok().unwrap();
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &sealed,
+        &[OriginalResourceSource {
+            asset,
+            sample_rate: rate,
+            frames: expected.len() as u64,
+            layout: if channels == 1 {
+                OriginalResourceLayout::Mono
+            } else {
+                OriginalResourceLayout::Stereo
+            },
+        }],
+        ResourceCatalogReservation {
+            metadata_bytes: 65536,
+            hash_frames: expected.len() as u64,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let root = DeviceResourceBank::try_new_on_control(
+        sealed,
+        catalog,
+        64 * 1024 * 1024,
+        64 * 1024 * 1024,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let original = root
+        .borrow_original_source_on_control(asset, std::mem::size_of::<OriginalSourceLease>())
+        .unwrap();
+    let snapshot = original
+        .try_clone_on_control(std::mem::size_of::<OriginalSourceLease>())
+        .unwrap();
+    drop(root);
+    drop(original);
+    let view = snapshot.view().unwrap();
+    assert_eq!(view.sample_rate(), rate);
+    if channels == 1 {
+        let mono = view.resident_mono_samples().unwrap();
+        assert_eq!(mono.as_ptr() as usize, pointer);
+        for (sample, reference) in mono.iter().zip(expected) {
+            assert_eq!(*sample, reference[0]);
+        }
+    } else {
+        let stereo = view.resident_frames().unwrap();
+        assert_eq!(stereo.as_ptr() as usize, pointer);
+        assert_eq!(stereo, expected);
+    }
 }
 
 #[test]

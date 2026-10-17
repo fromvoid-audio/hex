@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) mod retained;
-pub use retained::{DeviceResourceBank, DeviceResourceBankRefusal, PreparedDeviceResourceLease};
+pub use retained::{
+    DeviceResourceBank, DeviceResourceBankRefusal, OriginalSourceLease, PreparedDeviceResourceLease,
+};
 mod ingress;
 pub use ingress::ResidentAudioIngressRefusal;
 

@@ -173,3 +173,26 @@ The architecture check caught that the earlier engine-side source hash dependenc
 was absent from its declared boundary. The policy and owning README now explicitly
 allow pinned sha2 for bounded control-side hashes of actual retained PCM only;
 file verification stays in media and callback resource queries never hash.
+
+## closed media view over the same root
+
+`OriginalSourceLease` is a closed handle into the same retained resource root,
+not a second cache or a fake device configuration. It exposes only the selected
+original source's borrowed mono/stereo view and checked source facts. It has no
+raw Audio/Arc/Weak escape or infallible Clone. Control creates/clones it only
+after quoting its header and obtaining a distinct physical handle. Aggregate
+coexistence/retirement reservations still belong to the host; this header quote
+does not authorize graph publication.
+
+The existing root ledger visits every media/snapshot handle alongside actual
+provider leases, deduplicating the real PCM and root storage once. Omitting a
+live media snapshot prevents closed-handle validation. Tests retain media views
+after caller bank/provider retirement and observe final root destruction only
+after the last view returns to control. The independent media codec oracles
+also traverse decode → native input storage → catalog → retained root → source
+snapshot, preserving actual PCM buffer pointers and original channels.
+
+This prepares the narrow Session/waveform backing handoff without altering
+waveform geometry or silently converting already-shared raw Audio into custody.
+Session publication, all-role memory reservations and complete native retirement
+remain open acceptance work.

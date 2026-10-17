@@ -577,3 +577,109 @@ fn mono_constructor_numeric_refusals_return_the_actual_caller_buffer() {
         );
     }
 }
+
+#[test]
+fn original_media_views_share_actual_root_and_close_every_handle_before_control_retirement() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let ids = ids();
+    let Some(bank) = bank(&ids) else { return };
+    let retired_before = super::retained::RETIRED_RESOURCE_ROOTS.with(|n| n.get());
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &specs(&ids),
+        limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let owner = DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let quote = std::mem::size_of::<OriginalSourceLease>();
+    assert!(matches!(
+        owner.borrow_original_source_on_control(ids[0], quote - 1),
+        Err(ResourcePreparationError::MetadataCapacity)
+    ));
+    assert!(matches!(
+        owner.borrow_original_source_on_control(ids[2], quote),
+        Err(ResourcePreparationError::InvalidSource)
+    ));
+    let media = owner
+        .borrow_original_source_on_control(ids[0], quote)
+        .unwrap();
+    assert!(matches!(
+        media.try_clone_on_control(quote - 1),
+        Err(ResourcePreparationError::MetadataCapacity)
+    ));
+    let snapshot = media.try_clone_on_control(quote).unwrap();
+    assert!(snapshot.shares_source_with(&media));
+    let other = owner
+        .borrow_original_source_on_control(ids[1], quote)
+        .unwrap();
+    assert!(!other.shares_source_with(&media));
+    let provider = owner
+        .prepare_lease_on_control(&state(ids[0]), 4096)
+        .unwrap();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 16,
+        root_rows: 8,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    })
+    .unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&owner, AudioStorageRole::Caller)
+        .unwrap();
+    ledger
+        .borrow_device_resource_lease_on_control(&provider, AudioStorageRole::Current)
+        .unwrap();
+    let before = ledger.summary().unwrap();
+    ledger
+        .borrow_original_source_lease_on_control(&media, AudioStorageRole::Caller)
+        .unwrap();
+    ledger
+        .borrow_original_source_lease_on_control(&other, AudioStorageRole::Archive)
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    ledger
+        .borrow_original_source_lease_on_control(&snapshot, AudioStorageRole::PendingReclaim)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    let after = ledger.summary().unwrap();
+    assert_eq!(after.data_bytes - before.data_bytes, quote * 3);
+    assert_eq!(after.unresolved_handles - before.unresolved_handles, 3);
+    assert_eq!(after.unknown_storage, 0);
+    assert_eq!(
+        after.require_complete(),
+        Err(crate::AudioStorageIncomplete::RetirementReceiptUnknown)
+    );
+    drop(ledger);
+    drop(owner);
+    drop(provider);
+    drop(other);
+    assert_eq!(media.source_facts().unwrap().asset, ids[0]);
+    assert_eq!(media.view().unwrap().resident_frames().unwrap(), PCM);
+    let returned = std::thread::spawn(move || {
+        assert_eq!(snapshot.view().unwrap().resident_frames().unwrap(), PCM);
+        // Borrow only on the worker; final ownership returns to control.
+        snapshot
+    })
+    .join()
+    .unwrap();
+    drop(media);
+    assert_eq!(
+        super::retained::RETIRED_RESOURCE_ROOTS.with(|n| n.get()),
+        retired_before
+    );
+    drop(returned);
+    assert_eq!(
+        super::retained::RETIRED_RESOURCE_ROOTS.with(|n| n.get()),
+        retired_before + 1
+    );
+}

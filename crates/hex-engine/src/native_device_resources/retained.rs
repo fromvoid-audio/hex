@@ -34,7 +34,39 @@ pub struct PreparedDeviceResourceLease {
     scope: DeviceResourceScope,
     handle: u64,
 }
+/// Closed original-source view for media/history/waveform readers. This is a
+/// handle into the SAME resource root, with no raw Audio/Arc escape, new cache,
+/// PCM allocation, authored device slot or provider-owned payload.
+/// Owning clone/drop belongs on control or its existing retirement path.
+pub struct OriginalSourceLease {
+    root: OwnedShared<ResourceRoot>,
+    source: usize,
+    handle: u64,
+}
 impl DeviceResourceBank {
+    pub fn borrow_original_source_on_control(
+        &self,
+        asset: AssetId,
+        max_metadata_bytes: usize,
+    ) -> Result<OriginalSourceLease, ResourcePreparationError> {
+        if std::mem::size_of::<OriginalSourceLease>() > max_metadata_bytes {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        let source = self
+            .root
+            .catalog
+            .source_index(asset.value())
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        self.root
+            .bank
+            .source_view(&self.root.catalog.sources[source].token)?;
+        let handle = crate::audio_only_inputs::handle()?;
+        Ok(OriginalSourceLease {
+            root: self.root.clone_on_control(),
+            source,
+            handle,
+        })
+    }
     pub fn input_storage_summary(&self) -> crate::AudioInputStorageSummary {
         self.root.bank.summary()
     }
@@ -153,6 +185,21 @@ fn visit<'a>(
     Ok(())
 }
 impl<'a> AudioRootStorageLedger<'a> {
+    pub fn borrow_original_source_lease_on_control(
+        &mut self,
+        lease: &'a OriginalSourceLease,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            ledger.root(lease, role)?;
+            visit(
+                &lease.root,
+                crate::audio_storage::Owner::exclusive(lease),
+                lease.handle,
+                ledger,
+            )
+        })
+    }
     pub fn borrow_device_resource_bank_on_control(
         &mut self,
         bank: &'a DeviceResourceBank,
@@ -176,6 +223,49 @@ impl<'a> AudioRootStorageLedger<'a> {
         self.mutate(|ledger| {
             ledger.root(lease, role)?;
             lease.visit_storage(ledger)
+        })
+    }
+}
+
+impl OriginalSourceLease {
+    /// O(1) immutable borrow, tied to this actual retained root. No owner clone,
+    /// hash, allocation, decode, wait or temporary-owner lifetime is involved.
+    pub fn view(&self) -> Result<crate::OwnedAudioSourceView<'_>, AudioStorageError> {
+        let fact = self
+            .root
+            .catalog
+            .sources
+            .get(self.source)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        self.root.bank.source_view(&fact.token)
+    }
+    pub fn source_facts(&self) -> Result<OriginalResourceSource, AudioStorageError> {
+        self.root
+            .catalog
+            .sources
+            .get(self.source)
+            .map(|fact| fact.expected)
+            .ok_or(AudioStorageError::SourceMismatch)
+    }
+    /// Equality of actual selected root/source custody, for control reuse only.
+    /// This is not an ownership or publication proof.
+    pub fn shares_source_with(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(self.root.arc(), other.root.arc()) && self.source == other.source
+    }
+    /// Caller must reserve aggregate coexistence/retirement capacity separately;
+    /// this quotes the exact handle header before the control-only owning clone.
+    pub fn try_clone_on_control(
+        &self,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, ResourcePreparationError> {
+        if std::mem::size_of::<Self>() > max_metadata_bytes {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        let handle = crate::audio_only_inputs::handle()?;
+        Ok(Self {
+            root: self.root.clone_on_control(),
+            source: self.source,
+            handle,
         })
     }
 }
