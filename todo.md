@@ -1,3 +1,14 @@
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
+
 ## aligned eq input/output capture — #2730 / PR343, 17 october 2026
 
 Actual whole-entry pre/post taps share one bounded packet, rolling-window

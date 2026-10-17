@@ -40,6 +40,7 @@ mod return_drag;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
+mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
 pub(super) use send_controls::{

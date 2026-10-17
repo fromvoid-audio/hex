@@ -135,7 +135,9 @@ and performs one nonblocking SPSC push; it does not wake the worker.
 The worker drains at most 32 batches per poll, assembles a fixed 4096-frame
 rolling window, and publishes no faster than 30 Hz through a one-result bounded
 channel. Target, capture generation, sample-rate changes and sequence gaps clear
-the rolling window. Ordinary applied-revision changes keep contiguous output
+the rolling windows and display envelopes. Display results use immediate attack
+and 48 dB/s decay with a common pair time; decay never refreshes capture age.
+Ordinary applied-revision changes keep contiguous output
 samples and update the published revision. Sample-rate changes reconstruct the
 kernel on the worker. Results expire after 100 ms without accepted capture. The
 worker thread owns FFT construction/reconstruction and analysis. The prepared

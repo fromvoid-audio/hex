@@ -98,6 +98,9 @@ impl SpectrumCore {
             latest_stamp: _,
             captured_at: _,
             last_analysis_at: _,
+            output_envelope: _,
+            input_envelope: _,
+            envelope_at: _,
             dirty_since_analysis: _,
         } = self;
         std::mem::size_of_val(self)
