@@ -956,6 +956,7 @@ impl EditorView {
         let (is_current, pending) = self.browser.scans.complete(request.generation);
         let mut next = pending;
         if is_current {
+            self.browser.samples.invalidate_listing();
             match result {
                 Ok(listing) => {
                     self.browser.listing = Some(listing);

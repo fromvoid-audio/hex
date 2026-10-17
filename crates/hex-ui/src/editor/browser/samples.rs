@@ -2,7 +2,12 @@
 use super::*;
 use hex_library::catalog::{SampleCatalog, scan_samples};
 
-type VisibleCache = Option<(String, Option<PathBuf>, Arc<Vec<LibraryEntry>>)>;
+struct VisibleCache {
+    query: String,
+    source: Option<PathBuf>,
+    directory: Option<PathBuf>,
+    entries: Arc<Vec<LibraryEntry>>,
+}
 
 #[derive(Default)]
 pub(super) struct SampleBrowser {
@@ -12,28 +17,64 @@ pub(super) struct SampleBrowser {
     pending: bool,
     loaded: bool,
     pub(super) status: Option<String>,
-    visible: RefCell<VisibleCache>,
+    visible: RefCell<Option<VisibleCache>>,
 }
 
 impl SampleBrowser {
     pub(super) fn visible(&self, query: &str) -> Arc<Vec<LibraryEntry>> {
+        self.visible_with_listing(query, self.source.as_deref(), None)
+    }
+
+    /// Global search passes no source filter and the current bounded listing.
+    /// Samples passes its source filter and no folder listing.
+    pub(super) fn visible_with_listing(
+        &self,
+        query: &str,
+        source: Option<&std::path::Path>,
+        listing: Option<&DirectoryListing>,
+    ) -> Arc<Vec<LibraryEntry>> {
+        let directory = listing.map(|listing| listing.directory.as_path());
         let mut cache = self.visible.borrow_mut();
-        if let Some((previous, source, entries)) = cache.as_ref()
-            && previous == query
-            && *source == self.source
+        if let Some(previous) = cache.as_ref()
+            && previous.query == query
+            && previous.source.as_deref() == source
+            && previous.directory.as_deref() == directory
         {
-            return entries.clone();
+            return previous.entries.clone();
         }
-        let entries = Arc::new(self.catalog.filtered(query, self.source.as_deref()));
-        *cache = Some((query.to_owned(), self.source.clone(), entries.clone()));
+        let entries = Arc::new(if listing.is_some() {
+            self.catalog.search_with_listing(query, listing)
+        } else {
+            self.catalog.filtered(query, source)
+        });
+        *cache = Some(VisibleCache {
+            query: query.to_owned(),
+            source: source.map(PathBuf::from),
+            directory: directory.map(PathBuf::from),
+            entries: entries.clone(),
+        });
         entries
     }
 
-    pub(super) fn replace(&mut self, catalog: SampleCatalog) {
-        if self.catalog != catalog {
-            self.catalog = catalog;
+    /// Folder contents can change without changing the path or query.
+    pub(super) fn invalidate_listing(&self) {
+        let has_listing = self
+            .visible
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| cache.directory.is_some());
+        if has_listing {
             *self.visible.borrow_mut() = None;
         }
+    }
+
+    pub(super) fn replace(&mut self, catalog: SampleCatalog) -> bool {
+        if self.catalog == catalog {
+            return false;
+        }
+        self.catalog = catalog;
+        *self.visible.borrow_mut() = None;
+        true
     }
 }
 
@@ -265,5 +306,52 @@ impl EditorView {
             );
         }
         content
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn combined_results_reuse_cache_and_accept_republished_folder_contents() {
+        let directory = PathBuf::from("/sample-cache-fixture");
+        let mut listing = DirectoryListing {
+            directory: directory.clone(),
+            entries: vec![LibraryEntry {
+                name: "utility.wav".into(),
+                path: directory.join("utility.wav"),
+                kind: EntryKind::WaveAudio,
+            }],
+            enumerated_entries: 1,
+            truncated: false,
+        };
+        let browser = SampleBrowser {
+            source: Some(PathBuf::from("/another-source")),
+            ..SampleBrowser::default()
+        };
+        let first = browser.visible_with_listing("utility", None, Some(&listing));
+        assert_eq!(first.len(), 1);
+        assert!(Arc::ptr_eq(
+            &first,
+            &browser.visible_with_listing("utility", None, Some(&listing))
+        ));
+        listing.entries.push(LibraryEntry {
+            name: "utility-new.wav".into(),
+            path: directory.join("utility-new.wav"),
+            kind: EntryKind::WaveAudio,
+        });
+        listing.enumerated_entries += 1;
+        browser.invalidate_listing();
+        let updated = browser.visible_with_listing("utility", None, Some(&listing));
+        assert_eq!(updated.len(), 2);
+        assert!(!Arc::ptr_eq(&first, &updated));
+        assert!(browser.visible("utility").is_empty());
+        assert_eq!(
+            browser
+                .visible_with_listing("utility", None, Some(&listing))
+                .len(),
+            2
+        );
     }
 }
