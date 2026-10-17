@@ -1368,6 +1368,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
     let other_clip_id = other_track_id + 1;
     let first_note_id = other_track_id + 10;
     snapshot.tracks.push(hex_project::TrackSnapshot {
+        color: hex_project::ElementColor::default(),
         gain_envelope: Vec::new(),
         gain_touch_spans: Vec::new(),
         gain_touch_epoch: 0,
@@ -1382,6 +1383,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![hex_project::MidiClipSnapshot {
             name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             id: other_clip_id,
             start_raw: beat(8).raw(),
             length_raw: beat(4).raw(),

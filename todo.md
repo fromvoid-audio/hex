@@ -1,3 +1,13 @@
+## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
+
+Ten shared theme colors replace custom per-clip colors. Track-header menus choose
+one identity, inherited by Arrangement/Session audio and MIDI clips; clip menus
+switch muted/accent flavor. Canonical history, schema27 persistence and explicit
+legacy defaults are source implemented; copy/split/trim/conversion retain flavor.
+Project/storage tests, context-menu/cache repaint tests and source guards pass.
+Exact full local-CI evidence is recorded with the PR; native acceptance is separate.
+Native macOS acceptance is pending. See [element colors](docs/element-colors.md).
+
 ## browser outward tag editor and resizable picker — 17 october 2026
 
 The tag editor adds a right column without consuming results/preview width.

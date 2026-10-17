@@ -476,6 +476,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
             name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             id: next + 1,
             start_raw: 0,
             length_raw: hex_project::BeatTime::ONE.raw(),

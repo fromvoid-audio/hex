@@ -87,6 +87,7 @@ impl RangeClipboard {
 #[derive(Debug, Clone)]
 struct MidiFragment {
     name: String,
+    flavor: crate::ClipFlavor,
     row: usize,
     start: u64,
     duration: u64,
@@ -226,6 +227,7 @@ impl Project {
                 reserve(&mut result.midi, 1)?;
                 result.midi.push(MidiFragment {
                     name: clip.name().into(),
+                    flavor: clip.flavor,
                     row,
                     start: start - range.start,
                     duration: end - start,
@@ -443,6 +445,7 @@ pub(crate) fn paste_rows(
         };
         let clip = MidiClip {
             name: fragment.name.clone(),
+            flavor: fragment.flavor,
             id: ClipId(project.allocate_id()?),
             start,
             length,

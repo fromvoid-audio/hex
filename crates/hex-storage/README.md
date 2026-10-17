@@ -151,7 +151,8 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema26, extending the schema25 envelope for device input/output host gains,
+New saves use schema27, preserving inherited track colors and per-clip flavors
+(see `docs/element-colors.md`) plus the schema26 envelope for device host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
 and recording epochs with independent Arrangement clip names. All playback
 consumers share the admitted lane model. The

@@ -184,9 +184,9 @@ impl EditorView {
             .enumerate()
         {
             let color = [
-                theme::PaletteRole::Primary,
-                theme::PaletteRole::Secondary,
-                theme::PaletteRole::Muted,
+                hex_project::ElementColor::Red,
+                hex_project::ElementColor::Cyan,
+                hex_project::ElementColor::Gray,
             ][index];
             sidebar = sidebar.child(
                 div()
@@ -200,7 +200,9 @@ impl EditorView {
                     .items_center()
                     .gap_1()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(browser_caption("■").text_color(rgb(theme::color(color))))
+                    .child(
+                        browser_caption("■").text_color(rgb(theme::element_colors(color).accent)),
+                    )
                     .children(
                         (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
                     ),

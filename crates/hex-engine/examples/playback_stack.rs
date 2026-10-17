@@ -345,6 +345,7 @@ fn project_fixture(
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -369,6 +370,7 @@ fn project_fixture(
                 audio_clips: Vec::new(),
                 midi_clips: vec![MidiClipSnapshot {
                     name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     id: clip_id,
                     start_raw: 0,
                     length_raw: BeatTime::from_quarters(2)?.raw(),
