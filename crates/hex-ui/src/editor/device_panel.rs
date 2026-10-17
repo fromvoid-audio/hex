@@ -26,6 +26,7 @@ use std::{
 mod auto_pan_panel;
 mod compressor_panel;
 mod eq8_panel;
+mod eq_panel;
 mod gain_meters;
 mod gate_panel;
 mod navigation;
@@ -154,6 +155,7 @@ pub(super) struct DevicePanelState {
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphControl>,
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
+    eq_panels: HashMap<DeviceId, eq_panel::Panel>,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -386,6 +388,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         operator_panel::envelope::cancel_all(view, cx);
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
+        view.device_panel.eq_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -488,6 +491,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         operator_panel::envelope::cancel_all(view, cx);
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
+        view.device_panel.eq_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -558,6 +562,9 @@ pub(super) fn retire_removed_eq8_graphs(
     cx: &mut Context<EditorView>,
     alive: &HashSet<DeviceId>,
 ) {
+    view.device_panel
+        .eq_panels
+        .retain(|device, _| alive.contains(device));
     let stale: Vec<_> = view
         .device_panel
         .eq8_graphs
@@ -588,7 +595,7 @@ fn clear_removed_spectrum_target(
                     device.value() == target.identity.device_id
                         && identity.class == NativeDeviceClass::Effect
                         && identity.type_id == target.identity.device_type
-                        && identity.type_id.as_str() == Ok("hex.eq8")
+                        && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq"))
                 })
         })
     }) == Some(true);
@@ -610,7 +617,7 @@ fn clear_removed_processor_audition_target(
                     device.value() == target.identity.device_id
                         && identity.class == NativeDeviceClass::Effect
                         && identity.type_id == target.identity.device_type
-                        && identity.type_id.as_str() == Ok("hex.eq8")
+                        && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq"))
                 })
         })
     }) == Some(true);
@@ -769,7 +776,7 @@ fn render_track(
         .iter()
         .filter_map(|(device, identity)| {
             (identity.class == NativeDeviceClass::Effect
-                && identity.type_id.as_str().ok() == Some("hex.eq8"))
+                && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq")))
             .then_some(*device)
         })
         .collect();
@@ -1000,7 +1007,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
             operator_panel::OPERATOR_FRAME_WIDTH
         }
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
-        (NativeDeviceClass::Effect, Some("hex.eq8")) => eq8_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
@@ -1367,6 +1374,20 @@ fn render_effect(
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
                 auto_pan_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.eq") {
+                let sample_rate = view
+                    .state
+                    .as_ref()
+                    .map_or(48000, |state| state.project.sample_rate());
+                eq_panel::render_body(
+                    view,
+                    cx,
+                    device_id,
+                    hex_engine::ProcessorChainOwner::Track(track.value()),
+                    device.state(),
+                    device_view,
+                    sample_rate,
+                )
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 let sample_rate = view
                     .state
@@ -1448,7 +1469,7 @@ fn render_effect(
     let selector = format!("effect-device-{}", device_id.value());
     let frame_width = match device.state().type_id().as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8") => eq8_panel::FRAME_WIDTH,
+        Ok("hex.eq8" | "hex.eq") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,

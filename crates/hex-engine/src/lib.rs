@@ -4,6 +4,8 @@ pub use hex_devices::SineTable;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
+/// Control-side EQ node editing and its opaque versioned state contract.
+pub use hex_devices::eq;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{
@@ -55,6 +57,7 @@ pub use session_inventory::audio_assembly::{SessionAssemblyCapacity, SessionInve
 pub use session_structure_preparation::SessionStructureCapacity;
 pub use session_tempo_preparation::SessionTempoCapacity;
 pub mod audio_transform;
+mod effect_clock;
 mod native_device_view;
 pub use audio_input_storage::{
     AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
@@ -2456,6 +2459,10 @@ impl RendererRuntime {
                         .checked_add(count as u64)
                         .ok_or(Invalid("render range overflow"))?;
                     let target = &mut scratch[..count];
+                    let effect_clock = crate::effect_clock::ArrangementEffectClock::canonical(
+                        project.tempo_map.as_ref(),
+                        start,
+                    );
                     target.fill([0.0; 2]);
                     if let Some(page_provider) = pages.as_deref_mut() {
                         if track.requires_ordered_processing() {
@@ -2479,7 +2486,11 @@ impl RendererRuntime {
                     if track.requires_ordered_processing() {
                         if let Some(chain) = chain.as_deref_mut() {
                             chain
-                                .process_range(0..track.instrument_position(), target)
+                                .process_range_with_clock(
+                                    0..track.instrument_position(),
+                                    target,
+                                    Some(&effect_clock),
+                                )
                                 .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                         } else {
                             track.apply_ordered_prefix(target);
@@ -2490,13 +2501,19 @@ impl RendererRuntime {
                         if let Some(chain) = chain.as_deref_mut() {
                             let effect_count = chain.len();
                             chain
-                                .process_range(track.instrument_position()..effect_count, target)
+                                .process_range_with_clock(
+                                    track.instrument_position()..effect_count,
+                                    target,
+                                    Some(&effect_clock),
+                                )
                                 .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                         } else {
                             track.apply_ordered_suffix(target);
                         }
                     } else if let Some(chain) = chain.as_deref_mut() {
-                        chain.process_block(target);
+                        chain
+                            .process_range_with_clock(0..chain.len(), target, Some(&effect_clock))
+                            .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     }
                     if track.has_gain_automation() {
                         for (frame_index, (destination, source)) in output[offset..offset + count]
@@ -2558,6 +2575,10 @@ impl RendererRuntime {
                 .checked_add(count as u64)
                 .ok_or(Invalid("render range overflow"))?;
             let output_chunk = &mut output[offset..offset + count];
+            let effect_clock = crate::effect_clock::ArrangementEffectClock::canonical(
+                project.tempo_map.as_ref(),
+                start,
+            );
             for scratch in &mut self.return_scratch {
                 scratch[..count].fill([0.0; 2]);
             }
@@ -2597,7 +2618,11 @@ impl RendererRuntime {
                         self.device_chains
                             .get_mut(track_index)
                             .ok_or(Invalid("native device runtime is unavailable"))?
-                            .process_range(0..track.instrument_position, rendered)
+                            .process_range_with_clock(
+                                0..track.instrument_position,
+                                rendered,
+                                Some(&effect_clock),
+                            )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
                         track.apply_ordered_prefix(rendered);
@@ -2612,16 +2637,23 @@ impl RendererRuntime {
                             .ok_or(Invalid("native device runtime is unavailable"))?;
                         let effect_count = chain.len();
                         chain
-                            .process_range(track.instrument_position..effect_count, rendered)
+                            .process_range_with_clock(
+                                track.instrument_position..effect_count,
+                                rendered,
+                                Some(&effect_clock),
+                            )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
                         track.apply_ordered_suffix(rendered);
                     }
                 } else if stateful {
-                    self.device_chains
+                    let chain = self
+                        .device_chains
                         .get_mut(track_index)
-                        .ok_or(Invalid("native device runtime is unavailable"))?
-                        .process_block(rendered);
+                        .ok_or(Invalid("native device runtime is unavailable"))?;
+                    chain
+                        .process_range_with_clock(0..chain.len(), rendered, Some(&effect_clock))
+                        .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
                 for (frame_index, source) in rendered.iter().copied().enumerate() {
                     let mixed = if track.has_gain_automation() {
@@ -2645,10 +2677,13 @@ impl RendererRuntime {
                 for &index in project.return_feed_plan.order() {
                     let bus = &project.return_buses[index];
                     let frames = &mut self.return_scratch[index][..count];
-                    self.return_chains
+                    let chain = self
+                        .return_chains
                         .get_mut(index)
-                        .ok_or(Invalid("return runtime is unavailable"))?
-                        .process_block(frames);
+                        .ok_or(Invalid("return runtime is unavailable"))?;
+                    chain
+                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .map_err(|_| Invalid("prepared return segment is invalid"))?;
                     if let Some(matrix) = bus.matrix {
                         matrix.apply_block(frames);
                     }
@@ -2680,7 +2715,9 @@ impl RendererRuntime {
                     .ok_or(Invalid("return scratch is unavailable"))?;
                 let frames = &mut bus_frames[..count];
                 if let Some(chain) = self.return_chains.get_mut(index) {
-                    chain.process_block(frames);
+                    chain
+                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .map_err(|_| Invalid("prepared return segment is invalid"))?;
                 } else {
                     return Err(Invalid("return runtime is unavailable"));
                 }

@@ -49,7 +49,17 @@ remains open. Asset relinking is deferred.
 
 ## Run
 
+On macOS, `./launch` updates a clean `main` checkout from `origin/main`, runs
+full local CI, installs the optimized build at the configured stable `hex.app`
+path (default `artifacts/hex.app`), verifies it, and opens that exact app. It stops on a
+dirty/non-main checkout or any fetch, verification, packaging, or installed-app
+failure. Save and quit hex before running it; it never force-quits an app. The
+command requires `gh` authentication to record the PR associated with the tested
+main commit. It writes ignored build provenance and a finite smoke checklist
+under `artifacts/local-ci/`; native interaction and listening remain user checks.
+
 ```sh
+./launch
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
 # Optimized stable test delivery after exact-source CI (see docs/test-builds.md):

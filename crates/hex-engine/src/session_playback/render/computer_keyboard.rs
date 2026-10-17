@@ -86,7 +86,7 @@ impl SessionPlayback {
                     }
                 }
             }
-            self.render_return_buses(chunk, offset, observer, capture)?;
+            self.render_return_buses(chunk, offset, None, observer, capture)?;
         }
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {

@@ -2737,3 +2737,35 @@ and the current model directly, with identical scalar loops. Rebuild using
 `rustc --edition 2024 -O artifacts/fade-handles/gain_profile.rs -o
 artifacts/fade-handles/gain_profile`; the harness path is executor-local.
 Candidate model SHA-256: `1a63e639ddc4eb5c3d7f5469eb7e68ef88d1b45ab6c65480b34081fbfedfd1dc`.
+
+## sparse eq — 17 october 2026 (pulse2654 / pr270)
+
+Clean measured source `238bcb858426cc0caa192463d4395578be7030f2`, Apple M5 Pro,
+macOS 26.6.2 (25G83) arm64, rustc 1.94.0. Command:
+`cargo run --release -p hex-devices --example profile_eq --locked`.
+Executable SHA-256: `65951ccd166653fe75c46bd62d74072a65d1ef533b9cd9a7f7ed97f5ff8545f2`.
+Raw output: `artifacts/eq2654/profile-238bcb85.log` (ignored). No concurrent Cargo
+or benchmark ran; ordinary OS load was uncontrolled.
+
+The deterministic stereo fixture uses 48 kHz, 100 warmup blocks and three trials
+of 2000 measured blocks. Bands are log-spaced from 80 to 16000 hz, Q 0.9, gain
+alternating +/−0.75 db. The automated case has 64 frequency lanes and 128 points,
+normalized 0.08 to 0.92 over 128 quarter-note beats at 120 bpm. Construction and
+admission are outside timing. The example records the exact signal equations,
+finite output, checksums and declared runtime sizes. The matching eight-bell
+legacy/new render has zero maximum sample difference in this fixture.
+
+| case | 128-frame mean µs/block | 256-frame mean µs/block | declared runtime bytes |
+| --- | ---: | ---: | ---: |
+| legacy eq8, 8 bells | 28.689 | 54.260 | 3792 |
+| eq, 8 bells | 15.997 | 26.498 | 4232 |
+| eq, 64 static bands | 108.791 | 210.646 | 31112 |
+| eq, 64 automated bands | 113.097 | 238.903 | 35208 |
+
+The automated workload consumes 4.24% and 4.48% of nominal block duration in
+these mean measurements. This is bounded headless throughput evidence, not a
+physical callback deadline, p99 gate, full-project limit, native UI or listening
+acceptance. Runtime storage scales with actual node count; aggregate/twin
+admission retains its independent 1 MiB bank limit. Allocation probes separately
+cover direct dense processing and actual prepared Track/Return callback
+publication, stable-ID audition, release, cancellation and retirement.

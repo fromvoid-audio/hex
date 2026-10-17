@@ -2646,6 +2646,16 @@ mod tests {
         gain_db: f32,
         q: f32,
     ) -> (Playback, PostNodeIdentity) {
+        spectrum_eq_graph_with_params(playing, mode, gain_db, q, false)
+    }
+
+    fn spectrum_eq_graph_with_params(
+        playing: bool,
+        mode: u32,
+        gain_db: f32,
+        q: f32,
+        flexible: bool,
+    ) -> (Playback, PostNodeIdentity) {
         use hex_lattice_contract::DeviceTypeId;
         use hex_project::{
             AssetSnapshot, ClipFade, ClipSnapshot, DeviceSnapshot, MeterPoint,
@@ -2711,6 +2721,37 @@ mod tests {
             hex_lattice_contract::ParameterValue::Choice(mode),
         )
         .unwrap();
+        if flexible {
+            use hex_engine::eq::{
+                AutomationLane, AutomationPoint, EqState, Node, NodeId, NodeParameter,
+            };
+            let mut settings = EqState::default();
+            for index in 0..64 {
+                let id = NodeId::new(1000 + index).unwrap();
+                let mut node =
+                    Node::new(id, 500.0, if index == 0 { gain_db } else { 0.0 }, 0).unwrap();
+                node.q = q;
+                settings.add(node).unwrap();
+                settings
+                    .set_lane(AutomationLane {
+                        node: id,
+                        parameter: NodeParameter::Frequency,
+                        points: vec![
+                            AutomationPoint {
+                                beat: 0,
+                                normalized: 0.2,
+                            },
+                            AutomationPoint {
+                                beat: 4 << 32,
+                                normalized: 0.8,
+                            },
+                        ],
+                    })
+                    .unwrap();
+            }
+            state = settings.encode().unwrap();
+            return_state = state.clone();
+        }
         let project = CanonicalProject::from_snapshot(Snapshot {
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -2801,7 +2842,7 @@ mod tests {
             PostNodeIdentity::new(
                 hex_engine::ProcessorChainOwner::Track(TRACK_ID),
                 DEVICE_ID,
-                DeviceTypeId::from_static("hex.eq8"),
+                DeviceTypeId::from_static(if flexible { "hex.eq" } else { "hex.eq8" }),
             ),
         )
     }
@@ -3966,6 +4007,143 @@ mod tests {
 
         control.request_shutdown();
         callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn sparse_eq_callback_publication_held_stable_audition_release_and_retirement_allocate_nothing()
+    {
+        let (mut control, mut callback) = channel(48000).unwrap();
+        let (playback, identity) = spectrum_eq_graph_with_params(true, 0, 3.0, 1.0, true);
+        let first = control
+            .publish_with_policy_and_context_generation(
+                playback,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        let mut prefix = [[0.0; 2]; 17];
+        let admission = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut prefix).unwrap();
+        });
+        assert_eq!(
+            (
+                admission.count_total,
+                admission.bytes_total,
+                admission.count_current,
+                admission.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let selection = hex_engine::ProcessorAuditionSelection {
+            index: 1000,
+            lane: 0,
+        };
+        control
+            .processor_audition
+            .select(identity, 2, first, 48000, selection)
+            .unwrap();
+        let mut output = [[0.0; 2]; 64];
+        let held = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                held.count_total,
+                held.bytes_total,
+                held.count_current,
+                held.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let (candidate, _) = spectrum_eq_graph_with_params(false, 0, 6.0, 2.0, true);
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                candidate,
+                PublicationPolicy::InheritRuntime,
+                2,
+            )
+            .unwrap();
+        let publication = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                publication.count_total,
+                publication.bytes_total,
+                publication.count_current,
+                publication.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            callback.processor_audition_lease,
+            control.processor_audition.desired()
+        );
+        assert!(
+            callback
+                .active
+                .as_mut()
+                .and_then(ActivePublication::legacy_mut)
+                .unwrap()
+                .playback
+                .processor_audition_is_active(identity, selection)
+        );
+        control.processor_audition.release().unwrap();
+        let mut fade = [[0.0; 2]; 256];
+        let release = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut fade).unwrap();
+        });
+        assert_eq!(
+            (
+                release.count_total,
+                release.bytes_total,
+                release.count_current,
+                release.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(callback.processor_audition_lease.is_none());
+        control
+            .processor_audition
+            .select(identity, 2, revision, 48000, selection)
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        control.processor_audition.cancel_immediately().unwrap();
+        let cancel = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                cancel.count_total,
+                cancel.bytes_total,
+                cancel.count_current,
+                cancel.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(callback.processor_audition_lease.is_none());
+        control.request_shutdown();
+        let retire = allocation_counter::measure(|| {
+            callback.begin_block();
+        });
+        assert_eq!(
+            (
+                retire.count_total,
+                retire.bytes_total,
+                retire.count_current,
+                retire.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
         control.reclaim();
     }
 
