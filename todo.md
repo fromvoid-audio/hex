@@ -5,8 +5,10 @@ unchanged project-rate clip derivatives through single/batch/Session/Open and
 Undo/Redo paths. The same resident-frame ceiling charges unique buffer capacity;
 identity aliases count once, excess Vec capacity counts, and source+derivative
 refusal preserves canonical state/Redo. An identity-alias reload failure at zero
-remaining frames was reproduced and repaired. All113 Session tests pass; full
-exact-source CI remains pending. This is control-side bank accounting, not
+remaining frames was reproduced and repaired. All113 Session tests pass. The real mixed-rate service fixture now proves
+derivative-only budget refusal and exact source+derivative Save/Open under its
+actual declared workload; targeted worker case passes. Failed full evidence is
+retained; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026

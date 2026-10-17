@@ -187,3 +187,11 @@ alias/capacity, Open/history, failed-batch and Session-cell fixtures. Earlier
 mixed-rate assertions now count the retained original; an actual identity-alias
 Open refusal was reproduced and repaired. Focused logs retain both failures
 and passes. Final exact-source full validation remains required.
+
+The first full run at `cefb4ff5` exposed the mixed-rate service fixture's old
+441-frame derivative-only reservation. It now explicitly proves that budget
+refuses without project/unsaved-state mutation, then exercises exact save/reopen
+and changed-source refusal with the actual480+441 retained-frame reservation.
+This changes the test caller's declared workload, not a production ceiling.
+The targeted actual worker/Save/Open case passes. Failed full evidence remains
+`artifacts/local-ci/20261017T141627Z-89de27ca/summary.json`.
