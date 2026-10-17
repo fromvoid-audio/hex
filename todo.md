@@ -20,18 +20,18 @@ for scope and the finite native checklist.
 
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
 
-## Global browser search — #2659 / PR275, 17 october 2026
+## Clip conversion — #2658 / PR274, 17 october 2026
 
-Command-F opens the browser in `all`, focuses search and selects the previous
-query. Cached name filtering combines current-folder supported files and native
-devices; category tabs, dragging and sample preview remain available. Search is
-bounded/nonrecursive, matching the current library contract; no all-place index
-or Live parity claim. See docs/browser-places.md for the native user checklist.
-All 29 focused browser tests pass, including global focus/query replacement,
-category filtering and existing drag/preview coverage. Source guards pass.
-Full runner results are recorded in the PR and Pulse; native acceptance remains
-pending.
-
+- User request: MIDI → audio bounces in place; audio → MIDI removes audio and
+  yields an empty editable source. Note detection is explicitly out of scope.
+- Source implements Arrangement/Session identity-preserving atomic replacement,
+  float32 generated WAV publication, worker preparation, undo/redo and Clip View
+  conversion controls. Effects/mixer stay live; source loops/tempo and bounded
+  mutable preroll use the canonical renderer. See docs/clip-conversion.md for
+  finite duration semantics, media ownership, refusals and native checklist.
+- Focused controller/PCM/history/save-reopen/refusal tests pass at the source
+  milestone. Exact full local-CI evidence is retained with PR274; native macOS
+  interaction/listening remains pending. No macOS bundle was built in Linux.
 
 Native effect/instrument registries validate owned descriptors for each current
 state; patches, availability and engine read-only views resolve dynamic IDs.
@@ -3894,3 +3894,15 @@ acceptance remains open: hover selected/unselected headers and nested controls,
 then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
+
+## Global browser search — #2659 / PR275, 17 october 2026
+
+Command-F opens the browser in `all`, focuses search and selects the previous
+query. Cached name filtering combines current-folder supported files and native
+devices; category tabs, dragging and sample preview remain available. Search is
+bounded/nonrecursive, matching the current library contract; no all-place index
+or Live parity claim. See docs/browser-places.md for the native user checklist.
+All 29 focused browser tests pass, including global focus/query replacement,
+category filtering and existing drag/preview coverage. Source guards pass.
+Full runner results are recorded in the PR and Pulse; native acceptance remains
+pending.
