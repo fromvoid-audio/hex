@@ -10,6 +10,19 @@
   visual/user acceptance remains separate; exercise a failed `Samples/Kick.WAV`
   drop and hover the status to confirm path casing, then perform a valid import.
 
+## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
+
+Native effect/instrument registries validate owned descriptors for each current
+state; patches, availability and engine read-only views resolve dynamic IDs.
+Static device/catalog APIs and EQ8's 3,792-byte runtime stay unchanged. Effect
+instances may declare 64 KiB per twin while the independent 1 MiB bank cap,
+256-instance limit and twin accounting remain in force. Heap-backed future
+runtimes must declare all owned capacities; see [runtime bounds](docs/stateful-lattice.md).
+
+Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
+The parent EQ redesign, per-node automation, full final-source local CI and any
+native/user-test delivery remain separate work; this entry does not claim them.
+
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
 - Create-new canonical workload generator writes100 independent120s original

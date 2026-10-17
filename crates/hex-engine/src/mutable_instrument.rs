@@ -35,9 +35,11 @@ pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
 /// graph or one retained-tail bank. Variable-size instrument requirements draw
-/// from this pool; the separate 4 KiB effect-twin limit is not an instrument cap.
+/// from this pool; the separate 64 KiB effect-twin limit is not an instrument cap.
 /// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
+/// Retarget proof storage is independent of effect runtime payload size.
+pub(crate) const MAX_INSTRUMENT_RETARGET_PROOF_BYTES: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MutableOccurrenceKey {
@@ -903,7 +905,7 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances. Effects retain their separate 4 KiB
+/// admits at most 256 stateful instances. Effects retain their separate 64 KiB
 /// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
@@ -932,7 +934,7 @@ pub(crate) fn validate_prepared_graph_budget(
     session: &crate::PreparedSessionInventory,
 ) -> Result<(), MutableInstrumentRuntimeError> {
     let max_retarget_bytes = hex_project::MAX_TRACKS
-        .checked_mul(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES)
+        .checked_mul(MAX_INSTRUMENT_RETARGET_PROOF_BYTES)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if session.mutable_history_retarget_storage_bytes() > max_retarget_bytes {
         return Err(MutableInstrumentRuntimeError::Budget);

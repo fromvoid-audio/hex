@@ -97,12 +97,12 @@ pub(super) fn render(
     for (index, descriptor, value) in [
         (
             0,
-            &hex_engine::DEVICE_INPUT_GAIN,
+            hex_engine::DEVICE_INPUT_GAIN,
             device.state().input_gain_db(),
         ),
         (
             1,
-            &hex_engine::DEVICE_OUTPUT_GAIN,
+            hex_engine::DEVICE_OUTPUT_GAIN,
             device.state().output_gain_db(),
         ),
     ] {
