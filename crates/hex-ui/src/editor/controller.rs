@@ -1975,6 +1975,17 @@ impl EditorView {
             self.last_enqueued_arrangement_device_drop = Some(*destination);
         }
         #[cfg(test)]
+        if let Request::ConvertClip {
+            project_generation,
+            revision,
+            clip,
+            to_audio,
+        } = &request
+        {
+            self.last_enqueued_clip_conversion =
+                Some((*project_generation, *revision, *clip, *to_audio));
+        }
+        #[cfg(test)]
         if let Request::Edit(command) = &request {
             self.last_enqueued_edit = Some(command.clone());
         }
@@ -2102,6 +2113,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::Edit(_)
+                | Request::ConvertClip { .. }
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
                 | Request::InsertTimeRange { .. }

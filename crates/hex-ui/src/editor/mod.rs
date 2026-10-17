@@ -594,6 +594,8 @@ pub(super) struct EditorView {
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
     #[cfg(test)]
+    last_enqueued_clip_conversion: Option<(u64, u64, ClipId, bool)>,
+    #[cfg(test)]
     last_enqueued_native_device_add: Option<(
         TrackId,
         hex_engine::NativeDeviceClass,
@@ -937,6 +939,8 @@ impl EditorView {
             drag_move_event_count: 0,
             #[cfg(test)]
             last_enqueued_edit: None,
+            #[cfg(test)]
+            last_enqueued_clip_conversion: None,
             #[cfg(test)]
             last_enqueued_native_device_add: None,
             #[cfg(test)]

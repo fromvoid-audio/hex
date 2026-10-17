@@ -354,6 +354,13 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
+    /// Convert against the exact selected canonical clip; delayed stale actions refuse.
+    ConvertClip {
+        project_generation: u64,
+        revision: u64,
+        clip: hex_project::ClipId,
+        to_audio: bool,
+    },
     CopyTimeRange(hex_project::TimeRange),
     CutTimeRange(hex_project::TimeRange),
     PasteTimeRange {
@@ -1033,6 +1040,7 @@ fn run_worker(
                 | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
+                | Request::ConvertClip { .. }
         );
         let mut barrier_failure = None;
         if barrier {
@@ -1785,6 +1793,54 @@ fn run_worker(
                             }
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::ConvertClip {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    clip,
+                    to_audio,
+                } => {
+                    let result = if expected_generation != project_generation
+                        || expected_revision != revision
+                    {
+                        Err("clip conversion canceled · project changed".to_owned())
+                    } else if to_audio {
+                        untitled_recovery_path().and_then(|path| {
+                            let root = path
+                                .parent()
+                                .and_then(Path::parent)
+                                .ok_or("bounce media folder is unavailable")?
+                                .join("media/bounces");
+                            session.bounce_midi_clip(
+                                clip,
+                                &root,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            )
+                        })
+                    } else {
+                        session
+                            .command_prepared_revision(
+                                Command::ConvertAudioClipToMidi(clip),
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            )
+                            .map_err(|e| e.to_string())
+                    };
+                    match result {
+                        Ok((result, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some(
+                                if to_audio {
+                                    "clip bounced to audio"
+                                } else {
+                                    "clip converted to empty midi"
+                                }
+                                .into(),
+                            );
+                        }
+                        Err(reason) => error = Some(reason.to_lowercase()),
                     }
                 }
                 Request::Edit(command) => {
