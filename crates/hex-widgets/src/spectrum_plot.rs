@@ -14,8 +14,7 @@ pub struct SpectrumPlotLayer {
 pub fn layered_spectrum_plot(layers: Vec<SpectrumPlotLayer>, style: ControlStyle) -> Option<Div> {
     if layers.len() > MAX_SPECTRUM_PLOT_LAYERS
         || layers.iter().any(|layer| {
-            layer.points.len() > MAX_POINTS
-                || layer.points.len() < 2
+            !(2..=MAX_POINTS).contains(&layer.points.len())
                 || layer.points.iter().any(|[x, y]| {
                     !x.is_finite()
                         || !y.is_finite()
@@ -80,6 +79,20 @@ pub fn layered_spectrum_plot(layers: Vec<SpectrumPlotLayer>, style: ControlStyle
 #[cfg(test)]
 mod tests {
     use super::*;
+    const STYLE: ControlStyle = ControlStyle {
+        background: 0x202020,
+        surface: 0x303030,
+        raised: 0x383838,
+        rail: 0x282828,
+        border: 0x505050,
+        text: 0xe0e0e0,
+        muted: 0xaaaaaa,
+        accent: 0x55ddee,
+        focus_marker: 0xaaaaaa,
+        dial_rail: 0x000000,
+        hover: 0x404040,
+        font_size: 8.0,
+    };
     #[test]
     fn malformed_or_excess_layers_are_refused_without_dropping_members() {
         let layer = SpectrumPlotLayer {
@@ -87,23 +100,16 @@ mod tests {
             color: 0x123456,
         };
         assert!(
-            layered_spectrum_plot(
-                vec![layer.clone(); MAX_SPECTRUM_PLOT_LAYERS],
-                ControlStyle::default()
-            )
-            .is_some()
+            layered_spectrum_plot(vec![layer.clone(); MAX_SPECTRUM_PLOT_LAYERS], STYLE).is_some()
         );
         assert!(
-            layered_spectrum_plot(
-                vec![layer.clone(); MAX_SPECTRUM_PLOT_LAYERS + 1],
-                ControlStyle::default()
-            )
-            .is_none()
+            layered_spectrum_plot(vec![layer.clone(); MAX_SPECTRUM_PLOT_LAYERS + 1], STYLE)
+                .is_none()
         );
         let invalid = SpectrumPlotLayer {
             points: vec![[1.0, 0.0], [0.0, 1.0]],
             ..layer
         };
-        assert!(layered_spectrum_plot(vec![invalid], ControlStyle::default()).is_none());
+        assert!(layered_spectrum_plot(vec![invalid], STYLE).is_none());
     }
 }
