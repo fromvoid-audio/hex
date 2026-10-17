@@ -250,6 +250,54 @@ class DeliveryTests(unittest.TestCase):
             delivery.recover(self.app)
         self.assertEqual((self.workspace / "unknown").read_text(), "preserve")
 
+    def test_recovery_removes_only_regular_finder_metadata_and_is_idempotent(self):
+        self.bundle(self.app)
+        receipt = self.root / "hex-test-build-receipt.json"
+        receipt.write_bytes(b"old adjacent receipt")
+        metadata = self.workspace / ".DS_Store"
+        metadata.write_bytes(b"finder metadata")
+        with patch.object(delivery, "run", return_value=f"123 {self.app}/Contents/MacOS/hex"):
+            with self.assertRaisesRegex(delivery.DeliveryError, "running"):
+                delivery.recover(self.app)
+        self.assertTrue(metadata.exists())
+        delivery.recover(self.app)
+        delivery.recover(self.app)
+        self.assertFalse(self.workspace.exists())
+        delivery.verify(self.app)
+        # Recovery cleans custody; only the normal build publishes a new sidecar.
+        self.assertEqual(receipt.read_bytes(), b"old adjacent receipt")
+
+    def test_finder_name_is_not_a_directory_symlink_or_hidden_file_allowlist(self):
+        self.bundle(self.app, b"old")
+        self.bundle(self.stage)
+        foreign = self.root / "project.hex"
+        foreign.write_bytes(b"user project")
+        metadata = self.workspace / ".DS_Store"
+        for kind in ("directory", "symlink", "unknown"):
+            with self.subTest(kind=kind):
+                path = metadata if kind != "unknown" else self.workspace / ".other"
+                if kind == "directory":
+                    path.mkdir()
+                    (path / "user").write_bytes(b"preserve")
+                elif kind == "symlink":
+                    path.symlink_to(foreign)
+                else:
+                    path.write_bytes(b"preserve")
+                for operation in (lambda: delivery.activate(self.app, self.stage),
+                                  lambda: delivery.recover(self.app)):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "unexpected"):
+                        operation()
+                    self.assertTrue(os.path.lexists(path))
+                    self.assertEqual(foreign.read_bytes(), b"user project")
+                    self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                    self.assertTrue(self.stage.exists())
+                # Test fixture teardown only; the installer refused these members.
+                if kind == "directory":
+                    (path / "user").unlink()
+                    path.rmdir()
+                else:
+                    path.unlink()
+
     def test_activation_is_serialized(self):
         with delivery.activation_lock(self.app):
             with self.assertRaisesRegex(delivery.DeliveryError, "another"):
@@ -258,6 +306,15 @@ class DeliveryTests(unittest.TestCase):
 
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
+
+    def test_finder_metadata_after_custody_deletion_publishes_matching_receipt(self):
+        self.assert_production_build(build_only=False, finder_metadata=True)
+
+    def test_late_unknown_member_preserved_until_inspection_then_normal_retry(self):
+        self.assert_production_build(build_only=False, finder_metadata="unknown")
+
+    def test_late_finder_symlink_preserved_until_inspection_then_normal_retry(self):
+        self.assert_production_build(build_only=False, finder_metadata="symlink")
 
     def test_build_only_assembles_without_ci_and_records_untested_source(self):
         self.assert_production_build(build_only=True)
@@ -268,11 +325,13 @@ class DeliveryTests(unittest.TestCase):
     def test_build_only_source_drift_during_signing_preserves_installed_app(self):
         self.assert_production_build(build_only=True, drift="signing")
 
-    def assert_production_build(self, *, build_only, drift=False):
+    def assert_production_build(self, *, build_only, drift=False, finder_metadata=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
         self.workspace.rmdir()
+        sidecar = self.root / "hex-test-build-receipt.json"
+        sidecar.write_bytes(b"old adjacent receipt")
         source = self.root / "repo"
         source.mkdir()
         for relative in ("scripts", "assets/fonts/ioskeley-mono", "third_party/gpui"):
@@ -365,7 +424,44 @@ class DeliveryTests(unittest.TestCase):
             # A real retry gets a fresh runner/log directory while preserving
             # the failed signing attempt's evidence.
             runner.output_dir = runner.output_dir.parent / "retry"
-            receipt = delivery.build(args)
+            remove = shutil.rmtree
+            foreign = self.root / "user-project.hex"
+            foreign.write_bytes(b"user project")
+            member = self.workspace / ("unknown" if finder_metadata == "unknown" else ".DS_Store")
+            def finder_after_custody_deletion(path):
+                remove(path)
+                if path == self.backup:
+                    # Actual PhaseB cutpoint: new app is verified and old custody
+                    # is gone, but activate has not removed the workspace or
+                    # returned to build's adjacent-receipt publication.
+                    self.assertFalse(self.stage.exists())
+                    delivery.verify(self.app)
+                    self.assertEqual(sidecar.read_bytes(), b"old adjacent receipt")
+                    if finder_metadata == "symlink":
+                        member.symlink_to(foreign)
+                    else:
+                        member.write_bytes(b"finder metadata")
+            with patch.object(delivery.shutil, "rmtree", side_effect=finder_after_custody_deletion if finder_metadata else remove):
+                if finder_metadata in ("unknown", "symlink"):
+                    with self.assertRaisesRegex(delivery.DeliveryError, "unexpected"):
+                        delivery.build(args)
+                    self.assertTrue(os.path.lexists(member))
+                    self.assertFalse(self.backup.exists())
+                    self.assertEqual(delivery.verify(self.app)["source"], candidate)
+                    self.assertEqual(sidecar.read_bytes(), b"old adjacent receipt")
+                    with self.assertRaisesRegex(delivery.DeliveryError, "unexpected"):
+                        delivery.recover(self.app)
+                else:
+                    receipt = delivery.build(args)
+            if finder_metadata in ("unknown", "symlink"):
+                self.assertEqual(foreign.read_bytes(), b"user project")
+                # Simulate explicit inspection resolving the TEST's foreign entry,
+                # then retry the ordinary supported build, not a sidecar write.
+                member.unlink()
+                (self.workspace / ".DS_Store").write_bytes(b"finder metadata")
+                runner.output_dir = runner.output_dir.parent / "publication-retry"
+                receipt = delivery.build(args)
+                self.assertEqual(foreign.read_bytes(), b"user project")
             verified = delivery.verify(self.app)
             wrong = {**verified, "signing": {**SIGNING, "certificate_sha1": "0" * 40}}
             delivery.write_json(self.app / "Contents/Resources/test-build.json", wrong)
@@ -398,7 +494,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn("Contents/MacOS/hex", verified["files"])
         self.assertIn("Contents/MacOS/hex", receipt["artifact_files"])
         self.assertIn("Contents/Resources/test-build.json", receipt["artifact_files"])
-        self.assertEqual(runner.target_lock.release.call_count, 2)
+        self.assertEqual(runner.target_lock.release.call_count, 3 if finder_metadata in ("unknown", "symlink") else 2)
 
     def test_build_only_source_gate_rejects_dirty_wrong_or_changed_candidate(self):
         runner = delivery.ci.LocalCiRunner(self.root)
