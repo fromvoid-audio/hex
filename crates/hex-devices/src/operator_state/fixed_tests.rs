@@ -150,7 +150,14 @@ fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
     let decoded = OperatorSettings::from_state(&state).expect("settings");
     assert_eq!(decoded.to_state().expect("encode"), state);
     let instrument = OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("instrument");
     let context = instrument
         .prepare_shared_analytic_context()
@@ -160,23 +167,38 @@ fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
     let high = context.prepare_note(127, 100).expect("high");
     for age in 0..8192 {
         assert_eq!(
-            context.sample(&low, age, 6000),
-            context.sample(&high, age, 6000)
+            context.sample(&low, age, 6000, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            context.sample(&high, age, 6000, &hex_lattice::EMPTY_DEVICE_RESOURCES)
         );
     }
     let ratio = patch(&state, parameter::fixed(1), ParameterValue::Bool(false));
     assert_ne!(ratio, state);
     let context = OPERATOR_METADATA
-        .prepare_instrument(&ratio, 48_000)
+        .prepare_instrument(
+            &ratio,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("mixed")
         .prepare_shared_analytic_context()
         .expect("context")
         .expect("shared");
     let low = context.prepare_note(48, 100).expect("low");
     let high = context.prepare_note(60, 100).expect("high");
-    assert!(
-        (1000..4000).any(|age| context.sample(&low, age, 6000) != context.sample(&high, age, 6000))
-    );
+    assert!((1000..4000).any(|age| context.sample(
+        &low,
+        age,
+        6000,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES
+    ) != context.sample(
+        &high,
+        age,
+        6000,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES
+    )));
 }
 
 #[test]

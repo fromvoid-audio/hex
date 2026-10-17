@@ -30,7 +30,12 @@ impl PreparedNativeProcessor for BudgetPrepared {
     }
 }
 impl NativeProcessorRuntime for BudgetRuntime {
-    fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+    fn process_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
     fn reset(&mut self) {}
     fn is_quiescent(&self) -> bool {
         true

@@ -459,7 +459,16 @@ mod tests {
                     .unwrap();
             }
             for rate in [8_000, 44_100, 48_000, 192_000] {
-                let instrument = metadata.prepare_instrument(&law, rate).unwrap();
+                let instrument = metadata
+                    .prepare_instrument(
+                        &law,
+                        &hex_lattice::DevicePreparationContext {
+                            sample_rate: rate,
+                            tuning: &hex_lattice::TuningTable::default(),
+                            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        },
+                    )
+                    .unwrap();
                 let context = instrument
                     .prepare_shared_analytic_context()
                     .unwrap()

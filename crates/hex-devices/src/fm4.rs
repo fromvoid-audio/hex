@@ -615,6 +615,7 @@ fn sample_fm4_note(
     age_frames: u64,
     gate_frames: u64,
     release_frames: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> StereoFrame {
     let Some(table) = crate::shared_sine_table_if_prepared() else {
         return [0.0; 2];

@@ -189,8 +189,9 @@ impl NativeDeviceDefinition for EqDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         Ok(Some(Box::new(runtime::PreparedEq::new(
             EqState::decode(state)?,
             sample_rate,
