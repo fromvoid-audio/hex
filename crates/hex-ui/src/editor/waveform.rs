@@ -11,7 +11,7 @@ use super::waveform_geometry::{
 
 const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
-const FADE_ENVELOPE_BREAKPOINTS: usize = 4;
+const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
 pub(super) fn prepared_waveform_view_cached(
     prepared: &hex_session::service::AudioClipWaveform,
@@ -183,6 +183,43 @@ pub(super) fn peak_vertical_bounds(peak: CachedPeak, center: f32, amplitude: f32
     (top.min(bottom), top.max(bottom))
 }
 
+// Sample inside each fade as well as across the viewport, so a short curved fade
+// on a long clip never collapses to a straight line between its endpoint knots.
+fn fade_domain_positions(fade: ClipFade) -> impl Iterator<Item = u64> {
+    // Invert the rational law only to choose drawing coordinates. The canonical
+    // gain_at method still supplies every ordinate. Uniform gain spacing keeps
+    // even extreme bends accurate near their steep endpoint.
+    let at_gain = |length: u64, index: usize, curve: i16| {
+        let gain = index as f64 / 32.0;
+        let c = f64::from(curve);
+        let fraction = gain * (1001.0 + c) / (1001.0 - c + 2.0 * c * gain);
+        ((fraction * length.saturating_sub(1) as f64).round() as u64).min(length.saturating_sub(1))
+    };
+    let out_end = fade.span() - fade.out_end_offset();
+    let midpoints = [
+        (fade.in_curve() != 0).then_some(fade.in_start() + fade.fade_in().saturating_sub(1) / 2),
+        (fade.out_curve() != 0).then_some(out_end - 1 - fade.fade_out().saturating_sub(1) / 2),
+    ];
+    fade.breakpoints()
+        .into_iter()
+        .flatten()
+        .chain(midpoints.into_iter().flatten())
+        .chain(
+            (1..32)
+                .flat_map(move |index| {
+                    [
+                        (fade.in_curve() != 0 && fade.fade_in() > 1).then_some(
+                            fade.in_start() + at_gain(fade.fade_in(), index, fade.in_curve()),
+                        ),
+                        (fade.out_curve() != 0 && fade.fade_out() > 1).then_some(
+                            out_end - 1 - at_gain(fade.fade_out(), index, fade.out_curve()),
+                        ),
+                    ]
+                })
+                .flatten(),
+        )
+}
+
 /// Return a viewport-clipped, bounded preview of the canonical fade gain law.
 /// X and gain are normalized to [0, 1]; sample phases stay in clip timeline
 /// frames, independent of looping source-media phase.
@@ -211,7 +248,7 @@ pub(super) fn projected_fade_envelope_samples(
     let root_end = root_start
         .checked_add(length - 1)
         .ok_or(hex_project::Invalid("fade geometry frame overflow"))?;
-    let capacity = count + 12;
+    let capacity = count + 3 * FADE_ENVELOPE_BREAKPOINTS;
     let mut positions = Vec::new();
     positions
         .try_reserve_exact(capacity)
@@ -219,7 +256,10 @@ pub(super) fn projected_fade_envelope_samples(
     for index in 0..count {
         positions.push(root_start + fraction_u64(length - 1, index, count.saturating_sub(1)));
     }
-    for frame in fade.breakpoints()?.into_iter().flatten() {
+    for position in fade_domain_positions(clip.retained_fade()) {
+        let Some(frame) = fade.frame_at_domain_position(position)? else {
+            continue;
+        };
         for frame in [frame.saturating_sub(1), frame, frame.saturating_add(1)] {
             if frame >= root_start && frame <= root_end {
                 positions.push(frame);
@@ -249,10 +289,7 @@ pub(super) fn fade_envelope_samples(
     visible_start: u64,
     visible_end: u64,
 ) -> Vec<(f32, f32)> {
-    if (fade.fade_in() == 0 && fade.fade_out() == 0)
-        || visible_start < clip_start
-        || visible_start >= visible_end
-    {
+    if fade.is_neutral() || visible_start < clip_start || visible_start >= visible_end {
         return Vec::new();
     }
     let visible_frames = visible_end - visible_start;
@@ -282,17 +319,9 @@ pub(super) fn fade_envelope_samples(
             frames.push(frame);
         }
     };
-    if fade.fade_in() > 1 {
-        add_domain_position(fade.fade_in() - 1);
+    for position in fade_domain_positions(fade) {
+        add_domain_position(position);
     }
-    if fade.fade_out() > 0 {
-        let fade_out_start = fade.span() - fade.fade_out();
-        if fade_out_start > 0 {
-            add_domain_position(fade_out_start - 1);
-        }
-        add_domain_position(fade_out_start);
-    }
-    add_domain_position(fade.span() - 1);
     frames.sort_unstable();
     frames.dedup();
     let mut points = Vec::with_capacity(frames.len());
@@ -762,6 +791,14 @@ mod tests {
             .find(|(x, _)| (*x - 240.0 / 999_999.0).abs() < f32::EPSILON)
             .expect("exact fade-in end breakpoint");
         assert_eq!(end.1, 1.0);
+        let curved = fade.with_shape(0, 0, 800, 0).unwrap();
+        let samples = fade_envelope_samples(curved, 0, 0, 1_000_000);
+        let midpoint = samples
+            .iter()
+            .find(|(x, _)| (*x - 120.0 / 999_999.0).abs() < f32::EPSILON)
+            .expect("short curve interior survives zoom out");
+        assert_eq!(midpoint.1, curved.gain_at(120));
+        assert!(midpoint.1 < 0.2);
     }
 
     #[test]

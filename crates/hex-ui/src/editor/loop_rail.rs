@@ -61,6 +61,7 @@ impl EditorView {
             || self.active_browser_audio_drag.is_some()
             || self.active_native_device_drag.is_some()
             || self.active_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
             || self.active_midi_trim_drag.is_some()
             || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()

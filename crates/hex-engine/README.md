@@ -128,7 +128,7 @@ the visible span count. The existing standalone `render` retains its overwrite
 and silence-on-error contract. These are stateless control-prepared source
 helpers, not Session routing or callback deadline evidence.
 
-The compiler also attaches each canonical clip's fixed-domain linear fade.
+The compiler also attaches each canonical clip's fixed-domain fade with independent silent endpoints and rational curve bends.
 Zero-length fades use the original render loop without per-frame envelope work;
 faded clips multiply their two endpoint-defined ramps in timeline phase. Splits
 preserve phase through the canonical offset, including under source and global

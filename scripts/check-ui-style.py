@@ -109,6 +109,8 @@ widgets = (
     'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
     'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

@@ -334,6 +334,7 @@ fn status_slot(
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reconcile_clip_name(window, cx);
+        self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
@@ -383,6 +384,7 @@ impl Render for EditorView {
             .bg(rgb(theme::color(theme::PaletteRole::Background)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
+            .child(self.fade_pointer_events(cx))
             .track_focus(&self.focus)
             .key_context(if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
@@ -400,7 +402,13 @@ impl Render for EditorView {
             .capture_any_mouse_down(cx.listener(|view, event, _, cx| {
                 super::device_panel::capture_navigation_pointer_down(view, event, cx);
             }))
-            .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, _, cx| {
+            .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left && view.active_fade_drag.is_some() {
+                    view.update_fade_gesture(event.position, cx);
+                    view.finish_fade_gesture(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_trim_drag.clone()
                 {
@@ -470,9 +478,16 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                view.computer_keyboard_down(event, window, cx);
+                if !view.fade_key_down(event, window, cx) {
+                    view.computer_keyboard_down(event, window, cx);
+                }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                if event.keystroke.key == "f" && view.fade_key_held {
+                    view.fade_key_held = false;
+                    cx.notify();
+                    cx.stop_propagation();
+                }
                 if view.computer_keyboard_up(&event.keystroke.key) {
                     cx.stop_propagation();
                 }
@@ -518,7 +533,10 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
-                if view.active_native_device_drag.is_some() {
+                if view.active_fade_drag.take().is_some() {
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if view.active_native_device_drag.is_some() {
                     cx.stop_active_drag(window);
                     view.cancel_active_native_device_drag();
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
@@ -559,6 +577,11 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.active_fade_drag.take().is_some() {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if view.cancel_audio_batch(cx) {
                     cx.stop_propagation();
                     return;

@@ -37,6 +37,7 @@ fn fixture() -> Value {
     document.as_object_mut().unwrap().remove("track_colors");
     document.as_object_mut().unwrap().remove("accented_clips");
     document.as_object_mut().unwrap().remove("audio_clip_state");
+    document.as_object_mut().unwrap().remove("fade_shapes");
     document
         .as_object_mut()
         .unwrap()
@@ -58,6 +59,7 @@ fn historical(version: u64, provenance: bool, routing: bool) -> Value {
     document.as_object_mut().unwrap().remove("track_colors");
     document.as_object_mut().unwrap().remove("accented_clips");
     document.as_object_mut().unwrap().remove("audio_clip_state");
+    document.as_object_mut().unwrap().remove("fade_shapes");
     document
         .as_object_mut()
         .unwrap()

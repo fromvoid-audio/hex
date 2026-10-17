@@ -91,6 +91,7 @@ impl ReturnEffectTailBank {
 
     pub(super) fn rollback_block(&mut self) {
         for tail in self.slots.iter_mut().flatten() {
+            tail.chain.rollback_block();
             tail.output_scratch = tail.output_active;
         }
     }
@@ -432,8 +433,7 @@ fn reserve_chain(
         .checked_add(chain.stateful_count())
         .ok_or(SessionPlaybackError::ReleaseBankFull)?;
     *runtime_bytes = runtime_bytes
-        .checked_add(chain.declared_runtime_bytes())
-        .and_then(|bytes| bytes.checked_add(chain.declared_runtime_bytes()))
+        .checked_add(chain.declared_pair_bytes())
         .ok_or(SessionPlaybackError::ReleaseBankFull)?;
     *entry_count = entry_count
         .checked_add(chain.len())
