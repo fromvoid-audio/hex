@@ -66,7 +66,10 @@ Untuned projects preserve the legacy equal-temperament formula. Opening
 the editor must not enable tuning, change the scale or dirty the project. The
 Freqs seven-degree major scale (key 60 at 220 Hz) remains a deliberate selection,
 not a migration default. Enabled scales support 3–48 ordered degrees with at least
-one cent separation, root keys 0–127, root 10–20,000 Hz and repeat 600–2400 cents.
+one cent separation including the cyclic period seam, root keys 0–127, root 10–20,000 Hz and repeat 600–2400 cents.
+Portable exports use round-trip-safe float text for root Hz, period and all degree
+values; import/export preserves the authored float bits. Wrapped insertion and
+count edits retain the root and validate the complete cyclic scale.
 Portable input is capped at 8192 bytes before parsing, including inactive degree
 values. Sample-rate/Nyquist admission remains an instrument preparation concern;
 a valid authored table is not proof every instrument can render its highest key.
