@@ -439,6 +439,28 @@ on the approved optimized candidate, click first then Shift-click fifth, reverse
 and shrink the range, toggle/add with Command, click another row, then confirm
 header dragging and body time-selection still work. No app replacement or Mac
 execution is part of these source checks.
+## inline track naming — #2768 / PR376
+
+Clicking an Arrangement track header (its name or empty background) focuses that
+header. Command-R edits its name inline; Enter commits one canonical RenameTrack
+edit and Escape cancels the draft. Names retain case and Unicode in the project.
+Arrow navigation from header focus follows the neighboring header. Track control
+clicks retain their own behavior and do not bubble into header selection.
+
+Clip-header focus keeps the existing clip rename shortcut. Browser search,
+clip-name input and numeric text drafts retain their own focus and keys. A track
+name draft prevents competing clip/time gestures, and project replacement or a
+stale revision cancels it. The label uses the existing header dimensions and
+track-name tooltip; this adds no project rename model or layout policy.
+
+Rendered regressions cover actual header-background/name clicks, Enter, Escape,
+clip focus, arrow navigation and text/numeric protection. The dispatched canonical
+command is checked through Undo/Redo and worker save/reopen. Exact final cloud
+checks are recorded on the canonical PR. Native acceptance remains through the
+coordinator's serial lane: focus a header, rename with Command-R/Enter, Undo/Redo,
+Escape a second draft, verify clip rename and search/numeric protection, then
+save/reopen a disposable project with user consent. No current app replacement
+or required save/quit is implied.
 ## track creation shortcut — #2767 / PR375, 17 october 2026
 
 Command-T in editor focus invokes the same canonical `AddTrack` action as the

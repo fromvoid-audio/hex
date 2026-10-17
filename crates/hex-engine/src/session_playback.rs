@@ -252,6 +252,7 @@ struct ReleaseEntry {
     order: u64,
     mix: crate::PreparedTrackMix,
     continuation: Option<SessionContinuation>,
+    inline_tuning_owned: bool,
     voice: MidiReleaseVoice,
 }
 

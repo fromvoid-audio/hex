@@ -194,6 +194,7 @@ impl RevisionAssembly {
             .map(|o| o.as_ref())
             .or(self.revision_value.as_ref());
         if let Some(PreparedRevision {
+            tuning_family: _,
             arrangement,
             session,
             midi_preview,
@@ -349,6 +350,8 @@ impl RevisionAssembly {
         ) {
             (Some(arrangement), Some(session), Some(midi_preview)) => {
                 self.revision_value = Some(PreparedRevision {
+                    tuning_family: TuningContinuationFamily::fresh()
+                        .map_err(|_| Error::Overflow)?,
                     arrangement,
                     session,
                     midi_preview,
@@ -404,6 +407,7 @@ impl RevisionAssembly {
             self.extracted += 1;
         }
         if let Some(PreparedRevision {
+            tuning_family: _,
             arrangement,
             session,
             midi_preview,
@@ -519,6 +523,7 @@ impl RevisionAssembly {
             .or(revision_value.as_ref())
         {
             let PreparedRevision {
+                tuning_family: _,
                 arrangement,
                 session,
                 midi_preview,

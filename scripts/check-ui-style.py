@@ -13,7 +13,7 @@ widgets = (
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Clip name components normalize labels or render a native text-input entity.
-    'self.clip_name_label(', 'self.clip_name_header(', 'edit.input.clone())',
+    'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -67,6 +67,7 @@ widgets = (
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
     'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
+    'super::waveform::timeline_waveform_view_cached(',
     'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',

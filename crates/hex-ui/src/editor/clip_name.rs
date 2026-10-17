@@ -78,6 +78,7 @@ impl EditorView {
             || self.time_range_move_gesture.is_some()
             || self.clip_paint_gesture.is_some()
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
         {
             return;
         }
