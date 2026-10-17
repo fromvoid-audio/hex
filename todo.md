@@ -4628,3 +4628,13 @@ retry automatically. Reproduced selected-cache loss before repair; real pointer
 hover/selection regression checks no repeated preparation/audition, stable metadata,
 unchanged project state and surrounding lane geometry/style. Native flicker
 acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## deliberate sample insertion — pulse2780 / PR386
+
+Sample-result double-click no longer imports; consume its bubble after ordinary
+selection/automatic audition. Actual second-mouse-down regression with a valid
+target track failed before repair, and verifies no import/canonical mutation with
+auto on/off while retaining manual Right/search focus and explicit Enter import.
+Existing deliberate drag/drop coverage remains required. Other file/device
+handlers unchanged. Native double-click behavior remains coordinator-serial.
