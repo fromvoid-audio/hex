@@ -147,3 +147,58 @@ under the unchanged2MiB ceiling. Its computed next-recipe refusal remains.
 The earlier device-state proof repair is retained; this engine assertion and
 its owning README now report the current asset-metadata charge. The failed run
 is `artifacts/local-ci/20261017T133404Z-073b6e04/summary.json`.
+
+## original-rate PCM retention — pulse2762 / PR370
+
+`PreparedImport` now retains the exact original-rate decoded stereo `Audio`
+alongside the existing project-rate clip derivative. Single and batch imports,
+Arrangement tracks/clips, Session cells and Open/recovery keep both in the
+control-side Session bank. `Session::audio` continues returning the unchanged
+clip derivative; `Session::source_audio` borrows the original for future sample
+preparation. Existing decode expands mono to stereo explicitly; original-rate
+here describes decoded PCM, not untouched encoded file bytes. Paths/source
+metadata and waveform summaries keep their existing meanings.
+
+The same caller resident-frame ceiling now charges the unique PCM buffer
+capacity across retained sources/derivatives and aliases, using exact owner
+identity rather than sample equality. `Audio::pcm_capacity_frames` observes the
+buffer's allocated frame capacity, so excess Vec capacity cannot evade the
+frame bound. Identity conversion clones the same PCM owner and incurs no second
+buffer charge. Loading a known identity alias still works when remaining frame
+capacity is zero. Fresh decoded files allocate distinct buffers and remain
+charged individually even when their content/path matches.
+
+Batch workers and Open/recovery decrement their remaining retained-frame bounds
+for original plus converted buffers before retaining another prepared member.
+Over-budget candidates refuse before project/history/applied replacement;
+Undo/Redo retain the exact original source without reopening the file. The
+existing ceiling is not raised. Consequently some converted imports that fit
+only the derivative under the old accounting can now refuse explicitly.
+
+This is Session-bank PCM **frame** accounting, not the complete graph/resource
+allocation-byte union or handle/lease/retirement proof. It excludes owner/graph
+metadata and pending work outside this bank; those remain required in the shared
+resident-resource admission path. Borrowing `source_audio` grants no callback
+lease and nonempty device bindings still refuse processing. No tuning/schema,
+Lattice API, registration or user-file rewriting is added by this slice.
+
+All113 Session library tests pass, including four direct original/derivative,
+alias/capacity, Open/history, failed-batch and Session-cell fixtures. Earlier
+mixed-rate assertions now count the retained original; an actual identity-alias
+Open refusal was reproduced and repaired. Focused logs retain both failures
+and passes. Final exact-source full validation remains required.
+
+The first full run at `cefb4ff5` exposed the mixed-rate service fixture's old
+441-frame derivative-only reservation. It now explicitly proves that budget
+refuses without project/unsaved-state mutation, then exercises exact save/reopen
+and changed-source refusal with the actual480+441 retained-frame reservation.
+This changes the test caller's declared workload, not a production ceiling.
+The targeted actual worker/Save/Open case passes. Failed full evidence remains
+`artifacts/local-ci/20261017T141627Z-89de27ca/summary.json`.
+
+The next full run found the same outdated caller reservation in the mixed-rate
+clip/history integration fixture. It now declares441+480 original/derivative
+frames and checks original-rate retention through Undo/Redo. The entire Session
+package passes182 tests, zero failures or ignored tests. Both failed full runs
+remain recorded; the second is
+`artifacts/local-ci/20261017T142427Z-f1c8bc8d/summary.json`.

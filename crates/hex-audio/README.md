@@ -117,6 +117,15 @@ waits for preview owners too. No extra stream, callback allocation, locking or
 final PCM drop is needed. The media decoder and browser input remain outside
 this crate. See [runtime](../../docs/runtime.md#browser-sample-playback--pulse2637--pr254).
 
+`sample_preview::Control::snapshot` and the split client's `preview_snapshot`
+expose generation-scoped Preparing, Playing and Finished phases. Submission is
+not playback: only actual callback PCM consumption marks Playing, and the final
+frame marks Finished even when retirement is backpressured. Cancel returns Idle
+immediately and silences active/queued/pending PCM without touching project
+transport; stale decodes cannot revive it. Faulted/closed output is Unavailable.
+Two constructor-allocated atomic generation acknowledgements carry callback
+start/end; snapshots neither own PCM nor allocate or reclaim on the callback.
+
 The strict worker factory uses the same analysis implementation at the actual
 fixed device rate, with a private actual Capture/Reader/Reaper receipt. Its Reader
 is part of Client's terminal bundle; the Reaper stays in persistent lifecycle
