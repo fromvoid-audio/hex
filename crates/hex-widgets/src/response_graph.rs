@@ -8,6 +8,16 @@ use gpui::{
     div, point, prelude::*, px, rgb,
 };
 
+gpui::actions!(hex_response_graph, [RemoveNode, CancelPointer]);
+
+/// Install opt-in graph Backspace and held-pointer Escape bindings.
+pub fn bind_response_graph_keys(cx: &mut App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("backspace", RemoveNode, Some("hex_response_graph_remove")),
+        gpui::KeyBinding::new("escape", CancelPointer, Some("hex_response_graph_remove")),
+    ]);
+}
+
 const MAX_CURVE_POINTS: usize = 256;
 const MAX_NODES: usize = 64;
 const PLOT_INSET: f32 = 7.0;
@@ -27,6 +37,8 @@ pub enum ResponseGraphPhase {
     /// With creation dragging enabled, its pointer stream keeps node_id zero.
     Create,
     Select,
+    /// Owner-opted-in Backspace on an idle, focused selected node.
+    Remove,
     /// Physical pointer press on a node; does not start a parameter edit.
     Press,
     Begin,
@@ -119,6 +131,7 @@ pub struct ResponseGraph {
     creation_enabled: bool,
     creation_drag_enabled: bool,
     tab_navigation: bool,
+    backspace_removal: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
 }
@@ -160,6 +173,7 @@ impl ResponseGraph {
             creation_enabled: false,
             creation_drag_enabled: false,
             tab_navigation: false,
+            backspace_removal: false,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
@@ -177,6 +191,15 @@ impl ResponseGraph {
     /// Disabled by default so existing click-only owners retain their behavior.
     pub fn set_creation_drag_enabled(&mut self, enabled: bool) {
         self.creation_drag_enabled = enabled;
+    }
+
+    /// Capture Backspace only while this graph owns focus. Owners decide how
+    /// an emitted stable node identity maps to their canonical removal command.
+    /// Empty, disabled or held-pointer graphs consume the key without removal.
+    /// Its scoped Escape binding preserves held-pointer cancellation before
+    /// ancestor application actions can handle the key.
+    pub fn set_backspace_removal(&mut self, enabled: bool) {
+        self.backspace_removal = enabled;
     }
 
     /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
@@ -500,7 +523,57 @@ impl ResponseGraph {
         true
     }
 
-    fn key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn cancel_pointer(&mut self, _: &CancelPointer, window: &mut Window, cx: &mut Context<Self>) {
+        if self.backspace_removal
+            && self.focus.is_focused(window)
+            && (self.drag.is_some() || self.press.is_some())
+        {
+            cx.stop_propagation();
+            self.cancel(cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn remove_selected(&mut self, _: &RemoveNode, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.backspace_removal || !self.focus.is_focused(window) {
+            return;
+        }
+        cx.stop_propagation();
+        if self.editable
+            && self.drag.is_none()
+            && self.press.is_none()
+            && let Some(node) = self.model.nodes.iter().find(|node| node.selected)
+        {
+            cx.emit(ResponseGraphEvent {
+                phase: ResponseGraphPhase::Remove,
+                node_id: node.id,
+                position: node.position,
+                modifiers: Modifiers::default(),
+            });
+            cx.notify();
+        }
+    }
+
+    fn key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.backspace_removal
+            && self.focus.is_focused(window)
+            && event.keystroke.key == "backspace"
+        {
+            // A focused empty/pending graph must not forward deletion to its
+            // editor's track/clip action. Numeric/text siblings own their keys.
+            cx.stop_propagation();
+            let modifiers = event.keystroke.modifiers;
+            if !modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.shift {
+                self.remove_selected(&RemoveNode, window, cx);
+            }
+            return;
+        }
         if event.keystroke.key == "escape" && (self.drag.is_some() || self.press.is_some()) {
             cx.stop_propagation();
             self.cancel(cx);
@@ -672,6 +745,12 @@ impl gpui::Render for ResponseGraph {
             .w_full()
             .h_full()
             .track_focus(&self.focus)
+            .when(self.backspace_removal, |graph| {
+                graph
+                    .key_context("hex_response_graph_remove")
+                    .on_action(cx.listener(Self::remove_selected))
+                    .on_action(cx.listener(Self::cancel_pointer))
+            })
             .on_key_down(cx.listener(Self::key_down))
             .cursor(if self.drag.is_some() {
                 CursorStyle::ResizeColumn

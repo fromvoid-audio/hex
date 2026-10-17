@@ -80,6 +80,19 @@ retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
+## sample bpm and shift edge stretching — pulse2781 / PR387, 17 october2026
+
+Authored original sample BPM, canonical affine edge stretch and metadata-only
+preview/release wiring are implemented in a separate follow-up. Five model/storage
+fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
+both-edge stationary Shift gesture checks pass; excessive stretch refuses project/history
+commit. Escape preview persistence was reproduced and repaired; active-window
+Escape/focus/deactivation and canceled re-entry checks pass. Final exact-source
+CI remains pending on the final projection candidate. Merged388 supplies
+ordinary trim visibility;387 adds accepted-peak changed-root projection for live
+Shift stretch. Stability2764/PR372 stays separate; final projection checks and
+coordinator-owned native acceptance remain pending. See docs/sample-bpm-stretch.md for behavior and
+finite coordinator-only native checklist. No Mac execution or app replacement.
 
 ## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
 
@@ -226,6 +239,20 @@ widths preserve shared styling; the strengthened font-shaped text-fit regression
 fails before and passes after, alongside all six rendered EQ tests. Full exact-source CI
 and optimized native visual/input acceptance remain required.
 See [layout contract](docs/eq.md#panel-layout).
+
+## focused eq Backspace — #2737 / PR348, 17 october 2026
+
+Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
+bindings. The owner reuses canonical stable-node removal and refuses automation
+point IDs, previews, pending/stale work and old project generations. Empty graph
+focus consumes the key; numeric/text siblings keep their own editing. A rendered
+regression fails before/passes after for removal with atomic automation cleanup,
+empty focus, Undo/Redo and current-format save/reopen identity state. All eight
+rendered EQ regressions and strict UI feature Clippy pass, including
+pending/numeric/automation-point isolation and held-pointer cancellation with
+real editor keybindings. Graph-scoped Escape preserves existing cancellation
+before ancestor editor actions. Full exact-source CI and optimized native input
+acceptance remain required.
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4537,6 +4564,30 @@ pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 save
 CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
 native physical input/listening and optimized coordinated Mac delivery remain
 pending with the coordinator's serial follow-up workflow.
+
+
+## lower fade handles free by default — pulse2777 / PR383, 17 october 2026
+
+Both lower fade-edge resize handles now use unsnapped pointer positions by
+default, independent of ordinary Arrangement snap. Holding the existing Command
+modifier enables the configured grid, or the existing adaptive grid when global
+snap is off. Stationary modifier changes and mouse-up use current modifiers.
+Ordinary trims/body gestures and upper/curve controls retain their behavior.
+The existing rendered gesture regression fails before this change (quarter grid
+produces frame24000 instead of the requested18000). Expanded coverage checks
+both edges, grid on/off, stationary press/release and both mouse-up disagreement
+directions, no-motion clicks and canonical single Undo/Redo. Existing cancellation
+coverage now exercises both lower edges; canonical model tests retain loop/source
+bounds and opposite-edge/fade-shape coverage. All nine focused fade tests pass. Exact full cloud CI evidence is tracked in
+Pulse2777 and canonical PR383.
+
+Native acceptance remains pending through the coordinator's single Mac lane:
+on the approved optimized candidate, drag each lower handle with snap on and
+off; verify continuous free motion, hold Command to snap (adaptive when off),
+press/release Command without moving, then release with either modifier state.
+Check crop/reveal and unchanged waveform landmarks, opposite edge and fade shape,
+one Undo/Redo, click-only no-op, Escape cancellation and finite source limits.
+No Mac job, app replacement, save/quit or delivery was performed by this lane.
 
 ## adaptive arranger grid — 17 october 2026
 
