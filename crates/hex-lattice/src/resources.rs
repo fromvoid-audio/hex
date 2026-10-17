@@ -132,6 +132,36 @@ impl HostDeviceResourceScope for NoDeviceResourceScope {
     }
 }
 
+// An absent scope is physically asset-free. Some(empty) may still retain an
+// owning allocation, so query length must never collapse Some into None.
+impl<R: HostDeviceResourceScope> DeviceResources for Option<R> {
+    fn len(&self) -> usize {
+        self.as_ref().map_or(0, DeviceResources::len)
+    }
+    fn get(&self, index: usize) -> Option<DeviceResourceView<'_>> {
+        self.as_ref().and_then(|scope| scope.get(index))
+    }
+}
+impl<R: HostDeviceResourceScope> HostDeviceResourceScope for Option<R> {
+    fn same_configuration(&self, other: &Self) -> bool {
+        match (self, other) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same_configuration(b),
+            _ => false,
+        }
+    }
+    fn validate_configuration_on_control(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<(), DeviceContractError> {
+        match self {
+            Some(scope) => scope.validate_configuration_on_control(state, sample_rate),
+            None => NoDeviceResourceScope.validate_configuration_on_control(state, sample_rate),
+        }
+    }
+}
+
 /// One current preparation boundary. Never construct or validate this on callback.
 /// Tuning is already validated; resource PCM verification occurs on control under
 /// the host's existing work/cancellation/memory limits before root publication.

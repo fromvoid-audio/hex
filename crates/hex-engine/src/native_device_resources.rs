@@ -333,4 +333,6 @@ impl<'a> ScopedDeviceResources<'a> {
 pub(crate) mod tests;
 
 #[cfg(test)]
+mod effect_host_tests;
+#[cfg(test)]
 mod effect_scope_tests;

@@ -516,3 +516,22 @@ Its selected actual model/history/prepared identity inventory remains separate
 from enclosing container storage, root custody, full construction peak and
 retirement. No pointer/count/hash promotion, alternate PCM owner/cache or
 registry admission is added.
+
+Prepared effect entries now carry `Option<DeviceResourceConfiguration>` in
+their actual source array; Arrangement Renderer, Session current/tail chains,
+Returns and export use the same scoped runtime type. Construction clones the
+bounded configuration handle on control. Scope storage is never held by provider
+coefficients or a parallel cache. Preflight and actual runtime accounting use the
+real scoped entry size under the existing ceilings. `Some(empty)` differs from
+`None`; the closed Utility constructor and transfer/storage proof require actual
+absence of a scope. The ordinary compiler still supplies `None` pending the
+resource-aware preparation/closed-admission path. An unregistered fixture through
+the actual prepared Track/Renderer path proves retained original PCM, seek and
+partition consistency and control final-root drop, with allocation instrumentation
+over that Renderer path. This is not public referenced registry admission or a
+claim that Session/Return/keyboard/export resource acceptance is complete.
+
+The canonical model-source oracle also exercises an actual mutable Operator
+Arrangement descriptor: omitting its retained identity fails closure; including
+the real field closes, and it retains the original body/notes after canonical
+model retirement. It remains a selected-view oracle, not whole-root proof.

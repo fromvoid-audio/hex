@@ -104,7 +104,7 @@ impl hex_lattice::OwnedProcessorRuntime for OwnedPcm {
         self
     }
 }
-fn owner() -> Option<(DeviceResourceBank, Vec<AssetId>)> {
+pub(super) fn owner() -> Option<(DeviceResourceBank, Vec<AssetId>)> {
     let ids = tests::ids();
     let bank = tests::bank(&ids)?;
     let catalog = DeviceResourceCatalog::prepare_on_control(
@@ -127,7 +127,7 @@ fn owner() -> Option<(DeviceResourceBank, Vec<AssetId>)> {
         ids,
     ))
 }
-fn scoped(
+pub(super) fn scoped(
     owner: &DeviceResourceBank,
     asset: AssetId,
     bypassed: bool,

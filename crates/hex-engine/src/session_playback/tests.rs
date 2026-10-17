@@ -2496,7 +2496,7 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
             .first()
             .expect("first handoff captures a release");
         for slot in 1..SESSION_TAIL_GROUP_CAPACITY {
-            active.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+            active.tail_groups[slot] = Some(crate::EffectRuntimeChain::empty());
             let mut grouped = release;
             grouped.location = ReleaseLocation::new(
                 grouped.location.track_index(),
@@ -4712,7 +4712,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
         .take()
         .expect("mutable release tail");
     let suffix_start = candidate.tail_suffix_starts[tail_slot];
-    candidate.tail_groups[stale_slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+    candidate.tail_groups[stale_slot] = Some(crate::EffectRuntimeChain::empty());
     candidate.tail_suffix_starts[stale_slot] = suffix_start;
     candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail {
         track_id,
@@ -5234,7 +5234,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
 
     // A full preallocated tail bank refuses before either graph is mutated.
     for slot in &mut candidate.tail_groups {
-        *slot = Some(hex_lattice::NativeRuntimeChain::empty());
+        *slot = Some(crate::EffectRuntimeChain::empty());
     }
     let previous_frame = previous.performance_frame;
     let previous_routes = previous.routes.clone();

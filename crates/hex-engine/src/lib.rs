@@ -15,6 +15,9 @@ pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
+mod effect_resources;
+pub(crate) use effect_resources::EffectRuntimeChain;
+pub use effect_resources::PreparedEffectInstance;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -797,7 +800,7 @@ pub struct Track {
     instrument_position: usize,
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
     ordered_suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    device_chain: std::sync::Arc<[crate::PreparedEffectInstance]>,
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -825,7 +828,7 @@ pub(crate) struct ReturnBus {
     pub gain: f32,
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
-    pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub device_chain: std::sync::Arc<[crate::PreparedEffectInstance]>,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -921,6 +924,21 @@ impl PreparedTrackMix {
 }
 
 impl Track {
+    /// Hidden unregistered ABI fixture over the ACTUAL prepared effect source
+    /// field and normal Renderer/Session runtime constructors. No native graph
+    /// or resource registry admission is granted by this test-only seam.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn with_test_effect_scopes_on_control(
+        mut self,
+        effects: Vec<PreparedEffectInstance>,
+    ) -> Result<Self, Invalid> {
+        if effects.len() > hex_project::MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("test effect chain exceeds model bound"));
+        }
+        self.device_chain = Arc::from(effects);
+        Ok(self)
+    }
     /// Overlapping clips are summed in this prototype; Live overlap semantics are unverified.
     pub fn new(clips: Vec<Clip>, gain: f32, muted: bool) -> Result<Self, Invalid> {
         Self::with_balance(clips, gain, muted, 0.0)
@@ -970,7 +988,7 @@ impl Track {
         effects: Option<hex_lattice::StereoMatrix>,
         ordered_prefix: Option<hex_lattice::StereoMatrix>,
         ordered_suffix: Option<hex_lattice::StereoMatrix>,
-        device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
+        device_chain: Vec<crate::PreparedEffectInstance>,
     ) -> Result<Self, Invalid> {
         let stateful = !device_chain.is_empty();
         let ordered = instrument_position != 0;
@@ -1084,19 +1102,13 @@ impl Track {
 
     pub(crate) fn new_device_runtime(
         &self,
-    ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
-        let mut instances = Vec::new();
-        instances
-            .try_reserve_exact(self.device_chain.len())
-            .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
-        instances.extend(self.device_chain.iter().cloned());
-        hex_lattice::NativeRuntimeChain::new_prepared(instances)
+    ) -> Result<crate::EffectRuntimeChain, hex_lattice_contract::DeviceContractError> {
+        let instances = crate::effect_resources::clone_prepared_on_control(&self.device_chain)?;
+        crate::EffectRuntimeChain::new_prepared(instances)
     }
 
     pub(crate) fn device_runtime_storage_preflight_bytes(&self) -> Option<usize> {
-        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
-            &self.device_chain,
-        )
+        crate::EffectRuntimeChain::declared_storage_preflight_bytes_for_scoped(&self.device_chain)
     }
 
     pub(crate) fn with_sends(mut self, sends: Vec<CompiledSend>) -> Self {
@@ -2166,8 +2178,8 @@ impl PreparedMasterGain {
 }
 
 pub(crate) struct RendererRuntime {
-    device_chains: Vec<hex_lattice::NativeRuntimeChain>,
-    return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    device_chains: Vec<crate::EffectRuntimeChain>,
+    return_chains: Vec<crate::EffectRuntimeChain>,
     return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
     compensation: Option<signal_graph::SignalRuntime>,
@@ -2218,19 +2230,22 @@ impl RendererRuntime {
                 runtime_error = Some("return runtime allocation failed");
             } else {
                 for bus in &project.return_buses {
-                    let mut instances = Vec::new();
-                    if instances.try_reserve_exact(bus.device_chain.len()).is_err() {
-                        runtime_error = Some("return device allocation failed");
-                        return Self {
-                            device_chains,
-                            return_chains,
-                            return_scratch,
-                            runtime_error,
-                            compensation,
+                    let instances =
+                        match crate::effect_resources::clone_prepared_on_control(&bus.device_chain)
+                        {
+                            Ok(instances) => instances,
+                            Err(_) => {
+                                runtime_error = Some("return device allocation failed");
+                                return Self {
+                                    device_chains,
+                                    return_chains,
+                                    return_scratch,
+                                    runtime_error,
+                                    compensation,
+                                };
+                            }
                         };
-                    }
-                    instances.extend(bus.device_chain.iter().cloned());
-                    match hex_lattice::NativeRuntimeChain::new_prepared(instances) {
+                    match crate::EffectRuntimeChain::new_prepared(instances) {
                         Ok(chain) => {
                             return_chains.push(chain);
                             return_scratch.push([[0.0; 2]; 256]);
@@ -2383,11 +2398,11 @@ impl RendererRuntime {
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.device_chains
             .iter()
-            .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+            .any(crate::EffectRuntimeChain::has_stateful_processors)
             || self
                 .return_chains
                 .iter()
-                .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+                .any(crate::EffectRuntimeChain::has_stateful_processors)
     }
 
     pub(crate) fn can_inherit_from(

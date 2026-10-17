@@ -656,7 +656,7 @@ struct CompiledEffectPlan {
     fused: Option<hex_lattice::StereoMatrix>,
     prefix: Option<hex_lattice::StereoMatrix>,
     suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
+    device_chain: Vec<crate::PreparedEffectInstance>,
 }
 
 fn compile_device_effects(
@@ -714,16 +714,19 @@ fn compile_effect_devices(
                 .then(trim)
                 .map_err(|error| Invalid(error.0))?;
         }
-        devices.push(hex_lattice::PreparedRuntimeInstance {
-            meter: Default::default(),
-            owner,
-            device_id: device.id().value(),
-            device_type: migrated.type_id(),
-            matrix: prepared,
-            bypassed: device.bypassed(),
-            sample_rate,
-            configuration: Some(std::sync::Arc::new(migrated)),
-            definition: processor,
+        devices.push(crate::PreparedEffectInstance {
+            instance: hex_lattice::PreparedRuntimeInstance {
+                meter: Default::default(),
+                owner,
+                device_id: device.id().value(),
+                device_type: migrated.type_id(),
+                matrix: prepared,
+                bypassed: device.bypassed(),
+                sample_rate,
+                configuration: Some(std::sync::Arc::new(migrated)),
+                definition: processor,
+            },
+            resources: None,
         });
     }
     Ok(CompiledEffectPlan {

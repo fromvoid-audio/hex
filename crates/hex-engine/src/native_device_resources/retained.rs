@@ -387,6 +387,14 @@ impl DeviceResourceBank {
             .map_err(|refusal| refusal.reason)
     }
 }
+impl std::fmt::Debug for DeviceResourceConfiguration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeviceResourceConfiguration")
+            .field("bindings", &self.len())
+            .finish_non_exhaustive()
+    }
+}
 impl DeviceResourceConfiguration {
     /// Quote this physical alias header before taking another owning handle.
     /// Keep and retire the resulting handle through the host's existing paths.

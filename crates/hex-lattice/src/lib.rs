@@ -500,6 +500,15 @@ impl NativeRuntimeEntryStorage<'_, NoDeviceResourceScope> {
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
         self.matches_runtime_metadata(prepared)
     }
+}
+impl<R: HostDeviceResourceScope> NativeRuntimeEntryStorage<'_, Option<R>> {
+    /// Only an ACTUALLY absent host scope can match the asset-free constructor.
+    /// Some(empty) remains owning storage even when it returns no PCM views.
+    pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
+        self.entry.resources.is_none() && self.matches_runtime_metadata(prepared)
+    }
+}
+impl<R: HostDeviceResourceScope> NativeRuntimeEntryStorage<'_, R> {
     fn matches_runtime_metadata(&self, prepared: &PreparedRuntimeInstance) -> bool {
         self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
@@ -512,6 +521,8 @@ impl NativeRuntimeEntryStorage<'_, NoDeviceResourceScope> {
                 _ => false,
             }
     }
+}
+impl NativeRuntimeEntryStorage<'_, NoDeviceResourceScope> {
     /// Compare against an already borrowed prepared owner. The view never
     /// returns or clones either shared owning field.
     pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {

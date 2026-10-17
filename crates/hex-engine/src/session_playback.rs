@@ -328,14 +328,14 @@ pub struct SessionPlayback {
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
-    device_chains: Vec<hex_lattice::NativeRuntimeChain>,
-    return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    device_chains: Vec<crate::EffectRuntimeChain>,
+    return_chains: Vec<crate::EffectRuntimeChain>,
     return_scratch: Vec<[Frame; 256]>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
-    tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    tail_groups: Vec<Option<crate::EffectRuntimeChain>>,
     // Immutable original ownership, including effect-only suffixes. Inline
     // slots are charged by size_of::<Self>() in actual and paired preflight.
     tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
@@ -487,7 +487,7 @@ impl SessionPlayback {
     }
     #[cfg(test)]
     pub(crate) fn test_populate_unsupported_tail(&mut self) {
-        self.tail_groups[0] = Some(hex_lattice::NativeRuntimeChain::empty());
+        self.tail_groups[0] = Some(crate::EffectRuntimeChain::empty());
     }
     /// Constructor-bound inventory of independently movable runtime owner
     /// locations, adapted from original177 owner_groups.rs. No callback visitor
@@ -986,13 +986,10 @@ impl SessionPlayback {
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         for bus in return_buses {
-            let mut instances = Vec::new();
-            instances
-                .try_reserve_exact(bus.device_chain.len())
+            let instances = crate::effect_resources::clone_prepared_on_control(&bus.device_chain)
                 .map_err(|_| SessionPlaybackError::Allocation)?;
-            instances.extend(bus.device_chain.iter().cloned());
             return_chains.push(
-                hex_lattice::NativeRuntimeChain::new_prepared(instances)
+                crate::EffectRuntimeChain::new_prepared(instances)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
             );
             return_scratch.push([[0.0; 2]; 256]);

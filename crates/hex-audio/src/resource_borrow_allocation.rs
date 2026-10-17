@@ -540,7 +540,7 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
         configuration(ids[0].value()),
     )
     .unwrap();
-    let effect = |id| {
+    let prepared_effect = |id| {
         let state = state
             .clone()
             .with_asset_references(vec![DeviceAssetReference {
@@ -561,27 +561,58 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
             0,
         )
         .unwrap();
-        hex_lattice::NativeRuntimeChain::new_prepared(vec![
-            hex_lattice::PreparedScopedRuntimeInstance {
-                resources,
-                instance: hex_lattice::PreparedRuntimeInstance {
-                    meter: std::sync::Arc::new(hex_lattice::DeviceMeter::default()),
-                    owner: hex_lattice::ProcessorChainOwner::Track(1),
-                    device_id: 1,
-                    device_type: state.type_id(),
-                    matrix: hex_lattice::StereoMatrix::identity(),
-                    bypassed: false,
-                    sample_rate: 44_100,
-                    configuration: Some(std::sync::Arc::new(state)),
-                    definition: Some(hex_lattice::PreparedProcessorFactory::Legacy(
-                        std::sync::Arc::new(ScopedPcmEffect(prepared)),
-                    )),
-                },
+        hex_lattice::PreparedScopedRuntimeInstance {
+            resources,
+            instance: hex_lattice::PreparedRuntimeInstance {
+                meter: std::sync::Arc::new(hex_lattice::DeviceMeter::default()),
+                owner: hex_lattice::ProcessorChainOwner::Track(1),
+                device_id: 1,
+                device_type: state.type_id(),
+                matrix: hex_lattice::StereoMatrix::identity(),
+                bypassed: false,
+                sample_rate: 44_100,
+                configuration: Some(std::sync::Arc::new(state)),
+                definition: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                    std::sync::Arc::new(ScopedPcmEffect(prepared)),
+                )),
             },
-        ])
-        .unwrap()
+        }
     };
+    let effect =
+        |id| hex_lattice::NativeRuntimeChain::new_prepared(vec![prepared_effect(id)]).unwrap();
     let mut effects = [effect(ids[0].value()), effect(ids[1].value())];
+    let renderer_project = |id| {
+        let prepared = prepared_effect(id);
+        let track = hex_engine::Track::new(
+            vec![
+                hex_engine::Clip::new(
+                    hex_engine::Audio::new(44_100, vec![[1.0; 2]; 64]).unwrap(),
+                    0,
+                    64,
+                    false,
+                )
+                .unwrap(),
+            ],
+            1.0,
+            false,
+        )
+        .unwrap()
+        .with_test_effect_scopes_on_control(vec![hex_engine::PreparedEffectInstance {
+            instance: prepared.instance,
+            resources: Some(prepared.resources),
+        }])
+        .unwrap();
+        hex_engine::Project::new(44_100, vec![track]).unwrap()
+    };
+    let renderer_projects = [
+        renderer_project(ids[0].value()),
+        renderer_project(ids[1].value()),
+    ];
+    let mut renderers = renderer_projects.each_ref().map(hex_engine::Renderer::new);
+    for renderer in &mut renderers {
+        renderer.play();
+    }
+
     let mutable = |id| {
         let state = state
             .clone()
@@ -662,6 +693,37 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
         (0, 0, 0, 0)
     );
     assert_eq!(effect_sum, [1536.0, -1024.0]);
+    // Actual prepared Track -> RendererRuntime -> paired entry scope path.
+    // Source bank is already retired; each original is still held by its real
+    // prepared source and runtime fields. This unregistered fixture grants no
+    // native graph admission and does not copy original resource PCM.
+    let mut renderer_sum = [0.0_f32; 2];
+    let mut rendered = [[0.0_f32; 2]; 64];
+    let measured = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            for (index, renderer) in renderers.iter_mut().enumerate() {
+                renderer.seek(0);
+                for block in rendered.chunks_mut(17) {
+                    renderer.render(block).unwrap();
+                }
+                for frame in rendered {
+                    assert_eq!(frame, if index == 0 { [0.25; 2] } else { [0.5, -0.75] });
+                    renderer_sum[0] += frame[0];
+                    renderer_sum[1] += frame[1];
+                }
+            }
+        }
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(renderer_sum, [1536.0, -1024.0]);
     let mut sum = [0.0_f32; 2];
     let measurement = allocation_counter::measure(|| {
         for _ in 0..32 {

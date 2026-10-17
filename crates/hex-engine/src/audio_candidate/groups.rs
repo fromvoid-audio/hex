@@ -55,7 +55,7 @@ impl<'a> Transfer<'a> {
         &mut self,
         source: Location,
         destination: Location,
-        actual_chain: &hex_lattice::NativeRuntimeChain,
+        actual_chain: &crate::EffectRuntimeChain,
     ) -> Result<(), crate::SessionPlaybackError> {
         let invalid = crate::SessionPlaybackError::ReleaseBankFull;
         let source = self
@@ -89,6 +89,9 @@ impl<'a> Transfer<'a> {
         let view = actual_chain.storage_view();
         let mut bytes = view.entry_capacity_bytes().ok_or(invalid)?;
         for entry in view.entries() {
+            if entry.host_resources().is_some() {
+                return Err(invalid);
+            }
             match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
                 (Some(a), Some(b))
                     if entry

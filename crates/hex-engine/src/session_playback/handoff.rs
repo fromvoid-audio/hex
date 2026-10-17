@@ -2,7 +2,7 @@ use super::*;
 use crate::MidiTiming;
 
 fn validate_tail_suffix(
-    chain: &hex_lattice::NativeRuntimeChain,
+    chain: &crate::EffectRuntimeChain,
     suffix_start: usize,
     sample_rate: u32,
 ) -> Result<usize, SessionPlaybackError> {
@@ -22,7 +22,7 @@ fn validate_tail_suffix(
 }
 
 fn tail_runtime_suffix_start(
-    chain: &hex_lattice::NativeRuntimeChain,
+    chain: &crate::EffectRuntimeChain,
     instrument_position: usize,
 ) -> Result<usize, SessionPlaybackError> {
     if chain.is_empty() {
@@ -2880,7 +2880,7 @@ impl SessionPlayback {
             {
                 *candidate = Some(std::mem::replace(
                     old_chain,
-                    hex_lattice::NativeRuntimeChain::empty(),
+                    crate::EffectRuntimeChain::empty(),
                 ));
                 self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
                 if let (Some(active), Some(prepared_active)) = (

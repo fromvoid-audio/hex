@@ -345,3 +345,53 @@ fn actual_session_routed_and_cached_prepared_fields_are_all_required_then_retire
     assert_eq!(ledger.shared_resource_counts(), (1, 2));
     assert_eq!(ledger.summary().unwrap().data_allocations, 2);
 }
+#[test]
+fn actual_mutable_arrangement_descriptor_requires_its_source_alias_and_retains_it_after_model_retirement()
+ {
+    if !native_layout_known() {
+        return;
+    }
+    let (mut project, id) = project();
+    add(&mut project, id, 60);
+    let device = project.tracks()[0].instrument().unwrap().id();
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let state = registry
+        .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)
+        .unwrap();
+    let state = registry
+        .patch_parameter(
+            &state,
+            hex_devices::operator_state::harmonic_parameter(1, 2),
+            hex_lattice_contract::ParameterValue::Float(0.25),
+        )
+        .unwrap();
+    edit(&mut project, Command::ReplaceDeviceState { device, state });
+    let revision = crate::PreparedRevision::prepare(
+        &project,
+        &std::collections::BTreeMap::new(),
+        Arc::new(crate::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    assert!(revision.arrangement().tracks()[0].has_mutable_instrument());
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+    ledger
+        .borrow_project_midi_sources_on_control(&project)
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err()); // actual descriptor alias is omitted
+    ledger
+        .borrow_revision_midi_sources_on_control(&revision)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    assert_eq!(ledger.shared_resource_counts(), (1, 2));
+    assert_eq!(ledger.summary().unwrap().data_allocations, 2);
+    drop(ledger);
+    drop(project);
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
+    ledger
+        .borrow_revision_midi_sources_on_control(&revision)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    assert_eq!(ledger.shared_resource_counts(), (1, 1));
+    assert_eq!(ledger.summary().unwrap().data_allocations, 2);
+}

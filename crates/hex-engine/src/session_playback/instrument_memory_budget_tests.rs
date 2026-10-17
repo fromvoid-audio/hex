@@ -116,7 +116,7 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
             let mut donor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
             donor.apply(SessionPlaybackCommand::Play).unwrap();
             render_checkpoint_prefix(&mut donor, 1);
-            previous.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+            previous.tail_groups[slot] = Some(crate::EffectRuntimeChain::empty());
             previous.tail_suffix_starts[slot] = 0;
             previous.tail_mutable_instruments[slot] =
                 Some(crate::mutable_instrument::MutableInstrumentTail {

@@ -1,7 +1,7 @@
 use super::*;
 use hex_lattice::{
-    NativeProcessorRuntime, NativeRuntimeChain, OutputTail, PreparedNativeProcessor,
-    PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+    NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, PreparedProcessorInstance,
+    ProcessorChainOwner, StereoMatrix,
 };
 use hex_lattice_contract::DeviceTypeId;
 use std::any::Any;
@@ -73,8 +73,8 @@ impl NativeProcessorRuntime for HoldRuntime {
         self
     }
 }
-fn chain(entries: usize, bounds: &[u64]) -> NativeRuntimeChain {
-    let mut chain = NativeRuntimeChain::new(
+fn chain(entries: usize, bounds: &[u64]) -> crate::EffectRuntimeChain {
+    let mut chain = crate::effect_resources::new_legacy(
         (0..entries)
             .map(|index| PreparedProcessorInstance {
                 meter: Default::default(),
