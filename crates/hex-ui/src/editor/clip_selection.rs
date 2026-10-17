@@ -105,6 +105,13 @@ impl EditorView {
                 .reconcile(&state.project, self.project_generation, state.revision);
         }
     }
+    pub(super) fn clip_is_selected(&self, clip: ClipId) -> bool {
+        self.selected_clip == Some(clip)
+            || self.selected_clip.is_some_and(|primary| {
+                self.clip_selection.members.contains(&primary)
+                    && self.clip_selection.members.contains(&clip)
+            })
+    }
     pub(super) fn selected_clip_ids(&self) -> Vec<ClipId> {
         let Some(primary) = self.selected_clip else {
             return Vec::new();

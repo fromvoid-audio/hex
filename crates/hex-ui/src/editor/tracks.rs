@@ -960,7 +960,7 @@ impl EditorView {
             if clip.start() >= viewport_end || end <= viewport.start {
                 continue;
             }
-            let selected_clip = self.selected_clip() == Some(clip.id());
+            let selected_clip = self.clip_is_selected(clip.id());
             if clip_intersects_exclusions(clip, exclusions) {
                 for fragment in clip_fragments_outside(clip, exclusions, state.project.tempo_map())
                     .into_iter()
@@ -1041,7 +1041,7 @@ impl EditorView {
                 }
                 continue;
             }
-            let selected_clip = self.selected_clip() == Some(clip.id());
+            let selected_clip = self.clip_is_selected(clip.id());
             let left = start.max(viewport.start).saturating_sub(viewport.start) as f64
                 / viewport.length as f64;
             let width = end
