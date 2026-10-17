@@ -5059,3 +5059,11 @@ input acceptance remain pending; no installed app changes.
   full local CI is recorded in PR336/Pulse2720, not inferred from focused tests.
 - Native optimized physical input, listening and current-format save/reopen remain
   open; bounded checklist: docs/project-tempo-input.md. No app change by cloud.
+
+After integrating merged373/main in389, the3bank tests and2callback probes
+pass unchanged. Joint engine+audio all-target Clippy with allocation-probe
+exposed an inherited non-exhaustive Expression match in the feature-gated
+playback-stack example. The note-only fixture now explicitly refuses controller
+events during preflight. Its focused regression passes; the same joint strict
+Clippy command now passes. The negative compiler log is retained. This repairs
+a verification fixture and adds no sampler/controller playback behavior.
