@@ -37,8 +37,9 @@ callback reopens only the same installed entity, fence epoch, generation and
 owner. Retirement invalidates the epoch; refused finalization neither fences nor
 accepts the local draft. This uses GPUI's existing FIFO effect delivery, with no
 new host request queue or public widget event token. The rendered same-update
-no-op drag regression reproduces reopening before this repair; the repaired
-candidate still requires its positive run and the later-drag check.
+no-op drag regression reproduces reopening before this repair. At exact
+e009db34 the six focused host tests pass, including the no-op finalization and
+later genuine drag. Final integrated full local CI remains required.
 
 Canonical, preview and pending values retain their existing separate meaning;
 widget display is not audio-applied evidence. Compound EQ/Operator graph edits,

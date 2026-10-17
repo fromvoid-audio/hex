@@ -4327,3 +4327,8 @@ emitter tests pass. Exacte1abd20a adds a local successful-finish delivery fence;
 independent source review finds no actionable issue. Its positive/later-drag
 checks remain pending while W04 final CI owns the native cache. No GPUI or
 other dependency patch was required; the existing dispatch_input seam is used.
+
+W06 positive ordering proof: exacte009db34 passes all six focused host binding
+tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
+drag stays finalized and a later real drag works. Final integration/review/full
+local CI and broader W06 deliverables remain pending; no native result claimed.
