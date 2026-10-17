@@ -2420,6 +2420,38 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
     });
+    // A real second mouse-down with a valid target track must never import.
+    editor.update(visual, |view, _| view.selected_track = Some(track));
+    for auto in [true, false] {
+        editor.update(visual, |view, _| view.browser.auto_audition = auto);
+        let (before, state) = editor.read_with(visual, |view, _| {
+            (
+                view.browser.playback_generation,
+                view.state.clone().unwrap(),
+            )
+        });
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: row.center(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+        editor.read_with(visual, |view, _| {
+            assert_eq!(view.browser.playback_generation, before + u64::from(auto));
+            assert!(
+                view.pending_requests.is_empty(),
+                "double-click cannot enqueue import"
+            );
+            assert!(view.last_enqueued_import_to_track.is_none());
+            assert!(view.last_enqueued_import_to_new_track.is_none());
+            assert!(view.pending_audio_commands.is_empty());
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &state));
+            assert!(view.browser.results_focused);
+        });
+    }
+    editor.update(visual, |view, _| view.browser.auto_audition = true);
     let contexts = visual
         .update_window(handle, |_, window, cx| {
             let view = editor.read(cx);
@@ -2434,7 +2466,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     assert!(contexts.2, "{contexts:?}");
     visual.simulate_keystrokes("right");
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser.playback_generation, 2, "{contexts:?}");
+        assert_eq!(view.browser.playback_generation, 3, "{contexts:?}");
         assert!(view.pending_requests.is_empty());
     });
     // Clicking search restores text focus. Left/right then insert at the
@@ -2445,7 +2477,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     visual.simulate_keystrokes("right l o left right o");
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).content, "loo");
-        assert_eq!(view.browser.playback_generation, 2);
+        assert_eq!(view.browser.playback_generation, 3);
     });
     std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(visual, |view, cx| {
@@ -2459,14 +2491,14 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     visual.simulate_keystrokes("down right up right");
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.selected_index, 0);
-        assert_eq!(view.browser.playback_generation, 4);
+        assert_eq!(view.browser.playback_generation, 5);
         assert!(view.pending_requests.is_empty());
     });
     // Enter keeps the existing explicit import path.
     editor.update(visual, |view, _| view.selected_track = Some(track));
     visual.simulate_keystrokes("enter");
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser.playback_generation, 4);
+        assert_eq!(view.browser.playback_generation, 5);
         let (imported_path, imported_track, _, _) = view
             .last_enqueued_import_to_track
             .as_ref()

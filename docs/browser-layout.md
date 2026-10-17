@@ -92,3 +92,10 @@ render/evict/reprepare/notify cycle that could flash preparing and repaint the
 whole editor. Headless input checks retain canonical project identity, surrounding
 lane geometry/background and selected metadata across hover/selection. Native
 temporal paint acceptance remains separate; no generic GPUI patch is inferred.
+
+
+Sample-result double-click (Pulse2780 / PR386) selects/auditions according to the
+automatic audition preference and consumes its second-click bubble. It cannot
+import into a track/Session cell or create history. Enter and deliberate drag/drop
+remain explicit import routes; device, project and directory double-click retain
+their own handlers. Manual waveform/Play/Stop controls are independent.

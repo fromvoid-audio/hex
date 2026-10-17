@@ -1884,7 +1884,11 @@ impl EditorView {
                             EntryKind::Directory => {
                                 view.request_browser_scan(click_path.clone(), cx)
                             }
-                            EntryKind::WaveAudio => view.import_browser_audio(click_path.clone()),
+                            EntryKind::WaveAudio => {
+                                // Sample double-click remains selection/audition.
+                                // Import is an explicit Enter or drag/drop action.
+                                cx.stop_propagation();
+                            }
                             EntryKind::Project => view.open_browser_project(click_path.clone(), cx),
                         }
                     }
