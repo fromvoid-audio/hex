@@ -135,6 +135,7 @@ impl Render for ClipContents {
 impl EditorView {
     fn clip_content_cache_allowed(&self) -> bool {
         self.clip_name_edit.is_none()
+            && !self.track_name.is_editing()
             && !self.edit_pending()
             && !self.opening_project
             && !self.close_prompt_open

@@ -98,6 +98,7 @@ mod track_keyboard_ui_test;
 mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
+mod track_name;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -265,6 +266,9 @@ actions!(
         TrimRight,
         DeleteClip,
         RenameClip,
+        RenameTrack,
+        CommitTrackName,
+        CancelTrackName,
         CommitClipName,
         CancelClipName,
         CopyTimeSelection,
@@ -318,6 +322,7 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     clip_name::bind_keys(cx);
+    track_name::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -513,6 +518,7 @@ pub(super) struct EditorView {
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
     clip_name_edit: Option<clip_name::NameEdit>,
+    track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
@@ -892,6 +898,7 @@ impl EditorView {
             routing_page: 0,
             selected_clip: None,
             clip_name_edit: None,
+            track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
             selected_cell: None,
@@ -1082,6 +1089,7 @@ impl EditorView {
     }
 
     pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
+        let header_focused = self.track_header_focused(window);
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
         self.midi_hit_cycle = None;
@@ -1094,6 +1102,9 @@ impl EditorView {
         self.selected_clip = None;
         self.midi_selection.clear();
         self.update_track_selection_status();
+        if header_focused {
+            self.focus_track_header_after_navigation(track, window);
+        }
     }
 
     pub(super) fn toggle_play(&mut self) {

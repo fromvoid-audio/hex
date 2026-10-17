@@ -74,6 +74,14 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## inline track rename — pulse2768 / PR376, 17 october 2026
+
+Actual header focus routes Command-R to a compact inline name draft, Enter to
+canonical RenameTrack and Escape to cancellation. Clip rename remains focus
+specific; text/numeric inputs and track controls retain their behavior. Gesture
+eligibility protects active drafts. Source tests include rendered focus/keys,
+canonical single Undo/Redo and worker save/reopen; exact required checks and
+native acceptance are recorded in Pulse/PR.
 ## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
 
 Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
