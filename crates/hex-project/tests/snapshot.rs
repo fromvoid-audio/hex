@@ -46,6 +46,7 @@ fn valid_snapshot() -> Snapshot {
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: vec![
                     ClipSnapshot {
+                        name: "clip".into(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
@@ -59,6 +60,7 @@ fn valid_snapshot() -> Snapshot {
                         fade: hex_project::ClipFade::neutral(80).unwrap(),
                     },
                     ClipSnapshot {
+                        name: "clip".into(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 30,
@@ -212,6 +214,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let track = &mut clips.tracks[0];
     *track.audio_clips_mut().unwrap() = (0..=MAX_CLIPS)
         .map(|index| ClipSnapshot {
+            name: "clip".into(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id: 1_000 + index as u64,

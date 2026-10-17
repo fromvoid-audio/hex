@@ -6,6 +6,7 @@ is a separate versioned reference gate, not implied by implementing the feature.
 
 | Area | Current state | Next acceptance workflow |
 | --- | --- | --- |
+| Clip conversion | Clip View converts MIDI to a float WAV in place and audio to empty editable MIDI, with one-step history and Arrangement/Session identity; [limits and acceptance](clip-conversion.md) | Native conversion/listening/save-reopen checklist |
 | Hybrid tracks | Unified audio/MIDI collections under one track/mix; Arrangement source-sum, schema-13 roundtrip/history, Session switching, worker/UI and allocation checks pass | User native mixed-source import/edit/save/launch and listening acceptance |
 | Native desktop | GPUI shell, scrollable workspace | Resize, focus, accessible keyboard and controls |
 | Audio output | CPAL default output, visible error, source-integrated restart of the default output with stopped graph/cursor restore | Native failure/restart acceptance, device selection, disconnect recovery and long stress run |

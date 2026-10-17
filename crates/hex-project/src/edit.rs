@@ -15,6 +15,19 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Rename any Arrangement or Session clip by stable ID.
+    RenameClip {
+        clip: ClipId,
+        name: String,
+    },
+    /// Replace audio with an empty editable MIDI source, retaining clip identity.
+    ConvertAudioClipToMidi(ClipId),
+    /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
+    ConvertMidiClipToAudio {
+        clip: ClipId,
+        path: PathBuf,
+        frames: u64,
+    },
     /// One prepared history operation creates a normal hybrid track with a device.
     InsertTrackWithDevice {
         name: String,
@@ -879,6 +892,7 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        name: clip.name.clone(),
         gain: clip.gain,
         edit: clip.edit.clone(),
         id: clip.id,
@@ -950,6 +964,7 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        name: original.name.clone(),
         id: right_id,
         asset: original.asset,
         start: frame,
@@ -1144,6 +1159,12 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::ConvertAudioClipToMidi(clip) => {
+                crate::clip_conversion::audio_to_midi(self, clip)
+            }
+            Command::ConvertMidiClipToAudio { clip, path, frames } => {
+                crate::clip_conversion::midi_to_audio(self, clip, path, frames)
+            }
             Command::SpliceGainTouchBatch {
                 track,
                 expected_epoch,
@@ -1743,6 +1764,7 @@ impl Project {
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
             }
+            Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
                 self.track_mut(track)?.name = name;
@@ -1898,6 +1920,7 @@ impl Project {
                 let id = ClipId(self.allocate_id()?);
                 let fade = ClipFade::neutral(duration)?;
                 self.audio_clips_mut(track)?.push(Clip {
+                    name: "clip".into(),
                     id,
                     asset,
                     start,
@@ -2225,6 +2248,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    name: "clip".into(),
                     id,
                     asset,
                     start,
@@ -2286,6 +2310,7 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    name: "clip".into(),
                     id,
                     asset,
                     start,

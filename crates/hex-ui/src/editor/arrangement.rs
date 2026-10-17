@@ -397,6 +397,13 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if event.click_count == 2
+                                && view.begin_clip_paint(x, y, event.modifiers.platform)
+                            {
+                                view.focus.focus(window);
+                                cx.notify();
+                                return (true, false);
+                            }
                             let move_started = view.begin_main_time_range_move_gesture(x, y)
                                 || view.begin_time_range_move_gesture(x, y);
                             let started = if move_started {
@@ -437,6 +444,17 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                            if view.clip_paint_gesture.is_some() {
+                                let changed = if event.pressed_button == Some(MouseButton::Left) {
+                                    view.update_clip_paint(x, y, event.modifiers.platform)
+                                } else {
+                                    view.cancel_clip_paint()
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                                return (changed, false);
+                            }
                             let moving = view.time_range_move_gesture.is_some();
                             let changed =
                                 view.update_time_range_move_gesture(x, y, event.modifiers.platform)
@@ -466,6 +484,11 @@ impl EditorView {
                             let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
+                            if view.finish_clip_paint(x, y, event.modifiers.platform) {
+                                cx.stop_propagation();
+                                cx.notify();
+                                return (true, false);
+                            }
                             view.refresh_time_gesture_modifiers(
                                 event.modifiers.platform,
                                 event.modifiers.alt,

@@ -2,6 +2,12 @@
 
 ## Purpose
 
+Own the independently tested, borrowed-PCM [Sampler playback kernel](../../docs/sampler.md)
+for pitched stereo regions, loops, reverse, linear ADSR and manual slice selection.
+This is a standalone prerequisite; Sampler is not yet in the native catalog.
+Host device assets, panel, remaining Simpler functionality and measured reference
+agreement remain open under Pulse2679. No sample PCM is embedded in device state.
+
 Implement original native device DSP, including a linear stereo Utility processor,
 the stateless nonlinear [Saturator](../../docs/saturator.md),
 the stereo-linked [Compressor](../../docs/compressor.md),

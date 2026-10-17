@@ -194,6 +194,7 @@ fn invalid_boundary_splits_preserve_project_and_redo() {
 fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let clips: Vec<_> = (0..MAX_CLIPS)
         .map(|index| MidiClipSnapshot {
+            name: "clip".into(),
             id: 2 + index as u64,
             start_raw: 0,
             length_raw: beat(2).raw(),

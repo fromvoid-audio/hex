@@ -497,6 +497,9 @@ impl EditorView {
                     .opacity(0.035),
             );
         }
+        if let Some(preview) = self.clip_paint_overlay(track_id, viewport) {
+            clip_area = clip_area.child(preview);
+        }
         if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor) {
             clip_area = clip_area.children([selection]);
         }
@@ -1082,6 +1085,7 @@ impl EditorView {
                     }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
+            midi = midi.child(self.clip_name_header(clip.id(), clip.name()));
             clip_area = clip_area.children([midi]);
         }
         clip_area
@@ -1333,7 +1337,7 @@ impl EditorView {
                 }));
             content = content.children([move_surface]).children(trim_handles);
         }
-        content
+        content.child(self.clip_name_header(clip.id(), clip.name()))
     }
 
     fn drag_available(&self) -> bool {
