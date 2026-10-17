@@ -107,7 +107,7 @@ impl EditorView {
             Phase::Preparing | Phase::Playing
         );
         let preparing = self.browser.playback_phase == Phase::Preparing;
-        let auto = self.audition_control(
+        let toggle = self.audition_control(
             "browser-audition-auto",
             "a",
             if self.browser.auto_audition {
@@ -120,7 +120,7 @@ impl EditorView {
             cx,
         );
         let path = sample.as_ref().map(|entry| entry.path.clone());
-        let transport = self.audition_control(
+        let control = self.audition_control(
             "browser-audition-transport",
             if active { "■" } else { "▶" },
             if preparing {
@@ -218,8 +218,8 @@ impl EditorView {
             .items_center()
             .gap(px(2.0))
             .debug_selector(|| "browser-audition-row".to_owned())
-            .child(auto)
-            .child(transport)
+            .child(toggle)
+            .child(control)
             .child(waveform)
     }
 }
