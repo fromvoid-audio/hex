@@ -44,6 +44,14 @@ specific; text/numeric inputs and track controls retain their behavior. Gesture
 eligibility protects active drafts. Source tests include rendered focus/keys,
 canonical single Undo/Redo and worker save/reopen; exact required checks and
 native acceptance are recorded in Pulse/PR.
+## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
+
+Command-T binds the existing AddTrack action under editor/non-text focus.
+Rendered focus and keyboard regressions cover the editor, browser search,
+clip-name input and gain numeric draft; canonical Undo/Redo remains one edit.
+Required exact-source checks and native acceptance are recorded in Pulse/PR.
+Track layout resizing was delivered separately by launcher2714/PR330.
+
 
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
@@ -59,6 +67,19 @@ retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
+## sample bpm and shift edge stretching — pulse2781 / PR387, 17 october2026
+
+Authored original sample BPM, canonical affine edge stretch and metadata-only
+preview/release wiring are implemented in a separate follow-up. Five model/storage
+fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
+both-edge stationary Shift gesture checks pass; excessive stretch refuses project/history
+commit. Escape preview persistence was reproduced and repaired; active-window
+Escape/focus/deactivation and canceled re-entry checks pass. Final exact-source
+CI remains pending on the final projection candidate. Merged388 supplies
+ordinary trim visibility;387 adds accepted-peak changed-root projection for live
+Shift stretch. Stability2764/PR372 stays separate; final projection checks and
+coordinator-owned native acceptance remain pending. See docs/sample-bpm-stretch.md for behavior and
+finite coordinator-only native checklist. No Mac execution or app replacement.
 
 ## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
 
@@ -168,6 +189,20 @@ widths preserve shared styling; the strengthened font-shaped text-fit regression
 fails before and passes after, alongside all six rendered EQ tests. Full exact-source CI
 and optimized native visual/input acceptance remain required.
 See [layout contract](docs/eq.md#panel-layout).
+
+## focused eq Backspace — #2737 / PR348, 17 october 2026
+
+Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
+bindings. The owner reuses canonical stable-node removal and refuses automation
+point IDs, previews, pending/stale work and old project generations. Empty graph
+focus consumes the key; numeric/text siblings keep their own editing. A rendered
+regression fails before/passes after for removal with atomic automation cleanup,
+empty focus, Undo/Redo and current-format save/reopen identity state. All eight
+rendered EQ regressions and strict UI feature Clippy pass, including
+pending/numeric/automation-point isolation and held-pointer cancellation with
+real editor keybindings. Graph-scoped Escape preserves existing cancellation
+before ancestor editor actions. Full exact-source CI and optimized native input
+acceptance remain required.
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
