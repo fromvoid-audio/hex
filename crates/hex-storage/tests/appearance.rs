@@ -225,10 +225,11 @@ fn track_colors_and_both_clip_domains_roundtrip_with_history_and_copies() {
 fn schema26_defaults_and_strict_appearance_validation() {
     let (editor, _, _, _) = fixture();
     let value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
-    assert_eq!(value["version"], 30);
+    assert_eq!(value["version"], 31);
     let mut legacy = value.clone();
     legacy["version"] = json!(26);
     legacy.as_object_mut().unwrap().remove("tuning");
+    legacy.as_object_mut().unwrap().remove("device_assets");
     legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
     legacy.as_object_mut().unwrap().remove("track_colors");

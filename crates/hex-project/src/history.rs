@@ -64,6 +64,7 @@ impl Editor {
     ) -> Result<(Created, T), E> {
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
         let prepared = prepare(&self.project, &candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
@@ -97,6 +98,7 @@ impl Editor {
         for command in commands {
             results.push(candidate.apply(command)?);
         }
+        candidate.validate_device_asset_references()?;
         // Reserve before preparation/commit. No history allocation follows it.
         self.undo
             .try_reserve(1)

@@ -1,5 +1,11 @@
 # hex-project
 
+Neutral device asset references resolve against the existing project catalog
+before history commits and snapshot restoration. Device-only references prevent
+asset removal, and generic expected-state replacement retains atomic Undo/Redo.
+This is control-side identity validation, not PCM/resource admission. See
+[device assets](../../docs/device-assets.md).
+
 ## Purpose
 
 Canonical control-side arrangement: stable typed IDs, media references,

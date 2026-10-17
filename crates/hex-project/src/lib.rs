@@ -17,6 +17,7 @@ mod clip_copy;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
     default_instrument_state,
