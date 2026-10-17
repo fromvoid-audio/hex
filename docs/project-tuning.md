@@ -124,3 +124,27 @@ hosting claim follows from these source tests. Full exact-candidate local CI and
 focused PR review precede merge; later source changes require fresh evidence.
 The complete feature uses repository-owned optimized stable-path delivery with
 exact source/build/CI provenance and a finite user interaction/listening list.
+
+### Dedicated native reference audition
+
+The tuning window owns a transient reference-tone input independent of selected
+tracks and the project-tuning enable switch. Its root focus accepts the existing
+computer-keyboard piano mapping, with z/x octave and c/v velocity controls. Text
+and numeric focus do not play notes. Key release works after modifier changes;
+window deactivation, closing tuning, project replacement, Stop and retirement
+cancel the lease. A canceled lease cannot restart from autorepeat.
+
+The engine mixes a fixed-capacity PolyBLEP triangle/square/saw synthesizer after
+normal playback. It borrows prepared 128-key frequencies, preserves phase and
+envelopes through supported graph retargets, and refuses unsupported Nyquist or
+voice cases explicitly. This is a live monitor, excluded from offline export.
+Held/recent pitch-line highlights observe the synthesizer's actual held-key mask.
+Grouped tuning previews and their cancel/commit publications retain a matching
+keyboard/audition activation, and preparation refusal precedes canonical history
+commit. Opening or auditioning does not enable tuning or dirty the project.
+
+Cloud source evidence: the real desktop worker-to-audio bridge test rendered
+nonzero PCM without a selected track; the callback retarget test checked an
+independent waveform oracle with zero total/net callback allocations; GPUI tests
+covered root/numeric focus, modified key release and close cancellation. Native
+Mac listening, focus and physical deadline acceptance remain pending.

@@ -599,18 +599,24 @@ impl Session {
         let mut preview = Editor::new(self.project().clone(), 1)?;
         let media = self.media_bank();
         let table = self.sine_table();
-        let (_, prepared) = preview.execute_prepared(Command::SetTuning(tuning), |candidate| {
-            prepare_with_waveforms(
-                candidate,
-                &media,
-                Arc::clone(&table),
-                previous.map(|artifact| artifact.session().as_ref()),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-            )
-            .map(Arc::new)
-            .map_err(SessionError::from)
-        })?;
+        let (_, prepared) = preview.execute_prepared_transition(
+            Command::SetTuning(tuning),
+            |source, candidate| {
+                prepare_with_waveforms(
+                    candidate,
+                    &media,
+                    Arc::clone(&table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )
+                .and_then(|prepared| {
+                    tuning_prepared_transition(prepared, source, candidate, previous)
+                })
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )?;
         Ok((Arc::new(preview.project().clone()), prepared))
     }
 

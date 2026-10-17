@@ -4358,3 +4358,11 @@ Session admission until #2740 replaces that guard with verified pitch integratio
 Editor/library/audition (#2741) and desktop MTS publication (#2742) remain open;
 this prerequisite provides no native tuning feature or user-test build by itself.
 Targeted and exact final local validation results are retained on the canonical PR.
+
+- 2026-10-17: cloud5 continued canonical tuning editor PR352: grouped live
+  preview/commit/cancel preparation, root-relative octave-preserving snapping,
+  Shift-only repeat landmarks, and a dedicated phase-preserving reference
+  audition independent of track selection or project-wide tuning enable.
+  Real desktop worker/audio bridge, callback allocation/oracle and GPUI focus/
+  release/close tests pass. Native Mac acceptance remains coordinator-serial;
+  no app delivery or schema edits were performed by this continuation.

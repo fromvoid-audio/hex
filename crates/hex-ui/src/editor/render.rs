@@ -482,11 +482,17 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if !view.fade_key_down(event, window, cx) {
+                if !view.tuning_audition_down(event, window, cx)
+                    && !view.fade_key_down(event, window, cx)
+                {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                if view.tuning_audition_up(&event.keystroke.key) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
                 if event.keystroke.key == "f" && view.fade_key_held {
                     view.fade_key_held = false;
                     cx.notify();
@@ -519,10 +525,22 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
-            .on_action(cx.listener(|view, _: &super::OpenTuning, window, cx| {view.open_tuning(window,cx);}))
-            .on_action(cx.listener(|view, _: &super::CloseTuning, window, cx| {view.close_tuning(window,cx);}))
-            .on_action(cx.listener(|view, _: &super::CommitTuningName, window, cx| {view.commit_tuning_name(window,cx);}))
-            .on_action(cx.listener(|view, _: &super::CancelTuningName, window, cx| {view.cancel_tuning_name(window,cx);}))
+            .on_action(cx.listener(|view, _: &super::OpenTuning, window, cx| {
+                view.open_tuning(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CloseTuning, window, cx| {
+                view.close_tuning(window, cx);
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::CommitTuningName, window, cx| {
+                    view.commit_tuning_name(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &super::CancelTuningName, window, cx| {
+                    view.cancel_tuning_name(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::OpenSettings, window, cx| {
                 view.open_theme_settings(window, cx);
             }))

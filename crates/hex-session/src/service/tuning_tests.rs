@@ -133,3 +133,109 @@ fn control_preparation_refusal_preserves_canonical_history_and_keyboard_lease() 
     assert_eq!(refused.state.can_undo, added.state.can_undo);
     assert!(!input.is_cancelled());
 }
+
+#[test]
+fn grouped_previews_skip_cancel_and_commit_retarget_the_actual_keyboard_without_history_noise() {
+    use crate::tuning_gesture::{TuningGestureKey, TuningGestureRequest as Gesture};
+    let service = Service::new(48000, 16, 8_000_000).unwrap();
+    let _ = next(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "audible".into(),
+        }))
+        .unwrap();
+    let initial = next(&service);
+    let track = initial.state.project.tracks()[0].id();
+    let revision = initial.state.revision;
+    let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    service
+        .submit(Request::PrepareComputerKeyboard {
+            project_generation: 0,
+            revision,
+            request_id: 1,
+            track,
+            input: Arc::clone(&input),
+        })
+        .unwrap();
+    let mut actual = next(&service).playback.unwrap();
+    actual.render(&mut [[0.0; 2]; 777]).unwrap();
+    let neutral = 440.0 * 2.0_f64.powf((60.0 - 69.0) / 12.0);
+    let mut phase = neutral * 777.0 / 48000.0;
+    let key = TuningGestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::TuningGesture(Gesture::Begin { key }))
+        .unwrap();
+    assert!(next(&service).tuning_gesture_ack.unwrap().accepted);
+    service
+        .submit(Request::TuningGesture(Gesture::Change {
+            key,
+            sequence: 1,
+            tuning: tuning(333.0),
+        }))
+        .unwrap();
+    let skipped = next(&service);
+    assert_eq!(skipped.state.project, initial.state.project);
+    assert_eq!(skipped.state.revision, revision);
+    drop(skipped); // accepted worker preview is deliberately never installed
+    for (request, hz, committed) in [
+        (
+            Gesture::Change {
+                key,
+                sequence: 2,
+                tuning: tuning(196.0),
+            },
+            196.0,
+            false,
+        ),
+        (Gesture::Cancel { key }, neutral, false),
+    ] {
+        service.submit(Request::TuningGesture(request)).unwrap();
+        let event = next(&service);
+        assert!(event.tuning_gesture_ack.unwrap().accepted);
+        assert_eq!(event.state.revision, revision + u64::from(committed));
+        let mut candidate = event.playback.unwrap();
+        candidate.try_inherit_runtime_from(&mut actual).unwrap();
+        let mut output = [[0.0; 2]; 137];
+        candidate.render(&mut output).unwrap();
+        for (offset, frame) in output.iter().enumerate() {
+            let expected = (std::f64::consts::TAU * (phase + hz * offset as f64 / 48000.0)).sin()
+                * (100.0 / 127.0)
+                * 0.1;
+            assert!((f64::from(frame[0]) - expected).abs() < 0.000002);
+        }
+        phase += hz * 137.0 / 48000.0;
+        actual = candidate;
+        assert!(!input.is_cancelled());
+    }
+    let key = TuningGestureKey {
+        generation: 0,
+        token: 2,
+    };
+    service
+        .submit(Request::TuningGesture(Gesture::Begin { key }))
+        .unwrap();
+    let _ = next(&service);
+    service
+        .submit(Request::TuningGesture(Gesture::Commit {
+            key,
+            sequence: 1,
+            tuning: tuning(333.0),
+        }))
+        .unwrap();
+    let committed = next(&service);
+    assert!(committed.tuning_gesture_ack.unwrap().accepted);
+    assert_eq!(committed.state.revision, revision + 1);
+    let mut candidate = committed.playback.unwrap();
+    candidate.try_inherit_runtime_from(&mut actual).unwrap();
+    assert!(!input.is_cancelled());
+    service.submit(Request::Undo).unwrap();
+    let undone = next(&service);
+    assert_eq!(
+        undone.state.project, initial.state.project,
+        "whole gesture is exactly one undo"
+    );
+}

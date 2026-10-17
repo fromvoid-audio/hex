@@ -1302,6 +1302,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         error: Some("test rejection".to_owned()),
         request_complete: true,
         computer_keyboard_complete: None,
+        tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,

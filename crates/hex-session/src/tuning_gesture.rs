@@ -286,12 +286,24 @@ impl TuningGestureMachine {
         self.last_key = None;
     }
 
+    #[cfg(test)]
     pub fn handle(
         &mut self,
         session: &mut Session,
         request: TuningGestureRequest,
         previous: Option<&Arc<PreparedRevision>>,
         generation: u64,
+    ) -> TuningGestureOutcome {
+        self.handle_with(session, request, previous, generation, |_, _, _| Ok(()))
+    }
+
+    pub fn handle_with(
+        &mut self,
+        session: &mut Session,
+        request: TuningGestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        mut finish: impl FnMut(&Project, &Project, &Arc<PreparedRevision>) -> Result<(), SessionError>,
     ) -> TuningGestureOutcome {
         let mut outcome = TuningGestureOutcome {
             ack: TuningGestureAck {
@@ -309,7 +321,7 @@ impl TuningGestureMachine {
             outcome.ack.reason = Some("tuning gesture belongs to an old project".into());
             return outcome;
         }
-        let result = self.apply(session, request, previous, generation, &mut outcome);
+        let result = self.apply(session, request, previous, &mut outcome, &mut finish);
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
@@ -334,10 +346,11 @@ impl TuningGestureMachine {
         session: &mut Session,
         request: TuningGestureRequest,
         previous: Option<&Arc<PreparedRevision>>,
-        generation: u64,
         outcome: &mut TuningGestureOutcome,
+        finish: &mut impl FnMut(&Project, &Project, &Arc<PreparedRevision>) -> Result<(), SessionError>,
     ) -> Result<(), SessionError> {
         let key = request.key();
+        let generation = key.generation;
         match request {
             TuningGestureRequest::Begin { .. } => {
                 if self.active.is_some()
@@ -372,9 +385,10 @@ impl TuningGestureMachine {
                 }
                 if terminal {
                     let before = session.project().clone();
-                    let (_, prepared) = session.command_prepared_revision(
+                    let (_, (prepared, ())) = session.command_prepared_revision_with(
                         Command::SetTuning(tuning),
                         previous.map(Arc::as_ref),
+                        |source, target, prepared| finish(source, target, prepared),
                     )?;
                     outcome.canonical_changed = session.project() != &before;
                     outcome.playback = Some(prepared);
@@ -383,6 +397,7 @@ impl TuningGestureMachine {
                 } else {
                     let (project, prepared) =
                         session.preview_tuning(tuning, previous.map(Arc::as_ref))?;
+                    finish(session.project(), &project, &prepared)?;
                     if let Some(active) = self.active.as_mut() {
                         active.sequence = sequence;
                         active.tuning = tuning;
@@ -393,6 +408,9 @@ impl TuningGestureMachine {
             }
             TuningGestureRequest::Cancel { .. } => {
                 self.checked_active(session, key)?;
+                if let Some(prepared) = previous {
+                    finish(session.project(), session.project(), prepared)?;
+                }
                 self.active = None;
                 self.initial = None;
                 outcome.playback = previous.cloned();
@@ -464,14 +482,15 @@ impl TuningGestureMachine {
         }
     }
 
-    pub fn finish(
+    pub fn finish_with(
         &mut self,
         session: &mut Session,
         previous: Option<&Arc<PreparedRevision>>,
         generation: u64,
+        finish: impl FnMut(&Project, &Project, &Arc<PreparedRevision>) -> Result<(), SessionError>,
     ) -> Option<TuningGestureOutcome> {
         let active = self.active?;
-        Some(self.handle(
+        Some(self.handle_with(
             session,
             TuningGestureRequest::Commit {
                 key: active.key,
@@ -480,6 +499,7 @@ impl TuningGestureMachine {
             },
             previous,
             generation,
+            finish,
         ))
     }
 }
@@ -658,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_enabled_tuning_commit_refuses_without_changing_history() {
+    fn input_preparation_refusal_preserves_gesture_history_transaction() {
         let mut session = Session::new(48_000, 8, 0).unwrap();
         let previous = session.compile_prepared_revision(None).unwrap();
         let original = session.project().clone();
@@ -679,7 +699,7 @@ mod tests {
                 .accepted
         );
         let enabled = custom_disabled_tuning().with_enabled(true);
-        let outcome = machine.handle(
+        let outcome = machine.handle_with(
             &mut session,
             TuningGestureRequest::Commit {
                 key,
@@ -688,6 +708,10 @@ mod tests {
             },
             Some(&previous),
             3,
+            |_, target, _| {
+                assert!(target.tuning().enabled());
+                Err(SessionError::Invalid("input preparation refused"))
+            },
         );
         assert!(!outcome.ack.accepted);
         assert_eq!(session.project(), &original);

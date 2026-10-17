@@ -607,6 +607,7 @@ impl EditorView {
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_computer_keyboard();
+        visible_change |= self.tick_tuning_audition();
         visible_change |= self.tick_controller_input(cx);
         visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
@@ -1425,6 +1426,24 @@ impl EditorView {
             .is_some_and(|generation| self.recovery.generation() != Some(generation))
         {
             return None;
+        }
+        if let Some(input) = event.tuning_audition_complete.as_ref() {
+            let current = self.tuning.open
+                && input.project_generation == self.project_generation
+                && self
+                    .tuning
+                    .audition_input
+                    .as_ref()
+                    .is_some_and(|active| Arc::ptr_eq(active, input))
+                && !input.is_cancelled()
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.revision == event.state.revision);
+            if !current {
+                input.cancel();
+                return None;
+            }
         }
         if let Some(request_id) = event.computer_keyboard_complete {
             let current = self.computer_keyboard.enabled

@@ -103,6 +103,7 @@ pub struct Event {
     pub audio_batch_failure: Option<AudioBatchMemberFailure>,
     pub request_complete: bool,
     pub computer_keyboard_complete: Option<u64>,
+    pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
     /// Correlates one final batch result; contains metadata only, never PCM.
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
@@ -270,6 +271,11 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Dedicated reference tone, independent of selected-track instruments.
+    PrepareTuningAudition {
+        revision: u64,
+        input: Arc<hex_engine::tuning_audition::TuningAuditionInput>,
+    },
     PrepareLiveExpression {
         input: Arc<hex_engine::live_expression::LiveExpressionInput>,
         revision: u64,
@@ -1129,6 +1135,8 @@ fn run_worker(
     let mut keyboard_tuning_hint: Option<
         hex_engine::computer_keyboard::ComputerKeyboardTuningHint,
     > = None;
+    let mut audition_activation: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>> =
+        None;
     let mut live_expression: Option<Arc<hex_engine::live_expression::LiveExpressionInput>> = None;
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut device_gesture = GestureMachine::default();
@@ -1153,6 +1161,7 @@ fn run_worker(
                 audio_batch_failure: None,
                 request_complete: false,
                 computer_keyboard_complete: None,
+                tuning_audition_complete: None,
                 live_expression_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
@@ -1182,6 +1191,7 @@ fn run_worker(
             audio_batch_failure: None,
             request_complete: false,
             computer_keyboard_complete: None,
+            tuning_audition_complete: None,
             live_expression_complete: None,
             audio_batch_complete: None,
             save_complete: false,
@@ -1213,9 +1223,10 @@ fn run_worker(
 
     while let Some(request) = events.next_request(&requests) {
         let mut computer_keyboard_complete = None;
+        let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
-        let mut tuning_keyboard_publication = None;
+        let mut tuning_input_publication = None;
         let mut audio_batch_complete = None;
         let mut audio_batch_failure = None;
         let mut open_complete = false;
@@ -1288,10 +1299,24 @@ fn run_worker(
                     barrier_failure = outcome.ack.reason;
                     restore_prepared = outcome.playback;
                 }
-            } else if let Some(outcome) = tuning_gesture.finish(
+            } else if let Some(outcome) = tuning_gesture.finish_with(
                 &mut session,
                 compiled.as_ref().map(|(_, artifact)| artifact),
                 project_generation,
+                |source, target, prepared| {
+                    tuning_input_publication = prepare_tuning_input_publication(
+                        source,
+                        target,
+                        prepared,
+                        project_generation,
+                        revision,
+                        keyboard_activation.as_ref(),
+                        keyboard_tuning_hint.as_ref(),
+                        audition_activation.as_ref(),
+                        true,
+                    )?;
+                    Ok(())
+                },
             ) {
                 tuning_gesture_ack = Some(outcome.ack.clone());
                 gesture_protocol_ack = true;
@@ -1423,11 +1448,25 @@ fn run_worker(
                             canonical_changed: false,
                         }
                     } else {
-                        tuning_gesture.handle(
+                        tuning_gesture.handle_with(
                             &mut session,
                             gesture,
                             compiled.as_ref().map(|(_, artifact)| artifact),
                             project_generation,
+                            |source, target, prepared| {
+                                tuning_input_publication = prepare_tuning_input_publication(
+                                    source,
+                                    target,
+                                    prepared,
+                                    project_generation,
+                                    revision,
+                                    keyboard_activation.as_ref(),
+                                    keyboard_tuning_hint.as_ref(),
+                                    audition_activation.as_ref(),
+                                    true,
+                                )?;
+                                Ok(())
+                            },
                         )
                     };
                     tuning_gesture_ack = Some(outcome.ack.clone());
@@ -2207,7 +2246,7 @@ fn run_worker(
                         command,
                         compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                         |source, target, prepared| {
-                            let keyboard = prepare_tuning_keyboard_publication(
+                            let keyboard = prepare_tuning_input_publication(
                                 source,
                                 target,
                                 prepared,
@@ -2215,6 +2254,8 @@ fn run_worker(
                                 revision,
                                 keyboard_activation.as_ref(),
                                 keyboard_tuning_hint.as_ref(),
+                                audition_activation.as_ref(),
+                                false,
                             )?;
                             Ok((source != target, keyboard))
                         },
@@ -2222,7 +2263,7 @@ fn run_worker(
                         Ok((result, (prepared, (true, keyboard)))) => {
                             unsaved = true;
                             replacement_revision = Some(prepared);
-                            tuning_keyboard_publication = keyboard;
+                            tuning_input_publication = keyboard;
                             created = Some(result);
                             status = Some("edit committed".into());
                         }
@@ -2233,7 +2274,7 @@ fn run_worker(
                 Request::Undo => match session.undo_prepared_revision_with(
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     |source, target, prepared| {
-                        prepare_tuning_keyboard_publication(
+                        prepare_tuning_input_publication(
                             source,
                             target,
                             prepared,
@@ -2241,13 +2282,15 @@ fn run_worker(
                             revision,
                             keyboard_activation.as_ref(),
                             keyboard_tuning_hint.as_ref(),
+                            audition_activation.as_ref(),
+                            false,
                         )
                     },
                 ) {
                     Ok(Some((prepared, keyboard))) => {
                         unsaved = true;
                         replacement_revision = Some(prepared);
-                        tuning_keyboard_publication = keyboard;
+                        tuning_input_publication = keyboard;
                         status = Some("undo committed".into());
                     }
                     Ok(None) => status = Some("nothing to undo".into()),
@@ -2256,7 +2299,7 @@ fn run_worker(
                 Request::Redo => match session.redo_prepared_revision_with(
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     |source, target, prepared| {
-                        prepare_tuning_keyboard_publication(
+                        prepare_tuning_input_publication(
                             source,
                             target,
                             prepared,
@@ -2264,13 +2307,15 @@ fn run_worker(
                             revision,
                             keyboard_activation.as_ref(),
                             keyboard_tuning_hint.as_ref(),
+                            audition_activation.as_ref(),
+                            false,
                         )
                     },
                 ) {
                     Ok(Some((prepared, keyboard))) => {
                         unsaved = true;
                         replacement_revision = Some(prepared);
-                        tuning_keyboard_publication = keyboard;
+                        tuning_input_publication = keyboard;
                         status = Some("redo committed".into());
                     }
                     Ok(None) => status = Some("nothing to redo".into()),
@@ -2514,6 +2559,59 @@ fn run_worker(
                             Some("controller input requires a compiled project revision".into());
                     }
                 }
+                Request::PrepareTuningAudition {
+                    revision: expected_revision,
+                    input,
+                } => {
+                    tuning_audition_complete = Some(Arc::clone(&input));
+                    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        || expected_revision != revision
+                        || input.project_generation != project_generation
+                        || input.is_cancelled()
+                    {
+                        input.cancel();
+                        error = Some("tuning audition preparation is stale or unavailable".into());
+                    } else if let Some((_, canonical)) = compiled
+                        .as_ref()
+                        .filter(|(candidate, _)| *candidate == revision)
+                    {
+                        match project_source_for_runtime_input(
+                            &session,
+                            tuning_gesture.snapshot(),
+                            canonical,
+                        )
+                        .and_then(|(project, prepared, is_preview)| {
+                            let mut playback = native_playback(Arc::clone(&prepared));
+                            playback
+                                .prepare_tuning_audition(&project, Arc::clone(&input))
+                                .map_err(|error| error.to_string())?;
+                            Ok((project, prepared, playback, is_preview))
+                        }) {
+                            Ok((project, prepared, playback, is_preview)) => {
+                                if let Some(previous) =
+                                    audition_activation.replace(Arc::clone(&input))
+                                {
+                                    if !Arc::ptr_eq(&previous, &input) {
+                                        previous.cancel();
+                                    }
+                                }
+                                computer_keyboard_playback = Some(playback);
+                                if is_preview {
+                                    preview_project = Some(project);
+                                    preview_prepared = Some(prepared);
+                                }
+                                status = Some("tuning audition ready".into());
+                            }
+                            Err(reason) => {
+                                input.cancel();
+                                error = Some(reason);
+                            }
+                        }
+                    } else {
+                        input.cancel();
+                        error = Some("tuning audition requires a compiled project".into());
+                    }
+                }
                 Request::PrepareComputerKeyboard {
                     project_generation: generation,
                     revision: expected_revision,
@@ -2598,6 +2696,9 @@ fn run_worker(
         }
 
         if project_replaced {
+            if let Some(input) = audition_activation.take() {
+                input.cancel();
+            }
             range_clipboard = None;
             device_gesture.reset();
             tuning_gesture.reset();
@@ -2620,8 +2721,11 @@ fn run_worker(
         } else {
             None
         };
-        if let Some((playback, hint)) = tuning_keyboard_publication {
-            keyboard_tuning_hint = Some(hint);
+        if let Some((playback, hint)) = tuning_input_publication {
+            keyboard_tuning_hint = hint;
+            if keyboard_tuning_hint.is_none() {
+                keyboard_activation = None;
+            }
             if let Some((generation, prepared_revision, _, _)) = &mut keyboard_activation {
                 *generation = project_generation;
                 *prepared_revision = revision;
@@ -2722,9 +2826,7 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback_uses_preview = computer_keyboard_playback.is_none()
-            && canonical_prepared.is_none()
-            && preview_prepared.is_some();
+        let playback_uses_preview = canonical_prepared.is_none() && preview_prepared.is_some();
         let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
         } else if computer_keyboard_playback.is_some() {
@@ -2736,6 +2838,25 @@ fn run_worker(
         } else {
             restore_prepared.map(native_playback)
         };
+        if let (Some(candidate), Some(input)) = (
+            playback.as_mut(),
+            audition_activation
+                .as_ref()
+                .filter(|input| !input.is_cancelled()),
+        ) {
+            let project = if playback_uses_preview {
+                tuning_preview
+                    .as_ref()
+                    .map(|preview| preview.state.project.as_ref())
+                    .unwrap_or_else(|| session.project())
+            } else {
+                session.project()
+            };
+            if let Err(reason) = candidate.prepare_tuning_audition(project, Arc::clone(input)) {
+                error = Some(reason.to_string());
+                playback = None; // keep the previously installed runtime audible
+            }
+        }
         if let Some(input) = live_expression.as_ref() {
             if input.project_generation != project_generation {
                 input.cancel();
@@ -2769,6 +2890,7 @@ fn run_worker(
             error,
             request_complete: true,
             computer_keyboard_complete,
+            tuning_audition_complete,
             live_expression_complete,
             audio_batch_complete,
             audio_batch_failure,
@@ -7020,10 +7142,15 @@ mod service_tests {
 #[path = "service/controller_input_tests.rs"]
 mod controller_input_tests;
 
-#[allow(clippy::too_many_arguments)] // Exact worker generation/revision/lease tuple, borrowed before history commit.
-fn prepare_tuning_keyboard_publication(
-    source: &hex_project::Project,
-    target: &hex_project::Project,
+type TuningInputPublication = (
+    Playback,
+    Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>,
+);
+
+#[allow(clippy::too_many_arguments)] // One borrowed worker generation/revision/input tuple, inside history preparation.
+fn prepare_tuning_input_publication(
+    source: &Project,
+    target: &Project,
     prepared: &Arc<PreparedRevision>,
     generation: u64,
     revision: u64,
@@ -7034,35 +7161,41 @@ fn prepare_tuning_keyboard_publication(
         Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
     )>,
     hint: Option<&hex_engine::computer_keyboard::ComputerKeyboardTuningHint>,
-) -> Result<
-    Option<(
-        hex_engine::playback::Playback,
-        hex_engine::computer_keyboard::ComputerKeyboardTuningHint,
-    )>,
-    crate::SessionError,
-> {
-    if source.tuning() == target.tuning() || !source.same_except_tuning(target) {
+    audition: Option<&Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
+    allow_unchanged: bool,
+) -> Result<Option<TuningInputPublication>, crate::SessionError> {
+    let keyboard = activation.filter(|(old_generation, old_revision, _, input)| {
+        !input.is_cancelled()
+            && *old_generation == generation
+            && *old_revision == revision
+            && source.same_except_tuning(target)
+            && (allow_unchanged || source.tuning() != target.tuning())
+    });
+    let audition =
+        audition.filter(|input| input.project_generation == generation && !input.is_cancelled());
+    if keyboard.is_none() && audition.is_none() {
         return Ok(None);
     }
-    let Some((old_generation, old_revision, track, input)) =
-        activation.filter(|(_, _, _, input)| !input.is_cancelled())
-    else {
-        return Ok(None);
-    };
-    if *old_generation != generation || *old_revision != revision {
-        return Ok(None);
-    }
-    let hint = hint.ok_or(crate::SessionError::Invalid(
-        "computer keyboard tuning hint is missing",
-    ))?;
     let mut playback = native_playback(Arc::clone(prepared));
-    playback.prepare_computer_keyboard_for_tuning(target, *track, Arc::clone(input), hint)?;
-    let hint = playback
-        .computer_keyboard_tuning_hint()
-        .ok_or(crate::SessionError::Invalid(
-            "computer keyboard tuning hint was not prepared",
+    let next_hint = if let Some((_, _, track, input)) = keyboard {
+        let hint = hint.ok_or(crate::SessionError::Invalid(
+            "computer keyboard tuning hint is missing",
         ))?;
-    Ok(Some((playback, hint)))
+        playback.prepare_computer_keyboard_for_tuning(target, *track, Arc::clone(input), hint)?;
+        Some(
+            playback
+                .computer_keyboard_tuning_hint()
+                .ok_or(crate::SessionError::Invalid(
+                    "computer keyboard tuning hint was not prepared",
+                ))?,
+        )
+    } else {
+        None
+    };
+    if let Some(input) = audition {
+        playback.prepare_tuning_audition(target, Arc::clone(input))?;
+    }
+    Ok(Some((playback, next_hint)))
 }
 
 #[cfg(test)]

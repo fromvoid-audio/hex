@@ -207,10 +207,10 @@ impl EditorView {
         }
     }
     pub(super) fn tuning_library_panel(&self, cx: &mut Context<Self>) -> Div {
-        let mut panel = section("local presets · eight slots");
-        let mut slots = div().flex().gap_1();
+        let mut panel = tuning_section("local presets · eight slots");
+        let mut tuning_slots = div().flex().gap_1();
         for number in 1..=8 {
-            slots = slots.child(
+            tuning_slots = tuning_slots.child(
                 button(format!("{number}"), self.tuning.slot == number).on_click(cx.listener(
                     move |view, _, _, cx| {
                         view.tuning.slot = number;
@@ -220,13 +220,13 @@ impl EditorView {
                 )),
             );
         }
-        panel = panel.child(slots);
-        if let Some(input) = self.tuning.name.as_ref() {
+        panel = panel.child(tuning_slots);
+        if let Some(tuning_name_input) = self.tuning.name.as_ref() {
             panel = panel.child(
                 div()
                     .id("tuning-preset-name")
                     .key_context("hex_tuning_name hex_text_editing")
-                    .child(input.clone()),
+                    .child(tuning_name_input.clone()),
             );
         } else {
             panel = panel.child(theme::text(self.tuning_slot_name()));

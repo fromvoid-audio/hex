@@ -8,7 +8,7 @@ use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
     NativeDeviceState,
 };
-pub use hex_tuning::TuningTable;
+pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::DeviceMeter;
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,

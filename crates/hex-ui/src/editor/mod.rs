@@ -797,12 +797,16 @@ impl EditorView {
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
-                && entity.read(cx).computer_keyboard_accepts(
+                && (entity.read(cx).tuning_audition_accepts(
+                    &event.keystroke.key,
+                    event.keystroke.modifiers,
+                    window,
+                ) || entity.read(cx).computer_keyboard_accepts(
                     &event.keystroke.key,
                     event.keystroke.modifiers,
                     window,
                     cx,
-                )
+                ))
             {
                 cx.stop_propagation();
             }
@@ -834,6 +838,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;

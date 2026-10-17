@@ -121,6 +121,7 @@ pub(super) fn pitch(
     bounds: Bounds<Pixels>,
     s: Scale,
     selected: usize,
+    activity: [(bool, bool); 48],
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -135,9 +136,13 @@ pub(super) fn pitch(
         theme::PaletteRole::Border,
         1.0,
     );
-    for i in 0..s.count() {
+    for (i, activity) in activity.iter().copied().enumerate().take(s.count()) {
         let x = left + s.cents()[i] / s.period_cents() * width;
-        let role = if i == selected {
+        let role = if activity.0 {
+            theme::PaletteRole::Waveform
+        } else if activity.1 {
+            theme::PaletteRole::Secondary
+        } else if i == selected {
             theme::PaletteRole::Primary
         } else if i == s.root_degree() {
             theme::PaletteRole::Secondary
@@ -192,7 +197,9 @@ pub(super) fn palette(view: &EditorView, cx: &mut Context<EditorView>) -> Statef
             MouseButton::Left,
             cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                 let _ = window;
-                if view.tuning.analysis_pending || view.tuning.drag.is_some(){return;}
+                if view.tuning.analysis_pending || view.tuning.drag.is_some() {
+                    return;
+                }
                 // Pick against the exact painted geometry retained by canvas prepaint.
                 let Some(bounds) = view.tuning.palette_bounds else {
                     return;

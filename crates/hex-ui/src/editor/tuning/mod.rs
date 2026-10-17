@@ -1,6 +1,9 @@
 //! Native project-scale editor. The worker owns tuning edits and grouped history.
+mod audition;
 pub(super) mod library;
 mod plots;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod ui_tests;
 use super::EditorView;
 use crate::theme;
 use gpui::{
@@ -48,6 +51,11 @@ struct Drag {
 
 pub(super) struct TuningState {
     pub open: bool,
+    audition_keyboard: super::computer_keyboard::ComputerKeyboard,
+    pub(super) audition_input:
+        Option<std::sync::Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
+    held_keys: [u64; 2],
+    recent_keys: [Option<Instant>; 128],
     pub client: TuningGestureClient,
     pub(super) value: ProjectTuning,
     generation: u64,
@@ -95,6 +103,10 @@ impl TuningState {
         let value = ProjectTuning::default();
         Self {
             open: false,
+            audition_keyboard: super::computer_keyboard::ComputerKeyboard::default(),
+            audition_input: None,
+            held_keys: [0; 2],
+            recent_keys: [None; 128],
             client: TuningGestureClient::default(),
             value,
             generation: 0,
@@ -127,6 +139,14 @@ impl TuningState {
             deferred_library: None,
             deferred_dialog: None,
             slots: Vec::new(),
+        }
+    }
+}
+
+impl Drop for TuningState {
+    fn drop(&mut self) {
+        if let Some(input) = &self.audition_input {
+            input.cancel();
         }
     }
 }
@@ -251,6 +271,8 @@ impl Field {
 impl EditorView {
     pub(super) fn open_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tuning.open = true;
+        self.cancel_computer_keyboard();
+        self.tuning.audition_keyboard.enabled = true;
         self.tuning.shift = window.modifiers().shift;
         self.refresh_tuning_variations(cx);
         self.tuning.focus.focus(window);
@@ -259,6 +281,7 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn close_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_tuning_audition();
         let _ = self.tuning.client.cancel();
         self.tuning.drag = None;
         self.tuning.context = None;
@@ -289,6 +312,7 @@ impl EditorView {
             return;
         };
         if self.tuning.generation != self.project_generation {
+            self.cancel_tuning_audition();
             self.reset_tuning_controls(cx);
             self.tuning.client.reset();
             self.tuning.drag = None;
@@ -543,7 +567,8 @@ impl EditorView {
                 } else {
                     scale.set_degree_frequency(i, event.value);
                     if self.tuning.snap {
-                        let cents = snap_node_cents(scale.cents()[i], scale.cents()[scale.root_degree()]);
+                        let cents =
+                            snap_node_cents(scale.cents()[i], scale.cents()[scale.root_degree()]);
                         scale.move_degree(i, cents);
                     }
                     self.tuning.selected = i;
@@ -553,7 +578,9 @@ impl EditorView {
             Field::Cents(i) => {
                 let cents = if self.tuning.snap {
                     snap_node_cents(event.value as f32, scale.cents()[scale.root_degree()])
-                } else { event.value as f32 };
+                } else {
+                    event.value as f32
+                };
                 scale.move_degree(i, cents);
                 self.tuning.selected = i;
                 Ok(())
@@ -749,7 +776,9 @@ impl EditorView {
                 * speed;
         let cents = if self.tuning.snap {
             snap_node_cents(cents, s.cents()[s.root_degree()])
-        } else { cents };
+        } else {
+            cents
+        };
         s.move_degree(drag.degree, cents);
         if let Ok(next) =
             ProjectTuning::new(self.tuning.value.enabled(), s, self.tuning.value.audition())
@@ -791,7 +820,7 @@ impl EditorView {
         }
         let s = self.tuning.value.scale();
         let selected = self.tuning.selected;
-        let mut nodes = div()
+        let mut tuning_nodes = div()
             .id("tuning-nodes")
             .flex()
             .flex_col()
@@ -834,24 +863,24 @@ impl EditorView {
                     row = row.child(div().w(px(82.0)).child(control.entity.clone()));
                 }
             }
-            nodes = nodes.child(row);
+            tuning_nodes = tuning_nodes.child(row);
         }
-        let mut reference = section("reference");
+        let mut tuning_reference = tuning_section("reference");
         for field in [
             Field::RootDegree,
             Field::RootHz,
             Field::RootKey,
             Field::Period,
         ] {
-            reference = reference.child(self.tuning_control(field));
+            tuning_reference = tuning_reference.child(self.tuning_control(field));
         }
-        reference = reference.child(
+        tuning_reference = tuning_reference.child(
             button("snap ratios", self.tuning.snap).on_click(cx.listener(|view, _, _, cx| {
                 view.tuning.snap = !view.tuning.snap;
                 cx.notify();
             })),
         );
-        let mut audition = section("audition");
+        let mut audition = tuning_section("audition");
         for (label, wave) in [
             ("triangle", Waveform::Triangle),
             ("square", Waveform::Square),
@@ -879,6 +908,7 @@ impl EditorView {
         for field in [Field::Level, Field::Attack, Field::Release] {
             audition = audition.child(self.tuning_control(field));
         }
+        audition = audition.child(theme::text("a–; play · z/x octave · c/v velocity"));
         let pitch = div()
             .id("tuning-pitch-line")
             .h(px(110.0))
@@ -903,7 +933,13 @@ impl EditorView {
                             owner.update(cx, |view, _| view.tuning.pitch_bounds = Some(bounds));
                         }
                     },
-                    move |bounds, _, window, cx| plots::pitch(bounds, s, selected, window, cx),
+                    {
+                        let activity =
+                            std::array::from_fn(|degree| self.tuning.degree_activity(degree));
+                        move |bounds, _, window, cx| {
+                            plots::pitch(bounds, s, selected, activity, window, cx)
+                        }
+                    },
                 )
                 .size_full(),
             );
@@ -935,9 +971,9 @@ impl EditorView {
             .gap_2()
             .flex_1()
             .min_w_0()
-            .child(section("pitch line").child(pitch))
+            .child(tuning_section("pitch line").child(pitch))
             .child(
-                section("pitch space")
+                tuning_section("pitch space")
                     .child(palette)
                     .child(self.tuning_control(Field::Reach))
                     .child(
@@ -948,7 +984,7 @@ impl EditorView {
                     ),
             )
             .child(
-                section("relationships")
+                tuning_section("relationships")
                     .child(plots::lattice(self, cx))
                     .child(theme::text(if self.tuning.analysis_pending {
                         "updating relationships…".to_owned()
@@ -971,10 +1007,10 @@ impl EditorView {
                     cx.listener(move |view, _, _, cx| view.tuning_scale_action(action, cx)),
                 ));
         }
-        let mut left = section("nodes · hz / cents")
+        let mut left = tuning_section("nodes · hz / cents")
             .w(px(230.0))
             .h_full()
-            .child(nodes);
+            .child(tuning_nodes);
         if self.tuning.context.is_some() {
             left = left
                 .child(
@@ -994,9 +1030,9 @@ impl EditorView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(reference)
+            .child(tuning_reference)
             .child(
-                section("slots & structure")
+                tuning_section("slots & structure")
                     .child(self.tuning_control(Field::Count))
                     .child(settings),
             )
@@ -1080,7 +1116,7 @@ impl EditorView {
         )
     }
 }
-fn section(label: &str) -> Div {
+fn tuning_section(label: &str) -> Div {
     div()
         .flex()
         .flex_col()
@@ -1092,7 +1128,7 @@ fn section(label: &str) -> Div {
         .child(
             div()
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                .child(theme::text(label.to_owned())),
+                .child(theme::text(label)),
         )
 }
 fn button(label: impl Into<String>, active: bool) -> Stateful<Div> {

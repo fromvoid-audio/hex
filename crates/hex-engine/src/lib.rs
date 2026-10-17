@@ -3068,6 +3068,7 @@ mod prepared_tempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
+pub mod tuning_audition;
 
 pub mod compile;
 
