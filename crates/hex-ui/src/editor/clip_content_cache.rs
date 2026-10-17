@@ -133,7 +133,8 @@ impl Render for ClipContents {
 }
 impl EditorView {
     fn clip_content_cache_allowed(&self) -> bool {
-        !self.edit_pending()
+        self.clip_name_edit.is_none()
+            && !self.edit_pending()
             && !self.opening_project
             && !self.close_prompt_open
             && !self.save_dialog_open

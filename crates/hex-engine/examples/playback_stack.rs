@@ -368,6 +368,7 @@ fn project_fixture(
             content: TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![MidiClipSnapshot {
+                    name: "clip".into(),
                     id: clip_id,
                     start_raw: 0,
                     length_raw: BeatTime::from_quarters(2)?.raw(),

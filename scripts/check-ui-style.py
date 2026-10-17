@@ -12,6 +12,8 @@ widgets = (
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Clip name components normalize labels or render a native text-input entity.
+    'self.clip_name_label(', 'self.clip_name_header(', 'edit.input.clone())',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through

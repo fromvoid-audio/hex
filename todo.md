@@ -1,3 +1,14 @@
+## clip selection and inline names — #2660 / PR276, 17 october 2026
+
+Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
+and press Command-R to edit its name in place. Enter/blur commit, Escape cancels;
+typing owns editing keys. Canonical RenameClip, history, copy/split preservation,
+strict schema26 names and legacy defaults are implemented. See
+[clip names](docs/clip-names.md) for contracts and native checklist.
+Focused project/storage and rendered rename tests pass; exact final-source local
+CI evidence is retained with PR276. Native macOS visual/input acceptance remains
+separate and unverified. No optimized macOS build is produced on this Linux host.
+
 ## arrangement clip painting — 17 october 2026
 
 Double-click empty track space, hold the second press, drag right, then release
