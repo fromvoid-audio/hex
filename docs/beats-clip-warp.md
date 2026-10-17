@@ -74,3 +74,9 @@ passes when UI compilation exposed an unused test import that strict Clippy woul
 reject. It is retained as interrupted, never full PASS. Both new actual-input UI
 cases passed directly on the compiled test binary before removing that import.
 The corrected candidate requires a new full run.
+
+Full20/20 checks passed on clean20c8493722ec5ab53d8fb91483c36011eda89976.
+The final merge then incorporates already-verified original-rate retentionPR370;
+only todo.md conflicted. Both work-log sections were preserved, with this task's
+entry appended to avoid competing insertions. Final integrated-source checks
+remain required by the repository's exact-candidate/conflict-resolution rule.

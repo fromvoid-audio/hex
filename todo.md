@@ -1,13 +1,16 @@
-## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
-The selected Arrangement audio clip now exposes Warp and a direct implemented
-algorithm picker above source controls. Beats defaults to transient preservation;
-existing modes, parameters, canonical maps/history and worker preparation remain.
-Independent PCM, persistence, engine seek/partition, native/export and both
-actual-input UI checks pass. An unused UI-test import was removed after the first
-full run was deliberately interrupted; corrected exact-source full checks remain.
-See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
-No Mac execution or app installation; full sampler/resource work stays open.
+Prepared imports and Session assets retain original-rate decoded PCM beside
+unchanged project-rate clip derivatives through single/batch/Session/Open and
+Undo/Redo paths. The same resident-frame ceiling charges unique buffer capacity;
+identity aliases count once, excess Vec capacity counts, and source+derivative
+refusal preserves canonical state/Redo. An identity-alias reload failure at zero
+remaining frames was reproduced and repaired. All113 Session tests pass. The real mixed-rate service fixture now proves
+derivative-only budget refusal and exact source+derivative Save/Open under its
+actual declared workload; targeted worker case passes. Failed full evidence is
+retained, including the second mixed-rate clip fixture reservation repair.
+The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
+resource-root/handle/callback lease admission; full W10/sampler remain open.
 
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
@@ -4555,3 +4558,14 @@ stages on Linux and Mac, including real signing; those reports do not certify
 this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+
+The selected Arrangement audio clip now exposes Warp and a direct implemented
+algorithm picker above source controls. Beats defaults to transient preservation;
+existing modes, parameters, canonical maps/history and worker preparation remain.
+Independent PCM, persistence, engine seek/partition, native/export and both
+actual-input UI checks pass. An unused UI-test import was removed after the first
+full run was deliberately interrupted; corrected exact-source full checks remain.
+See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
+No Mac execution or app installation; full sampler/resource work stays open.
