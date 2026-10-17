@@ -1194,7 +1194,19 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     }
 
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
-        if let Some(factory) = self.lfo_runtime.as_ref() {
+        if self.harmonic_runtime.tuning.is_some() {
+            // Custom tuning selects the harmonic runtime even for plain/LFO
+            // voices. Admit exactly its tuned oscillator/excursion domain.
+            let tuning = self.harmonic_runtime.tuning.as_ref();
+            if self.harmonic_runtime.settings.lfo.active() {
+                self.configuration
+                    .prepare_lfo_note_with_tuning(pitch, velocity, tuning)
+            } else {
+                self.configuration
+                    .prepare_note_with_tuning(pitch, velocity, tuning)
+            }
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        } else if let Some(factory) = self.lfo_runtime.as_ref() {
             factory
                 .prepare_note_for_runtime(pitch, velocity)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;

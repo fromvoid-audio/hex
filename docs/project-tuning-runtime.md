@@ -22,6 +22,11 @@ does not rewrite their authored parameters. Actual voiced pitches must satisfy
 the instrument's sample-rate/Nyquist rules. Unused unsupported keys do not cause
 blanket rejection of a valid scale.
 
+Operator event admission uses the same custom-table note preparation as its
+selected harmonic runtime, including LFO excursion validation. A focused
+regression reproduces both excessive tuned pitches admitted under the neutral
+law and playable lowered pitches rejected under that law, with LFO off/on.
+
 ## continuation and refusal
 
 Sine/FM4 inline notes carry a static provider authority. Providers validate
@@ -39,6 +44,12 @@ and ordinary edits start a fresh family; a hint is scoped to the exact physical
 input lease. The worker invalidates ordinary-edit inheritance during preparation,
 but cancellation of the audible keyboard lease occurs at audio publication.
 A pending/refused candidate must not prematurely silence the installed graph.
+
+Keyboard handoff samples asynchronous input cancellation once before moving
+Session state. Structural preflight and commit do not re-read that control-side
+flag: a later cancel remains terminal and silences the transferred input, without
+rejecting a graph whose Session history has already moved. A deterministic
+preflight/cancel/commit regression fails on the previous implementation.
 
 Control preparation failure leaves canonical state/history unchanged. A later
 callback refusal based on actual held voices leaves the applied runtime/PCM
@@ -61,8 +72,9 @@ storage and ordinary control retirement. On64-bit builds:
   span buffer16,075,272 bytes; with context owner/lease slots16,599,560. Existing
  16/18/32 MiB scoped/preroll ceilings and overflow refusals remain unchanged.
 - Neutral shared contexts keep their existing compact configuration, so the
-  unchanged2 MiB retained harmonic-context ceiling still admits426 proposed
-  contexts. Only custom-tuned wide mutable owners retain a fixed inline table;
+  unchanged2 MiB retained harmonic-context ceiling admitted426 proposed
+  contexts before W10; its separately charged authored asset metadata makes the
+  current integrated boundary425. Only custom-tuned wide mutable owners retain a fixed inline table;
   their actual factory/runtime size includes it. Legacy feedback/LFO twins keep
   their existing8KiB bound. No configuration gains heap owners or callback clones
   of a reference-counted/owned table.

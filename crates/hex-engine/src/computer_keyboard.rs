@@ -507,10 +507,11 @@ impl ComputerKeyboardRuntime {
     pub(crate) fn request_controller_handoff_preservation(&mut self) {
         self.preserve_on_handoff = true;
     }
+    fn preserves_input_identity(&self, previous: &Self) -> bool {
+        self.preserve_on_handoff && Arc::ptr_eq(&self.input, &previous.input)
+    }
     pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
-        self.preserve_on_handoff
-            && Arc::ptr_eq(&self.input, &previous.input)
-            && !self.input.is_cancelled()
+        self.preserves_input_identity(previous) && !self.input.is_cancelled()
     }
     fn continued_voices(&self, previous: &Self) -> Result<[Option<Voice>; VOICES], Invalid> {
         let mut voices = previous.primary;
@@ -565,7 +566,9 @@ impl ComputerKeyboardRuntime {
         Some((notes, len))
     }
     pub(crate) fn can_preserve_from(&self, previous: &Self) -> bool {
-        if !self.requests_preservation_from(previous)
+        // The requests_preservation_from cut decides whether the input is live.
+        // Structural preflight and commit must not re-read asynchronous cancel.
+        if !self.preserves_input_identity(previous)
             || previous.lease_detached
             || previous.faulted
             || self.track != previous.track
@@ -608,6 +611,10 @@ impl ComputerKeyboardRuntime {
     }
     /// Every provider and both twins are checked before the input lease changes.
     pub(crate) fn preserve_from(&mut self, previous: &mut Self) -> Result<(), Invalid> {
+        // Playback already preflighted before moving any Session state. A
+        // control-side cancel can arrive after that cut: carry its terminal
+        // input state, rather than reject a partially transferred graph. All
+        // history/identity fields remain audio-owned and are rechecked here.
         if !self.can_preserve_from(previous) {
             return Err(Invalid("computer keyboard continuation was refused"));
         }
