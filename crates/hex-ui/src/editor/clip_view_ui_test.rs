@@ -235,10 +235,10 @@ fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
     });
     assert!(visual.debug_bounds("device-panel").is_some());
 
-    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
     let clip_bounds = visual
         .debug_bounds(clip_selector)
-        .expect("arrangement clip");
+        .expect("arrangement clip header");
     let clip_point = point(clip_bounds.center().x, clip_bounds.center().y);
     visual.simulate_mouse_down(clip_point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(clip_point, MouseButton::Left, Modifiers::default());

@@ -164,29 +164,46 @@ impl EditorView {
             .child(theme::text(name))
             .into_any_element()
     }
-    pub(super) fn clip_name_header(&self, clip: ClipId, name: &str) -> impl IntoElement + use<> {
+    pub(super) fn clip_name_header(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         div()
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
             .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(16.0))
+            .top(px(-1.0))
+            .left(px(-1.0))
+            .right(px(-1.0))
+            .h(px(
+                super::tracks::TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION
+            ))
             .px_1()
             .overflow_hidden()
             .text_xs()
             .line_height(px(14.0))
             .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .on_click({
-                let editing = self.clip_name_edit.as_ref().is_some_and(|e| e.clip == clip);
-                move |_, _, cx| {
-                    if editing {
-                        cx.stop_propagation();
-                    }
+            .cursor_pointer()
+            .on_click(cx.listener(move |view, _, window, cx| {
+                if view
+                    .clip_name_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.clip == clip)
+                {
+                    cx.stop_propagation();
+                    return;
                 }
-            })
+                if view.clip_name_edit.is_some() {
+                    view.finish_clip_name(true, window, cx);
+                }
+                view.set_selected_clip(track, clip, window, cx);
+                view.focus.focus(window);
+                cx.notify();
+            }))
             .child(self.clip_name_label(clip, name))
     }
 }

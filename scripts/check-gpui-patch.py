@@ -74,7 +74,10 @@ for name, original in manifest["original_files"].items():
         errors.append(f"GPUI source/provenance mismatch: {name}")
 local_metadata = {"HEX-PATCHES.md", "hex-provenance.json", "hex-patches.diff"}
 extra = {
-    str(path.relative_to(vendor)) for path in vendor.rglob("*") if path.is_file()
+    # Finder metadata is ignored by Git and is not a dependency build input.
+    # Keep symlinks and every other unexpected file visible to this check.
+    str(path.relative_to(vendor)) for path in vendor.rglob("*")
+    if path.is_symlink() or (path.is_file() and path.name != ".DS_Store")
 } - set(manifest["original_files"]) - expected_additions - local_metadata
 if extra:
     errors.append(f"unexpected files in external GPUI: {sorted(extra)}")
