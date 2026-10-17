@@ -18,10 +18,18 @@ The explicit spectrum control enables capture; input defaults visible and
 hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
 Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
 storage/allocation regressions. Portable tests and earlier integrated full runs
-pass; final-source CI is rerun
-when published foundations change. Native acceptance remains open under the
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
 coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
 See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
+
+The borrowed kernel now reports a checked exclusive end age: Trigger follows
+natural source exhaustion, Gate follows the earlier source/release bound, and
+loop gate-plus-release overflow refuses. No shared host/resource/schema/tuning
+or device-registration behavior changes. All11 sampler tests and strict device
+Clippy pass; actual PCM exhaustion/rate/pitch/reverse/slice/partition/overflow
+fixtures cover the new query. Final full CI remains pending; full2679 stays open.
 
 ## owned history example feature — #2747 / PR357, 17 october 2026
 
