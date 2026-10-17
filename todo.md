@@ -11,10 +11,13 @@ separate and unverified. No optimized macOS build is produced on this Linux host
 
 ## arrangement clip painting — 17 october 2026
 
-Double-click empty track space, hold the second press, drag right, then release
-creates an empty MIDI clip through the existing undoable placement command.
+Double-click empty track space, hold the second press, drag left or right, then
+release creates an empty MIDI clip through the existing undoable placement command.
 Snapped/free preview and cancellation are source implemented. Four focused rendered
-UI tests and the source/format guards pass; native user acceptance is pending. See [clip painting](docs/clip-paint.md)
+UI tests now cover both directions, crossing the anchor, preview bounds and
+undo/redo; they pass after reproducing the prior leftward limitation. The user
+confirmed rightward painting works. Native leftward/reversal acceptance remains
+pending. See [clip painting](docs/clip-paint.md)
 for scope and the finite native checklist.
 
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
