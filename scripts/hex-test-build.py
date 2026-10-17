@@ -53,7 +53,8 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
     with runner.guarded_release(adopt=adopt) as ownership:
         argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
         log_path = runner.output_dir / "optimized-build.log"
-        with log_path.open("w") as log:
+        with log_path.open("w") as log, \
+                ci.terminal_progress("building optimized hex"):
             process = subprocess.run(argv, cwd=runner.root, env=runner.env,
                                      stdout=subprocess.PIPE, stderr=log, text=True, check=False)
             log.write(process.stdout)
