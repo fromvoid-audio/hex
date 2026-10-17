@@ -16,12 +16,12 @@ mod device_theme_tests;
 mod gate_ui_tests;
 mod header_style_tests;
 mod navigation_ui_tests;
+mod operator_algorithm_ui_tests;
 mod operator_enable_ui_tests;
 #[path = "operator_harmonic_ui_tests.rs"]
 mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
-mod operator_routing_readout_tests;
 mod operator_tab_tests;
 mod parameter_rows_tests;
 mod saturator_ui_tests;
@@ -1107,6 +1107,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
         Ok("hex.instrument.operator")
     );
     let instrument_id = instrument.id();
+    // Custom authored routing retains all new global controls without exposing a matrix.
+    service
+        .submit(Request::SetDeviceParameter {
+            device: instrument_id,
+            parameter: hex_lattice_contract::ParameterId::from_static(17),
+            value: ParameterValue::Float(0.31),
+        })
+        .unwrap();
+    let custom = receive_service_event(&service);
+    assert!(custom.error.is_none());
+    let state = custom.state;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(880.0), px(540.0)));
@@ -1237,6 +1248,17 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     });
     let envelope_tab =
         Box::leak(format!("operator-page-{}-envelope", instrument_id.value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(envelope_tab).is_none(),
+        "global panel dedicates its middle to modulation"
+    );
+    let shell = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", instrument_id.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(shell.center(), Modifiers::default());
+    visual.run_until_parked();
     let envelope_bounds = visual.debug_bounds(envelope_tab).expect("amp envelope tab");
     visual.simulate_click(envelope_bounds.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1450,45 +1472,7 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             ))
             .is_some()
     );
-    for target in 0..4 {
-        let header = Box::leak(format!("operator-routing-target-{target}").into_boxed_str());
-        assert!(
-            visual.debug_bounds(header).is_some(),
-            "target {target} header"
-        );
-    }
-    assert!(visual.debug_bounds("operator-routing-out-header").is_some());
-    for source in 0..4_u32 {
-        let source_bounds = visual
-            .debug_bounds(Box::leak(
-                format!("operator-routing-source-{source}").into_boxed_str(),
-            ))
-            .expect("source row label");
-        assert!(source_bounds.size.width >= px(11.0));
-        for target in 0..4_u32 {
-            if source == target {
-                continue;
-            }
-            let parameter = 12 + source * 4 + target + 1;
-            let field = Box::leak(
-                format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
-            );
-            let field_bounds = visual.debug_bounds(field).expect("routing field bounds");
-            let header = Box::leak(format!("operator-routing-target-{target}").into_boxed_str());
-            let header_bounds = visual.debug_bounds(header).expect("target heading");
-            assert_eq!(field_bounds.origin.x, header_bounds.origin.x);
-            assert_eq!(field_bounds.size.width, px(46.0));
-        }
-        let carrier = Box::leak(
-            format!("device-{}-parameter-{}", instrument_id.value(), 29 + source).into_boxed_str(),
-        );
-        let carrier_bounds = visual.debug_bounds(carrier).expect("output field bounds");
-        let output_header = visual
-            .debug_bounds("operator-routing-out-header")
-            .expect("output heading");
-        assert_eq!(carrier_bounds.origin.x, output_header.origin.x);
-        assert_eq!(carrier_bounds.size.width, px(46.0));
-    }
+    assert!(visual.debug_bounds("operator-routing-header").is_none());
     for parameter in [
         14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27, 29, 30, 31, 32, 61,
     ] {
@@ -1496,8 +1480,19 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
             format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
         );
         assert!(
+            visual.debug_bounds(selector).is_none(),
+            "legacy routing is preserved without a matrix editor"
+        );
+    }
+    for parameter in
+        (601..=608).chain((620..=639).filter(|parameter| !matches!(*parameter, 626 | 634)))
+    {
+        let selector = Box::leak(
+            format!("device-{}-parameter-{parameter}", instrument_id.value()).into_boxed_str(),
+        );
+        assert!(
             visual.debug_bounds(selector).is_some(),
-            "routing parameter {parameter}"
+            "global parameter {parameter}"
         );
     }
     editor.read_with(cx, |view, _| {
@@ -2089,10 +2084,13 @@ fn operator_shell_controls_select_their_oscillator_without_losing_the_edit(
     visual.run_until_parked();
     let oscillator_tab =
         Box::leak(format!("operator-page-{}-oscillator", operator.value()).into_boxed_str());
-    let tab = visual
-        .debug_bounds(oscillator_tab)
-        .expect("oscillator page tab");
-    visual.simulate_click(tab.center(), Modifiers::default());
+    assert!(visual.debug_bounds(oscillator_tab).is_none());
+    let shell = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", operator.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(shell.center(), Modifiers::default());
     visual.run_until_parked();
 
     let waveform_a = ParameterKey {

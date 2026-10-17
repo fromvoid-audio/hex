@@ -170,9 +170,8 @@ impl Session {
                             ));
                         }
                     }
-                    let revision = Arc::new(hex_engine::PreparedRevision::prepare(
+                    let revision = Arc::new(candidate_media.prepare(
                         candidate,
-                        &candidate_media,
                         sine_table,
                         previous.map(|artifact| artifact.session().as_ref()),
                     )?);

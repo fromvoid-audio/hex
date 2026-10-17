@@ -27,14 +27,14 @@ impl Session {
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
             |candidate| {
-                PreparedRevision::prepare(
-                    candidate,
-                    &media,
-                    Arc::clone(&table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)
+                media
+                    .prepare(
+                        candidate,
+                        Arc::clone(&table),
+                        previous.map(|artifact| artifact.session().as_ref()),
+                    )
+                    .map(Arc::new)
+                    .map_err(SessionError::from)
             },
         )?;
         Ok((Arc::new(preview.project().clone()), prepared))

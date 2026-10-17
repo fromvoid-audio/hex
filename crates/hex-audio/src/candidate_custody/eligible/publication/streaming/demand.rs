@@ -372,11 +372,8 @@ pub(crate) struct StreamOutcome {
     pub(crate) activated: Option<u64>,
 }
 impl Active {
-    pub(crate) fn contains_streamed_sources(&self) -> bool {
-        self.state
-            .runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.contains_streamed_sources())
+    pub(crate) fn streaming_enabled(&self) -> bool {
+        self.state.streaming.is_some()
     }
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.clear_stream_roles(domains);

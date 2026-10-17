@@ -1,3 +1,42 @@
+## Vector global processing — 17 october 2026
+
+The optimized headless `profile_vector_globals` example compares identical authored
+v14 prefixes with legacy16, operator-mode16 and operator-mode32. Apple M5 Pro
+arm64, macOS26.6.2, Rust1.94, 48kHz, 128frames; five trials per variant, each
+100warmups plus2,000 measured blocks. Each block includes runtime-pair begin,
+preflight/process and commit. Preparation, note-on setup, timing-vector storage
+and checksums are outside the timed region. All30,000 samples and outliers remain.
+
+| held voices / processing mode | p50 µs | p95 µs | p99 µs | maximum µs |
+| --- | ---: | ---: | ---: | ---: |
+| legacy16 | 142.917 | 151.459 | 188.166 | 291.583 |
+| operator16 | 510.417 | 554.750 | 645.500 | 1052.000 |
+| operator32 | 1011.458 | 1077.541 | 1138.541 | 1527.209 |
+
+New16 costs3.57× legacy16 in this FM/LFO/filter fixture; new32 costs1.98× new16.
+The new quality law performs2× graph/filter evaluation and decimation; this is
+not a PCM-equivalent optimization. New32 p99 consumes42.7% of the nominal
+2,666.7µs block period in isolation. Ordinary desktop activity was uncontrolled.
+No physical callback scheduling, note/event-density or expression cost, mixer,
+multi-track scalability, allocation instrumentation or listening is measured.
+
+Each mutable runtime twin is 116,520 B versus 6,416 B for this legacy factory;
+the primary/scratch pair is 233,040 B versus 12,832 B. The 2 MiB aggregate
+DSP-pair budget remains enforced. A small single-track timing
+does not establish high instrument-track density; Pulse2226 retains storage,
+density and sustained native acceptance work. Historical patches keep their
+legacy processing and admission policy.
+
+Reproduce with `cargo run --release -p hex-devices --example profile_vector_globals
+--locked -- legacy16 artifacts/profiles/vector-globals`, replacing `legacy16`
+with `operator16` or `operator32`. Raw CSVs, states, environment, binary hash and
+source manifests are in `artifacts/profiles/vector-globals/`. DSP source-set
+SHA-256 is `8abff25ca823ea9d5ac76cbb717d721000118e3deab3ee99b5592c11ce55927d`,
+verified unchanged across these runs. The source set was uncommitted atop
+`0fa7a76bb3f3994c6044bdb01668635252ec837d`; retained per-file hashes identify it
+independently of later controller-input or documentation changes. All three
+authored v14 prefix hashes match; output checksums are finite and repeatable.
+
 ## project-wide selection feedback — 17 october 2026
 
 Optimized candidate `17ce787dc7ef892b8d9876f811d70663ca2b4f68` passed all 20
@@ -2158,8 +2197,9 @@ The benchmark's fixed Return accumulation scratch is
 `16 Returns × 256 frames × 2 f32 samples = 32,768 bytes`. Its paired Utility
 history is `16 Returns × 2 transactional runtime twins ×
 size_of::<UtilityFilterProcessor>()`, printed by the example. The admission
-policy bounds all stateful processor declarations to 256 × 4,096 = 1,048,576
-bytes per runtime twin, or 2,097,152 bytes for the primary/scratch pair. These
+policy allows 65,536 declared bytes per effect runtime twin, while the aggregate
+bank remains capped at 256 × 4,096 = 1,048,576 declared bytes, or 2,097,152
+bytes for the primary/scratch pair. These
 figures cover scratch and declared processor state; they exclude allocator/Arc
 headers and the rest of the compiled graph. The separate callback allocation
 probe verifies zero total and signed-net allocation changes for a stateful

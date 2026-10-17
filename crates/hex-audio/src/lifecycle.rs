@@ -1,6 +1,6 @@
 //! Bounded output lifecycle worker for stream retirement and recovery opens.
 //! Stream pause/disposal and replacement device creation never run on realtime.
-use crate::device::PreparedOutput;
+use crate::device::{Opened, PreparedOutput, WorkerPreparedOutput};
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
@@ -19,7 +19,7 @@ use std::{
 
 static OCCUPIED: AtomicBool = AtomicBool::new(false);
 static OPEN_STATE: OnceLock<Arc<OpenState>> = OnceLock::new();
-static SERVICE: OnceLock<Result<SyncSender<LifecycleMessage<PreparedOutput, Retirement>>, String>> =
+static SERVICE: OnceLock<Result<SyncSender<LifecycleMessage<Opened, Retirement>>, String>> =
     OnceLock::new();
 // Defensive fallback if the service unexpectedly exits. Static storage retains
 // at most the one leased stream until process exit; reopening stays disabled.
@@ -57,6 +57,10 @@ impl CompletedStreamHandle {
 }
 struct Retirement {
     stream: Option<cpal::Stream>,
+    #[cfg(feature = "allocation-probe")]
+    headless_backend: Option<()>,
+    #[cfg(feature = "allocation-probe")]
+    headless: bool,
     spectrum_reaper: Option<SpectrumReaper>,
     _lease: Lease,
     native: Option<crate::native_callback_owner::NativeRetirement>,
@@ -83,6 +87,10 @@ impl StreamOwner {
         Self {
             retirement: Some(Retirement {
                 stream: Some(stream),
+                #[cfg(feature = "allocation-probe")]
+                headless_backend: None,
+                #[cfg(feature = "allocation-probe")]
+                headless: false,
                 spectrum_reaper,
                 _lease: lease,
                 native: None,
@@ -99,18 +107,44 @@ impl StreamOwner {
         spectrum_reaper: Option<SpectrumReaper>,
         native: crate::native_callback_owner::NativeRetirement,
     ) -> Self {
+        native.bind_spectrum_reaper(spectrum_reaper.as_ref());
+        Self::unexposed_custody(lease, spectrum_reaper, Some(native))
+    }
+    pub(crate) fn failed_preparation_custody(
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+    ) -> Self {
+        Self::unexposed_custody(lease, spectrum_reaper, None)
+    }
+    fn unexposed_custody(
+        lease: Lease,
+        spectrum_reaper: Option<SpectrumReaper>,
+        native: Option<crate::native_callback_owner::NativeRetirement>,
+    ) -> Self {
         Self {
             retirement: Some(Retirement {
                 stream: None,
+                #[cfg(feature = "allocation-probe")]
+                headless_backend: None,
+                #[cfg(feature = "allocation-probe")]
+                headless: false,
                 spectrum_reaper,
                 _lease: lease,
-                native: Some(native),
+                native,
                 backend_exposed: false,
                 stream_drop_pending: false,
                 stream_disposed: false,
                 failed: false,
                 first_panic: None,
             }),
+        }
+    }
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn expose_headless_backend(&mut self) {
+        if let Some(retirement) = self.retirement.as_mut() {
+            retirement.headless = true;
+            retirement.headless_backend = Some(());
+            retirement.backend_exposed = true;
         }
     }
     pub(crate) fn expose_backend(&mut self) {
@@ -191,15 +225,47 @@ impl std::error::Error for RecoveryOpenError {}
 
 /// One nonblocking result slot for a requested output open.
 pub struct RecoveryOpen {
-    waiter: OpenWaiter<PreparedOutput>,
+    waiter: OpenWaiter<Opened>,
 }
 impl RecoveryOpen {
     /// Poll once; `None` means the lifecycle worker is still preparing the output.
     pub fn try_take(
         &mut self,
     ) -> Result<Option<Result<PreparedOutput, String>>, RecoveryOpenError> {
-        self.waiter.try_take()
+        Ok(self
+            .waiter
+            .try_take()?
+            .map(|result| result.and_then(Opened::into_legacy)))
     }
+}
+
+/// Worker-only completion on the same exclusive lifecycle open lane.
+/// It must be polled and retained on the Session worker, never delivered to UI.
+pub struct WorkerRecoveryOpen {
+    waiter: OpenWaiter<Opened>,
+}
+impl WorkerRecoveryOpen {
+    pub fn try_take(
+        &mut self,
+    ) -> Result<Option<Result<WorkerPreparedOutput, String>>, RecoveryOpenError> {
+        Ok(self
+            .waiter
+            .try_take()?
+            .map(|result| result.and_then(Opened::into_worker)))
+    }
+}
+
+/// Queue a virgin worker-owned output. None negotiates the initial device rate;
+/// Some validates the current document rate before exposing callbacks.
+pub fn request_worker_open(
+    expected_sample_rate: Option<u32>,
+) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
+    if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
+        return Err(RecoveryOpenError::InvalidRate);
+    }
+    let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
+    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, true)?;
+    Ok(WorkerRecoveryOpen { waiter })
 }
 
 /// Queue a default-device reopen for the expected project rate without waiting.
@@ -220,7 +286,7 @@ pub fn request_initial_open() -> Result<RecoveryOpen, RecoveryOpenError> {
 
 fn request_open(expected_sample_rate: Option<u32>) -> Result<RecoveryOpen, RecoveryOpenError> {
     let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_open(sender, state(), expected_sample_rate)?;
+    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, false)?;
     Ok(RecoveryOpen { waiter })
 }
 
@@ -292,10 +358,20 @@ impl<T> Drop for OpenWaiter<T> {
     }
 }
 
+#[cfg(test)]
 fn enqueue_open<T: Send + 'static, R: Send + 'static>(
     sender: &SyncSender<LifecycleMessage<T, R>>,
     state: &Arc<OpenState>,
     expected_sample_rate: Option<u32>,
+) -> Result<OpenWaiter<T>, RecoveryOpenError> {
+    enqueue_open_kind(sender, state, expected_sample_rate, false)
+}
+
+fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
+    sender: &SyncSender<LifecycleMessage<T, R>>,
+    state: &Arc<OpenState>,
+    expected_sample_rate: Option<u32>,
+    worker_endpoints: bool,
 ) -> Result<OpenWaiter<T>, RecoveryOpenError> {
     if state.in_service.load(Acquire) {
         return Err(RecoveryOpenError::Busy);
@@ -321,6 +397,7 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
     let request = OpenRequest {
         id,
         expected_sample_rate,
+        worker_endpoints,
         completion,
         canceled: Arc::clone(&canceled),
         consumed: Arc::clone(&consumed),
@@ -359,6 +436,7 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
 struct OpenRequest<T> {
     id: u64,
     expected_sample_rate: Option<u32>,
+    worker_endpoints: bool,
     completion: SyncSender<Result<T, String>>,
     canceled: Arc<AtomicBool>,
     consumed: Arc<AtomicBool>,
@@ -376,10 +454,20 @@ enum LifecycleMessage<T, R> {
     Open(OpenRequest<T>),
 }
 
+#[cfg(test)]
 fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>) -> Option<Result<T, String>>,
+    retire: impl FnMut(R),
+) {
+    run_lifecycle_selected(receiver, is_occupied, |rate, _| try_open(rate), retire)
+}
+
+fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
+    receiver: Receiver<LifecycleMessage<T, R>>,
+    is_occupied: impl Fn() -> bool,
+    mut try_open: impl FnMut(Option<u32>, bool) -> Option<Result<T, String>>,
     mut retire: impl FnMut(R),
 ) {
     enum Phase {
@@ -416,7 +504,10 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
                     }
                 }
                 Phase::Queued => {
-                    if let Some(result) = try_open(current.request.expected_sample_rate) {
+                    if let Some(result) = try_open(
+                        current.request.expected_sample_rate,
+                        current.request.worker_endpoints,
+                    ) {
                         if current.request.canceled.load(Acquire) {
                             drop(result);
                             current.phase = Phase::Delivered;
@@ -496,20 +587,23 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     }
 }
 
-fn service() -> Result<&'static SyncSender<LifecycleMessage<PreparedOutput, Retirement>>, String> {
+fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>, String> {
     SERVICE
         .get_or_init(|| {
-            let (sender, receiver) =
-                mpsc::sync_channel::<LifecycleMessage<PreparedOutput, Retirement>>(3);
+            let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<Opened, Retirement>>(3);
             thread::Builder::new()
                 .name("hex-audio-lifecycle".into())
                 .spawn(move || {
-                    run_lifecycle(
+                    run_lifecycle_selected(
                         receiver,
                         || OCCUPIED.load(Acquire),
-                        |expected_rate| {
+                        |expected_rate, worker_endpoints| {
                             let lease = Lease::try_acquire()?;
-                            Some(PreparedOutput::open_with_lease(expected_rate, lease))
+                            Some(crate::device::open_prepared(
+                                expected_rate,
+                                lease,
+                                worker_endpoints,
+                            ))
                         },
                         retire_prepared_output,
                     );
@@ -559,6 +653,17 @@ fn retire_prepared_output(mut retirement: Retirement) {
     }
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
+    #[cfg(feature = "allocation-probe")]
+    if retirement.headless {
+        return dispose_stream_and_native_on_control(
+            &mut retirement.headless_backend,
+            true,
+            &mut retirement.stream_drop_pending,
+            &mut retirement.stream_disposed,
+            retirement.native.as_mut(),
+            |_| Ok(()),
+        );
+    }
     if !dispose_stream_and_native_on_control(
         &mut retirement.stream,
         retirement.backend_exposed,
@@ -569,11 +674,12 @@ fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
     )? {
         return Ok(false);
     }
-    if let Some(reaper) = retirement.spectrum_reaper.take() {
-        if reaper.shutdown_and_join().is_err() {
+    if let Some(reaper) = retirement.spectrum_reaper.as_mut() {
+        if reaper.advance_shutdown_on_control().is_err() {
             return Err(());
         }
     }
+    drop(retirement.spectrum_reaper.take());
     Ok(true)
 }
 
@@ -651,6 +757,47 @@ mod candidate_retirement_tests {
             drop(self.data.take());
             drop(self.errors.take());
         }
+    }
+    #[test]
+    fn worker_open_uses_same_lane_and_preserves_negotiated_completion_and_abandonment() {
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<u32, ()>>(3);
+        let state = Arc::new(OpenState::new());
+        let mut waiter = enqueue_open_kind(&sender, &state, None, true).unwrap();
+        assert!(matches!(
+            enqueue_open(&sender, &state, None),
+            Err(RecoveryOpenError::Busy)
+        ));
+        let worker = std::thread::spawn(move || {
+            run_lifecycle_selected(
+                receiver,
+                || false,
+                |rate, worker| {
+                    assert!(worker);
+                    assert_eq!(rate, None);
+                    Some(Ok(44100))
+                },
+                |_| {},
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(result) = waiter.try_take().unwrap() {
+                assert_eq!(result.unwrap(), 44100);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(waiter);
+        // The real service sender is static. Wait for its acknowledgement tick
+        // before terminating this isolated test lane.
+        while state.reserved.load(Acquire) != 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        drop(sender);
+        worker.join().unwrap();
+        assert_eq!(state.reserved.load(Acquire), 0);
     }
     #[test]
     fn bounded_open_cleanup_retire_order_adopts_old_job_before_next_open() {
@@ -901,6 +1048,7 @@ mod tests {
 
     #[test]
     fn exclusive_lease_prevents_accumulating_live_or_retained_streams() {
+        let _serial = crate::prepared::candidate_tests::serial();
         let first = Lease::acquire().unwrap();
         assert!(Lease::acquire().is_err());
         drop(first);

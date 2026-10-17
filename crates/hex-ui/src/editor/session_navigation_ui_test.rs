@@ -74,8 +74,7 @@ fn session_window(
     let (project, first_track, second_track, first_scene, _) = fixture();
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::MAX_RESIDENT_FRAMES).expect("disposable service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("test offline output".into()))
             });
@@ -113,8 +112,7 @@ fn worker_session_window(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Ed
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::MAX_RESIDENT_FRAMES).expect("disposable service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("test offline output".into()))
             });

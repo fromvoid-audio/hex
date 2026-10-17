@@ -6,11 +6,13 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_engine::{NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView};
-use hex_lattice_contract::{ParameterId, ParameterKind, ParameterValue};
+use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::DeviceId;
 
+pub(super) mod algorithms;
 pub(super) mod context;
 pub(super) mod envelope;
+mod global;
 pub(super) mod harmonics;
 pub(super) mod preview;
 
@@ -52,6 +54,7 @@ pub(super) enum OperatorPage {
 pub(super) enum NavigationTarget {
     Oscillator(usize),
     Page(OperatorPage),
+    Algorithm(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -152,14 +155,18 @@ pub(super) fn render_body(
         OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
-    let detail =
-        crate::device_composition::tabbed_detail(detail, page_tabs(view, cx, device, owner, state))
-            .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
-            .id(ElementId::Name(
-                format!("operator-detail-{}", device.value()).into(),
-            ))
-            .debug_selector(move || format!("operator-detail-{}", device.value()))
-            .track_focus(&detail_focus);
+    let tabs = if state.page == OperatorPage::Routing {
+        div()
+    } else {
+        page_tabs(view, cx, device, owner, state)
+    };
+    let detail = crate::device_composition::tabbed_detail(detail, tabs)
+        .on_children_prepainted(context::section_listener(view, cx, device, Section::Detail))
+        .id(ElementId::Name(
+            format!("operator-detail-{}", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-detail-{}", device.value()))
+        .track_focus(&detail_focus);
     let preview = preview::render(view, cx, device, device_view);
     crate::device_composition::three_pane(shell, detail, preview)
         .tab_group()
@@ -964,176 +971,22 @@ fn routing_detail(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
 ) -> Stateful<Div> {
-    let preset = compact_control(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        id(61),
-        ControlPresentation::CompactSelector,
-        Some("routing preset"),
-    );
-    let mut rows = div().flex().flex_col().gap(px(2.0));
-    let mut header = div()
-        .id("operator-routing-header")
-        .debug_selector(|| "operator-routing-header".into())
-        .h(px(10.0))
-        .flex()
-        .items_center()
-        .gap(px(2.0))
-        .child(routing_header_cell(
-            "operator-routing-source-header",
-            "",
-            11.0,
-        ));
-    for target in 0..4 {
-        header = header.child(routing_header_cell(
-            format!("operator-routing-target-{target}"),
-            ["a", "b", "c", "d"][target],
-            FIELD_WIDTH,
-        ));
-    }
-    header = header.child(routing_header_cell(
-        "operator-routing-out-header",
-        "out",
-        FIELD_WIDTH,
-    ));
-    for source in 0..4_u32 {
-        let mut row = div().h(px(18.0)).flex().items_center().gap(px(2.0)).child(
-            div()
-                .id(ElementId::Name(
-                    format!("operator-routing-source-{source}").into(),
-                ))
-                .debug_selector(move || format!("operator-routing-source-{source}"))
-                .w(px(11.0))
-                .flex()
-                .justify_center()
-                .child(section_title(["a", "b", "c", "d"][source as usize])),
-        );
-        for target in 0..4_u32 {
-            if source == target {
-                row = row.child(div().w(px(FIELD_WIDTH)).h(px(14.0)));
-                continue;
-            }
-            let parameter_id = 12 + source * 4 + target + 1;
-            row = row.child(routing_cell(
-                view,
-                cx,
-                device,
-                identity,
-                parameters,
-                id(parameter_id),
-                super::numeric_display::NumericDisplayCodec::Turns,
-            ));
-        }
-        let carrier = routing_cell(
-            view,
-            cx,
-            device,
-            identity,
-            parameters,
-            id(29 + source),
-            super::numeric_display::NumericDisplayCodec::LinearGain,
-        );
-        row = row.child(carrier);
-        rows = rows.child(row);
-    }
+    let selected = value(view, device, parameters, id(600));
     div()
         .id(ElementId::Name(
             format!("operator-routing-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("operator-routing-{}", device.value()))
         .w_full()
-        .h(px(160.0))
+        .h_full()
         .flex()
         .flex_col()
-        .gap(px(3.0))
-        .child(
-            div()
-                .h(px(86.0))
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .child(header)
-                .child(rows),
-        )
-        .child(div().h(px(16.0)).flex_shrink_0())
-        .child(div().flex().items_center().gap(px(3.0)).child(preset))
-}
-
-fn routing_header_cell(
-    selector: impl Into<String>,
-    text: &'static str,
-    width: f32,
-) -> Stateful<Div> {
-    let selector = selector.into();
-    let id = ElementId::Name(selector.clone().into());
-    div()
-        .id(id)
-        .debug_selector(move || selector.clone())
-        .w(px(width))
-        .h(px(10.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(7.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text(text))
-}
-
-#[allow(clippy::too_many_arguments)] // Keeps the existing parameter binding and view codec explicit.
-fn routing_cell(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: DeviceId,
-    identity: DeviceControlIdentity,
-    parameters: &[NativeDeviceParameterView],
-    parameter: ParameterId,
-    codec: super::numeric_display::NumericDisplayCodec,
-) -> Div {
-    let description = parameters
-        .iter()
-        .find(|entry| entry.descriptor.id == parameter)
-        .map(|entry| {
-            let unit = match entry.descriptor.kind {
-                ParameterKind::Float { unit, .. } => unit.unwrap_or(""),
-                _ => "",
-            };
-            theme::text(format!("{} · {unit}", entry.descriptor.label))
-        })
-        .unwrap_or_else(|| theme::text("unavailable routing parameter"));
-    let selector = format!(
-        "operator-routing-cell-{}-{}",
-        device.value(),
-        parameter.value()
-    );
-    let control = compact_control_with_codec(
-        view,
-        cx,
-        device,
-        identity,
-        parameters,
-        parameter,
-        ControlPresentation::InlineValue,
-        None,
-        Some(codec),
-    )
-    .id(ElementId::Name(selector.clone().into()))
-    .debug_selector(move || selector.clone())
-    // Long typed drafts scroll within their cell, never into a neighbor.
-    .overflow_hidden()
-    .tooltip(move |_, cx| {
-        cx.new(|_| crate::editor::transport::MiniTooltip {
-            description: description.clone(),
-        })
-        .into()
-    });
-    div()
-        .w(px(FIELD_WIDTH))
-        .h(px(14.0))
-        .flex_shrink_0()
-        .child(control)
+        .gap(px(2.0))
+        .child(algorithms::selector(view, cx, device, selected))
+        .child(global::expression_routing(
+            view, cx, device, identity, parameters,
+        ))
+        .child(global::controls(view, cx, device, identity, parameters))
 }
 
 #[allow(clippy::too_many_arguments)] // Keeps GPUI context, binding identity and presentation explicit.
@@ -1552,7 +1405,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operator_view_inventory_maps_every_descriptor_to_a_panel_page() {
+    fn operator_metadata_inventory_covers_panel_and_preserved_legacy_parameters() {
         let mut exposed = Vec::new();
         for operator in 0..4_u32 {
             let base = operator * 3 + 1;
@@ -1567,6 +1420,8 @@ mod tests {
             exposed.extend([74 + operator, 78 + operator]);
         }
         exposed.extend([61]);
+        exposed.extend(600..=608);
+        exposed.extend(620..=639);
         exposed.extend(82..=388);
         exposed.extend(20_001..=20_007);
         exposed.extend(513..=516);
@@ -1595,7 +1450,7 @@ mod tests {
             exposed, actual,
             "panel inventory matches registered metadata"
         );
-        assert_eq!(exposed.len(), 395);
+        assert_eq!(exposed.len(), 424);
         assert_eq!(exposed.first(), Some(&1));
         assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {

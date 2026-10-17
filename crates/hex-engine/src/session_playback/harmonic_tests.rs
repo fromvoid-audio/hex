@@ -1,14 +1,10 @@
 //! Real canonical device preparation, publication and PCM; no injected provider.
 use super::*;
-use hex_devices::operator_state::{OPERATOR_TYPE_ID, harmonic_parameter, parameter};
+use hex_devices::operator_state::{harmonic_parameter, parameter};
 use hex_lattice_contract::{ParameterId, ParameterValue};
 
 fn carrier_state() -> hex_lattice_contract::NativeDeviceState {
-    let mut state = crate::default_native_device_state_for_class(
-        crate::NativeDeviceClass::Instrument,
-        OPERATOR_TYPE_ID,
-    )
-    .unwrap();
+    let mut state = crate::operator_legacy_test::legacy_operator_state();
     for operator in 1..=4 {
         state = set(
             &state,

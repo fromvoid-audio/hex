@@ -211,6 +211,7 @@ pub struct AudioBatchImport {
     resident_frames: u64,
     resident_assets: usize,
     max_resident_frames: u64,
+    source_epoch: u64,
     control: Arc<AudioBatchControl>,
 }
 impl AudioBatchImport {
@@ -290,6 +291,7 @@ impl AudioBatchImport {
             resident_frames: session.resident_frames(),
             resident_assets: session.media.len(),
             max_resident_frames: session.max_resident_frames(),
+            source_epoch: session.semantic_source_epoch,
         })
     }
     pub fn control(&self) -> Arc<AudioBatchControl> {
@@ -340,8 +342,12 @@ impl AudioBatchImport {
             || session.resident_frames() != self.resident_frames
             || session.media.len() != self.resident_assets
             || session.max_resident_frames() != self.max_resident_frames
+            || session.semantic_source_epoch != self.source_epoch
         {
             return Err(AudioBatchError::ContextChanged);
+        }
+        if session.audio_mode() == crate::DocumentAudioMode::VerifiedStreaming {
+            return self.run_verified(session, previous, current);
         }
         let mut remaining = self
             .max_resident_frames
@@ -429,6 +435,71 @@ impl AudioBatchImport {
                         admission_error = Some(AudioBatchError::Canceled);
                         return Err(error);
                     }
+                }
+                Ok(())
+            },
+        );
+        match result {
+            Ok(value) => Ok(value),
+            Err(_) if self.control.state.load(Ordering::Acquire) == CANCEL_REQUESTED => {
+                Err(AudioBatchError::Canceled)
+            }
+            Err(error) => Err(admission_error.unwrap_or_else(|| error.into())),
+        }
+    }
+    fn run_verified(
+        &self,
+        session: &mut Session,
+        previous: Option<&hex_engine::PreparedRevision>,
+        current: &mut impl FnMut() -> AudioBatchContext,
+    ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(self.paths.len())
+            .map_err(|_| SessionError::Allocation)?;
+        for (index, original) in self.paths.iter().enumerate() {
+            self.check(current)?;
+            let path = if original.is_absolute() {
+                original.clone()
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| AudioBatchError::Member {
+                        member: index + 1,
+                        path: original.clone(),
+                        source: SessionError::Media(hex_media::ImportError::Io(e)),
+                    })?
+                    .join(original)
+            };
+            self.control.publish(1, index + 1, index);
+            let inspected = session.verify_import_with_pending(path, &sources, || {
+                self.control.check_cancel().is_err()
+            });
+            self.check(current)?;
+            let source = inspected.map_err(|source| AudioBatchError::Member {
+                member: index + 1,
+                path: original.clone(),
+                source,
+            })?;
+            sources.push(source);
+            self.control.publish(3, index + 1, index + 1);
+        }
+        self.check(current)?;
+        self.control.publish(4, self.paths.len(), self.paths.len());
+        let mut admissions = 0;
+        let mut admission_error = None;
+        let result = session.import_verified_batch_revision(
+            sources,
+            self.destination,
+            &self.project,
+            previous,
+            || {
+                if let Err(error) = self.check(current) {
+                    admission_error = Some(error);
+                    return Err(SessionError::Invalid("audio batch context changed"));
+                }
+                admissions += 1;
+                if admissions == 2 {
+                    self.control.claim_commit()?;
                 }
                 Ok(())
             },

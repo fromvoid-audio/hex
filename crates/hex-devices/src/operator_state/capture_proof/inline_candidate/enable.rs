@@ -22,7 +22,7 @@ pub(in crate::operator_state::capture_proof) struct Binding {
 impl Binding {
     pub fn encode(binding: EnableBinding, format: AnalyticContinuationFormat) -> Option<Self> {
         let expected =
-            AnalyticContinuationFormat::new(crate::operator_state::OPERATOR_TYPE_ID, 1).ok()?;
+            AnalyticContinuationFormat::new(crate::operator_state::OPERATOR_TYPE_ID, 2).ok()?;
         if format != expected {
             return None;
         }

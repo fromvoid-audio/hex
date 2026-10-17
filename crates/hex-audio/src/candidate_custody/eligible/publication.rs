@@ -24,6 +24,12 @@ mod streaming;
 use resources::RootResourceWitness;
 pub(super) use resources::remaining_handle_reservation;
 pub(crate) use streaming::{StageAction, StreamInstall, StreamOutcome, StreamProgress};
+mod preparation;
+use preparation::PreparationExecution;
+pub use preparation::{
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
+};
 mod disposal;
 pub(crate) use active::{Active, FinalReturn, InstallDecision};
 
@@ -63,6 +69,9 @@ struct Life {
 struct RuntimeSlot {
     incarnation: u64,
     identity: Option<AudioCandidateIdentity>,
+    preparation_reservation: Option<AudioCandidatePreparationReservation>,
+    preparation_retiring: bool,
+    preparation_metadata_pending: bool,
     phase: Phase,
     archive: usize,
     life: Arc<Life>,
@@ -83,6 +92,9 @@ impl RuntimeSlot {
         Self {
             incarnation: 0,
             identity: None,
+            preparation_reservation: None,
+            preparation_retiring: false,
+            preparation_metadata_pending: false,
             phase: Phase::Vacant,
             archive: 0,
             life: Arc::new(Life {
@@ -133,6 +145,7 @@ struct BankDrop {
 }
 #[derive(Default)]
 pub(super) struct Work {
+    preparations: Vec<Option<PreparationExecution>>,
     anchors: Vec<Option<AudioCandidateAnchors>>,
     executions: Vec<Option<Execution>>,
     failed_payloads: Vec<Option<Box<dyn Any + Send>>>,
@@ -147,10 +160,28 @@ struct Claims {
     successor_dependency: bool,
     resources: RootResourceWitness,
 }
+#[derive(Clone, Copy)]
 pub(in crate::candidate_custody) struct Header {
     pub(in crate::candidate_custody) revision: u64,
     pub(in crate::candidate_custody) context_generation: u64,
     pub(in crate::candidate_custody) policy: crate::prepared::PublicationPolicy,
+}
+struct StageCommit {
+    runtime: ClaimedAudioCandidateRuntime,
+    anchors: AudioCandidateAnchors,
+    domains: Vec<AudioCandidateDomainToken>,
+    header: Header,
+    summary: AudioCandidateConstructorSummary,
+    plan: StagePlan,
+    state: Box<State>,
+}
+struct StagePlan {
+    prepared: bool,
+    stamp: Stamp,
+    archive: usize,
+    retained: usize,
+    peak: usize,
+    resources: Option<RootResourceWitness>,
 }
 struct State {
     stamp: Stamp,
@@ -237,6 +268,9 @@ impl Bank {
         let declared = [
             reservation
                 .runtime_slots
+                .checked_mul(std::mem::size_of::<Option<PreparationExecution>>()),
+            reservation
+                .runtime_slots
                 .checked_mul(std::mem::size_of::<RuntimeSlot>()),
             reservation
                 .archive_slots
@@ -282,6 +316,11 @@ impl Bank {
         work.failed_payloads
             .try_reserve_exact(reservation.receipt_rows)
             .map_err(|_| "could not reserve failure custody")?;
+        work.preparations
+            .try_reserve_exact(reservation.runtime_slots)
+            .map_err(|_| "could not reserve preparation cells")?;
+        work.preparations
+            .resize_with(reservation.runtime_slots, || None);
         work.banks
             .try_reserve_exact(reservation.runtime_slots)
             .map_err(|_| "could not reserve abandoned bank custody")?;
@@ -295,6 +334,9 @@ impl Bank {
         work.failed_payloads
             .resize_with(reservation.receipt_rows, || None);
         bank.metadata_bytes = [
+            work.preparations
+                .capacity()
+                .checked_mul(std::mem::size_of::<Option<PreparationExecution>>()),
             bank.slots
                 .capacity()
                 .checked_mul(std::mem::size_of::<RuntimeSlot>()),
@@ -329,6 +371,53 @@ pub struct AudioCandidateEligibleStageRefusal {
     pub domains: Vec<AudioCandidateDomainToken>,
 }
 impl super::Custody {
+    #[cfg(test)]
+    pub(in crate::candidate_custody) fn test_publication_status(&self) -> String {
+        let bank = self.bank.try_lock().ok();
+        let work = self.work.try_lock().ok();
+        format!(
+            "slots={:?} prep={:?} exec={:?} anchors={:?}",
+            bank.as_ref().map(|b| b
+                .publication
+                .slots
+                .iter()
+                .map(|s| (
+                    s.phase,
+                    s.preparation_metadata_pending,
+                    s.anchors.is_some(),
+                    s.returned.is_some(),
+                    s.ready.is_some()
+                ))
+                .collect::<Vec<_>>()),
+            work.as_ref().map(|w| w
+                .publication
+                .preparations
+                .iter()
+                .map(|p| p.as_ref().map(|p| p.test_summary()))
+                .collect::<Vec<_>>()),
+            work.as_ref().map(|w| w
+                .publication
+                .executions
+                .iter()
+                .map(|e| e.as_ref().map(|e| (
+                    e.pending,
+                    e.failed,
+                    e.proof_recorded,
+                    e.proof.is_some(),
+                    e.disposed.is_some(),
+                    e.inputs.is_some()
+                )))
+                .collect::<Vec<_>>()),
+            work.as_ref().map(|w| w
+                .publication
+                .anchors
+                .iter()
+                .map(|a| a
+                    .as_ref()
+                    .map(|a| (a.original_runtime_disposed(), a.all_origins_closed())))
+                .collect::<Vec<_>>())
+        )
+    }
     pub(in crate::candidate_custody) fn configure_publications(
         &self,
         root: u64,
@@ -421,167 +510,8 @@ impl super::Custody {
         header: Header,
         summary: AudioCandidateConstructorSummary,
     ) -> Result<(Queued, AudioCandidateTicket), AudioCandidateEligibleStageRefusal> {
-        let Header {
-            revision,
-            context_generation,
-            policy,
-        } = header;
-        let reservation = lock(&self.bank).publication.reservation;
-        let Some(reservation) = reservation else {
-            return Err(AudioCandidateEligibleStageRefusal {
-                reason: "constructor publication is not reserved",
-                owner,
-                domains,
-            });
-        };
-        let preflight = (|| {
-            let bank = lock(&self.bank);
-            if bank.closing || bank.root != root.root_id() || domains.len() > 2 {
-                return Err("constructor Root is closing or differs");
-            }
-            for (index, token) in domains.iter().enumerate() {
-                if token.root != bank.root
-                    || domains[..index].contains(token)
-                    || bank.domains.get(token.slot).is_none_or(|slot| {
-                        !slot.matches(*token)
-                            || slot.phase != Phase::Accepted
-                            || slot.retiring
-                            || slot.owner.is_none()
-                            || slot.uses.checked_add(1).is_none()
-                    })
-                {
-                    return Err("constructor domain association is unavailable");
-                }
-            }
-            if bank.publication.stream_extents.is_some()
-                && owner.streamed_sources().next().is_some()
-                && (owner
-                    .source_context()
-                    .is_none_or(|context| context.project_generation != context_generation)
-                    || domains
-                        .iter()
-                        .any(|token| !bank.domains[token.slot].loan_outstanding))
-            {
-                return Err(
-                    "streamed constructor requires captured context and reserved actual page loans",
-                );
-            }
-            let mut used = [false; 2];
-            for source in owner.streamed_sources() {
-                let Some(index) = domains.iter().position(|token| {
-                    bank.domains[token.slot]
-                        .owner
-                        .as_ref()
-                        .is_some_and(|domain| domain.covers_source(source))
-                }) else {
-                    return Err("actual catalog lease does not cover source");
-                };
-                used[index] = true;
-            }
-            if used[..domains.len()].iter().any(|used| !used) {
-                return Err("unused constructor domain association");
-            }
-            let metadata = domains
-                .capacity()
-                .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
-                .and_then(|n| n.checked_add(std::mem::size_of::<State>()))
-                .ok_or("constructor publication metadata overflow")?;
-            let retained = summary
-                .data
-                .retained_bytes
-                .checked_add(summary.reserved_split_bytes)
-                .and_then(|n| n.checked_add(metadata))
-                .ok_or("constructor retained DATA overflow")?;
-            let peak = summary
-                .data
-                .construction_peak_bytes
-                .checked_add(summary.reserved_split_bytes)
-                .and_then(|n| n.checked_add(metadata))
-                .ok_or("constructor construction DATA overflow")?;
-            let mut retained_total = bank
-                .domains
-                .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
-                .ok_or("constructor domain DATA overflow")?;
-            let mut peak_total = bank
-                .domains
-                .iter()
-                .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
-                .ok_or("constructor domain construction overflow")?;
-            let resources = resources::for_candidate(&bank, summary)?;
-            let mut members = summary.member_rows;
-            let mut transfers = summary.transfer_rows;
-            for slot in &bank.publication.slots {
-                retained_total = retained_total
-                    .checked_add(slot.retained)
-                    .ok_or("constructor retained DATA overflow")?;
-                peak_total = peak_total
-                    .checked_add(slot.peak)
-                    .ok_or("constructor construction DATA overflow")?;
-                if let Some(summary) = slot.summary {
-                    members = members
-                        .checked_add(summary.member_rows)
-                        .ok_or("constructor member reservation overflow")?;
-                    transfers = transfers
-                        .checked_add(summary.transfer_rows)
-                        .ok_or("constructor transfer reservation overflow")?;
-                }
-            }
-            if retained_total
-                .checked_add(retained)
-                .is_none_or(|n| n > reservation.max_retained_data_bytes)
-                || peak_total
-                    .checked_add(peak)
-                    .is_none_or(|n| n > reservation.max_construction_peak_data_bytes)
-            {
-                return Err("constructor caller DATA reservation exceeded");
-            }
-            if members > reservation.member_rows {
-                return Err("constructor member rows exceeded");
-            }
-            if transfers > reservation.transfer_rows {
-                return Err("constructor transfer rows exceeded");
-            }
-            let index = bank
-                .publication
-                .slots
-                .iter()
-                .position(|slot| slot.phase == Phase::Vacant)
-                .ok_or("constructor runtime cells are full")?;
-            let runtime_storage = bank.publication.slots[index]
-                .streaming
-                .as_ref()
-                .map_or(Some(0), |workspace| workspace.backing_bytes())
-                .and_then(|bytes| bytes.checked_add(metadata))
-                .ok_or("constructor mutable runtime storage overflow")?;
-            if runtime_storage > summary.external_runtime_bytes {
-                return Err("constructor mutable runtime reservation changed");
-            }
-            let archive = bank
-                .publication
-                .archives
-                .iter()
-                .position(|occupied| !occupied)
-                .ok_or("constructor archive cells are full")?;
-            let incarnation = bank.publication.slots[index]
-                .incarnation
-                .checked_add(1)
-                .ok_or("constructor runtime incarnation exhausted")?;
-            Ok((
-                Stamp {
-                    root: bank.root,
-                    slot: index,
-                    incarnation,
-                    owner: owner.identity(),
-                },
-                archive,
-                retained,
-                peak,
-                resources,
-            ))
-        })();
-        let (stamp, archive, retained, peak, resources) = match preflight {
-            Ok(value) => value,
+        let plan = match self.preflight_stage(root, &owner, &domains, header, summary, None) {
+            Ok(plan) => plan,
             Err(reason) => {
                 return Err(AudioCandidateEligibleStageRefusal {
                     reason,
@@ -590,8 +520,269 @@ impl super::Custody {
                 });
             }
         };
+        let state = Self::publication_state(plan.stamp, &domains, header);
+        let (runtime, anchors) = match owner.split_constructor_on_control() {
+            Ok(parts) => parts,
+            Err(refusal) => {
+                return Err(AudioCandidateEligibleStageRefusal {
+                    reason: "constructor split refused",
+                    owner: refusal.owner,
+                    domains,
+                });
+            }
+        };
+        Ok(self.commit_stage(
+            root,
+            StageCommit {
+                runtime,
+                anchors,
+                domains,
+                header,
+                summary,
+                plan,
+                state,
+            },
+        ))
+    }
+    fn preflight_stage(
+        &self,
+        root: &CandidateRoot,
+        owner: &AudioCandidateOwner,
+        domains: &Vec<AudioCandidateDomainToken>,
+        header: Header,
+        summary: AudioCandidateConstructorSummary,
+        preparation: Option<AudioCandidatePreparationToken>,
+    ) -> Result<StagePlan, &'static str> {
+        let Header {
+            revision: _,
+            context_generation,
+            policy: _,
+        } = header;
+        let reservation = lock(&self.bank)
+            .publication
+            .reservation
+            .ok_or("constructor publication is not reserved")?;
+        let bank = lock(&self.bank);
+        if bank.closing || bank.root != root.root_id() || domains.len() > 2 {
+            return Err("constructor Root is closing or differs");
+        }
+        let reserved_slot = if let Some(token) = preparation {
+            let slot = bank
+                .publication
+                .slots
+                .get(token.slot)
+                .filter(|s| {
+                    s.incarnation == token.incarnation
+                        && s.phase == Phase::Reserved
+                        && !s.preparation_retiring
+                        && s.preparation_reservation.is_some()
+                })
+                .ok_or("candidate preparation token differs")?;
+            if token.root != bank.root || !bank.publication.archives[slot.archive] {
+                return Err("candidate preparation archive differs");
+            }
+            Some(token.slot)
+        } else {
+            None
+        };
+        for (index, token) in domains.iter().enumerate() {
+            if token.root != bank.root
+                || domains[..index].contains(token)
+                || bank.domains.get(token.slot).is_none_or(|slot| {
+                    !slot.matches(*token)
+                        || slot.phase != Phase::Accepted
+                        || slot.retiring
+                        || slot.owner.is_none()
+                        || if reserved_slot.is_some() {
+                            slot.uses == 0
+                        } else {
+                            slot.uses.checked_add(1).is_none()
+                        }
+                })
+            {
+                return Err("constructor domain association is unavailable");
+            }
+        }
+        if bank.publication.stream_extents.is_some()
+            && (owner
+                .source_context()
+                .is_none_or(|context| context.project_generation != context_generation)
+                || domains
+                    .iter()
+                    .any(|token| !bank.domains[token.slot].loan_outstanding))
+        {
+            return Err(
+                "streamed constructor requires captured context and reserved actual page loans",
+            );
+        }
+        let mut used = [false; 2];
+        for source in owner.streamed_sources() {
+            let Some(index) = domains.iter().position(|token| {
+                bank.domains[token.slot]
+                    .owner
+                    .as_ref()
+                    .is_some_and(|domain| domain.covers_source(source))
+            }) else {
+                return Err("actual catalog lease does not cover source");
+            };
+            used[index] = true;
+        }
+        // A sticky Verified generation also admits its source-free successors
+        // through one genuine sealed N2 pair. This is physical endpoint custody,
+        // not a fabricated source lease; unrelated extra pairs still refuse.
+        let source_free_verified = bank.publication.stream_extents.is_some()
+            && owner.streamed_sources().next().is_none()
+            && domains.len() == 1;
+        if !source_free_verified && used[..domains.len()].iter().any(|used| !used) {
+            return Err("unused constructor domain association");
+        }
+        if bank.publication.stream_extents.is_some() && domains.is_empty() {
+            return Err("verified constructor requires an actual source domain");
+        }
+        let metadata = domains
+            .capacity()
+            .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<State>()))
+            .ok_or("constructor publication metadata overflow")?;
+        let retained = summary
+            .data
+            .retained_bytes
+            .checked_add(summary.reserved_split_bytes)
+            .and_then(|n| n.checked_add(metadata))
+            .ok_or("constructor retained DATA overflow")?;
+        let peak = summary
+            .data
+            .construction_peak_bytes
+            .checked_add(summary.reserved_split_bytes)
+            .and_then(|n| n.checked_add(metadata))
+            .ok_or("constructor construction DATA overflow")?;
+        let mut retained_total = bank
+            .domains
+            .iter()
+            .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.data))
+            .ok_or("constructor domain DATA overflow")?;
+        let mut peak_total = bank
+            .domains
+            .iter()
+            .try_fold(bank.metadata_bytes, |n, d| n.checked_add(d.peak))
+            .ok_or("constructor domain construction overflow")?;
+        let resources = resources::for_candidate(&bank, summary, reserved_slot)?;
+        let mut members = summary.member_rows;
+        let mut transfers = summary.transfer_rows;
+        for (index, slot) in bank.publication.slots.iter().enumerate() {
+            if Some(index) == reserved_slot {
+                continue;
+            }
+            retained_total = retained_total
+                .checked_add(slot.retained)
+                .ok_or("constructor retained DATA overflow")?;
+            peak_total = peak_total
+                .checked_add(slot.peak)
+                .ok_or("constructor construction DATA overflow")?;
+            if let Some(pending) = slot.preparation_reservation {
+                members = members
+                    .checked_add(pending.member_rows)
+                    .ok_or("constructor pending member reservation overflow")?;
+                transfers = transfers
+                    .checked_add(pending.transfer_rows)
+                    .ok_or("constructor pending transfer reservation overflow")?;
+            }
+            if let Some(summary) = slot.summary {
+                members = members
+                    .checked_add(summary.member_rows)
+                    .ok_or("constructor member reservation overflow")?;
+                transfers = transfers
+                    .checked_add(summary.transfer_rows)
+                    .ok_or("constructor transfer reservation overflow")?;
+            }
+        }
+        if retained_total
+            .checked_add(retained)
+            .is_none_or(|n| n > reservation.max_retained_data_bytes)
+            || peak_total
+                .checked_add(peak)
+                .is_none_or(|n| n > reservation.max_construction_peak_data_bytes)
+        {
+            return Err("constructor caller DATA reservation exceeded");
+        }
+        if members > reservation.member_rows {
+            return Err("constructor member rows exceeded");
+        }
+        if transfers > reservation.transfer_rows {
+            return Err("constructor transfer rows exceeded");
+        }
+        let index = if let Some(index) = reserved_slot {
+            index
+        } else {
+            bank.publication
+                .slots
+                .iter()
+                .position(|slot| slot.phase == Phase::Vacant)
+                .ok_or("constructor runtime cells are full")?
+        };
+        if let Some(pending) = bank.publication.slots[index].preparation_reservation {
+            if summary.member_rows > pending.member_rows
+                || summary.transfer_rows > pending.transfer_rows
+                || summary.shared_resource_handles > pending.handle_rows
+                || retained > bank.publication.slots[index].retained
+                || peak > bank.publication.slots[index].peak
+            {
+                return Err("candidate exceeded its construction reservation");
+            }
+        }
+        let runtime_storage = bank.publication.slots[index]
+            .streaming
+            .as_ref()
+            .map_or(Some(0), |workspace| workspace.backing_bytes())
+            .and_then(|bytes| bytes.checked_add(metadata))
+            .ok_or("constructor mutable runtime storage overflow")?;
+        if runtime_storage > summary.external_runtime_bytes {
+            return Err("constructor mutable runtime reservation changed");
+        }
+        let (archive, incarnation) = if reserved_slot.is_some() {
+            (
+                bank.publication.slots[index].archive,
+                bank.publication.slots[index].incarnation,
+            )
+        } else {
+            (
+                bank.publication
+                    .archives
+                    .iter()
+                    .position(|occupied| !occupied)
+                    .ok_or("constructor archive cells are full")?,
+                bank.publication.slots[index]
+                    .incarnation
+                    .checked_add(1)
+                    .ok_or("constructor runtime incarnation exhausted")?,
+            )
+        };
+        Ok(StagePlan {
+            prepared: reserved_slot.is_some(),
+            stamp: Stamp {
+                root: bank.root,
+                slot: index,
+                incarnation,
+                owner: owner.identity(),
+            },
+            archive,
+            retained,
+            peak,
+            resources,
+        })
+    }
+    fn publication_state(
+        stamp: Stamp,
+        domains: &[AudioCandidateDomainToken],
+        header: Header,
+    ) -> Box<State> {
+        let Header {
+            revision,
+            context_generation,
+            policy,
+        } = header;
         // Allocate the exact wrapper before consuming the original constructor.
-        let mut state = Box::new(State {
+        Box::new(State {
             stamp,
             revision,
             context_generation,
@@ -604,17 +795,35 @@ impl super::Custody {
             manifest: None,
             domain_refs: std::array::from_fn(|index| domains.get(index).copied()),
             streaming: None,
-        });
-        let (runtime, anchors) = match owner.split_constructor_on_control() {
-            Ok(parts) => parts,
-            Err(refusal) => {
-                return Err(AudioCandidateEligibleStageRefusal {
-                    reason: "constructor split refused",
-                    owner: refusal.owner,
-                    domains,
-                });
-            }
-        };
+        })
+    }
+    fn commit_stage(
+        &self,
+        root: &CandidateRoot,
+        commit: StageCommit,
+    ) -> (Queued, AudioCandidateTicket) {
+        let StageCommit {
+            runtime,
+            anchors,
+            domains,
+            header,
+            summary,
+            plan,
+            mut state,
+        } = commit;
+        let Header {
+            revision,
+            context_generation,
+            policy,
+        } = header;
+        let StagePlan {
+            prepared,
+            stamp,
+            archive,
+            retained,
+            peak,
+            resources,
+        } = plan;
         let matched = anchors
             .constructor_claims(&runtime)
             .is_some_and(|proof| proof.summary() == Some(summary));
@@ -622,8 +831,10 @@ impl super::Custody {
         // The outer terminal barrier and sole Control writer preserve every
         // checked vacancy. No validation/refusal, user destructor or allocation
         // remains between securing the two actual halves and queue acceptance.
-        for token in &domains {
-            bank.domains[token.slot].uses += 1;
+        if !prepared {
+            for token in &domains {
+                bank.domains[token.slot].uses += 1;
+            }
         }
         bank.publication.archives[archive] = true;
         let slot = &mut bank.publication.slots[stamp.slot];
@@ -640,6 +851,8 @@ impl super::Custody {
         slot.peak = peak;
         slot.anchors = Some(anchors);
         slot.phase = Phase::Accepted;
+        slot.preparation_reservation = None;
+        slot.preparation_metadata_pending = prepared;
         slot.life
             .incarnation
             .store(stamp.incarnation, Ordering::Relaxed);
@@ -671,7 +884,7 @@ impl super::Custody {
         let _ = runtime.set_device_metering(true);
         state.runtime = Some(runtime);
         slot.life.live.store(true, Ordering::Release);
-        Ok((Queued { state }, AudioCandidateTicket { stamp }))
+        (Queued { state }, AudioCandidateTicket { stamp })
     }
 }
 
@@ -700,7 +913,13 @@ impl Bank {
             matches!(
                 slot.phase,
                 Phase::Returned | Phase::Cleaning | Phase::Failed
-            ) || (abandoned && matches!(slot.phase, Phase::Accepted | Phase::Complete))
+            ) || slot.preparation_metadata_pending
+                || (slot.phase == Phase::Reserved && slot.preparation_retiring)
+                || (abandoned
+                    && matches!(
+                        slot.phase,
+                        Phase::Accepted | Phase::Complete | Phase::Reserved
+                    ))
         })
     }
     pub(super) fn complete(&self) -> bool {

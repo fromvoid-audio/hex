@@ -141,6 +141,12 @@ impl super::EditorView {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error =
+                Some("computer keyboard is unavailable for verified streaming audio".into());
+            cx.notify();
+            return;
+        }
         self.cancel_computer_keyboard();
         self.computer_keyboard.toggle();
         self.computer_keyboard.suspended = false;

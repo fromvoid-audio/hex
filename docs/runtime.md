@@ -231,8 +231,12 @@ deadline behavior remain open.
 export-style Arrangement-only runtime. `ArrangementSeekMode::Interactive`
 constructs a normal Session runtime first and then advances its Arrangement
 history, so the result remains eligible for Session route commands and normal
-prepared-revision state inheritance. Both modes reject enabled Arrangement
-transport loops. Results echo the selected mode; the caller must still validate
+prepared-revision state inheritance. Linear mode still rejects enabled Arrangement
+transport loops. Interactive mode supports admitted enabled loops: targets at or
+beyond loop end normalize into the half-open region before reconstruction, while
+intro and interior targets retain their content frame. Both candidate clocks
+start at the normalized frame with a fresh loop pass. Result metadata retains
+the requested target, and results echo the selected mode; the caller must still validate
 current project/route/Stop admission before publication. `Playback` wrappers do
 not establish the target-frame or readiness proof themselves.
 
@@ -246,17 +250,22 @@ overflowed the platform-default test-thread stack; a reduced fixture passed on
 a 2 MiB test stack after sequentializing runtime construction. The dedicated
 worker still owns the supported preparation path. `size_of::<SessionPlayback>()`
 (104,568 bytes here) is not a peak-stack measurement, and 100-track worst-case
-stack use remains unmeasured. Enabled transport loops are refused because the
-operation currently models one monotonic Arrangement pass.
+stack use remains unmeasured. For enabled loops, reconstruction is one monotonic
+first pass from zero to the normalized destination, strictly before loop end.
+Ordinary rendering preserves the authored first-pass tempo, mutable note gate
+clipping at loop end, track/return history and subsequent periodic loop behavior;
+no revision clone or temporary export runtime is used. Work-budget admission
+continues to validate the original requested target before normalization.
 
 `PreparedRevision::arrangement_seek_requires_preroll()` reports whether direct
 absolute-frame seeking would omit mutable Arrangement instruments or stateful
 track/return processors. Built-in Sine and Operator with zero effective feedback
 remain on the direct path because their notes are deterministic functions of
 note age and gate duration. Nonzero effective Operator feedback uses the bounded
-mutable runtime and therefore requires the existing prepared-history seek path;
-enabled transport-loop seek/preroll and other unsupported mutable paths remain
-explicit refusals. See docs/operator-feedback.md for its actual admission scope.
+mutable runtime and therefore requires the existing prepared-history seek path.
+Interactive seeks support enabled transport loops within the existing mutable
+density and resource admission; other unsupported mutable paths remain explicit
+refusals. See docs/operator-feedback.md for its actual admission scope.
 This is a control-side policy query, not a full eligibility or publication
 fence. Native UI/listening acceptance remains open. A 100-track interactive readiness
 profile is recorded in docs/performance.md; it is not a physical deadline.

@@ -12,7 +12,8 @@ use hex_lattice::{
 };
 use hex_project::{BeatTime, ClipId, NoteId, TrackId};
 
-pub(crate) const MAX_MUTABLE_EVENTS_PER_QUERY: usize = 256;
+pub(crate) const MAX_MUTABLE_NOTE_EVENTS_PER_QUERY: usize = 256;
+pub(crate) const MAX_MUTABLE_EVENTS_PER_QUERY: usize = MAX_MUTABLE_NOTE_EVENTS_PER_QUERY + 3;
 pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 /// The MIDI compiler admits at most 64 overlapping source intervals per
 /// instrument, including the declared release tail. This fixed proof capacity
@@ -22,7 +23,10 @@ pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 pub(crate) const MAX_MUTABLE_OCCURRENCE_PROOFS: usize = 64;
 /// Finite duration admission only: voice/query/storage/replay ceilings remain
 /// independent and may refuse dense sources or long prerolls at this horizon.
-const MAX_MUTABLE_TAIL_SECONDS: u64 = 140;
+// Vector's global time routing can slow its bounded 140-second companion
+// envelope horizon fourfold. Include the fixed decimator drain at 8 kHz while
+// retaining a finite admission/replay horizon and independent density caps.
+const MAX_MUTABLE_TAIL_SECONDS: u64 = 600;
 
 pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
     u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
@@ -31,9 +35,11 @@ pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
 /// graph or one retained-tail bank. Variable-size instrument requirements draw
-/// from this pool; the separate 4 KiB effect-twin limit is not an instrument cap.
+/// from this pool; the separate 64 KiB effect-twin limit is not an instrument cap.
 /// Host ledgers, checkpoints and retarget proofs have separate charged bounds.
 pub(crate) const MAX_STATEFUL_RUNTIME_PAIR_BYTES: usize = 2 * 1024 * 1024;
+/// Retarget proof storage is independent of effect runtime payload size.
+pub(crate) const MAX_INSTRUMENT_RETARGET_PROOF_BYTES: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MutableOccurrenceKey {
@@ -202,6 +208,8 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    pub(crate) expression_identity: Option<hex_project::DeviceId>,
+    pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
     scratch: Vec<MutableOccurrence>,
     next_id: u64,
@@ -279,11 +287,21 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            expression_identity: None,
+            expression: None,
             primary,
             scratch,
             next_id: 0,
             next_id_scratch: 0,
         })
+    }
+
+    pub(crate) fn supports_live_expression(&self) -> bool {
+        self.pair.max_events_per_block() >= MAX_MUTABLE_EVENTS_PER_QUERY
+            && self
+                .pair
+                .preflight_event_batch(&crate::live_expression::Snapshot::default().events(), 1)
+                .is_ok()
     }
 
     pub(crate) fn can_import_harmonics(
@@ -428,6 +446,9 @@ impl MutableInstrumentTrackRuntime {
         self.primary.extend_from_slice(&previous.primary);
         self.scratch.clear();
         self.scratch.extend_from_slice(&previous.primary);
+        self.expression = previous
+            .expression
+            .filter(|_| self.supports_live_expression());
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
         Ok(())
@@ -464,6 +485,9 @@ impl MutableInstrumentTrackRuntime {
         self.primary.extend_from_slice(&previous.primary);
         self.scratch.clear();
         self.scratch.extend_from_slice(&previous.primary);
+        self.expression = previous
+            .expression
+            .filter(|_| self.supports_live_expression());
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
         Ok(())
@@ -574,6 +598,9 @@ impl MutableInstrumentTrackRuntime {
             .checked_add(width)
             .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
         events.clear();
+        if let Some(expression) = self.expression {
+            events.extend(expression.events());
+        }
         onsets.sort_canonically();
 
         self.scratch.retain(|occurrence| {
@@ -691,6 +718,7 @@ impl MutableInstrumentTrackRuntime {
 
         events.sort_unstable_by_key(|event| {
             let (offset, is_on, occurrence_id) = match *event {
+                NativeInstrumentEvent::Expression { frame_offset, .. } => (frame_offset, false, 0),
                 NativeInstrumentEvent::NoteOff {
                     frame_offset,
                     occurrence_id,
@@ -819,7 +847,15 @@ fn push_event(
     events: &mut Vec<NativeInstrumentEvent>,
     event: NativeInstrumentEvent,
 ) -> Result<(), MutableInstrumentRuntimeError> {
-    if events.len() >= MAX_MUTABLE_EVENTS_PER_QUERY {
+    let expression_events = if events
+        .first()
+        .is_some_and(|event| matches!(event, NativeInstrumentEvent::Expression { .. }))
+    {
+        3
+    } else {
+        0
+    };
+    if events.len() >= MAX_MUTABLE_NOTE_EVENTS_PER_QUERY + expression_events {
         return Err(MutableInstrumentRuntimeError::EventCapacity);
     }
     events.push(event);
@@ -869,7 +905,7 @@ fn has_mutable_suppression(
 }
 
 /// Checked complete active-pair budget. The already-prepared effect graph
-/// admits at most 256 stateful instances. Effects retain their separate 4 KiB
+/// admits at most 256 stateful instances. Effects retain their separate 64 KiB
 /// per-twin bound; variable-size instruments consume the same aggregate pool.
 pub(crate) fn validate_mutable_graph_budget(
     existing_count: usize,
@@ -898,7 +934,7 @@ pub(crate) fn validate_prepared_graph_budget(
     session: &crate::PreparedSessionInventory,
 ) -> Result<(), MutableInstrumentRuntimeError> {
     let max_retarget_bytes = hex_project::MAX_TRACKS
-        .checked_mul(hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES)
+        .checked_mul(MAX_INSTRUMENT_RETARGET_PROOF_BYTES)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
     if session.mutable_history_retarget_storage_bytes() > max_retarget_bytes {
         return Err(MutableInstrumentRuntimeError::Budget);
@@ -958,4 +994,44 @@ pub(crate) fn validate_prepared_graph_budget(
     }
 
     validate_mutable_graph_budget(effect_count, effect_bytes, mutable_count, mutable_bytes)
+}
+
+#[cfg(test)]
+mod live_expression_capacity_tests {
+    use super::*;
+    #[test]
+    fn controllers_supplement_all_256_note_events_including_note_offs() {
+        let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+        events.extend(crate::live_expression::Snapshot::default().events());
+        let capacity = events.capacity();
+        for id in 1..=MAX_MUTABLE_NOTE_EVENTS_PER_QUERY {
+            push_event(
+                &mut events,
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: id as u64,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(events.len(), 259);
+        assert_eq!(events.capacity(), capacity);
+        assert_eq!(
+            push_event(
+                &mut events,
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: 257
+                }
+            ),
+            Err(MutableInstrumentRuntimeError::EventCapacity)
+        );
+        assert!(matches!(
+            events.last(),
+            Some(NativeInstrumentEvent::NoteOff {
+                occurrence_id: 256,
+                ..
+            })
+        ));
+    }
 }

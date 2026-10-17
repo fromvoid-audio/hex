@@ -50,7 +50,7 @@ pub struct NativeDeviceCatalogEntry {
 /// Validated typed value paired with its device-owned presentation descriptor.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeDeviceParameterView {
-    pub descriptor: &'static ParameterDescriptor,
+    pub descriptor: ParameterDescriptor,
     pub value: ParameterValue,
     /// Whether the editor should enable this control for the current device state.
     pub enabled: bool,
@@ -243,8 +243,9 @@ fn read_parameter<D: NativeDeviceMetadata + ?Sized>(
     if parameter == DEVICE_OUTPUT_GAIN.id {
         return Ok(ParameterValue::Float(state.output_gain_db()));
     }
-    let descriptor = definition
-        .descriptors()
+    let descriptors = hex_lattice_contract::validated_state_descriptors(definition, state)
+        .map_err(|_| Invalid("native device descriptors are invalid"))?;
+    let descriptor = descriptors
         .iter()
         .find(|descriptor| descriptor.id == parameter)
         .ok_or(Invalid("native device parameter is unavailable"))?;
@@ -262,8 +263,10 @@ fn build_view<D: NativeDeviceMetadata + ?Sized>(
     definition: &D,
     migrated: &NativeDeviceState,
 ) -> Result<NativeDeviceView, Invalid> {
-    let mut parameters = Vec::with_capacity(definition.descriptors().len());
-    for descriptor in definition.descriptors() {
+    let descriptors = hex_lattice_contract::validated_state_descriptors(definition, migrated)
+        .map_err(|_| Invalid("native device descriptors are invalid"))?;
+    let mut parameters = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
         let value = definition
             .read_parameter(migrated, descriptor.id)
             .map_err(|_| Invalid("native device parameter is unavailable"))?;
@@ -536,7 +539,7 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 395);
+        assert_eq!(operator_view.parameters.len(), 424);
         let enables: Vec<_> = operator_view
             .parameters
             .iter()
@@ -556,10 +559,21 @@ mod tests {
         for parameter in operator_view
             .parameters
             .iter()
-            .filter(|parameter| (57..=61).contains(&parameter.descriptor.id.value()))
+            .filter(|parameter| (57..=60).contains(&parameter.descriptor.id.value()))
         {
             assert_eq!(parameter.value, ParameterValue::Choice(0));
         }
+        let routing = operator_view
+            .parameters
+            .iter()
+            .find(|parameter| parameter.descriptor.id.value() == 61)
+            .unwrap();
+        assert_eq!(
+            routing.value,
+            ParameterValue::Choice(1),
+            "the product default uses the serial algorithm preset"
+        );
+        assert_eq!(routing.value, routing.descriptor.default);
         for operator_index in 0..4 {
             let id = hex_lattice_contract::ParameterId::new(74 + operator_index).unwrap();
             let parameter = operator_view

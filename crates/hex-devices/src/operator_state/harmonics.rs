@@ -270,7 +270,7 @@ mod tests {
     use super::*;
     #[test]
     fn version_twelve_preserves_all_legacy_prefixes_and_strictly_validates_banks() {
-        let current = OPERATOR_METADATA.default_state().unwrap();
+        let current = crate::operator_state::tests::legacy_state();
         assert_eq!(current.payload().len(), PAYLOAD_BYTES);
         for (version, len) in [
             (1, 224),

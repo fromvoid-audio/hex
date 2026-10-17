@@ -1,3 +1,21 @@
+## current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `ebb55d08`, preserving the streaming constructor/status contracts,
+Vector global panel and state-aware owned descriptors alongside retained windowed
+controls and accessibility admission. Hidden-row reconciliation compares owned
+descriptors and retires changed ranges plus pending values under unchanged IDs;
+the Track/Return/instrument regressions now cover that case. Both prior histories
+remain below.
+
+The combined MIDI/menu and248px meter layout initially collapsed the status
+message at880x540. A50px message minimum preserves its space while bounded status
+fields shrink; the existing menu regression now checks stable message/revision
+bounds. All40 focused row/window/accessibility/meter/header/navigation/algorithm/
+project-replacement/controller tests pass, as do UI test compilation, formatting,
+architecture, UI-style and device-composition guards. Exact integrated-source full
+local CI, commit, merge and optimized delivery remain separate primary work;
+these source/scene checks do not establish native acceptance.
+
 ## accessibility/cache composition — #29 / PR188, 16 october 2026
 
 After merging the independent cache optimization PR264, integrated main5607b14c
@@ -22,6 +40,139 @@ with a single content inset, checked scroll extent and a source-guard negative
 control against replacing that surface. Current source checks are retained in
 the PR; exact Mac compilation, the three AppKit lifecycle tests and actual
 AX/VoiceOver/input/paint acceptance remain required. No native acceptance claim.
+
+## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
+
+Native effect/instrument registries validate owned descriptors for each current
+state; patches, availability and engine read-only views resolve dynamic IDs.
+Static device/catalog APIs and EQ8's 3,792-byte runtime stay unchanged. Effect
+instances may declare 64 KiB per twin while the independent 1 MiB bank cap,
+256-instance limit and twin accounting remain in force. Heap-backed future
+runtimes must declare all owned capacities; see [runtime bounds](docs/stateful-lattice.md).
+
+Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
+The parent EQ redesign, per-node automation, full final-source local CI and any
+native/user-test delivery remain separate work; this entry does not claim them.
+
+## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
+
+- Create-new canonical workload generator writes100 independent120s original
+  mixed-rate WAVs with bounded IO, exact reader fingerprints and44.1/48kHz saved
+  projects sharing relative source paths. Two real Session scenes share assets;
+  audio-only tracks keep existing source/runtime/page limits and safe gains.
+- Small generator controls and an explicit ignored full-workload Desktop smoke
+  cover automated preparation. Native sustained100-track playback/listening and
+  device deadline evidence remain operator acceptance, not generation/headless
+  claims. Exact source/check/build results are recorded externally.
+- See docs/streaming-100-track-workload.md for generation, hashes, explicit smoke
+  and finite optimized operator checklist. PR241 remains the later edit/fault pass;
+  original24/177 broader acceptance stays open.
+
+## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
+
+The eleven canonical algorithm diagrams replace the raw matrix UI; new serial
+patches expose level-driven FM while saved custom routing and legacy DSP remain
+preserved. Version 15 adds explicit legacy/operator behavior, source assignments,
+the requested 1–32 voice choices, stealing/retrigger/mono, per-note pan and real
+interpolation/2× antialias processing. See [contracts and limits](docs/vector-global.md)
+and [reference provenance](research/observations/vector-global-2653.md).
+
+All 288 device tests and 38 focused operator UI tests pass at the source milestone.
+Connected pressure/bend/wheel input uses a separate identity-bound lease and the
+native CoreMIDI boundary. Hardware notes, sustain, MPE and recorded controller
+lanes are excluded. A prepared callback/oracle probe covers controller changes,
+held algorithm switching and cancellation with zero total/signed-net allocations.
+The release headless profile records CPU/storage cost in
+[performance.md](docs/performance.md); it does not establish physical deadlines.
+
+[PR269](https://github.com/PORTALSURFER/hex/pull/269) retains final exact-source full
+local CI and merge evidence. The repository test-build receipt records optimized
+stable-path delivery. Native controller/UI/listening acceptance remains separate;
+see the supplied finite test checklist. Implementation, merge and disk installation
+must not be reported as measured Live sonic parity or native acceptance.
+## native superseded preparation cleanup — pulse2656 / PR272, 17 october 2026
+
+- Adapter retirement intent now survives actual Root Cleaning/Complete and
+  verification failure before its first explicit request. Exact report recovery
+  remains the only removal/reuse frontier; transient work contention retains the
+  cancelled preparation token instead of treating Busy as completion.
+- An actual Root/pair control fails before repair in0.03s, then covers repeated
+  retirement, verification failure, exact recovery and incarnation reuse. Rapid
+  New→Import before empty ACK exercises actual successor PCM with callback probes.
+  No Root policy, queue/capacity, native deadline or listening claim is added.
+
+## native downsample reader window — pulse2655 / PR271, 17 october 2026
+
+- Native verified reader limits now use the already reserved source-scratch
+  allowance instead of confusing 4096 output frames with source frames. Existing
+  worker window validation and file/source/page/runtime limits stay unchanged.
+- A small actual Session→native adapter 48 kHz→44.1 kHz control reproduces the old
+  catalog-capacity refusal in 0.37 s, then checks actual applied PCM and zero
+  total/net callback allocations after repair. Full 100-track/native listening
+  acceptance remains separately tracked by PR240/241; no physical claim here.
+
+## connected verified document audio — pulse2544 / PR239, 17 october 2026
+
+- Desktop composes the actual Session worker/source snapshot with persistent
+  native pair/graph preparation and same-slot queue acceptance. UI receives only
+  the constructor-bound Client in both modes; Resident preroll ownership remains
+  a scoped compatibility path and never a Verified fallback.
+- Verified new-track import removes only the freshly generated default instrument
+  atomically. Empty/resident successors retain typed context and actual N2 domain
+  admission. Conservative per-request quote/scratch reservations preserve the
+  existing separate mutable-runtime, page-pool PCM, metadata and opaque scopes.
+- Actual install status reconciles coalesced Submitted events with last-audible
+  context and stable current refusal. Canonical generation events release the old
+  Client before replacement readiness; existing workers own cleanup without UI
+  polling or joins. Headless connected controls use actual mixed-rate verified
+  worker pages and zero-total/net callback probes.
+- Targeted and final exact local-CI evidence is recorded externally on the PR and
+  Pulse. No physical device, native UI/listening, installation, 100-track or
+  original24/177 completion is claimed; PR240/241 and export followup2650 remain.
+
+## verified document source/service checkpoint — pulse2544 / PR239, 16 october 2026
+
+Explicit verified New/Open branches before resident decode; imports/batches retain
+immutable verified source facts and use the existing mixed-source semantic
+compiler. History/source metadata budgets include Undo-retained facts, while
+canonical snapshots share verified path backing and pair actual worker context.
+Resident defaults remain. Verified events omit legacy Playback; offline export
+refuses explicitly (separate Pulse2650 / PR266). All163 Session tests, three
+focused real-reader/worker controls, strict Session Clippy and the UI compatibility
+check passed at this source checkpoint. The next accounting checkpoint enumerates actual auxiliary queue/atomic payload
+DATA and bounded opaque resource handles, with a never-used preview seal and
+owning refusals (including sentinel request0). All164 audio feature unit tests and
+76 integration tests plus strict feature Clippy pass; the handle-budget and
+sentinel-token negative controls fail with their guards disabled. The native endpoint checkpoint reserves four terminal destinations before CPAL
+exposure and separates callback nonrenderability, autonomous graph cleanup and
+final client endpoint/lease release. The move-only client transfers its whole
+bundle on close/Drop; the lifecycle thread destroys actual endpoint Boxes.
+Split gain/publication admission uses one atomic word with matching terminal
+release and enqueue-failure rollback. Legacy Resident Control remains compatible.
+The strict capture-enabled factory also measures actual analysis buffers and
+capture capacity, keeps Reader inside Client, binds the actual Reaper, and uses
+persistent normal-join/first-panic custody. Native analysis is fixed to device rate;
+generic dynamic workers remain unchanged and cannot mint its native receipt.
+The pending source constructor now reserves one existing N2 Root cell before
+factory work, keeps Starting occupied through close, seals the exact same pair
+in place, and transfers its endpoint only through the real reserved publication
+ring/terminal barrier. Verification refusal conserves the pool until normal
+lifecycle cleanup and report consumption; the real first-play readiness fixture
+uses this path. Session sink/desktop/UI wiring is still unfinished; no full-CI,
+native UI or delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+## loop-enabled prepared arrangement seek — #2652 / PR268, 17 october 2026
+
+Interactive seek candidates now accept admitted enabled transport loops instead
+of failing with `UnsupportedTransportLoop`. End/beyond-end targets normalize into
+the loop before bounded first-pass reconstruction; both candidate clocks start
+at that frame with pass zero. Ordinary rendering preserves mutable gate clipping,
+track/return processor history, first-pass tempo and subsequent periodic playback.
+Raw-request work budgets, cancellation, exact revision ownership, storage limits
+and linear-export preroll refusals remain unchanged. The focused regression
+failed with the reported error before the fix; boundary/paused-resume PCM tests
+cover mutable feedback plus stateful Track/Return chains and inside/outside-loop
+tempo changes across repeated seams. Full local CI and optimized native delivery
+are tracked with the canonical PR; native listening remains user-owned.
 
 ## cold clip-cache geometry identity — #2651 / PR267, 17 october 2026
 
@@ -3723,6 +3874,24 @@ same-owner device/context refusal, with zero total/net callback probes. A narrow
 negative control reproduces premature speculative repin. Final source evidence
 and exact full local CI are recorded externally; PR239 UI composition and original
 #24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.
+
+- PR #239 worker-connection checkpoint: one existing lifecycle open lane selects
+  legacy or worker-owned completion. Neutral Session sink negotiates before
+  canonical startup, polls through event backpressure, and closes on worker exit.
+  Focused negotiated-rate/offline/editing/backpressure/close controls and existing
+  Session suites pass; desktop/native publication and mode UI remain open.
+
+- PR #239 Resident forwarding checkpoint: one nonblocking constructor-owned
+  request/result cell preserves owning refusal and separates request/submitted/
+  applied identities. Verified sealing refuses that owning compatibility path.
+  Headless real queue/ACK, contention, refusal identity and zero-allocation
+  controls pass; desktop/UI integration remains outstanding.
+
+- PR #239 pending verified-pair checkpoint: endpoint/disposal reserve precedes
+  worker spawn; ready seal moves the same pair and cleanup backing. Mixed-rate
+  and empty-source seals, alias refusal, cancellation/pool conservation, changed
+  fingerprint, early insufficient allowance and retained worker-panic controls
+  pass. Root N2 slot integration and desktop/UI connection remain open.
 
 ## 17 October 2026 — issue29 macOS accessibility verification
 

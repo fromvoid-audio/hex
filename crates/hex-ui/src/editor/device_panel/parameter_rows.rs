@@ -139,8 +139,8 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
     // owner/type retires.
     for (device, (class, state, _)) in &view.device_panel.views {
         for descriptor in [
-            &hex_engine::DEVICE_INPUT_GAIN,
-            &hex_engine::DEVICE_OUTPUT_GAIN,
+            hex_engine::DEVICE_INPUT_GAIN,
+            hex_engine::DEVICE_OUTPUT_GAIN,
         ] {
             descriptors.insert(
                 ParameterKey {
@@ -380,13 +380,13 @@ pub(super) mod tests {
                         ParameterValue::Choice(0),
                     ),
                 };
-                let descriptor = Box::leak(Box::new(ParameterDescriptor {
+                let descriptor = ParameterDescriptor {
                     id: hex_lattice_contract::ParameterId::from_static(id),
                     label: "row value",
                     kind,
                     default: value,
                     presentation: ParameterPresentation::Linear,
-                }));
+                };
                 NativeDeviceParameterView {
                     descriptor,
                     value: if id == 10 {
@@ -462,13 +462,13 @@ pub(super) mod tests {
         parameters.insert(
             0,
             NativeDeviceParameterView {
-                descriptor: Box::leak(Box::new(ParameterDescriptor {
+                descriptor: ParameterDescriptor {
                     id: hex_lattice_contract::ParameterId::from_static(100),
                     label: "unsupported",
                     kind: ParameterKind::Bool,
                     default: ParameterValue::Bool(false),
                     presentation: ParameterPresentation::Linear,
-                })),
+                },
                 value: ParameterValue::Float(0.5),
                 enabled: false,
             },

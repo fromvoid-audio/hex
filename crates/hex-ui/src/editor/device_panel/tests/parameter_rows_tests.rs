@@ -296,6 +296,41 @@ fn exercise(
         "open selector mounted"
     );
     assert!(choice.read_with(cx, |control, _| control.is_open()));
+    // State-aware metadata owns descriptors. A changed range for an existing
+    // ID retires its cached control and optimistic value before remounting,
+    // while unrelated controls retain identity.
+    editor.update(cx, |view, cx| {
+        let changed_key = ParameterKey {
+            device,
+            parameter: second,
+        };
+        assert!(view.device_panel.controls.contains_key(&changed_key));
+        view.device_panel
+            .pending_values
+            .insert(changed_key, ParameterValue::Float(0.75));
+        let metadata = view
+            .device_panel
+            .views
+            .get_mut(&device)
+            .unwrap()
+            .2
+            .as_mut()
+            .unwrap();
+        metadata
+            .parameters
+            .iter_mut()
+            .find(|p| p.descriptor.id == second)
+            .unwrap()
+            .descriptor
+            .kind = ParameterKind::Float {
+            min: 0.0,
+            max: 2.0,
+            unit: None,
+        };
+        super::super::parameter_rows::reconcile(view, cx);
+        assert!(!view.device_panel.controls.contains_key(&changed_key));
+        assert!(!view.device_panel.pending_values.contains_key(&changed_key));
+    });
     // Metadata-only replacement invalidates an offscreen descriptor without
     // waiting for that row to mount again.
     editor.update(cx, |view, cx| {

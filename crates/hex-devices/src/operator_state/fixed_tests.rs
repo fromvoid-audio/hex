@@ -8,7 +8,7 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: ParameterValue) -> N
 
 #[test]
 fn version_two_migration_preserves_waveform_prefix_and_legacy_pcm() {
-    let mut current = OPERATOR_METADATA.default_state().expect("default");
+    let mut current = tests::legacy_state();
     current = patch(&current, parameter::waveform(2), ParameterValue::Choice(2));
     let legacy = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
@@ -41,7 +41,7 @@ fn version_two_migration_preserves_waveform_prefix_and_legacy_pcm() {
 
 #[test]
 fn version_three_migration_preserves_fixed_tuning_and_defaults_velocity_neutral() {
-    let mut current = OPERATOR_METADATA.default_state().expect("default");
+    let mut current = tests::legacy_state();
     current = patch(
         &current,
         parameter::fixed_frequency(3),
@@ -94,7 +94,7 @@ fn version_three_migration_preserves_fixed_tuning_and_defaults_velocity_neutral(
 
 #[test]
 fn version_four_migration_preserves_exact_prefix_and_defaults_feedback_neutral() {
-    let mut current = OPERATOR_METADATA.default_state().expect("default");
+    let mut current = tests::legacy_state();
     current = patch(
         &current,
         parameter::amplitude_velocity(4),
@@ -129,7 +129,7 @@ fn version_four_migration_preserves_exact_prefix_and_defaults_feedback_neutral()
 
 #[test]
 fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
-    let mut state = OPERATOR_METADATA.default_state().expect("default");
+    let mut state = tests::legacy_state();
     for operator in 1..=4 {
         state = patch(
             &state,
@@ -181,7 +181,7 @@ fn registered_fixed_notes_ignore_pitch_and_generic_state_roundtrips() {
 
 #[test]
 fn malformed_tuning_is_refused_even_when_fixed_mode_is_disabled() {
-    let original = OPERATOR_METADATA.default_state().expect("default");
+    let original = tests::legacy_state();
     for operator in 0..4 {
         for (field, value) in [
             (0, 2_u32),
@@ -204,10 +204,5 @@ fn malformed_tuning_is_refused_even_when_fixed_mode_is_disabled() {
             NativeDeviceState::new(OPERATOR_TYPE_ID, 3, vec![0; size]).expect("opaque data");
         assert!(OperatorSettings::from_state(&malformed).is_err());
     }
-    assert_eq!(
-        original,
-        OPERATOR_METADATA
-            .default_state()
-            .expect("unchanged defaults")
-    );
+    assert_eq!(original, tests::legacy_state());
 }

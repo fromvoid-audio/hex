@@ -7,7 +7,7 @@ pub(super) const CLIP_DETAIL_BODY_HEIGHT: f32 = 228.0;
 
 fn cancel_eq8_audition(view: &mut EditorView) {
     if let Some(audio) = view.audio.as_mut() {
-        let _ = audio.control.processor_audition.cancel_immediately();
+        let _ = audio.control.audition_cancel();
     }
     super::device_panel::clear_eq8_audition_gesture_flags(view);
 }

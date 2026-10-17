@@ -21,7 +21,8 @@ The full run executes its runner and native delivery regression tests, the
 architecture, GPUI patch, dependency patch, UI style and device-composition guards,
 formatting, denied dependency future-lint regressions, locked workspace and
 UI-feature tests, the native layout gallery's rendered test harness, audio and stream
-allocation probes, strict workspace and feature-specific Clippy, and a locked
+allocation probes (including the actual Session/Desktop adapter under the
+nondefault audio feature), strict workspace and feature-specific Clippy, and a locked
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
 

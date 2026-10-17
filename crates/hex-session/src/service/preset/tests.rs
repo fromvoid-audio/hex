@@ -179,18 +179,25 @@ fn device_preset_complete_state_one_undo_redo_preserves_identity_and_neighbors()
         if class == NativeDeviceClass::Instrument {
             assert_eq!(
                 state.state_version(),
-                14,
+                15,
                 "current canonical harmonic, filter and enable-state history is required"
             );
             assert_eq!(
                 state.payload().len(),
-                1_616,
+                1_728,
                 "complete current payload retained"
             );
             // Non-default values span level, tuning, envelope, signed routing
-            // and supported LFO/harmonic fields, including a hidden partial.
+            // and supported LFO/harmonic/global/controller fields, including a hidden partial.
             // Compare complete opaque state below.
             edits.extend([
+                // Start parallel before authoring a custom A-to-B edge; the
+                // default serial B-to-A edge would otherwise form a cycle.
+                (600, ParameterValue::Choice(11)),
+                (601, ParameterValue::Choice(5)),
+                (605, ParameterValue::Float(-37.5)),
+                (628, ParameterValue::Choice(5)),
+                (629, ParameterValue::Float(23.6)),
                 (357, ParameterValue::Bool(false)),
                 (358, ParameterValue::Float(0.25)),
                 (359, ParameterValue::Bool(true)),

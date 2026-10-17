@@ -328,7 +328,7 @@ pub(in crate::editor) fn bottom_bar(
                     view.device_panel.navigation.cancel();
                     view.focus.focus(window);
                     if let Some(audio) = view.audio.as_mut() {
-                        let _ = audio.control.processor_audition.cancel_immediately();
+                        let _ = audio.control.audition_cancel();
                     }
                     clear_eq8_audition_gesture_flags(view);
                     cx.notify();
