@@ -176,6 +176,26 @@ prerequisite. Linux cannot run the installed macOS Live reference or provide
 native macOS listening/visual evidence. Full local CI and final PR evidence
 are recorded on the ticket; targeted checks do not authorize merge.
 
+## Global browser search — #2659 / PR275, 17 october 2026
+
+Command-F opens the browser in `all`, focuses search and selects the previous
+query. Cached name filtering combines current-folder supported files and native
+devices; category filters, dragging and sample preview remain available. Search is
+bounded/nonrecursive, matching the current library contract; no all-place index
+or Live parity claim. See docs/browser-places.md for the native user checklist.
+Focused browser tests pass, including global focus/query replacement, first-arrow
+selection, selection identity across scan completion, Session device-click focus
+and category scroll reset. Follow-up regressions cover IME whole-query replacement,
+caret movement preserving manual scroll, search clicks restoring text mode without
+scroll reset, category clicks retaining Session browser focus, empty-query Escape
+restoring caret mode, and device highlights waiting for result focus. Unfinished gain numeric drafts refuse search without
+losing focus or text; Escape then Command-F restores normal search. Native-device
+and return-send numeric edits use the existing finalization barrier before search:
+invalid drafts retain focus, while repaired valid values commit before filtering. The browser
+and gain-lane suites pass, with existing drag/preview coverage preserved.
+Full runner results are recorded in the PR and Pulse; native acceptance remains
+pending.
+
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
 The eleven canonical algorithm diagrams replace the raw matrix UI; new serial
