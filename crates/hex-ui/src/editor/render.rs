@@ -335,6 +335,7 @@ impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
+        self.reconcile_clip_selection();
         self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
