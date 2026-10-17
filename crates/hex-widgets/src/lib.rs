@@ -20,7 +20,9 @@ mod numeric_text;
 mod response_graph;
 mod spectrum_plot;
 mod style;
-pub use spectrum_plot::{MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, layered_spectrum_plot};
+pub use spectrum_plot::{
+    MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
+};
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,

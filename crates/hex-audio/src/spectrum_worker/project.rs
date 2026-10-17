@@ -120,6 +120,11 @@ impl ProjectSelectionMailbox {
         self.version.load(SeqCst)
     }
     pub(crate) fn read(&self) -> Option<ProjectSelection> {
+        self.read_using(|id| id.load(SeqCst))
+    }
+    // Generic load seam lets tests count actual atomic reads without adding
+    // counters, storage or synchronization to the callback.
+    fn read_using(&self, mut load: impl FnMut(&AtomicU64) -> u64) -> Option<ProjectSelection> {
         let token = self.token();
         if token == 0 || token % 2 != 0 {
             return None;
@@ -128,13 +133,17 @@ impl ProjectSelectionMailbox {
         if count > MAX_PROJECT_TRACKS {
             return None;
         }
+        let mut tracks = [0; MAX_PROJECT_TRACKS];
+        for (target, source) in tracks[..count].iter_mut().zip(&self.tracks[..count]) {
+            *target = load(source);
+        }
         let selection = ProjectSelection {
             token,
             generation: self.generation.load(SeqCst),
             activation_floor: self.floor.load(SeqCst),
             sample_rate_hz: self.rate.load(SeqCst),
             count,
-            tracks: std::array::from_fn(|i| self.tracks[i].load(SeqCst)),
+            tracks,
             active: self.active.load(SeqCst),
         };
         (self.token() == token).then_some(selection)
@@ -811,6 +820,40 @@ mod tests {
             capture.finish(now, 11, true),
             Some(CaptureOutcome::Queued { .. })
         ));
+    }
+    #[test]
+    fn mailbox_reads_only_selected_prefix_and_refuses_concurrent_publication() {
+        let mailbox = ProjectSelectionMailbox::default();
+        for count in [0, 1, 2, MAX_PROJECT_TRACKS] {
+            let ids: Vec<_> = (1..=count as u64).collect();
+            mailbox.select(&ids, 7, 11, 48_000).unwrap();
+            let mut reads = 0;
+            let selection = mailbox
+                .read_using(|id| {
+                    reads += 1;
+                    id.load(SeqCst)
+                })
+                .unwrap();
+            assert_eq!(selection.tracks(), ids);
+            assert_eq!(reads, count, "no unused ID atomic reads");
+            assert!(selection.tracks[count..].iter().all(|id| *id == 0));
+        }
+        mailbox.clear().unwrap();
+        let cleared = mailbox
+            .read_using(|_| panic!("collapsed mailbox must not load any ID"))
+            .unwrap();
+        assert!(!cleared.active);
+        assert!(cleared.tracks().is_empty());
+        mailbox.select(&[1], 7, 11, 48_000).unwrap();
+        assert!(
+            mailbox
+                .read_using(|id| {
+                    mailbox.version.fetch_add(2, SeqCst);
+                    id.load(SeqCst)
+                })
+                .is_none(),
+            "no retry or stale snapshot after racing publication"
+        );
     }
     #[test]
     fn selection_preserves_every_identity_and_refuses_partial_or_wrapped_snapshots() {

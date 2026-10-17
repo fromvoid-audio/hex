@@ -47,6 +47,22 @@ exhaustion rejects the complete batch without dropping a selected layer or
 changing audio. Queue-full paths retain or return existing owners: no callback
 allocation, lock, logging, final owner destruction or FFT.
 
+Selection mailbox reads load only the published ID prefix (zero ID atomics for
+Master-only or cleared selections), with one bounded seqlock attempt. The immutable
+Playback owner table is sorted during control-side construction and stored inline,
+charged through Playback's actual size. Callback validation merges sorted selected
+IDs with that table in at most 256 owner comparisons, with no allocation or sorting.
+Malformed, unsorted, duplicate or missing IDs refuse the whole batch.
+
+UI render data uses validated immutable shared layer storage. Steady repaints clone
+one shared handle rather than converting/allocating 257 point vectors or scanning
+all tracks per selected layer. A result change rebuilds points; canonical revision
+or theme changes perform one color lookup traversal and retain existing points when
+colors did not change. Selection, output identity, generation, rate and freshness
+are still checked synchronously before exposing any cached curves. Focused tests
+check shared storage reuse, exact mailbox ID-load counts and linear owner comparisons
+at the full 256-track bound, alongside existing context/cancellation regressions.
+
 One aligned 4096-frame window covers every layer. Project work services at most two
 capture packets and eight stereo FFT layers per worker turn, then yields to the
 existing EQ analyzer. A multi-turn analysis freezes its one rolling window while

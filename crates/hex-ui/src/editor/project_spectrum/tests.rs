@@ -77,6 +77,24 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 count + 1,
                 "no selection cap or selected-track sum"
             );
+            let repeated = view.project_spectrum_layers(now);
+            assert!(
+                std::ptr::eq(layers.as_ptr(), repeated.as_ptr()),
+                "steady repaint shares every layer and point allocation"
+            );
+            view.project_spectrum.result.as_mut().unwrap().processed_at += Duration::from_nanos(1);
+            let updated = view.project_spectrum_layers(now);
+            assert!(
+                !std::ptr::eq(layers.as_ptr(), updated.as_ptr()),
+                "a new result invalidates shared render data"
+            );
+            let layers = updated;
+            publish(view, project.clone());
+            let unrelated = view.project_spectrum_layers(now);
+            assert!(
+                std::ptr::eq(layers.as_ptr(), unrelated.as_ptr()),
+                "unchanged colors preserve points across canonical revisions"
+            );
             for (index, track) in project.tracks().iter().enumerate() {
                 assert_eq!(
                     layers[index].color,
@@ -103,6 +121,10 @@ fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_contex
                 publish(view, changed.project().clone());
                 let recolored = view.project_spectrum_layers(now);
                 assert_eq!(recolored.len(), count + 1);
+                assert!(
+                    !std::ptr::eq(layers.as_ptr(), recolored.as_ptr()),
+                    "color change invalidates cache"
+                );
                 assert_eq!(
                     recolored[0].color,
                     theme::element_colors(ElementColor::Orange).accent

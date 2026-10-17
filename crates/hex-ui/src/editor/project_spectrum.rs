@@ -7,7 +7,7 @@ use gpui::{
     Window, div, prelude::*, px, rgb,
 };
 use hex_audio::spectrum_worker::PublishedProjectSpectrum;
-use hex_widgets::{SpectrumPlotLayer, layered_spectrum_plot};
+use hex_widgets::{SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot};
 
 pub(super) struct ProjectSpectrumState {
     pub(super) expanded: bool,
@@ -16,6 +16,7 @@ pub(super) struct ProjectSpectrumState {
     resize: Option<Resize>,
     result: Option<PublishedProjectSpectrum>,
     output_identity: Option<u64>,
+    plot_cache: Option<PlotCache>,
 }
 impl Default for ProjectSpectrumState {
     fn default() -> Self {
@@ -26,8 +27,21 @@ impl Default for ProjectSpectrumState {
             resize: None,
             result: None,
             output_identity: None,
+            plot_cache: None,
         }
     }
+}
+struct PlotCache {
+    generation: u64,
+    revision: u64,
+    theme: hex_preferences::ThemePreferences,
+    source: (
+        std::time::Instant,
+        std::time::Instant,
+        u64,
+        hex_audio::spectrum_worker::ProjectSelection,
+    ),
+    layers: SpectrumPlotLayers,
 }
 struct Resize {
     y: f32,
@@ -154,6 +168,7 @@ impl EditorView {
         if self.project_spectrum.result != result
             || self.project_spectrum.output_identity != output_identity
         {
+            self.project_spectrum.plot_cache = None;
             self.project_spectrum.result = result;
             self.project_spectrum.output_identity = output_identity;
             true
@@ -250,17 +265,17 @@ impl EditorView {
         .absolute()
         .inset_0()
     }
-    fn project_spectrum_layers(&self, now: std::time::Instant) -> Vec<SpectrumPlotLayer> {
+    fn project_spectrum_layers(&mut self, now: std::time::Instant) -> SpectrumPlotLayers {
         if self.project_spectrum.output_identity
             != self
                 .audio
                 .as_ref()
                 .and_then(|a| a.control.output_identity())
         {
-            return Vec::new();
+            return SpectrumPlotLayers::default();
         }
         if !self.project_spectrum.expanded {
-            return Vec::new();
+            return SpectrumPlotLayers::default();
         }
         let ids = self.project_spectrum_ids();
         let Some(result) = self.project_spectrum.result.as_ref().filter(|r| {
@@ -268,13 +283,54 @@ impl EditorView {
                 && r.selection.tracks() == ids
                 && r.is_fresh_at(now)
         }) else {
-            return Vec::new();
+            return SpectrumPlotLayers::default();
         };
         let Some(state) = self.state.as_ref() else {
-            return Vec::new();
+            return SpectrumPlotLayers::default();
         };
         if result.selection.sample_rate_hz != state.project.sample_rate() {
-            return Vec::new();
+            return SpectrumPlotLayers::default();
+        }
+        let source = (
+            result.captured_at,
+            result.processed_at,
+            result.applied_revision,
+            result.selection,
+        );
+        let palette = theme::preferences();
+        if let Some(cache) = self.project_spectrum.plot_cache.as_ref()
+            && cache.generation == self.project_generation
+            && cache.source == source
+            && cache.revision == state.revision
+            && cache.theme == palette
+        {
+            return cache.layers.clone();
+        }
+        // One canonical traversal per revision/theme/result change, with bounded
+        // binary lookup. Never a separate full project scan for each layer.
+        let mut colors = vec![None; ids.len()];
+        for track in state.project.tracks() {
+            if let Ok(index) = ids.binary_search(&track.id().value()) {
+                colors[index] = Some(theme::element_colors(track.color()).accent);
+            }
+        }
+        let Some(mut colors) = colors.into_iter().collect::<Option<Vec<_>>>() else {
+            return SpectrumPlotLayers::default();
+        };
+        colors.push(theme::device_analyzer_style().output);
+        // Unrelated edits update the lookup key without converting points again.
+        if let Some(cache) = self.project_spectrum.plot_cache.as_mut()
+            && cache.generation == self.project_generation
+            && cache.source == source
+            && cache
+                .layers
+                .iter()
+                .map(|l| l.color)
+                .eq(colors.iter().copied())
+        {
+            cache.revision = state.revision;
+            cache.theme = palette;
+            return cache.layers.clone();
         }
         let points = |frame: &hex_audio::spectrum::SpectrumFrame| {
             let upper = 20_000.0_f32.min(frame.sample_rate_hz as f32 / 2.0);
@@ -294,24 +350,24 @@ impl EditorView {
                 .collect()
         };
         let mut layers = Vec::with_capacity(result.selection.layer_count());
-        for (index, id) in result.selection.tracks().iter().enumerate() {
-            let Some(track) = state
-                .project
-                .tracks()
-                .iter()
-                .find(|track| track.id().value() == *id)
-            else {
-                return Vec::new();
-            };
+        for (index, color) in colors[..ids.len()].iter().enumerate() {
             layers.push(SpectrumPlotLayer {
                 points: points(&result.frames()[index + 1]),
-                color: theme::element_colors(track.color()).accent,
+                color: *color,
             });
         }
         // Real master stays contrasting and above every independent track layer.
         layers.push(SpectrumPlotLayer {
             points: points(&result.frames()[0]),
             color: theme::device_analyzer_style().output,
+        });
+        let layers = SpectrumPlotLayers::new(layers).unwrap_or_default();
+        self.project_spectrum.plot_cache = Some(PlotCache {
+            generation: self.project_generation,
+            revision: state.revision,
+            theme: palette,
+            source,
+            layers: layers.clone(),
         });
         layers
     }
@@ -379,8 +435,7 @@ impl EditorView {
             let plot = layered_spectrum_plot(
                 self.project_spectrum_layers(std::time::Instant::now()),
                 style,
-            )
-            .unwrap_or_else(div);
+            );
             header = header.child(
                 div().flex_1().min_w_0().h(px(18.0)).child(
                     plot.id("project-spectrum-plot")
@@ -402,7 +457,7 @@ impl EditorView {
             .child(header);
         if expanded && !compact {
             let layers = self.project_spectrum_layers(std::time::Instant::now());
-            let plot = layered_spectrum_plot(layers, style).unwrap_or_else(div);
+            let plot = layered_spectrum_plot(layers, style);
             panel = panel
                 .child(
                     plot.id("project-spectrum-plot")

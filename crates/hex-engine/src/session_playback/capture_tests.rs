@@ -1145,6 +1145,12 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
         snapshot.loop_region = looping.then(|| LoopRegion::new(0, 1024, true).unwrap());
         let project = Project::from_snapshot(snapshot).unwrap();
         let prepared = prepare_audio(&project);
+        let playback = crate::playback::Playback::from_prepared(Arc::clone(&prepared));
+        assert!(playback.project_output_supported(&[1, 6]));
+        assert!(playback.project_output_supported(&[]));
+        assert!(!playback.project_output_supported(&[6, 1]));
+        assert!(!playback.project_output_supported(&[1, 999]));
+
         let mut observed = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
         let mut reference = SessionPlayback::new(prepared).unwrap();
         observed.apply(SessionPlaybackCommand::Play).unwrap();
