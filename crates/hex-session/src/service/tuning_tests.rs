@@ -462,3 +462,73 @@ fn review_lifecycle_canonical_edit_publishes_actual_rebased_tuning_pcm() {
         );
     }
 }
+
+#[test]
+fn reference_audition_continues_during_device_parameter_preview() {
+    use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let _ = next(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "reference".into(),
+        }))
+        .unwrap();
+    let added = next(&service);
+    let track = added.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::AddReturnTrack {
+            name: "return".into(),
+        }))
+        .unwrap();
+    let added = next(&service);
+    let return_track = added.state.project.return_tracks()[0].id();
+    let input = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    service
+        .submit(Request::PrepareTuningAudition {
+            revision: added.state.revision,
+            input,
+        })
+        .unwrap();
+    assert!(next(&service).error.is_none());
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target: GestureTarget::ReturnSend {
+                track,
+                return_track,
+            },
+        }))
+        .unwrap();
+    assert!(next(&service).gesture_ack.unwrap().accepted);
+    service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 1,
+            value: ParameterValue::Float(0.3),
+        }))
+        .unwrap();
+    let preview = next(&service);
+    assert!(preview.gesture_ack.as_ref().unwrap().accepted);
+    assert!(preview.error.is_none(), "{:?}", preview.error);
+    assert_eq!(
+        preview
+            .device_preview
+            .unwrap()
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .sends()[0]
+            .gain(),
+        0.3
+    );
+    let mut playback = preview.playback.unwrap();
+    let mut frames = [[0.0; 2]; 128];
+    playback.render(&mut frames).unwrap();
+    assert!(frames.iter().any(|frame| frame[0] != 0.0));
+}

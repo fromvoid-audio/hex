@@ -2857,12 +2857,16 @@ fn run_worker(
             _ => None,
         };
         let playback_uses_preview = preview_prepared.is_some();
+        // A canonical rebase must replace its canonical audition candidate.
+        // Ordinary gesture publications already carry the prepared live-keyboard
+        // input and tuning hint, so keep that specialized preview intact.
+        let prefer_rebased_preview = canonical_changed && playback_uses_preview;
         let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
+        } else if computer_keyboard_playback.is_some() && !prefer_rebased_preview {
+            computer_keyboard_playback
         } else if let Some(prepared) = preview_prepared {
             Some(native_playback(prepared))
-        } else if computer_keyboard_playback.is_some() {
-            computer_keyboard_playback
         } else if let Some(prepared) = canonical_prepared {
             Some(native_playback(prepared))
         } else {
