@@ -1,6 +1,6 @@
 # optimized native test delivery
 
-Every Hex change requiring user testing uses `sh scripts/bundle-macos.sh` with
+Reviewed Hex change candidates supplied for user testing use `sh scripts/bundle-macos.sh` with
 full exact-source local CI evidence, included PR revisions and a finite
 checklist. This is the native macOS workflow; Hex is not a VST3 and does not use
 plugin-release. Unoptimized debug executables are only appropriate for a
@@ -10,14 +10,22 @@ future testing or delete historical review bundles.
 ## launch modes
 
 `./launch` is the standard update-and-start path. It requires a clean local `main`,
-fetches `origin/main`, fast-forwards only when local main is an ancestor, runs full
-local CI on that exact source, and installs and opens the optimized build at the
+fetches `origin/main`, fast-forwards only when local main is an ancestor, builds
+that exact source, and installs and opens the verified optimized build at the
 configured stable path. Dirty, non-main, ahead or divergent checkouts are refused.
 When source update changes `launch`, it re-executes the updated entrypoint while
 preserving the selected mode.
 
-`./launch --test` remains an explicit alias for the same update, check, build and
-start workflow. Save and quit hex before either mode. The launcher refuses to
+Default launch always fetches and invokes the optimized build, even when an app
+is installed. It neither runs tests nor requires a previous green CI report.
+Build-only delivery freezes the clean exact commit and source digest, rechecks
+them before publication, and retains source/artifact/signature verification and
+release ownership safeguards. Its receipt records `source-only` verification,
+`tests: not_run`, and no CI report; bundled `source-verification.json` is source
+evidence, never a passing test report. Cargo can reuse valid dependencies normally.
+
+`./launch --test` adds full exact-source local CI before the same build and start
+workflow. Save and quit hex before either mode. The launcher refuses to
 replace the installed app while it is running and also refuses when a raw
 `hex-desktop` executable is running, before CI or Cargo build work; it never kills
 a process. The `--test` spelling survives source-update re-exec.
@@ -31,6 +39,7 @@ source. `--open` and `--test` cannot be combined.
 
 Review the focused PR and run `python3 scripts/local-ci.py` on its clean final
 commit. All required steps must pass with unchanged source digest before merge.
+This developer validation requirement is separate from the runtime launch modes.
 Build and install with this repository's command below; Pulse is a ticket manager
 and does not authorize, schedule or attest Hex builds or installation.
 
@@ -54,6 +63,14 @@ sh scripts/bundle-macos.sh \
   --included artifacts/included-test-revisions.json \
   --checklist artifacts/USER-TEST.md
 ```
+
+The default launcher uses the same repository-owned installer with `--build-only`
+instead of `--ci-report`; those options are mutually exclusive and one is required.
+This explicit mode verifies clean exact `--candidate` source before/after the
+optimized build and before publication without running or requiring CI. It does
+not change the full-CI contract of the command above. Build-only bundles carry
+source verification instead of `local-ci-summary.json`; their receipt's CI path
+and hash are null. Do not describe them as tested.
 
 `included-test-revisions.json` is a nonempty list such as:
 
