@@ -16,7 +16,7 @@ than rewriting media. Their coordinates follow its existing clock: frames for
 ordinary audio, beats for explicitly musical audio. Snapping alone never enables
 warp or converts frame-anchored audio into tempo-following audio. The event grid
 uses the project tempo/meter map and the displayed interval, with independent
-adaptive/fixed/off state and zoom. The same helper supplies painted landmarks,
+adaptive on/off state and zoom. The same helper supplies painted landmarks,
 snapping and directional nudges. Holding Cmd/platform inverts snap, as in the
 Arrangement; Cmd+4 toggles it in the focused editor.
 
