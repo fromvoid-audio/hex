@@ -100,6 +100,10 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
         settled(v) && read(v, device).nodes.len() == 1
     });
     visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(selector("eq-auto", device)).is_some(),
+        "a newly created node remains selected after publication"
+    );
     let initial = editor.read_with(cx, |v, _| read(v, device));
     let id = initial.nodes[0].id;
     let moved = plot(&mut visual, device, 0.7, 0.7);
@@ -232,6 +236,79 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
         assert_eq!(state.lanes.len(), 1);
         assert_eq!(state.lanes[0].node, id);
     });
+    visual.run_until_parked();
+
+    // Restore the automation view if undo left the node unselected, then remove
+    // its last node while that view is open. The response must become editable.
+    let automation_field =
+        Box::leak(format!("eq-auto-field-{}-gain", device.value()).into_boxed_str());
+    if visual.debug_bounds(automation_field).is_none() {
+        visual.simulate_click(moved, Modifiers::default());
+        visual.run_until_parked();
+        let button = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert!(visual.debug_bounds(automation_field).is_some());
+    let button = visual.debug_bounds(selector("eq-remove", device)).unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.is_empty()
+    });
+    visual.run_until_parked();
+    let replacement_position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(replacement_position, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_panel.message.is_none(),
+            "empty response creation refused: {:?}",
+            view.device_panel.message
+        )
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    let replacement = editor.read_with(cx, |v, _| {
+        let state = read(v, device);
+        assert!(state.lanes.is_empty());
+        assert!(
+            state.nodes[0].id > id,
+            "deleting and undoing never reuses a node identity"
+        );
+        state.nodes[0].id
+    });
+
+    // Undoing a creation while its automation is open must leave the same usable
+    // empty response, rather than sending future clicks to the removed node.
+    let button = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(automation_field).is_some());
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.is_empty()
+    });
+    visual.run_until_parked();
+    visual.simulate_click(replacement_position, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_panel.message.is_none(),
+            "empty response creation refused: {:?}",
+            view.device_panel.message
+        )
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(selector("eq-auto", device)).is_some(),
+        "the replacement node is selected after undo and recreation"
+    );
+    assert!(editor.read_with(cx, |v, _| read(v, device).nodes[0].id) > replacement);
 }
 #[gpui::test]
 fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut TestAppContext) {

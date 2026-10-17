@@ -3911,3 +3911,12 @@ the compensated stamp now preserves that optional clock contract without losing
 exact frame identity. The original late-failure rollback regression is retained
 unchanged, with an added origin-clock unavailable-beat assertion. Final CI must
 be rerun on this repair; the earlier failed report is not merge evidence.
+
+The final rendered EQ workflow regression also reproduces and repairs removing
+the last node while its automation editor is open. Canonical-state changes now
+persist valid node selection and leave automation mode when that target is gone,
+while pending node creation retains optimistic selection until publication.
+Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
+new-node controls pass in the rendered fixture, alongside strict UI Clippy and
+page-boundary checks. The prior full run was interrupted for this repair; only
+the next unchanged full candidate may supply merge evidence.

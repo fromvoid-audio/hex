@@ -106,6 +106,13 @@ pub(super) fn render_body(
         // create/delete/undo/redo, may shift them. Local drag previews keep the
         // same authored key until commit and are preserved during the gesture.
         panel.authored_state = canonical.clone();
+        // Events share this persistent mode with rendering. Repair only when
+        // canonical state changes: a newly created node is selected optimistically
+        // before its ID appears in the worker's published state.
+        panel.selected = panel.selected.filter(|id| state.node(*id).is_ok());
+        if panel.selected.is_none() {
+            panel.automation = None;
+        }
         panel.selected_point = None;
         panel.preview = None;
     }
