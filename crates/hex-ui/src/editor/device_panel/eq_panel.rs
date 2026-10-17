@@ -857,7 +857,7 @@ fn spectrum_layers(
                     .unwrap_or((20.0, 20000.0));
                 [
                     (((low * high).sqrt() / 20.0).ln() / (upper / 20.0).ln()).clamp(0.0, 1.0),
-                    ((db + 72.0) / 72.0).clamp(0.0, 1.0),
+                    super::spectrum_display::level(*db),
                 ]
             })
             .collect()
