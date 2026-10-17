@@ -20,8 +20,10 @@ pub(crate) fn audio_to_midi(project: &mut Project, id: ClipId) -> Result<Created
                 .ok_or(Invalid("clip end overflow"))?,
         )?;
         let length = beat_length(start, end)?;
+        let name = clip.name.clone();
         project.tracks[track].content.audio_clips.remove(index);
         project.tracks[track].content.midi_clips.push(MidiClip {
+            name,
             id,
             start,
             length,
@@ -85,8 +87,9 @@ pub(crate) fn midi_to_audio(
             .position(|clip| clip.id == id)
             .map(|index| (track, index))
     }) {
-        project.tracks[track].content.midi_clips.remove(index);
+        let original = project.tracks[track].content.midi_clips.remove(index);
         project.tracks[track].content.audio_clips.push(Clip {
+            name: original.name,
             id,
             asset,
             start,

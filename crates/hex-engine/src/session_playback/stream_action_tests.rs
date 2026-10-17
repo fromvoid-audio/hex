@@ -12,6 +12,7 @@ fn action_revision(looped: bool) -> Arc<PreparedRevision> {
     snapshot.assets[0].playback_frames = 8192;
     snapshot.assets[0].conversion_version = hex_project::SINC_CONVERSION_V1;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        name: "clip".into(),
         edit: None,
         gain: hex_project::ClipGain::UNITY,
         id: snapshot.next_id,

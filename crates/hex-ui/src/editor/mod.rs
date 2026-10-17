@@ -12,6 +12,8 @@ mod browser_input;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+mod clip_name;
+
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_paint_ui_test;
@@ -251,6 +253,9 @@ actions!(
         TrimLeft,
         TrimRight,
         DeleteClip,
+        RenameClip,
+        CommitClipName,
+        CancelClipName,
         CopyTimeSelection,
         CutTimeSelection,
         PasteTimeSelection,
@@ -300,6 +305,7 @@ const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
+    clip_name::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -490,6 +496,7 @@ pub(super) struct EditorView {
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
+    clip_name_edit: Option<clip_name::NameEdit>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
@@ -836,6 +843,7 @@ impl EditorView {
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
+            clip_name_edit: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
             selected_cell: None,
@@ -1228,6 +1236,7 @@ impl EditorView {
             self.update_track_selection_status();
         }
         self.selected_clip = Some(clip);
+        self.focus.focus(window);
         true
     }
 

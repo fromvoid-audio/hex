@@ -50,15 +50,21 @@ build and confirm the folder remains and opens. Retest audio/MIDI dragging,
 cross-track preview and second pickup after the edit completes. Running earlier
 apps and unsaved projects are preserved. No native acceptance claim yet.
 
+17 October 2026: places now occupy the split browser's left navigation column;
+the same background persistence and add-folder paths remain in use. The new
+section/icon settings are transient and do not modify this preferences schema.
+See [browser composition](browser-layout.md) and Pulse #2672 for their persistence.
+
 ## Global browser search
 
-Command-F from the editor opens the browser, chooses the compact `all` category,
+Command-F from the editor opens the browser, chooses the `all` library section,
 focuses its search field and selects the previous query. Typing filters immediately
 by case-insensitive name across supported entries in the current folder and the
 registered native device catalog. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
 Escape clears it. Open context/controller menus are dismissed; leaving theme
 settings cancels its unsaved preview (an in-flight save must finish first).
+A clip-name draft commits using the existing blur behavior before search takes focus.
 Device rows retain drag-to-track/rail behavior; Enter on an
 all-view device displays that instruction rather than importing a file.
 

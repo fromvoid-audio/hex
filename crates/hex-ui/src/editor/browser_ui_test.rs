@@ -197,6 +197,7 @@ fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mu
         let devices = view.browser_visible_devices(cx);
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].1.name.to_lowercase(), "utility");
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility");
         assert!(!view.browser.results_focused);
     });
     cx.simulate_keystrokes(handle, "down");
@@ -220,6 +221,31 @@ fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mu
     cx.simulate_keystrokes(handle, "escape");
     editor.read_with(cx, |view, cx| {
         assert!(view.browser.search.read(cx).content.is_empty())
+    });
+}
+
+#[gpui::test]
+fn command_f_commits_clip_name_draft_then_routes_typing_to_browser(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (project, _, _, clip) = crate::editor::clip_drag_ui_test::audio_project();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            view.selected_clip = Some(clip);
+            view.begin_clip_name(window, cx);
+        });
+    })
+    .expect("rename focus");
+    cx.simulate_input(handle, "verse");
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "utility");
+    editor.read_with(cx, |view, cx| {
+        assert!(view.clip_name_edit.is_none());
+        assert!(matches!(&view.last_enqueued_edit,
+            Some(Command::RenameClip { clip: target, name }) if *target == clip && name == "verse"));
+        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert_eq!(view.browser.section, BrowserSection::All);
     });
 }
 
@@ -512,12 +538,11 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
         .expect("editor window");
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    // Default panel ends at x=280; grab its four-pixel separator midway down.
-    visual.simulate_mouse_down(
-        point(px(282.0), px(200.0)),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    // Grab the actual separator; the browser may use a compact or expanded width.
+    let separator = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("browser separator");
+    visual.simulate_mouse_down(separator.center(), MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(view.browser.resizing, "separator must receive mouse down")
     });
@@ -2173,4 +2198,53 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
     });
+}
+
+#[gpui::test]
+fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let sidebar = visual.debug_bounds("browser-sidebar").expect("sidebar");
+    let row = visual.debug_bounds("browser-entry-0").expect("sample row");
+    let tags = visual
+        .debug_bounds("browser-tag-selector")
+        .expect("tag selector");
+    let preview = visual
+        .debug_bounds("browser-selection-preview")
+        .expect("preview");
+    assert!(row.left() >= sidebar.right());
+    assert!(row.top() >= tags.bottom());
+    assert!(row.bottom() <= preview.top());
+    let toggle = visual
+        .debug_bounds("browser-control-≡")
+        .expect("filter toggle");
+    visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("browser-tag-selector").is_none());
+    let open = visual
+        .debug_bounds("browser-control-⋮")
+        .expect("editor toggle");
+    visual.simulate_mouse_down(open.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(open.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let tag_editor = visual
+        .debug_bounds("browser-tag-editor")
+        .expect("tag editor");
+    let row = visual.debug_bounds("browser-entry-0").expect("sample row");
+    assert!(row.right() <= tag_editor.left());
+    editor.update(visual, |view, cx| {
+        view.browser.width = super::MIN_WIDTH;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let row = visual
+        .debug_bounds("browser-entry-0")
+        .expect("compact sample row");
+    let preview = visual
+        .debug_bounds("browser-selection-preview")
+        .expect("compact preview");
+    assert!(row.size.width > px(0.0));
+    assert!(row.bottom() <= preview.top());
 }

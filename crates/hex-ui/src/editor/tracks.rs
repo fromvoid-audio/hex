@@ -1085,6 +1085,7 @@ impl EditorView {
                     }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
+            midi = midi.child(self.clip_name_header(clip.id(), clip.name()));
             clip_area = clip_area.children([midi]);
         }
         clip_area
@@ -1336,7 +1337,7 @@ impl EditorView {
                 }));
             content = content.children([move_surface]).children(trim_handles);
         }
-        content
+        content.child(self.clip_name_header(clip.id(), clip.name()))
     }
 
     fn drag_available(&self) -> bool {
