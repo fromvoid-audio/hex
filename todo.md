@@ -3883,6 +3883,10 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
 
+17 October 2026 — split browser visual composition: Pulse #2678 / PR294;
+see docs/browser-layout.md for scope and native review checklist. Full functional
+follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
+Command-F. Tag assignment/filtering, collections and history remain pending.
 
 ## 17 october 2026 — track header hover
 
