@@ -43,6 +43,9 @@ the covered destination too. Splitting leaves the sample sequence unchanged.
 Outer clip cuts retain the complete shared processing/event root and change the
 visible crop; editing a child makes its own copy without modifying its sibling.
 The container fade and gain apply after event composition, not once per event.
+When an outer cut crops through an existing event, the editable view isolates its
+visible fragment before an inner edit. Copy/move/trim therefore target that
+fragment, while the hidden source intervals and sibling clip stay intact.
 
 The lower editor owns its editing shortcuts while focused. Returning to a track,
 Arrangement clip, source tab, device panel or closed detail pane releases that

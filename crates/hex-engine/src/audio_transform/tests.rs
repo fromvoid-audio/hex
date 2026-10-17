@@ -854,3 +854,64 @@ fn musical_event_split_preserves_every_sample_in_all_existing_warp_modes() {
         );
     }
 }
+
+#[test]
+fn editing_the_visible_event_after_an_outer_cut_preserves_its_sibling_and_hidden_source() {
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 2000 },
+        })
+        .unwrap();
+    let Created::Clip(right) = editor
+        .execute(Command::SplitClip { clip, frame: 4000 })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let events = editor
+        .project()
+        .clip(right)
+        .unwrap()
+        .editable_audio_events()
+        .unwrap();
+    let visible = events.events.iter().find(|e| e.start == 4000).unwrap();
+    assert_eq!(visible.end, 8000);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: right,
+            operation: hex_project::AudioEventEdit::Trim {
+                event: visible.id,
+                start: 4500,
+                end: 7500,
+            },
+        })
+        .unwrap();
+    let mut expected = baseline.clone();
+    expected[4000..4500].fill([0.0; 2]);
+    expected[7500..8000].fill([0.0; 2]);
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 193),
+        expected
+    );
+    assert_eq!(
+        editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events
+            .len(),
+        2
+    );
+}

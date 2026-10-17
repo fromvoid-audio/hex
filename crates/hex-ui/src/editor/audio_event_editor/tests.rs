@@ -188,3 +188,57 @@ fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestA
         )
     });
 }
+
+#[gpui::test]
+fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let mut canonical = hex_project::Editor::new((*state.project).clone(), 8).unwrap();
+        canonical
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 24000 },
+            })
+            .unwrap();
+        let hex_project::Created::Clip(right) = canonical
+            .execute(Command::SplitClip { clip, frame: 48000 })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+            canonical_audio_source: None,
+            project: std::sync::Arc::new(canonical.project().clone()),
+            waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: state.midi_preview.clone(),
+            gain_preview: state.gain_preview.clone(),
+            timeline_frames: state.timeline_frames,
+            can_undo: true,
+            can_redo: false,
+            revision: 2,
+            unsaved: true,
+            document_path: None,
+        }));
+        view.selected_clip = Some(right);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let click = point(
+        bounds.origin.x + bounds.size.width * 0.25,
+        bounds.center().y + px(12.0),
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-c");
+    editor.read_with(cx, |view, _| {
+        let clipboard = view.audio_event_editor.clipboard.as_ref().unwrap();
+        assert_eq!(clipboard.length, 48000);
+        assert_eq!(clipboard.events[0].source_start, 48000);
+        assert!(view.last_enqueued_edit.is_none());
+    });
+}

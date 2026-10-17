@@ -336,6 +336,21 @@ impl Clip {
             .cloned()
             .unwrap_or_else(|| AudioClipEdit::capture(self))
     }
+    /// Split only the editable view boundaries, retaining hidden source intervals.
+    /// The returned local IDs are materialized by the next actual inner edit.
+    pub fn editable_audio_events(&self) -> Result<AudioEvents, Invalid> {
+        let root = self.audio_event_root();
+        if root.view_start == 0 && root.view_end == root.domain.clock.length() {
+            return Ok(self.audio_events());
+        }
+        self.audio_events().edited(
+            AudioEventEdit::SplitRange {
+                start: root.view_start,
+                end: root.view_end,
+            },
+            root.domain.clock.length(),
+        )
+    }
     /// The implicit initial event keeps legacy clips allocation-free until edited.
     pub fn audio_events(&self) -> AudioEvents {
         self.audio_edit()
@@ -360,7 +375,7 @@ pub(crate) fn apply(
         .audio_edit()
         .cloned()
         .unwrap_or_else(|| AudioClipEdit::capture(original));
-    let events = original.audio_events();
+    let events = original.editable_audio_events()?;
     let next = events.edited(operation, edit.domain.clock.length())?;
     if next == events {
         return Ok(());

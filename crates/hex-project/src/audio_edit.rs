@@ -505,7 +505,7 @@ impl AudioClipEdit {
         }
         if self.domain.events.is_some() {
             return Err(Invalid(
-                "audio event clock changes require a new processing root",
+                "timing mode cannot change after audio event edits; undo those edits first",
             ));
         }
         let origin_frame = i128::from(clip_start) - i128::from(self.view_start);
@@ -536,7 +536,7 @@ impl AudioClipEdit {
     pub(crate) fn unanchor(&mut self, tempo: &TempoMap) -> Result<(), Invalid> {
         if self.musical_start.is_some() && self.domain.events.is_some() {
             return Err(Invalid(
-                "audio event clock changes require a new processing root",
+                "timing mode cannot change after audio event edits; undo those edits first",
             ));
         }
         if self.musical_start.is_some()

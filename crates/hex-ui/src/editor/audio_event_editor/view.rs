@@ -25,7 +25,18 @@ pub(in crate::editor) fn view(
     }
     let state = view.state.as_ref()?;
     let clip = state.project.clip(clip_id)?.clone();
-    let events = clip.audio_events();
+    let events = match clip.editable_audio_events() {
+        Ok(events) => events,
+        Err(error) => {
+            return Some(
+                div()
+                    .id("audio-event-editor-limit")
+                    .flex_1()
+                    .text_xs()
+                    .child(theme::text(error.0)),
+            );
+        }
+    };
     if view
         .audio_event_editor
         .selected
@@ -300,8 +311,10 @@ pub(in crate::editor) fn view(
                     .audio_event_editor
                     .bounds
                     .is_some_and(|b| f32::from(event.position.y - b.origin.y) < 22.0);
-                let hit = clip
-                    .audio_events()
+                let Ok(events) = clip.editable_audio_events() else {
+                    return;
+                };
+                let hit = events
                     .events
                     .iter()
                     .find(|e| e.start <= raw && raw < e.end)

@@ -77,7 +77,8 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.selected_clip?)?;
         let selected = self.audio_event_editor.selected?;
-        clip.audio_events()
+        clip.editable_audio_events()
+            .ok()?
             .events
             .iter()
             .find(|e| e.id == selected)
@@ -100,7 +101,13 @@ impl EditorView {
             owner: (clip, self.project_generation),
             root,
             length: end - start,
-            events: source.audio_events().copy_range(start, end),
+            events: match source.editable_audio_events() {
+                Ok(events) => events.copy_range(start, end),
+                Err(error) => {
+                    self.error = Some(error.0.into());
+                    return;
+                }
+            },
         });
         self.audio_event_editor.cursor = start;
         if cut {
@@ -119,7 +126,7 @@ impl EditorView {
         std::sync::Arc::make_mut(&mut saved.domain).events = None;
         if clipboard.owner != (clip, self.project_generation) || root.domain != saved.domain {
             self.error = Some(
-                "audio event clipboard belongs to another source; select its original clip".into(),
+                "audio event clipboard belongs to a different or changed clip; copy the events again".into(),
             );
             return;
         }
@@ -327,8 +334,10 @@ impl EditorView {
         let Some(clip) = state.project.clip(clip_id) else {
             return;
         };
-        let Some(event) = clip
-            .audio_events()
+        let Ok(events) = clip.editable_audio_events() else {
+            return;
+        };
+        let Some(event) = events
             .events
             .iter()
             .find(|e| Some(e.id) == self.audio_event_editor.selected)
@@ -405,7 +414,13 @@ impl EditorView {
         let Some(clip) = state.project.clip(clip) else {
             return;
         };
-        let events = clip.audio_events().copy_range(start, end);
+        let events = match clip.editable_audio_events() {
+            Ok(events) => events.copy_range(start, end),
+            Err(error) => {
+                self.error = Some(error.0.into());
+                return;
+            }
+        };
         self.event_commit(AudioEventEdit::Paste {
             at: end,
             length: end - start,
