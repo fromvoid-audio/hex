@@ -4913,3 +4913,11 @@ exact sums [1536,-1024] and zero total/net allocations/frees. Control verifies
 unchanged bank totals/handle obligations afterward. Two resource probe tests and
 strict all-target audio allocation-feature Clippy pass. This remains a borrow
 boundary proof, not actual graph/root publication or final-owner retirement.
+
+After integrating merged373/main in389, the3bank tests and2callback probes
+pass unchanged. Joint engine+audio all-target Clippy with allocation-probe
+exposed an inherited non-exhaustive Expression match in the feature-gated
+playback-stack example. The note-only fixture now explicitly refuses controller
+events during preflight. Its focused regression passes; the same joint strict
+Clippy command now passes. The negative compiler log is retained. This repairs
+a verification fixture and adds no sampler/controller playback behavior.
