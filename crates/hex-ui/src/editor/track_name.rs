@@ -234,6 +234,7 @@ impl EditorView {
             div().child(theme::text(track.name()))
         };
         div()
+            .id(("track-name-focus", id.value()))
             .min_w_0()
             .flex_1()
             .on_click(

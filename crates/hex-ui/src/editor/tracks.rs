@@ -736,6 +736,7 @@ impl EditorView {
                 .into()
             });
         let track_controls = div()
+            .id(("arrangement-track-controls", track_id.value()))
             .debug_selector(move || format!("track-controls-{}", track_id.value()))
             .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
