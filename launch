@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update a clean main checkout, verify it, install the optimized app and open it."""
+"""Open the installed optimized app; use --test to update, verify and rebuild it."""
 
 from __future__ import annotations
 
@@ -101,15 +101,48 @@ def included_revisions(source: str, root: Path) -> list[dict[str, str]]:
 
 
 def configured_app(root: Path) -> Path:
-    common = Path(checked(["git", "rev-parse", "--git-common-dir"], cwd=root))
-    if not common.is_absolute():
-        common = root / common
     config = json.loads((root / "scripts/hex-test-build.json").read_text())
     configured = Path(os.environ.get("HEX_DEV_APP_PATH", config["app_path"]))
-    app = configured if configured.is_absolute() else common.resolve().parent / configured
+    if configured.is_absolute():
+        app = configured
+    else:
+        # Read standard checkout metadata without invoking Git on normal startup.
+        git_dir = root / ".git"
+        if git_dir.is_file():
+            pointer = git_dir.read_text().strip()
+            if not pointer.startswith("gitdir: "):
+                raise LaunchError("cannot resolve the configured app from checkout metadata")
+            git_dir = root / pointer[len("gitdir: "):]
+        common_file = git_dir / "commondir"
+        common = git_dir / common_file.read_text().strip() if common_file.is_file() else git_dir
+        app = common.resolve().parent / configured
     if app.name.casefold() != "hex.app":
         raise LaunchError("configured stable development app must be named hex.app")
     return app.absolute()
+
+
+def open_installed(app: Path, expected_source: str | None = None) -> Path:
+    try:
+        receipt = delivery.verify(app)
+        source = receipt.get("source")
+        if receipt.get("profile") != "release":
+            raise ValueError("installed app is not an optimized release build")
+        if not isinstance(source, str) or len(source) != 40 or any(c not in "0123456789abcdef" for c in source):
+            raise ValueError("installed app has no valid source provenance")
+    except (delivery.DeliveryError, OSError, ValueError, KeyError, TypeError,
+            AttributeError, subprocess.CalledProcessError) as error:
+        raise LaunchError(f"installed optimized hex is unavailable: {error}; run ./launch --test to verify and build it") from error
+    if expected_source is not None and (source != expected_source or receipt.get("candidate") != expected_source):
+        raise LaunchError(f"installed app does not match fetched main {expected_source}; app was not opened")
+    checked(["open", "-a", str(app)])
+    print(f"opened {app}")
+    return app
+
+
+def launch_installed(root: Path = ROOT) -> Path:
+    if sys.platform != "darwin":
+        raise LaunchError("./launch opens the native desktop app on macOS only")
+    return open_installed(configured_app(root))
 
 
 def checklist(source: str) -> str:
@@ -162,23 +195,20 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         capture=False,
     )
 
-    try:
-        receipt = delivery.verify(app)
-    except (delivery.DeliveryError, OSError, ValueError, json.JSONDecodeError) as error:
-        raise LaunchError(f"installed app verification failed; app was not opened: {error}") from error
-    if receipt.get("source") != source or receipt.get("candidate") != source:
-        raise LaunchError(f"installed app does not match fetched main {source}; app was not opened")
-    checked(["open", "-a", str(app)], cwd=root)
-    print(f"opened {app} from verified main source {source}")
-    return app
+    return open_installed(app, expected_source=source)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--test", action="store_true",
+                        help="update clean main, run full local checks, build/install the optimized app, then open it")
     arguments = list(sys.argv[1:] if argv is None else argv)
-    parser.parse_args(arguments)
+    options = parser.parse_args(arguments)
     try:
-        run_launch(argv=arguments)
+        if options.test:
+            run_launch(argv=arguments)
+        else:
+            launch_installed()
     except (LaunchError, ci.InterruptedRun, ci.TargetCacheError, OSError,
             ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print(f"launch stopped: {error}", file=sys.stderr)

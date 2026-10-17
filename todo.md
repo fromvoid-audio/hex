@@ -4182,3 +4182,14 @@ lock, scope, source and artifact checks. Real-Cargo regression fails before the
 fix and verifies added dependency output plus removal/rename/version-change
 refusals and preserved external/dev artifacts. Final exact checks and actual
 merged-source launch evidence remain recorded on PR320/Pulse2704.
+
+## fast normal startup with explicit test mode — pulse2705 / PR321, 17 october 2026
+
+The user changed normal `./launch` to open the supported installed optimized app
+without Git/update/build/CI dispatch or Cargo locks. `--test` retains clean-main
+update, exact full local checks and optimized guarded delivery/start, preserving
+that flag across updated-source re-exec. Installed identity/hash/signature/release
+checks remain, with one setup instruction for missing/unsupported apps; startup
+activates an existing process without forcing quit or changing user state.
+Targeted mode/error/configuration regressions and final source/build/actual-start
+evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
