@@ -37,8 +37,8 @@ impl SessionPlayback {
                     .session()
                     .timing()
                     .frame_to_beat(arrangement_frame)
-                    .map_err(|_| SessionPlaybackError::TempoConversion)?
-                    .raw(),
+                    .ok()
+                    .map(|beat| beat.raw()),
             })
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         for scratch in &mut self.return_scratch {

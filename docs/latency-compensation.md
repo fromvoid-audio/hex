@@ -74,3 +74,10 @@ returns unknown observations. Stopped audition explicitly reports a stopped
 transport and no advancing performance origin, even though its musical audition
 clock can advance. Stamp storage remains charged against existing compensation
 limits using the actual type size and allocated ring capacities; no limit rises.
+
+Arrangement beat stamps are optional when a content frame cannot be represented
+in Q32.32. The exact frame/performance clock remains valid; effects observe an
+unavailable beat, matching the ordinary clock path. This does not introduce a
+new tempo-conversion failure for non-automated audio. EQ uses its documented
+authored-base behavior for unavailable beat clocks. Stamp storage accounting uses
+the complete optional-field layout.

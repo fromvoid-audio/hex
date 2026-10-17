@@ -3892,3 +3892,10 @@ acceptance remains open: hover selected/unselected headers and nested controls,
 then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
+
+Full EQ CI caught an early-failure regression in the new compensated arrangement
+beat stamp. The ordinary path already treats unrepresentable beats as unavailable;
+the compensated stamp now preserves that optional clock contract without losing
+exact frame identity. The original late-failure rollback regression is retained
+unchanged, with an added origin-clock unavailable-beat assertion. Final CI must
+be rerun on this repair; the earlier failed report is not merge evidence.

@@ -262,7 +262,7 @@ fn stamp(index: usize) -> TransportStamp {
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
-        arrangement_beat_raw: ((index % 4) as u64) << 30,
+        arrangement_beat_raw: Some(((index % 4) as u64) << 30),
     }
 }
 

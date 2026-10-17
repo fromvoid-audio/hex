@@ -637,7 +637,7 @@ impl hex_lattice::NativeInstrumentClock for OriginClock {
         if offset != 0 {
             return None;
         }
-        self.0.map(|stamp| stamp.arrangement_beat_raw)
+        self.0.and_then(|stamp| stamp.arrangement_beat_raw)
     }
     fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
         if offset != 0 {
