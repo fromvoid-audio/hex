@@ -19,6 +19,7 @@ use std::{
 
 pub mod arrangement_seek;
 mod audio_sources;
+mod clip_conversion;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
@@ -925,7 +926,7 @@ impl Session {
         start: u64,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
-        self.import_prepared_audio_clip_revision_mode(prepared, track, start, previous, false)
+        self.import_prepared_audio_clip_revision_mode(prepared, track, start, previous, false, None)
     }
 
     /// Import prepared media onto a hybrid track, cutting its destination
@@ -937,7 +938,7 @@ impl Session {
         start: u64,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
-        self.import_prepared_audio_clip_revision_mode(prepared, track, start, previous, true)
+        self.import_prepared_audio_clip_revision_mode(prepared, track, start, previous, true, None)
     }
 
     fn import_prepared_audio_clip_revision_mode(
@@ -947,6 +948,7 @@ impl Session {
         start: u64,
         previous: Option<&hex_engine::PreparedRevision>,
         overwrite: bool,
+        bounce: Option<hex_project::ClipId>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
         if prepared.audio.sample_rate() != self.project().sample_rate() {
             return Err(SessionError::Invalid(
@@ -973,7 +975,13 @@ impl Session {
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
         let (created, (asset_id, revision)) = self.editor.execute_prepared(
-            if overwrite {
+            if let Some(clip) = bounce {
+                Command::ConvertMidiClipToAudio {
+                    clip,
+                    path: prepared.path,
+                    frames,
+                }
+            } else if overwrite {
                 Command::ImportPreparedAudioClipWithOverwrite {
                     track,
                     start,
