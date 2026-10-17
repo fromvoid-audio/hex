@@ -1,3 +1,12 @@
+## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
+
+The borrowed kernel now reports a checked exclusive end age: Trigger follows
+natural source exhaustion, Gate follows the earlier source/release bound, and
+loop gate-plus-release overflow refuses. No shared host/resource/schema/tuning
+or device-registration behavior changes. All11 sampler tests and strict device
+Clippy pass; actual PCM exhaustion/rate/pitch/reverse/slice/partition/overflow
+fixtures cover the new query. Final full CI remains pending; full2679 stays open.
+
 ## owned history example feature — #2747 / PR357, 17 october 2026
 
 The conformance-only owned-history profile now declares its required Cargo
