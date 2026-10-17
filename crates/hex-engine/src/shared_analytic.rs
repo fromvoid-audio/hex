@@ -17,7 +17,7 @@ pub(crate) mod resource_storage;
 #[cfg(test)]
 mod resource_tests;
 #[cfg(test)]
-mod sampler_tests;
+pub(crate) mod sampler_tests;
 
 pub(crate) const MAX_SHARED_CONTEXTS_PER_REVISION: usize = hex_project::MAX_TRACKS;
 pub(crate) const MAX_SHARED_CONTEXT_BYTES_PER_REVISION: usize = 2 * 1024 * 1024;
@@ -283,6 +283,17 @@ impl SharedContextOwner {
         &self,
     ) -> Option<&crate::native_device_resources::DeviceResourceConfiguration> {
         self.resources.as_ref()
+    }
+
+    /// Clone only the actual constructor-paired concrete factory on control.
+    /// The destination physical field must join the same allocation ledger.
+    pub(crate) fn sampler_factory_on_control(
+        &self,
+    ) -> Option<crate::owned_shared::OwnedShared<hex_devices::sampler::PreparedSamplerRuntime>>
+    {
+        self.sampler_factory
+            .as_ref()
+            .map(|(factory, _)| factory.clone_on_control())
     }
 
     pub(crate) fn resources(&self) -> &dyn hex_lattice::DeviceResources {

@@ -2,6 +2,7 @@
 pub(crate) mod audio_assembly;
 #[cfg(test)]
 mod midi_storage_tests;
+mod mutable_factory;
 mod routed_midi;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
@@ -17,6 +18,7 @@ use hex_lattice::{
 use hex_project::{
     AssetId, ClipId, DeviceId, MidiSourceIdentity, Project, SceneId, SessionCellContent, TrackId,
 };
+use mutable_factory::PreparedTrackRuntimeFactory;
 use routed_midi::{RoutedMidiPlan, account_template, prepare_clip};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -31,14 +33,14 @@ struct PreparedTrackInstrumentConfig {
     bypassed: bool,
     note_bank:
         Option<crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>>,
-    mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
+    mutable_runtime: Option<PreparedTrackRuntimeFactory>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
 }
 
 struct PreparedMutableTrackInstrument {
     track: TrackId,
-    factory: Box<dyn PreparedMutableInstrumentRuntime>,
+    factory: PreparedTrackRuntimeFactory,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
 }
@@ -523,7 +525,13 @@ impl PreparedSessionInventory {
         let mut instrument_track_indices = BTreeMap::new();
         for track in project.tracks() {
             let slot = track.instrument();
+            let sampler_factory = slot.filter(|device| !device.bypassed()).and_then(|device| {
+                shared_contexts.owner_for_device(device.id()).and_then(
+                    crate::shared_analytic::SharedContextOwner::sampler_factory_on_control,
+                )
+            });
             let config = slot
+                .filter(|_| sampler_factory.is_none())
                 .map(|device| {
                     let resources = shared_contexts.owner_for_device(device.id()).and_then(
                         crate::shared_analytic::SharedContextOwner::resource_configuration,
@@ -544,7 +552,9 @@ impl PreparedSessionInventory {
                         .map_err(|_| crate::Invalid("track instrument state is unsupported"))
                 })
                 .transpose()?;
-            let mutable_runtime = if slot.is_some_and(|device| !device.bypassed()) {
+            let mutable_runtime = if let Some(factory) = sampler_factory {
+                Some(PreparedTrackRuntimeFactory::Sampler(factory))
+            } else if slot.is_some_and(|device| !device.bypassed()) {
                 config
                     .as_deref()
                     .map(|prepared| {
@@ -559,10 +569,14 @@ impl PreparedSessionInventory {
                     .transpose()
                     .map_err(|_| crate::Invalid("mutable instrument runtime is unsupported"))?
                     .flatten()
+                    .map(PreparedTrackRuntimeFactory::Opaque)
             } else {
                 None
             };
-            let retarget_preparation = match mutable_runtime.as_deref() {
+            let retarget_preparation = match mutable_runtime
+                .as_ref()
+                .map(PreparedTrackRuntimeFactory::as_ref)
+            {
                 Some(candidate) => candidate
                     .prepare_history_retarget_target()
                     .map_err(|_| crate::Invalid("could not prepare mutable instrument retarget"))?,
@@ -624,7 +638,8 @@ impl PreparedSessionInventory {
             let config = instrument_configs
                 .get(track_index)
                 .ok_or(crate::Invalid("Session MIDI instrument is missing"))?;
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled =
+                (config.config.is_some() || config.mutable_runtime.is_some()) && !config.bypassed;
             let shared_context = config.device_id.and_then(|device| {
                 shared_contexts
                     .index_for_device(device)
@@ -765,7 +780,8 @@ impl PreparedSessionInventory {
             .zip(note_keys_by_track)
             .enumerate()
         {
-            let enabled = config.config.is_some() && !config.bypassed;
+            let enabled =
+                (config.config.is_some() || config.mutable_runtime.is_some()) && !config.bypassed;
             if unchanged_sources
                 .get(index)
                 .copied()

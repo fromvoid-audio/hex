@@ -944,6 +944,12 @@ impl SessionAssembly {
             l.vec(routed_midi_clips)?;
             l.vec(midi_source_roots)?;
             l.vec(mutable_instruments)?;
+            for instrument in mutable_instruments {
+                if instrument.history_retarget_target.is_some() {
+                    return Err(AudioStorageError::UnknownStorage);
+                }
+                instrument.factory.visit_storage(l)?;
+            }
             l.vec(audio_clips)?;
             for scene in scenes {
                 l.string(&scene.name)?;

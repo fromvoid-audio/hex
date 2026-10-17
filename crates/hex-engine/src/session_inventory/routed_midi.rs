@@ -106,7 +106,8 @@ pub(super) fn prepare_clip(
     let source_identity = clip.source_identity();
     let mutable_limits = config
         .mutable_runtime
-        .as_deref()
+        .as_ref()
+        .map(PreparedTrackRuntimeFactory::as_ref)
         .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
         .transpose()?;
     if mutable_limits.is_some()
@@ -120,7 +121,8 @@ pub(super) fn prepare_clip(
     }
     let instrument_id = config.device_id;
     let instrument_state = config.state.clone();
-    let instrument_enabled = config.config.is_some() && !config.bypassed;
+    let instrument_enabled =
+        (config.config.is_some() || config.mutable_runtime.is_some()) && !config.bypassed;
     let cached = cached.filter(|old| {
         old.track == destination
             && old.source_identity == source_identity

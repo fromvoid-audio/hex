@@ -119,6 +119,14 @@ source/model retirement. Removing the entire factory visitor fails the negative
 oracle; byte-restored source passes. This constructor is not whole-graph peak,
 custody, publication or saturated-reaper proof and does not open registry access.
 
+Actual Session source configuration and `PreparedMutableTrackInstrument` fields
+retain that concrete factory receipt through a private sampler/opaque enum.
+Borrowing the runtime trait does not create a different owner. The source-row
+and context-table joint test counts one factory body, charges the actual row
+capacity, refuses missing/raw/opaque owners and preserves PCM after source/model
+retirement. Normal referenced registry processing and the audio-only assembly's
+unsupported MIDI/whole-graph guards remain closed pending complete admission.
+
 This is still an unregistered runtime slice. Voice stealing/retrigger/glide,
 filter/LFO/modulation, high-quality resampling and warp, authored state/loading,
 the functional panel and full graph publication/retirement remain unfinished.

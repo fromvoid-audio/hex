@@ -25,12 +25,13 @@ fn reservation() -> AudioStorageLedgerReservation {
     }
 }
 
-#[test]
-fn concrete_sampler_factory_charges_body_header_and_every_actual_alias() {
+pub(crate) fn canonical_fixture() -> Option<(
+    DeviceResourceBank,
+    SharedContextIdentity,
+    hex_project::Editor,
+)> {
     let ids = fixtures::ids();
-    let Some(bank) = fixtures::bank(&ids) else {
-        return;
-    };
+    let bank = fixtures::bank(&ids)?;
     let catalog = DeviceResourceCatalog::prepare_on_control(
         &bank,
         &fixtures::specs(&ids),
@@ -100,6 +101,47 @@ fn concrete_sampler_factory_charges_body_header_and_every_actual_alias() {
         state: state.clone(),
         sample_rate: 44_100,
     };
+    Some((source, identity, editor))
+}
+
+pub(crate) fn retained_fixture()
+-> Option<(DeviceResourceBank, SharedContextLease, hex_project::Editor)> {
+    let (source, identity, editor) = canonical_fixture()?;
+    let configuration = source
+        .prepare_lease_on_control(&identity.state, 4096)
+        .unwrap()
+        .try_into_configuration_on_control(4096)
+        .ok()
+        .unwrap();
+    let owner = SharedContextOwner::from_sampler_resources_on_control(
+        SharedContextId::fresh().unwrap(),
+        identity,
+        configuration,
+        &hex_lattice::TuningTable::default(),
+        65_536,
+        MAX_SHARED_ANALYTIC_CONTEXT_BYTES,
+    )
+    .unwrap();
+    Some((source, OwnedShared::new_owned(owner), editor))
+}
+
+pub(crate) fn retained_table_fixture(
+    owner: SharedContextLease,
+) -> OwnedShared<SharedAnalyticContextTable> {
+    OwnedShared::new_owned(SharedAnalyticContextTable {
+        ids: vec![(owner.id(), 0)],
+        payload_bytes: owner.declared_bytes,
+        owners: vec![owner],
+        ..Default::default()
+    })
+}
+
+#[test]
+fn concrete_sampler_factory_charges_body_header_and_every_actual_alias() {
+    let Some((source, identity, editor)) = canonical_fixture() else {
+        return;
+    };
+    let state = identity.state.clone();
     let resources = || {
         source
             .prepare_lease_on_control(&state, 4096)
