@@ -2965,6 +2965,7 @@ fn reset_checkpoint_track(playback: &mut SessionPlayback, track: hex_project::Tr
         crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             factory,
             playback.revision.arrangement().sample_rate(),
+            None,
         )
         .unwrap(),
     );
@@ -4078,7 +4079,8 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
     }
 
     let mut whole =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     whole.begin_block();
     let mut whole_output = [[0.0; 2]; 8];
     let mut whole_events = Vec::new();
@@ -4128,7 +4130,8 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
     whole.commit_block();
 
     let mut partitioned =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     partitioned.begin_block();
     let mut partitioned_output = [[0.0; 2]; 8];
     let mut partitioned_events = Vec::new();
@@ -4179,7 +4182,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     };
 
     let mut old =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     old.begin_block();
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -4209,7 +4213,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     let suppression =
         crate::midi_template::MidiOccurrenceSuppression::mutable(proof.signature, old_deadline);
     let mut candidate =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     candidate.begin_block();
     let mut candidate_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     candidate_onsets.push(onset).unwrap();
@@ -4235,7 +4240,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     let mut changed = onset;
     changed.pitch += 1;
     let mut changed_runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     changed_runtime.begin_block();
     let mut changed_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     changed_onsets.push(changed).unwrap();
@@ -4266,7 +4272,8 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
     let note = clip.notes().first().unwrap();
     let factory = ZeroTailMutableFactory;
     let mut runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     let onset = crate::mutable_instrument::MutableNoteOnset {
         key: crate::mutable_instrument::MutableOccurrenceKey::new(
             track.id(),
@@ -4367,7 +4374,8 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
         release_frames: 8,
     };
     let mut runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     runtime.begin_block();
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     for iteration in 0..128_u64 {
@@ -4422,7 +4430,8 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
         release_frames: 8,
     };
     let runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     let ledger_bytes = runtime.ledger_capacity_bytes().unwrap();
     let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
     let graph_host_bytes =
@@ -4693,6 +4702,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
         runtime: crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             &ZeroTailMutableFactory,
             48_000,
+            None,
         )
         .unwrap(),
     });

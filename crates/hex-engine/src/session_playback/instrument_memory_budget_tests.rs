@@ -24,7 +24,7 @@ fn instrument_memory_budget_charges_actual_owned_buffers_above_old_limit() {
             level: 0.2,
             release_frames: 8,
         };
-        let runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        let runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000, None).unwrap();
         assert_eq!(runtime.runtime_pair_storage_bytes(), Some(bytes * 2));
         assert_eq!(runtime.declared_pair_bytes(), bytes * 2);
         assert_eq!(
@@ -45,7 +45,7 @@ fn instrument_memory_budget_rejects_overflow_and_over_budget_before_construction
             release_frames: 8,
         };
         assert!(matches!(
-            MutableInstrumentTrackRuntime::new(&factory, 48_000),
+            MutableInstrumentTrackRuntime::new(&factory, 48_000, None),
             Err(MutableInstrumentRuntimeError::Budget),
         ));
         assert!(
@@ -61,7 +61,7 @@ fn instrument_memory_budget_rejects_overflow_and_over_budget_before_construction
             level: 0.2,
             release_frames: 8,
         };
-        assert!(MutableInstrumentTrackRuntime::new(&factory, 48_000).is_err());
+        assert!(MutableInstrumentTrackRuntime::new(&factory, 48_000, None).is_err());
     }
     assert_eq!(counter.load(Ordering::Relaxed), 2);
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|slot| *slot.borrow_mut() = None);
@@ -218,11 +218,12 @@ fn profile_instrument_memory_budget() {
         let mut construction = Vec::new();
         for _ in 0..100 {
             let start = Instant::now();
-            let runtime = MutableInstrumentTrackRuntime::new(black_box(&factory), 48_000).unwrap();
+            let runtime =
+                MutableInstrumentTrackRuntime::new(black_box(&factory), 48_000, None).unwrap();
             construction.push(start.elapsed().as_nanos());
             black_box(runtime);
         }
-        let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000, None).unwrap();
         let mut copies = Vec::with_capacity(1000);
         for index in 0..1100 {
             let start = Instant::now();

@@ -2,7 +2,7 @@ use super::*;
 use crate::{AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource};
 use hex_lattice_contract::{DeviceAssetReference, DeviceTypeId};
 const PCM: [[f32; 2]; 4] = [[0.25, -0.75], [-0.5, 1.0], [0.75, -0.25], [-1.0, 0.5]];
-fn ids() -> Vec<AssetId> {
+pub(crate) fn ids() -> Vec<AssetId> {
     let mut editor =
         hex_project::Editor::new(hex_project::Project::new(44_100).unwrap(), 8).unwrap();
     (0..3)
@@ -21,7 +21,7 @@ fn ids() -> Vec<AssetId> {
         })
         .collect()
 }
-fn bank(ids: &[AssetId]) -> Option<AudioInputStorageAndObligations> {
+pub(crate) fn bank(ids: &[AssetId]) -> Option<AudioInputStorageAndObligations> {
     if !crate::pcm_arc::native_layout_known() {
         assert!(OwnedAudioSource::try_resident(44_100, PCM.to_vec()).is_err());
         eprintln!("resource bank unsupported constructor: no native ownership proof");
@@ -58,7 +58,7 @@ fn bank(ids: &[AssetId]) -> Option<AudioInputStorageAndObligations> {
             .unwrap(),
     )
 }
-fn specs(ids: &[AssetId]) -> Vec<OriginalResourceSource> {
+pub(crate) fn specs(ids: &[AssetId]) -> Vec<OriginalResourceSource> {
     ids[..2]
         .iter()
         .map(|&asset| OriginalResourceSource {
@@ -68,13 +68,13 @@ fn specs(ids: &[AssetId]) -> Vec<OriginalResourceSource> {
         })
         .collect()
 }
-fn limits() -> ResourceCatalogReservation {
+pub(crate) fn limits() -> ResourceCatalogReservation {
     ResourceCatalogReservation {
         metadata_bytes: 65_536,
         hash_frames: 8,
     }
 }
-fn state(asset: AssetId) -> NativeDeviceState {
+pub(crate) fn state(asset: AssetId) -> NativeDeviceState {
     NativeDeviceState::new(DeviceTypeId::from_static("test.resource-scope"), 1, vec![])
         .unwrap()
         .with_asset_references(vec![DeviceAssetReference {
@@ -247,4 +247,168 @@ fn refusal_cancel_and_exact_budgets_leave_actual_bank_unchanged() {
         Err(ResourcePreparationError::MetadataCapacity)
     ));
     assert_eq!(bank.summary(), before);
+}
+
+#[test]
+fn retained_scopes_inventory_one_actual_bank_and_every_physical_handle() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let ids = ids();
+    let Some(bank) = bank(&ids) else { return };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &specs(&ids),
+        limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let owner = DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let old = owner
+        .prepare_lease_on_control(&state(ids[0]), 4096)
+        .unwrap();
+    let candidate = owner
+        .prepare_lease_on_control(&state(ids[1]), 4096)
+        .unwrap();
+    let reservation = AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 16,
+        root_rows: 8,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&owner, AudioStorageRole::Caller)
+        .unwrap();
+    let before = ledger.summary().unwrap();
+    assert_eq!(before.unresolved_handles, 3);
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    ledger
+        .borrow_device_resource_lease_on_control(&old, AudioStorageRole::Predecessor)
+        .unwrap();
+    ledger
+        .borrow_device_resource_lease_on_control(&candidate, AudioStorageRole::Current)
+        .unwrap();
+    let after = ledger.summary().unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    assert_eq!(after.unresolved_handles, 5);
+    assert_eq!(after.unresolved_retirements, 3);
+    assert_eq!(after.unknown_storage, 0);
+    assert_eq!(
+        after.data_bytes - before.data_bytes,
+        old.declared_metadata_bytes().unwrap() + candidate.declared_metadata_bytes().unwrap()
+    );
+    assert_eq!(after.data_allocations - before.data_allocations, 2);
+    assert_eq!(
+        after.require_complete(),
+        Err(crate::AudioStorageIncomplete::RetirementReceiptUnknown)
+    );
+    let exact = after.retained_bytes;
+    drop(ledger);
+    let mut refused = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        max_retained_bytes: exact - 1,
+        ..reservation
+    })
+    .unwrap();
+    refused
+        .borrow_device_resource_bank_on_control(&owner, AudioStorageRole::Caller)
+        .unwrap();
+    refused
+        .borrow_device_resource_lease_on_control(&old, AudioStorageRole::Predecessor)
+        .unwrap();
+    assert_eq!(
+        refused.borrow_device_resource_lease_on_control(&candidate, AudioStorageRole::Current),
+        Err(AudioStorageError::ReservationExceeded)
+    );
+    assert!(refused.summary().is_err());
+    drop(refused);
+    assert_eq!(old.get(0).unwrap().pcm.frame(0), Some(PCM[0]));
+    assert_eq!(candidate.get(0).unwrap().pcm.frame(0), Some([0.5; 2]));
+}
+
+#[test]
+fn retained_root_refusals_preserve_native_bank_and_leave_no_extra_owning_handle() {
+    let ids = ids();
+    let Some(bank) = bank(&ids) else { return };
+    let before = bank.summary();
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &specs(&ids),
+        limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let refusal =
+        DeviceResourceBank::try_new_on_control(bank, catalog, 0, 65_536, &AtomicBool::new(false))
+            .err()
+            .unwrap();
+    assert_eq!(
+        refusal.reason,
+        AudioStorageError::ReservationExceeded.into()
+    );
+    assert_eq!(refusal.bank.summary(), before);
+    let refusal = DeviceResourceBank::try_new_on_control(
+        refusal.bank,
+        refusal.catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(true),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(refusal.reason, ResourcePreparationError::Cancelled);
+    let scope = refusal
+        .catalog
+        .prepare_scope_on_control(&state(ids[0]), 4096)
+        .unwrap();
+    assert_eq!(
+        refusal
+            .catalog
+            .resources(&refusal.bank, &scope)
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .pcm
+            .frame(0),
+        Some(PCM[0])
+    );
+    let owner = DeviceResourceBank::try_new_on_control(
+        refusal.bank,
+        refusal.catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(
+        owner
+            .prepare_lease_on_control(
+                &state(ids[0]),
+                std::mem::size_of::<PreparedDeviceResourceLease>() - 1
+            )
+            .err(),
+        Some(ResourcePreparationError::MetadataCapacity)
+    );
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 16,
+            root_rows: 8,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        })
+        .unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&owner, crate::AudioStorageRole::Caller)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    assert_eq!(ledger.summary().unwrap().unresolved_handles, 3);
 }

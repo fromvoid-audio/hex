@@ -940,6 +940,7 @@ impl SessionPlayback {
                     MutableInstrumentTrackRuntime::new(
                         factory,
                         revision.arrangement().sample_rate(),
+                        None,
                     )
                 })
                 .transpose()

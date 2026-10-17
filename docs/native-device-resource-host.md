@@ -78,3 +78,44 @@ work; preserve296 as historical kernel evidence.
 Current format31/strict current validation and alpha feature-first policy apply.
 No compatibility readers/migrations, shared-chain2756 implementation, neutral2773
 implementation, hosted CI, Mac self-dispatch or app replacement is included.
+
+## retained host implementation in progress
+
+`DeviceResourceBank` now moves the actual input storage/catalog into the existing
+constructor-paired `OwnedShared` family. `PreparedDeviceResourceLease` keeps that
+same immutable root and one configuration's scope; providers still own only
+coefficients/indices. Control cloning reserves scope metadata before the owning
+handle. Retained and construction ceilings are explicit and unchanged. The
+existing `AudioRootStorageLedger` visits the real root, every physical handle,
+input-storage vectors, catalog and scope buffers, deduplicating shared PCM once.
+A missing selected owner prevents closed-handle validation. Complete retirement
+is still explicitly unknown; these rows alone do not permit publication.
+
+Shared/continuation sampling now queries its actual selected
+`SharedContextOwner` lease. A source-root identity joins reuse/continuation
+identity, so equal authored state/content cannot substitute another actual bank.
+The actual carried-note path is tested after caller custody is released and a
+candidate reuses the slot; final root destruction is observed on control.
+
+Mutable track runtimes retain the configuration lease and pass it through actual
+controller preflight and processing. History inheritance/retarget checks the
+actual source configuration; tail moves retain that owner. Checkpoint capture/
+restore clones the same scope on control and charges its buffer before cloning.
+Uncertified resource-backed analytic-seed imports refuse. Asset-free hosts still
+construct with None. Shared control preparation still supplies None until its
+resident source plan/all-role admission is integrated; no registry gate is open.
+
+Exclusive decoded Audio can now move its retained Vec through a fresh existing
+native constructor without copying PCM. The old raw Arc is destroyed on control;
+its receipt is never upgraded. Shared/weak/derived inputs refuse intact. Frame
+work and cancellation are checked before consuming the source; positive tests
+verify the actual buffer pointer/capacity, rate, samples and new declaration.
+Media import integration and true native mono custody remain required work.
+
+Independent negative host oracles substitute the prior empty-resource sampling
+path and fail; restoring actual owner borrows passes. Mutable host cases cover
+rollback/retry, checkpoint scope clone, moved-tail continuation, wrong-source
+refusal before PCM changes and equal-content foreign-root history refusal.
+Full engine tests and strict joint engine/audio allocation-feature Clippy are
+run at each coherent source boundary. The readonly harmonic accounting proposal
+also charges the actual new host lease header; no memory limit was raised.

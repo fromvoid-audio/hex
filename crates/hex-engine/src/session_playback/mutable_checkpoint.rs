@@ -176,6 +176,7 @@ impl MutableRuntimeCheckpointStore {
 
         let charge =
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(factory, sample_rate)
+                .and_then(|bytes| bytes.checked_add(source.resource_scope_storage_bytes()?))
                 .ok_or(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)?;
         let next_payload_bytes = self
             .payload_bytes()
@@ -188,8 +189,11 @@ impl MutableRuntimeCheckpointStore {
         let next_total = store_bytes(next_payload_bytes)
             .ok_or(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)?;
 
-        let mut snapshot =
-            MutableInstrumentTrackRuntime::new(factory, sample_rate).map_err(map_runtime_error)?;
+        let resources = source
+            .clone_resources_on_control()
+            .map_err(map_runtime_error)?;
+        let mut snapshot = MutableInstrumentTrackRuntime::new(factory, sample_rate, resources)
+            .map_err(map_runtime_error)?;
         snapshot.inherit_from(source).map_err(map_runtime_error)?;
 
         self.entries[slot_index] = Some(Entry {
@@ -261,6 +265,7 @@ impl MutableRuntimeCheckpointStore {
             .ok_or(MutableRuntimeCheckpointError::MissingMutableRuntime)?;
         let candidate_charge =
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(factory, sample_rate)
+                .and_then(|bytes| bytes.checked_add(entry.runtime.resource_scope_storage_bytes()?))
                 .ok_or(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)?;
         let candidate_charge = candidate_charge
             .checked_add(std::mem::size_of::<MutableInstrumentTrackRuntime>())
@@ -270,8 +275,12 @@ impl MutableRuntimeCheckpointStore {
             .filter(|total| *total <= MAX_MUTABLE_RUNTIME_CHECKPOINT_OPERATION_BYTES)
             .ok_or(MutableRuntimeCheckpointError::CheckpointBudgetExceeded)?;
 
-        let mut candidate =
-            MutableInstrumentTrackRuntime::new(factory, sample_rate).map_err(map_runtime_error)?;
+        let resources = entry
+            .runtime
+            .clone_resources_on_control()
+            .map_err(map_runtime_error)?;
+        let mut candidate = MutableInstrumentTrackRuntime::new(factory, sample_rate, resources)
+            .map_err(map_runtime_error)?;
         candidate
             .inherit_from(&entry.runtime)
             .map_err(map_runtime_error)?;

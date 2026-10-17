@@ -219,16 +219,13 @@ impl PreparedMidiNote {
                             note,
                             age_frames,
                             gate_frames,
-                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                            owner.resources(),
                         )
                         .map_err(|_| Invalid("shared analytic continuation sample was refused"))
                 } else {
-                    Ok(owner.context().sample(
-                        note,
-                        age_frames,
-                        gate_frames,
-                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                    ))
+                    Ok(owner
+                        .context()
+                        .sample(note, age_frames, gate_frames, owner.resources()))
                 }
             }
         }

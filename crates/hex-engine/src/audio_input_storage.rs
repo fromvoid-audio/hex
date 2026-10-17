@@ -227,6 +227,21 @@ impl OwnedAudioInputs {
     }
 }
 impl AudioInputStorageAndObligations {
+    pub(crate) fn visit_resource_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            inputs,
+            allocations,
+            obligations,
+            summary: _,
+        } = self;
+        self.validate_unresolved_on_control()?;
+        ledger.inputs(inputs)?;
+        ledger.vec(allocations)?;
+        ledger.vec(obligations)
+    }
     pub fn summary(&self) -> AudioInputStorageSummary {
         self.summary
     }

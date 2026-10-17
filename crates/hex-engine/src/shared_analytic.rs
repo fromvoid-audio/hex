@@ -11,6 +11,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(test)]
+mod resource_tests;
+
 pub(crate) const MAX_SHARED_CONTEXTS_PER_REVISION: usize = hex_project::MAX_TRACKS;
 pub(crate) const MAX_SHARED_CONTEXT_BYTES_PER_REVISION: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_RETAINED_SHARED_CONTEXTS: usize = 16_384;
@@ -95,6 +98,7 @@ static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SharedContextIdentity {
     tuning: TuningIdentity,
+    resource_scope: u64,
     track: TrackId,
     device: DeviceId,
     device_type: DeviceTypeId,
@@ -127,6 +131,7 @@ pub(crate) struct SharedContextOwner {
     identity: SharedContextIdentity,
     declared_bytes: usize,
     context: Arc<dyn PreparedSharedAnalyticContext>,
+    resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
 }
 
 impl std::fmt::Debug for SharedContextOwner {
@@ -140,6 +145,24 @@ impl std::fmt::Debug for SharedContextOwner {
 }
 
 impl SharedContextOwner {
+    fn from_prepared_on_control(
+        id: SharedContextId,
+        mut identity: SharedContextIdentity,
+        declared_bytes: usize,
+        context: Box<dyn PreparedSharedAnalyticContext>,
+        resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    ) -> Self {
+        identity.resource_scope = resources
+            .as_ref()
+            .map_or(0, |lease| lease.source_scope_identity());
+        Self {
+            id,
+            identity,
+            declared_bytes,
+            context: Arc::from(context),
+            resources,
+        }
+    }
     pub(crate) fn id(&self) -> SharedContextId {
         self.id
     }
@@ -154,6 +177,13 @@ impl SharedContextOwner {
 
     pub(crate) fn context(&self) -> &dyn PreparedSharedAnalyticContext {
         self.context.as_ref()
+    }
+
+    pub(crate) fn resources(&self) -> &dyn hex_lattice::DeviceResources {
+        match &self.resources {
+            Some(lease) => lease,
+            None => &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        }
     }
 
     pub(crate) fn continuation_id(&self) -> Result<hex_lattice::AnalyticContinuationId, Invalid> {
@@ -173,6 +203,7 @@ impl SharedContextOwner {
             return Ok(transition);
         }
         if self.identity.track != previous.identity.track
+            || self.identity.resource_scope != previous.identity.resource_scope
             || self.identity.device != previous.identity.device
             || self.identity.device_type != previous.identity.device_type
             || self.identity.sample_rate != previous.identity.sample_rate
@@ -357,6 +388,7 @@ impl SharedAnalyticContextTable {
             };
             let identity = SharedContextIdentity {
                 tuning: tuning_identity,
+                resource_scope: 0,
                 track: track.id(),
                 device: device.id(),
                 device_type: device.state().type_id(),
@@ -397,12 +429,13 @@ impl SharedAnalyticContextTable {
                 ));
             }
             let id = SharedContextId::fresh()?;
-            owners.push(Arc::new(SharedContextOwner {
+            owners.push(Arc::new(SharedContextOwner::from_prepared_on_control(
                 id,
                 identity,
                 declared_bytes,
-                context: Arc::from(context),
-            }));
+                context,
+                None,
+            )));
         }
         if owners.len() > MAX_SHARED_CONTEXTS_PER_REVISION {
             return Err(Invalid("shared instrument context count limit reached"));

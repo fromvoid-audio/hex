@@ -4921,3 +4921,25 @@ playback-stack example. The note-only fixture now explicitly refuses controller
 events during preflight. Its focused regression passes; the same joint strict
 Clippy command now passes. The negative compiler log is retained. This repairs
 a verification fixture and adds no sampler/controller playback behavior.
+
+### 17 october 2026 — pulse2783: retained shared/mutable resource host slice
+
+PR389 now retains actual source storage through existing OwnedShared roots and
+configuration-specific leases. The real ledger deduplicates PCM and charges each
+handle/scope; exact-budget, cancellation and omitted-owner refusals preserve the
+bank. Actual shared carried-note sampling keeps the old scope under target slot
+reuse, with control final-root destruction. Mutable hosts retain/forward their
+lease through preflight/process, history checks, rollback, checkpoint scope
+cloning and moved tails. Equal-content foreign roots do not authorize reuse.
+Decoded exclusive buffers move through a fresh native constructor without PCM
+copy; shared/weak/cancel/work refusals leave the input intact.
+
+Real negative shared/mutable host oracles fail with the old empty-resource path;
+positive cases pass. Broader checks caught a missing lease header in the readonly
+harmonic layout proposal; actual header charging repairs it without cap changes.
+Engine534 tests pass (7 existing ignores), two actual-root callback probes pass
+with zero total/net allocations/frees, and joint strict all-target Clippy passes.
+No full389 qualification, registry asset admission, usable sampler or full goal3
+completion is claimed. Mono ingress and complete current/candidate/outgoing/
+checkpoint/history/pending accounting, source-plan loading and remaining host
+wiring/retirement acceptance remain in progress under the same canonical PR.

@@ -252,5 +252,17 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     verify_callbacks(&state, &resources);
     assert_eq!(bank.summary(), before);
     bank.validate_unresolved_on_control().unwrap();
+    let owner = hex_engine::native_device_resources::DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let lease = owner.prepare_lease_on_control(&state, 4096).unwrap();
+    verify_callbacks(&state, &lease);
+    assert_eq!(owner.input_storage_summary(), before);
     eprintln!("native bank callback probe: supported-controls=completed");
 }

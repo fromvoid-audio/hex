@@ -10,6 +10,11 @@ use hex_project::AssetId;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub(crate) mod retained;
+pub use retained::{DeviceResourceBank, DeviceResourceBankRefusal, PreparedDeviceResourceLease};
+mod ingress;
+pub use ingress::ResidentAudioIngressRefusal;
+
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginalResourceSource {
@@ -47,6 +52,7 @@ pub struct DeviceResourceCatalog {
     id: u64,
     sources: Vec<SourceFact>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct ScopeBinding {
     slot: DeviceAssetSlot,
     source: usize,
@@ -235,9 +241,15 @@ impl DeviceResources for ScopedDeviceResources<'_> {
         self.scope.bindings.len()
     }
     fn get(&self, index: usize) -> Option<DeviceResourceView<'_>> {
+        self.view(index)
+    }
+}
+impl<'a> ScopedDeviceResources<'a> {
+    fn view(&self, index: usize) -> Option<DeviceResourceView<'a>> {
         let binding = self.scope.bindings.get(index)?;
         let fact = self.catalog.sources.get(binding.source)?;
-        let source = self.bank.source_view(&fact.token).ok()?;
+        let bank: &'a AudioInputStorageAndObligations = self.bank;
+        let source = bank.source_view(&fact.token).ok()?;
         let pcm = source.resident_frames()?;
         if source.sample_rate() != fact.expected.sample_rate
             || pcm.len() as u64 != fact.expected.frames
@@ -254,4 +266,4 @@ impl DeviceResources for ScopedDeviceResources<'_> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

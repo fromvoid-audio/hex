@@ -180,6 +180,8 @@ pub(super) enum Guard {
 }
 pub(super) struct HostOwner {
     guard: Guard,
+    // Actual host-owned resource lease header; provider pair bytes exclude it.
+    resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     // Mirror the actual host's new inline controller target and frozen value;
     // these bytes are additional to the provider payload and both ledgers.
     expression_identity: Option<hex_project::DeviceId>,
