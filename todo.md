@@ -1,3 +1,16 @@
+## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
+
+Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
+viewport sampling lattice instead of redistributing all peak columns across
+each changing clip width. Actual interior stereo outline geometry fails under
+the former sampling and passes with fixed lane/time density across fractional
+edges, zoom scales and the column cap; canonical loop/one-shot trims are covered.
+Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
+the existing model. Native reproduction/acceptance is pending; the running
+source label is0f99bfbc, with no captured resize. See docs/waveform-display.md.
+Full exact-source cloud checks are recorded in the PR/Pulse; launcher368 retains
+its reserved merge slot until coordinator release. No app delivery performed.
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
