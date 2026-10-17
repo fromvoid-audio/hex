@@ -4319,3 +4319,11 @@ pass. The layout guard now follows the extracted production style helper;
 its four source-mutation tests pass. This is incomplete draft work: queued-event
 ordering, final integrated full local CI, final review and native acceptance
 remain open. Independent embedding/catalog/full W06 acceptance is not claimed.
+
+W06 follow-up: at exact8ac4e149 the six-test binding group reports five passes
+and one real rendered ordering failure: a queued Begin reopens a no-op drag
+synchronously finalized in the same App update. Stale-generation and retired
+emitter tests pass. Exacte1abd20a adds a local successful-finish delivery fence;
+independent source review finds no actionable issue. Its positive/later-drag
+checks remain pending while W04 final CI owns the native cache. No GPUI or
+other dependency patch was required; the existing dispatch_input seam is used.

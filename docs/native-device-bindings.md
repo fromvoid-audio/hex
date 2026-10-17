@@ -30,6 +30,16 @@ newer control's gesture for the same parameter. Synchronous owner finalization
 first retires stale bindings, retains refused drafts, and uses the existing
 post-terminal command barrier when another widget owns the gesture.
 
+Owner finalization can complete a physical edit before GPUI delivers its queued
+Begin/Change effects. After successful submission (or a successful unchanged
+finish), a binding-local fence ignores that completed delivery cycle. A deferred
+callback reopens only the same installed entity, fence epoch, generation and
+owner. Retirement invalidates the epoch; refused finalization neither fences nor
+accepts the local draft. This uses GPUI's existing FIFO effect delivery, with no
+new host request queue or public widget event token. The rendered same-update
+no-op drag regression reproduces reopening before this repair; the repaired
+candidate still requires its positive run and the later-drag check.
+
 Canonical, preview and pending values retain their existing separate meaning;
 widget display is not audio-applied evidence. Compound EQ/Operator graph edits,
 Return sends, preset finalization, context menus and project lifecycle retain
