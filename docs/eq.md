@@ -68,7 +68,9 @@ The forty-pixel top row contains mode/output controls, channel banks/count and
 analyzer/listen controls, separated by shared theme dividers. The forty-pixel
 footer keeps selected-node controls, automate and remove together. Frequency
 uses a reusable 74-pixel micro dial so full values and units fit; other controls
-keep the shared compact dial, selector and button presentations. Control widths
+keep the shared compact dial, selector and button presentations. The shared host
+[bindings](native-device-bindings.md) own their identity, gesture and retirement
+behavior; panel composition supplies presentation only. Control widths
 never shrink into neighboring labels or readouts. Automation adds a separate
 sixteen-pixel row containing its field/page controls and playhead readout, while
 the response/automation plot retains the remaining height.
