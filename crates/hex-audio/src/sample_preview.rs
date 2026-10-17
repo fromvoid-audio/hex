@@ -32,6 +32,9 @@ pub enum Phase {
 pub struct Snapshot {
     pub generation: u64,
     pub phase: Phase,
+    /// Absolute frame within the complete decoded preview PCM.
+    pub frame: u64,
+    pub frames: u64,
 }
 
 /// A synchronous refusal retains the caller's exact PCM owner.
@@ -59,6 +62,9 @@ pub struct Control {
     generation: Arc<AtomicU64>,
     started: Arc<AtomicU64>,
     finished: Arc<AtomicU64>,
+    position: Arc<AtomicU64>,
+    start: usize,
+    frames: usize,
     rate: u32,
     last_generation: u64,
     closing: bool,
@@ -72,6 +78,7 @@ pub(crate) struct Callback {
     generation: Arc<AtomicU64>,
     started: Arc<AtomicU64>,
     finished: Arc<AtomicU64>,
+    position: Arc<AtomicU64>,
 }
 
 pub(crate) fn channel(rate: u32) -> (Control, Callback) {
@@ -80,6 +87,7 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
     let generation = Arc::new(AtomicU64::new(0));
     let started = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(AtomicU64::new(0));
+    let position = Arc::new(AtomicU64::new(0));
     (
         Control {
             incoming,
@@ -88,6 +96,9 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             generation: generation.clone(),
             started: started.clone(),
             finished: finished.clone(),
+            position: position.clone(),
+            start: 0,
+            frames: 0,
             rate,
             last_generation: 0,
             closing: false,
@@ -100,6 +111,7 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             generation,
             started,
             finished,
+            position,
         },
     )
 }
@@ -121,7 +133,17 @@ impl Control {
         } else {
             Phase::Preparing
         };
-        Snapshot { generation, phase }
+        let frame = match phase {
+            Phase::Preparing => self.start as u64,
+            Phase::Playing | Phase::Finished => self.position.load(Acquire).min(self.frames as u64),
+            _ => 0,
+        };
+        Snapshot {
+            generation,
+            phase,
+            frame,
+            frames: self.frames as u64,
+        }
     }
 
     pub(crate) fn bind_status(&mut self, status: Arc<crate::prepared::Status>) {
@@ -148,6 +170,8 @@ impl Control {
         if let Some(status) = &self.status {
             status.mark_preview_used();
         }
+        self.start = 0;
+        self.frames = 0;
         self.last_generation = generation;
         self.generation.store(generation, Release);
         self.pending = None;
@@ -157,6 +181,17 @@ impl Control {
 
     /// Admit immutable, validated PCM. Stale completions are disposed on control.
     pub fn publish(&mut self, generation: u64, audio: Audio) -> Result<(), PublishRefusal> {
+        self.publish_from(generation, audio, 0)
+    }
+
+    /// Control-side offset admission; no PCM slicing/copying or callback seek work.
+    /// The exact end is valid and completes silently when consumed.
+    pub fn publish_from(
+        &mut self,
+        generation: u64,
+        audio: Audio,
+        frame: usize,
+    ) -> Result<(), PublishRefusal> {
         if !self.permitted() {
             return Err(PublishRefusal {
                 reason: Invalid("sample preview output is closing"),
@@ -178,10 +213,18 @@ impl Control {
                 audio,
             });
         }
+        if frame > audio.frames().len() {
+            return Err(PublishRefusal {
+                reason: Invalid("sample preview offset exceeds source"),
+                audio,
+            });
+        }
+        self.start = frame;
+        self.frames = audio.frames().len();
         self.pending = Some(Preview {
             generation,
             audio,
-            position: 0,
+            position: frame,
         });
         self.reclaim();
         Ok(())
@@ -209,6 +252,8 @@ impl Control {
     /// Silence and invalidate playback without disturbing project transport.
     pub fn cancel(&mut self) {
         self.generation.store(0, Release);
+        self.start = 0;
+        self.frames = 0;
         self.pending = None;
         self.reclaim();
     }
@@ -223,7 +268,8 @@ impl Callback {
             .plus(ChannelStorage::ring(self.retired.buffer())?)?
             .plus(ChannelStorage::paired_payload(self.generation.as_ref()))?
             .plus(ChannelStorage::paired_payload(self.started.as_ref()))?
-            .plus(ChannelStorage::paired_payload(self.finished.as_ref()))
+            .plus(ChannelStorage::paired_payload(self.finished.as_ref()))?
+            .plus(ChannelStorage::paired_payload(self.position.as_ref()))
     }
 
     pub(crate) fn begin_block(&mut self, closing: bool) {
@@ -275,14 +321,15 @@ impl Callback {
         }
         let frames = preview.audio.frames();
         let count = output.len().min(frames.len() - preview.position);
-        if count > 0 {
-            self.started.store(preview.generation, Release);
-        }
         for (target, source) in output.iter_mut().zip(&frames[preview.position..][..count]) {
             target[0] += source[0];
             target[1] += source[1];
         }
         preview.position += count;
+        self.position.store(preview.position as u64, Release);
+        if count > 0 {
+            self.started.store(preview.generation, Release);
+        }
         if preview.position == frames.len() {
             self.finished.store(preview.generation, Release);
         }
@@ -298,6 +345,46 @@ mod tests {
     }
 
     #[test]
+    fn offset_renders_exact_remaining_pcm_and_finishes_without_replay() {
+        let (mut control, mut callback) = channel(48_000);
+        let pcm = || Audio::new(48_000, (0..6).map(|i| [i as f32, -(i as f32)]).collect()).unwrap();
+        for start in [0, 3, 6] {
+            let token = control.request().unwrap();
+            control.publish_from(token, pcm(), start).unwrap();
+            assert_eq!(control.snapshot().frame, start as u64);
+            callback.begin_block(false);
+            let mut rendered = [[0.0; 2]; 8];
+            callback.mix(&mut rendered);
+            for (i, frame) in rendered.iter().take(6 - start).enumerate() {
+                assert_eq!(*frame, [(i + start) as f32, -((i + start) as f32)]);
+            }
+            assert!(rendered[6 - start..].iter().all(|frame| *frame == [0.0; 2]));
+            assert_eq!(control.snapshot().phase, Phase::Finished);
+            assert_eq!(control.snapshot().frame, 6);
+            rendered.fill([0.0; 2]);
+            callback.mix(&mut rendered);
+            assert_eq!(rendered, [[0.0; 2]; 8]);
+            control.reclaim();
+        }
+        let token = control.request().unwrap();
+        assert!(control.publish_from(token, pcm(), 7).is_err());
+        control.publish_from(token, pcm(), 3).unwrap();
+        callback.begin_block(false);
+        callback.mix(&mut [[0.0; 2]; 1]);
+        assert_eq!(control.snapshot().phase, Phase::Playing);
+        assert_eq!(control.snapshot().frame, 4);
+        let newer = control.request().unwrap();
+        control.publish_from(token, pcm(), 0).unwrap();
+        control.publish_from(newer, pcm(), 5).unwrap();
+        control.cancel();
+        callback.begin_block(false);
+        let mut silence = [[0.0; 2]; 8];
+        callback.mix(&mut silence);
+        assert_eq!(silence, [[0.0; 2]; 8]);
+        assert_eq!(control.snapshot().phase, Phase::Idle);
+    }
+
+    #[test]
     fn status_follows_actual_pcm_end_stop_and_stale_decode_without_replay() {
         let (mut control, mut callback) = channel(48_000);
         assert_eq!(control.snapshot().phase, Phase::Idle);
@@ -307,7 +394,9 @@ mod tests {
             control.snapshot(),
             Snapshot {
                 generation: first,
-                phase: Phase::Preparing
+                phase: Phase::Preparing,
+                frame: 0,
+                frames: 3,
             }
         );
         callback.begin_block(false);
@@ -331,7 +420,9 @@ mod tests {
             control.snapshot(),
             Snapshot {
                 generation: next,
-                phase: Phase::Preparing
+                phase: Phase::Preparing,
+                frame: 0,
+                frames: 0
             }
         );
         control.publish(first, pcm(0.9, 4)).unwrap();
@@ -509,7 +600,7 @@ mod tests {
         let (mut control, mut callback) = channel(48_000);
         for value in [0.1, 0.2, 0.3] {
             let token = control.request().unwrap();
-            control.publish(token, pcm(value, 2)).unwrap();
+            control.publish_from(token, pcm(value, 3), 2).unwrap();
         }
         assert!(control.pending.is_some());
         callback.begin_block(false); // reject queued 0.1
@@ -532,7 +623,10 @@ mod tests {
     fn sample_replacement_completion_and_shutdown_allocate_and_free_nothing() {
         let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
         let token = control.sample_preview.request().unwrap();
-        control.sample_preview.publish(token, pcm(0.25, 3)).unwrap();
+        control
+            .sample_preview
+            .publish_from(token, pcm(0.25, 5), 2)
+            .unwrap();
         let mut output = [[0.0; 2]; 2];
         let measure = allocation_counter::measure(|| {
             callback.begin_block();

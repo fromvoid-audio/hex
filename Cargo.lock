@@ -2711,6 +2711,7 @@ name = "hex-project"
 version = "0.1.0"
 dependencies = [
  "hex-lattice-contract",
+ "hex-tuning",
 ]
 
 [[package]]
@@ -2733,6 +2734,7 @@ dependencies = [
  "fs2",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
  "serde",
  "serde_json",
 ]
@@ -2748,6 +2750,10 @@ dependencies = [
  "rtrb",
  "sha2 0.10.9",
 ]
+
+[[package]]
+name = "hex-tuning"
+version = "0.1.0"
 
 [[package]]
 name = "hex-ui"
