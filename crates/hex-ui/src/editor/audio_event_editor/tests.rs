@@ -486,3 +486,166 @@ fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
         "reading raw source_start in composed PCM paints pasted content instead"
     );
 }
+
+fn replace_event_project(view: &mut EditorView, project: hex_project::Project, revision: u64) {
+    let state = view.state.as_ref().unwrap();
+    view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+        canonical_audio_source: None,
+        project: std::sync::Arc::new(project),
+        waveforms: state.waveforms.clone(),
+        audio_clip_waveforms: Default::default(),
+        midi_preview: state.midi_preview.clone(),
+        gain_preview: state.gain_preview.clone(),
+        timeline_frames: state.timeline_frames,
+        can_undo: true,
+        can_redo: false,
+        revision,
+        unsaved: true,
+        document_path: None,
+    }));
+}
+
+#[gpui::test]
+fn outer_trim_clamps_stale_cursor_range_and_hidden_selection(cx: &mut TestAppContext) {
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        let mut canonical =
+            hex_project::Editor::new((*view.state.as_ref().unwrap().project).clone(), 8).unwrap();
+        canonical
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 24000 },
+            })
+            .unwrap();
+        replace_event_project(view, canonical.project().clone(), 2);
+        cx.notify();
+    });
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.audio_event_editor.range = Some((0, 24000));
+        view.audio_event_editor.cursor = 0;
+        view.audio_event_editor.selected = Some(1);
+        view.event_copy(false);
+        let mut canonical =
+            hex_project::Editor::new((*view.state.as_ref().unwrap().project).clone(), 8).unwrap();
+        let frame = canonical.project().clip(clip).unwrap().start() + 48000;
+        canonical
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                frame,
+            })
+            .unwrap();
+        replace_event_project(view, canonical.project().clone(), 3);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        let (_, root, _) = view.event_context().unwrap();
+        assert_eq!(root.view_start, 48000);
+        assert_eq!(
+            view.audio_event_editor.cursor, root.view_start,
+            "cursor must follow crop bounds"
+        );
+        assert!(
+            view.audio_event_editor.range.is_none(),
+            "hidden time range must be cleared"
+        );
+        assert!(
+            view.audio_event_editor.selected.is_none(),
+            "hidden event must be deselected"
+        );
+        view.event_delete();
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "delete must not edit an old hidden selection"
+        );
+        view.event_paste(false);
+        assert!(
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::EditAudioEvents {
+                    operation: AudioEventEdit::Paste { at: 48000, .. },
+                    ..
+                })
+            ),
+            "paste must use visible cursor"
+        );
+    });
+}
+
+#[gpui::test]
+fn duplicate_and_clipboard_paste_refuse_beyond_visible_child(cx: &mut TestAppContext) {
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        let mut canonical =
+            hex_project::Editor::new((*view.state.as_ref().unwrap().project).clone(), 8).unwrap();
+        canonical
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 24000 },
+            })
+            .unwrap();
+        canonical
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Delete {
+                    start: 60000,
+                    end: 96000,
+                },
+            })
+            .unwrap();
+        canonical
+            .execute(Command::SplitClip { clip, frame: 48000 })
+            .unwrap();
+        replace_event_project(view, canonical.project().clone(), 2);
+        cx.notify();
+    });
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        view.audio_event_editor.range = Some((24000, 48000));
+        view.event_copy(false);
+        view.event_duplicate();
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "duplicate at crop end must not overwrite hidden audio"
+        );
+        assert!(view.error.is_some(), "refusal must be visible");
+        view.audio_event_editor.cursor = 48000;
+        for insert in [false, true] {
+            view.error = None;
+            view.event_paste(insert);
+            assert!(
+                view.last_enqueued_edit.is_none(),
+                "clipboard cannot write past crop"
+            );
+            assert!(view.error.is_some());
+        }
+        view.audio_event_editor.cursor = 0;
+        view.error = None;
+        view.event_paste(true);
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "insert must not shift a tail into hidden root space"
+        );
+        assert!(view.error.is_some());
+        view.audio_event_editor.cursor = 24000;
+        view.event_paste(false);
+        assert!(
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::EditAudioEvents {
+                    operation: AudioEventEdit::Paste {
+                        at: 24000,
+                        length: 24000,
+                        ..
+                    },
+                    ..
+                })
+            ),
+            "a fitting visible paste must still work"
+        );
+    });
+}

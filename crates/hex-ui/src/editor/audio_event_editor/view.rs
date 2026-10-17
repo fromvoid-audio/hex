@@ -21,6 +21,15 @@ pub(in crate::editor) fn view(
     }
     if view.audio_event_editor.revision != revision {
         view.audio_event_editor.gesture = None;
+        view.audio_event_editor.cursor = view
+            .audio_event_editor
+            .cursor
+            .clamp(root.view_start, root.view_end);
+        view.audio_event_editor.range = view.audio_event_editor.range.and_then(|(start, end)| {
+            let start = start.max(root.view_start);
+            let end = end.min(root.view_end);
+            (start < end).then_some((start, end))
+        });
         view.audio_event_editor.revision = revision;
     }
     let state = view.state.as_ref()?;
@@ -37,11 +46,12 @@ pub(in crate::editor) fn view(
             );
         }
     };
-    if view
-        .audio_event_editor
-        .selected
-        .is_some_and(|id| !events.events.iter().any(|e| e.id == id))
-    {
+    if view.audio_event_editor.selected.is_some_and(|id| {
+        !events
+            .events
+            .iter()
+            .any(|e| e.id == id && e.start >= root.view_start && e.end <= root.view_end)
+    }) {
         view.audio_event_editor.selected = None;
     }
     let preview = view

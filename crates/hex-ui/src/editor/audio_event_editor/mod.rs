@@ -121,6 +121,13 @@ impl EditorView {
         let Some(clipboard) = self.audio_event_editor.clipboard.as_ref() else {
             return;
         };
+        let last_event_end = root
+            .domain
+            .events
+            .as_ref()
+            .map_or(root.domain.clock.length(), |events| {
+                events.events.last().map_or(0, |event| event.end)
+            });
         let mut saved = clipboard.root.clone();
         std::sync::Arc::make_mut(&mut root.domain).events = None;
         std::sync::Arc::make_mut(&mut saved.domain).events = None;
@@ -128,6 +135,18 @@ impl EditorView {
             self.error = Some(
                 "audio event clipboard belongs to a different or changed clip; copy the events again".into(),
             );
+            return;
+        }
+        if !event_paste_fits_view(&root, self.audio_event_editor.cursor, clipboard.length) {
+            self.error = Some("audio event paste exceeds the visible clip".into());
+            return;
+        }
+        if insert
+            && last_event_end
+                .checked_add(clipboard.length)
+                .is_none_or(|end| end > root.view_end)
+        {
+            self.error = Some("audio event insert needs free time inside the visible clip".into());
             return;
         }
         let operation = if insert {
@@ -428,9 +447,13 @@ impl EditorView {
         let Some((start, end)) = self.event_range() else {
             return;
         };
-        let Some((clip, _, _)) = self.event_context() else {
+        let Some((clip, root, _)) = self.event_context() else {
             return;
         };
+        if !event_paste_fits_view(&root, end, end - start) {
+            self.error = Some("audio event duplicate exceeds the visible clip".into());
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };
@@ -501,4 +524,12 @@ impl EditorView {
             Some(self.event_viewport(&root).pan_half(end - first, right));
         self.audio_event_editor.gesture = None;
     }
+}
+
+fn event_paste_fits_view(root: &AudioClipEdit, at: u64, length: u64) -> bool {
+    length > 0
+        && at >= root.view_start
+        && at
+            .checked_add(length)
+            .is_some_and(|end| end <= root.view_end)
 }

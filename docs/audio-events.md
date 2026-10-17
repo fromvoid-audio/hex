@@ -46,7 +46,9 @@ The container fade and gain apply after event composition, not once per event.
 When an outer cut crops through an existing event, the editable view isolates its
 visible fragment before an inner edit. Copy/move/trim therefore target that
 fragment, while the hidden source intervals and sibling clip stay intact. Drag,
-range-move and keyboard destinations stay within the visible crop.
+range-move and keyboard destinations stay within the visible crop. Duplicate and
+clipboard spans, including the shifted insert tail, refuse writes outside that
+crop. Revision changes clamp cursor/range coordinates and clear hidden selections.
 
 The lower editor owns its editing shortcuts while focused. Returning to a track,
 Arrangement clip, source tab, device panel or closed detail pane releases that
