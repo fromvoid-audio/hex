@@ -29,9 +29,39 @@ pub trait NativeInstrumentClock {
     }
 }
 
-/// One note-on or note-off event in caller-owned block storage.
+/// A controller value on an instrument's logical MIDI channel. Notes retain
+/// their occurrence identity independently of this shared controller state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeInstrumentExpression {
+    ChannelPressure(u8),
+    PitchBend(i16),
+    ModWheel(u8),
+}
+impl NativeInstrumentExpression {
+    pub const fn is_valid(self) -> bool {
+        match self {
+            Self::ChannelPressure(value) | Self::ModWheel(value) => value <= 127,
+            Self::PitchBend(value) => value >= -8192 && value <= 8191,
+        }
+    }
+    /// Pressure, bipolar bend and wheel. MIDI's asymmetric bend endpoints map
+    /// exactly to -1 and +1; center maps exactly to zero.
+    pub fn normalized(self) -> f32 {
+        match self {
+            Self::ChannelPressure(value) | Self::ModWheel(value) => f32::from(value) / 127.0,
+            Self::PitchBend(value) => f32::from(value) / if value < 0 { 8192.0 } else { 8191.0 },
+        }
+    }
+}
+
+/// Sample-offset note/controller event in caller-owned bounded block storage.
+/// Equal offsets retain the caller's order; controllers have no occurrence ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInstrumentEvent {
+    Expression {
+        frame_offset: usize,
+        expression: NativeInstrumentExpression,
+    },
     NoteOn {
         frame_offset: usize,
         occurrence_id: u64,
@@ -45,17 +75,20 @@ pub enum NativeInstrumentEvent {
 }
 
 impl NativeInstrumentEvent {
-    const fn frame_offset(self) -> usize {
+    pub const fn frame_offset(self) -> usize {
         match self {
-            Self::NoteOn { frame_offset, .. } | Self::NoteOff { frame_offset, .. } => frame_offset,
+            Self::NoteOn { frame_offset, .. }
+            | Self::NoteOff { frame_offset, .. }
+            | Self::Expression { frame_offset, .. } => frame_offset,
         }
     }
 
-    const fn occurrence_id(self) -> u64 {
+    const fn occurrence_id(self) -> Option<u64> {
         match self {
             Self::NoteOn { occurrence_id, .. } | Self::NoteOff { occurrence_id, .. } => {
-                occurrence_id
+                Some(occurrence_id)
             }
+            Self::Expression { .. } => None,
         }
     }
 }
@@ -611,7 +644,8 @@ pub(super) fn validate_event_batch(
         let offset = event.frame_offset();
         if offset >= frame_count
             || (index > 0 && offset < previous_offset)
-            || event.occurrence_id() == 0
+            || event.occurrence_id() == Some(0)
+            || matches!(event, NativeInstrumentEvent::Expression { expression, .. } if !expression.is_valid())
         {
             return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
         }
@@ -693,6 +727,7 @@ mod tests {
     impl FeedbackRuntime {
         fn apply_event(&mut self, event: NativeInstrumentEvent) {
             match event {
+                NativeInstrumentEvent::Expression { .. } => {}
                 NativeInstrumentEvent::NoteOn {
                     occurrence_id,
                     pitch,
@@ -807,6 +842,9 @@ mod tests {
                 let offset = event.frame_offset();
                 Self::advance_many(&mut voices, offset - previous_offset);
                 match event {
+                    NativeInstrumentEvent::Expression { .. } => {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
                     NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         let Some(active_voices) = voices.get_mut(..self.max_voices) else {
                             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -957,6 +995,68 @@ mod tests {
             pitch,
             velocity,
         }
+    }
+
+    #[test]
+    fn controller_domain_order_and_unsupported_provider_refusal_are_atomic() {
+        use NativeInstrumentExpression::{ChannelPressure, ModWheel, PitchBend};
+        for expression in [
+            ChannelPressure(0),
+            ChannelPressure(127),
+            ModWheel(127),
+            PitchBend(-8192),
+            PitchBend(0),
+            PitchBend(8191),
+        ] {
+            let event = NativeInstrumentEvent::Expression {
+                frame_offset: 3,
+                expression,
+            };
+            assert_eq!(validate_event_batch(&[event], 4, 4), Ok(()));
+        }
+        for expression in [
+            ChannelPressure(128),
+            ModWheel(255),
+            PitchBend(-8193),
+            PitchBend(8192),
+        ] {
+            assert_eq!(
+                validate_event_batch(
+                    &[NativeInstrumentEvent::Expression {
+                        frame_offset: 0,
+                        expression
+                    }],
+                    1,
+                    4
+                ),
+                Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+            );
+        }
+        assert_eq!(PitchBend(-8192).normalized(), -1.0);
+        assert_eq!(PitchBend(0).normalized(), 0.0);
+        assert_eq!(PitchBend(8191).normalized(), 1.0);
+        let expression = NativeInstrumentEvent::Expression {
+            frame_offset: 0,
+            expression: ModWheel(100),
+        };
+        let late = NativeInstrumentEvent::Expression {
+            frame_offset: 4,
+            expression: ModWheel(100),
+        };
+        assert!(validate_event_batch(&[late], 4, 4).is_err());
+        assert!(validate_event_batch(&[event_on(1, 1, 60, 127), expression], 4, 4).is_err());
+        let factory = prepared(1, 2, Arc::new(AtomicUsize::new(0)));
+        let mut pair = NativeInstrumentRuntimePair::new(&factory, TEST_LIMITS).unwrap();
+        let mut frames = [[0.123, -0.456]; 4];
+        let unchanged = frames;
+        pair.begin_block();
+        assert_eq!(
+            pair.process_block(&[expression], &mut frames),
+            Err(NativeInstrumentRuntimeError::InvalidEventBatch)
+        );
+        assert_eq!(frames, unchanged);
+        pair.rollback_block();
+        assert!(pair.committed_is_quiescent());
     }
 
     struct PairRetargetProof {

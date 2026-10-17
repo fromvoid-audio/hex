@@ -1,4 +1,5 @@
-//! Independent PCM oracle for the four existing pitch-assignment flags.
+//! Independent legacy PCM oracle for the four existing pitch-assignment flags.
+mod support;
 use hex_devices::operator_state::OPERATOR_METADATA;
 use hex_lattice::{InstrumentHistoryRetargetPreparation, NativeInstrumentEvent};
 use hex_lattice_contract::{NativeDeviceMetadata, NativeDeviceState, ParameterId, ParameterValue};
@@ -10,7 +11,7 @@ fn patch(state: &NativeDeviceState, id: u32, value: ParameterValue) -> NativeDev
 }
 
 fn state(operator: u32, fixed: bool, selected: bool, amount: f32) -> NativeDeviceState {
-    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    let mut state = support::legacy_operator_state();
     for i in 0..4 {
         state = patch(
             &state,

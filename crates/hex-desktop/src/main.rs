@@ -33,7 +33,12 @@ fn main() {
             std::env::current_exe()
         ));
     }
+    let midi_worker = hex_midi::Worker::start();
+    let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
     Application::new().run(move |cx: &mut App| {
+        if let Some(handle) = &midi_handle {
+            hex_ui::install_controller_input(cx, handle.clone());
+        }
         hex_ui::install_session_log(cx, log_handle.clone());
         let demo = std::env::args_os()
             .skip(1)

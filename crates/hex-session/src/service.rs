@@ -88,6 +88,7 @@ pub struct Event {
     pub error: Option<String>,
     pub request_complete: bool,
     pub computer_keyboard_complete: Option<u64>,
+    pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
     /// Correlates one final batch result; contains metadata only, never PCM.
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
@@ -235,6 +236,10 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    PrepareLiveExpression {
+        input: Arc<hex_engine::live_expression::LiveExpressionInput>,
+        revision: u64,
+    },
     /// Reopen the worker-owned output for this canonical document generation.
     /// This does not edit the Project or replay transport/publication state.
     RestartAudio {
@@ -915,6 +920,13 @@ fn run_worker(
         unsaved,
         None,
     );
+    let mut keyboard_activation: Option<(
+        u64,
+        u64,
+        hex_project::TrackId,
+        Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>,
+    )> = None;
+    let mut live_expression: Option<Arc<hex_engine::live_expression::LiveExpressionInput>> = None;
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut device_gesture = GestureMachine::default();
     let mut initial = match compile(&session, None) {
@@ -936,6 +948,7 @@ fn run_worker(
                 error: None,
                 request_complete: false,
                 computer_keyboard_complete: None,
+                live_expression_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
                 open_complete: false,
@@ -958,6 +971,7 @@ fn run_worker(
             error: Some(error),
             request_complete: false,
             computer_keyboard_complete: None,
+            live_expression_complete: None,
             audio_batch_complete: None,
             save_complete: false,
             open_complete: false,
@@ -983,6 +997,7 @@ fn run_worker(
 
     while let Some(request) = events.next_request(&requests) {
         let mut computer_keyboard_complete = None;
+        let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
         let mut audio_batch_complete = None;
         let mut open_complete = false;
@@ -1974,6 +1989,67 @@ fn run_worker(
                         error = Some("current playback revision is unavailable".into());
                     }
                 }
+                Request::PrepareLiveExpression {
+                    input,
+                    revision: expected_revision,
+                } => {
+                    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        input.cancel();
+                        error = Some(
+                            "controller input is unavailable for verified streaming audio".into(),
+                        );
+                    } else if input.project_generation != project_generation
+                        || expected_revision != revision
+                        || input.is_cancelled()
+                    {
+                        input.cancel();
+                        error = Some("controller input preparation is stale".into());
+                    } else if let Some((_, prepared)) = compiled
+                        .as_ref()
+                        .filter(|(compiled_revision, _)| *compiled_revision == revision)
+                    {
+                        let mut playback = native_playback(Arc::clone(prepared));
+                        let prepared = playback
+                            .prepare_live_expression(session.project(), Arc::clone(&input))
+                            .and_then(|()| {
+                                if let Some((_, _, track, keyboard)) = keyboard_activation
+                                    .as_ref()
+                                    .filter(|(generation, prepared_revision, _, keyboard)| {
+                                        *generation == project_generation
+                                            && *prepared_revision == revision
+                                            && !keyboard.is_cancelled()
+                                    })
+                                {
+                                    playback.prepare_computer_keyboard_for_controller_activation(
+                                        session.project(),
+                                        *track,
+                                        Arc::clone(keyboard),
+                                    )?;
+                                }
+                                Ok(())
+                            });
+                        match prepared {
+                            Ok(()) => {
+                                live_expression_complete = Some(Arc::clone(&input));
+                                if let Some(previous) = live_expression.replace(Arc::clone(&input))
+                                {
+                                    if !Arc::ptr_eq(&previous, &input) {
+                                        previous.cancel();
+                                    }
+                                }
+                                computer_keyboard_playback = Some(playback);
+                            }
+                            Err(reason) => {
+                                input.cancel();
+                                error = Some(reason.to_string());
+                            }
+                        }
+                    } else {
+                        input.cancel();
+                        error =
+                            Some("controller input requires a compiled project revision".into());
+                    }
+                }
                 Request::PrepareComputerKeyboard {
                     project_generation: generation,
                     revision: expected_revision,
@@ -1992,8 +2068,16 @@ fn run_worker(
                         .filter(|(compiled_revision, _)| *compiled_revision == revision)
                     {
                         let mut playback = native_playback(Arc::clone(prepared));
-                        match playback.prepare_computer_keyboard(session.project(), track, input) {
-                            Ok(()) => computer_keyboard_playback = Some(playback),
+                        match playback.prepare_computer_keyboard(
+                            session.project(),
+                            track,
+                            Arc::clone(&input),
+                        ) {
+                            Ok(()) => {
+                                keyboard_activation =
+                                    Some((project_generation, revision, track, input));
+                                computer_keyboard_playback = Some(playback);
+                            }
                             Err(reason) => error = Some(reason.to_string()),
                         }
                     } else {
@@ -2116,7 +2200,10 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let playback_uses_preview = computer_keyboard_playback.is_none()
+            && canonical_prepared.is_none()
+            && preview_prepared.is_some();
+        let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
         } else if computer_keyboard_playback.is_some() {
             computer_keyboard_playback
@@ -2127,6 +2214,26 @@ fn run_worker(
         } else {
             restore_prepared.map(native_playback)
         };
+        if let Some(input) = live_expression.as_ref() {
+            if input.project_generation != project_generation {
+                input.cancel();
+            }
+            if let Some(playback) = playback.as_mut() {
+                let source_project = if playback_uses_preview {
+                    device_preview
+                        .as_ref()
+                        .map_or(session.project(), |preview| &preview.state.project)
+                } else {
+                    session.project()
+                };
+                if playback
+                    .prepare_live_expression(source_project, Arc::clone(input))
+                    .is_err()
+                {
+                    input.cancel();
+                }
+            }
+        }
         if !events.send(Event {
             state: Arc::clone(&state),
             playback,
@@ -2134,6 +2241,7 @@ fn run_worker(
             error,
             request_complete: true,
             computer_keyboard_complete,
+            live_expression_complete,
             audio_batch_complete,
             save_complete,
             open_complete,
@@ -6309,3 +6417,7 @@ mod service_tests {
         assert!(Arc::ptr_eq(&event.state, &state));
     }
 }
+
+#[cfg(test)]
+#[path = "service/controller_input_tests.rs"]
+mod controller_input_tests;

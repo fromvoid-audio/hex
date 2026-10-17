@@ -14,18 +14,33 @@ pub struct Note {
     scales: [u64; 2],
     flags: u32,
     velocity: u8,
+    pitch: u8,
+    has_origin: bool,
 }
 impl Note {
     pub fn pack(words: [u64; 8]) -> Result<Self, Error> {
         let velocity = (0_u8..=127)
             .find(|velocity| (f64::from(*velocity) / 127.0).to_bits() == words[4])
             .ok_or(Error::NoncanonicalNote)?;
-        let flags = u32::try_from(words[5]).map_err(|_| Error::NoncanonicalNote)?;
+        let flags = words[5] as u32;
+        let origin = words[5] >> 32;
+        let has_origin = origin != 0;
+        let pitch = origin as u8;
+        if has_origin
+            && (origin >> 16 != 0x4f50
+                || pitch > 127
+                || ((origin >> 8) & 255) != u64::from(velocity)
+                || velocity == 0)
+        {
+            return Err(Error::NoncanonicalNote);
+        }
         Ok(Self {
             steps: [words[0], words[1], words[2], words[3]],
             scales: [words[6], words[7]],
             flags,
             velocity,
+            pitch,
+            has_origin,
         })
     }
     pub fn unpack(self) -> [u64; 8] {
@@ -35,7 +50,14 @@ impl Note {
             self.steps[2],
             self.steps[3],
             (f64::from(self.velocity) / 127.0).to_bits(),
-            u64::from(self.flags),
+            u64::from(self.flags)
+                | if self.has_origin {
+                    (0x4f50_u64 << 48)
+                        | (u64::from(self.pitch) << 32)
+                        | (u64::from(self.velocity) << 40)
+                } else {
+                    0
+                },
             self.scales[0],
             self.scales[1],
         ]

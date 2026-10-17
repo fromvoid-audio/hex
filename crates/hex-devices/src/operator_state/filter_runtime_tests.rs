@@ -3,7 +3,7 @@ use hex_lattice::{
     NativeInstrumentDefinition, NativeInstrumentEvent, PreparedMutableInstrumentRuntime,
 };
 fn state() -> NativeDeviceState {
-    let mut s = OPERATOR_METADATA.default_state().unwrap();
+    let mut s = tests::legacy_state();
     for (id, v) in [
         (1, 1.0),
         (2, 1.0),
@@ -173,6 +173,8 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
             .descriptors()
             .iter()
             .all(|d| d.id.value() <= 388
+                || (600..=608).contains(&d.id.value())
+                || (620..=639).contains(&d.id.value())
                 || (513..=516).contains(&d.id.value())
                 || d.id.value() >= 20001)
     );

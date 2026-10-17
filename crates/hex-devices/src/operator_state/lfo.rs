@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn legacy_prefixes_migrate_neutral_and_all_inactive_lfo_words_are_strict() {
-        let current = OPERATOR_METADATA.default_state().unwrap();
+        let current = crate::operator_state::tests::legacy_state();
         for (version, length) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320), (6, 320)] {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,

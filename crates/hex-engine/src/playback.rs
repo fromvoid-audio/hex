@@ -304,6 +304,38 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    /// Control-side attachment validated against the exact compiled instrument instance.
+    pub fn prepare_live_expression(
+        &mut self,
+        project: &hex_project::Project,
+        input: Arc<crate::live_expression::LiveExpressionInput>,
+    ) -> Result<(), Invalid> {
+        let canonical = project
+            .track(input.track)
+            .and_then(hex_project::Track::instrument)
+            .ok_or(Invalid("controller input instrument unavailable"))?;
+        let compiled = self
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.canonical_track_id() == Some(input.track))
+            .ok_or(Invalid("controller input track unavailable"))?;
+        if project.sample_rate() != self.sample_rate()
+            || canonical.id() != input.instrument
+            || compiled.instrument_id != Some(input.instrument)
+            || compiled.instrument_state.as_ref() != Some(canonical.state())
+            || compiled.instrument_bypassed != canonical.bypassed()
+            || canonical.bypassed()
+        {
+            return Err(Invalid("controller input source does not match playback"));
+        }
+        let runtime = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid("controller input requires prepared playback"))?;
+        runtime.attach_live_expression(input)?;
+        Ok(())
+    }
     /// Control-side only: attach a selected instrument's bounded audition pool.
     /// The ordinary graph publication owns preparation, inheritance and retirement.
     pub fn prepare_computer_keyboard(
@@ -346,6 +378,25 @@ impl Playback {
         if runtime.validate_candidate_runtime_storage(0).is_err() {
             runtime.computer_keyboard = previous;
             return Err(Invalid("computer keyboard exceeds graph storage budget"));
+        }
+        Ok(())
+    }
+
+    /// Reprepare an existing same-revision keyboard lease for a controller-only
+    /// publication. Ordinary project publications keep their cancellation policy.
+    pub fn prepare_computer_keyboard_for_controller_activation(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+    ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard(project, track, input)?;
+        if let Some(keyboard) = self
+            .session_runtime
+            .as_mut()
+            .and_then(|runtime| runtime.computer_keyboard.as_mut())
+        {
+            keyboard.request_controller_handoff_preservation();
         }
         Ok(())
     }
@@ -1004,6 +1055,30 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
+        let preserve_keyboard = match (
+            self.session_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.computer_keyboard.as_ref()),
+            previous
+                .session_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.computer_keyboard.as_ref()),
+        ) {
+            (Some(next), Some(old)) if next.requests_preservation_from(old) => {
+                let exact_revision = self
+                    .prepared_revision
+                    .as_ref()
+                    .zip(previous.prepared_revision.as_ref())
+                    .is_some_and(|(next, old)| Arc::ptr_eq(next, old));
+                if !exact_revision || !next.can_preserve_from(old) {
+                    return Err(PlaybackHandoffError::Session(
+                        crate::SessionPlaybackError::DeviceRuntime,
+                    ));
+                }
+                true
+            }
+            _ => false,
+        };
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => next
                 .try_inherit_state_from(old)
@@ -1065,7 +1140,23 @@ impl Playback {
             }
         }
         self.inherit_metronome(previous);
-        previous.cancel_computer_keyboard();
+        if preserve_keyboard {
+            if let (Some(next), Some(old)) = (
+                self.session_runtime
+                    .as_mut()
+                    .and_then(|runtime| runtime.computer_keyboard.as_mut()),
+                previous
+                    .session_runtime
+                    .as_mut()
+                    .and_then(|runtime| runtime.computer_keyboard.as_mut()),
+            ) {
+                next.preserve_from(old).map_err(|_| {
+                    PlaybackHandoffError::Session(crate::SessionPlaybackError::DeviceRuntime)
+                })?;
+            }
+        } else {
+            previous.cancel_computer_keyboard();
+        }
         Ok(())
     }
 

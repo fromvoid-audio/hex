@@ -155,6 +155,24 @@ impl Settings {
         if !(8000..=192000).contains(&rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
+        self.prepare_at_rate(rate)
+    }
+    /// Internal2x processing only; the host sample-rate contract is unchanged.
+    pub(crate) fn prepare_oversampled(
+        self,
+        host_rate: u32,
+    ) -> Result<Prepared, DeviceContractError> {
+        if !(8000..=192000).contains(&host_rate) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.validate()?;
+        self.prepare_at_rate(
+            host_rate
+                .checked_mul(2)
+                .ok_or(DeviceContractError::InvalidParameterValue)?,
+        )
+    }
+    fn prepare_at_rate(self, rate: u32) -> Result<Prepared, DeviceContractError> {
         // Authored frequency stays portable; the rate-specific ceiling is a
         // documented effective cutoff, not a rewrite of canonical state.
         let frequency = f64::from(f32::from_bits(self.words[4])).min(0.45 * f64::from(rate));

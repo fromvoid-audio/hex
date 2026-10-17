@@ -14,7 +14,7 @@ pub(super) fn key(context: u64, generation: u64) -> Key {
     }
 }
 pub(super) fn fixture() -> (Vec<Root>, Record, Curve) {
-    let initial = OPERATOR_METADATA.default_state().unwrap();
+    let initial = crate::operator_state::tests::legacy_state();
     let initial = Root::new(key(10, 1), &initial, 48_000);
     let state = OPERATOR_METADATA
         .patch_parameter(
@@ -114,7 +114,7 @@ fn concrete_complete_bindings_measure_storage_overflow_instead_of_force_fit() {
 
 #[test]
 fn legacy_builtin_endpoint_is_exact_and_retains_512_cap_not_64_truncation() {
-    let base = OPERATOR_METADATA.default_state().unwrap();
+    let base = crate::operator_state::tests::legacy_state();
     let mut witnessed_nonzero = false;
     let mut truncation_diff = false;
     for choice in 0..4 {
@@ -156,7 +156,7 @@ fn legacy_builtin_endpoint_is_exact_and_retains_512_cap_not_64_truncation() {
 
 #[test]
 fn unchanged_eight_word_provider_still_refuses_waveform_authored_changes() {
-    let state = OPERATOR_METADATA.default_state().unwrap();
+    let state = crate::operator_state::tests::legacy_state();
     let changed = OPERATOR_METADATA
         .patch_parameter(&state, parameter::waveform(1), ParameterValue::Choice(1))
         .unwrap();

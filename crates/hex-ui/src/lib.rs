@@ -2,8 +2,10 @@
 mod app;
 mod build_info;
 mod context_menu;
+mod controller_input;
 mod device_composition;
 mod diagnostics;
+pub use controller_input::install_controller_input;
 pub use diagnostics::install_session_log;
 mod editor;
 mod editor_backend;

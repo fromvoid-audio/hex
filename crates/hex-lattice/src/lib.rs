@@ -59,8 +59,9 @@ pub use instrument_pair::{
 pub use instrument_runtime::{
     AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
     NativeInstrumentAnalyticSeed, NativeInstrumentClock, NativeInstrumentEvent,
-    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
-    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
+    NativeInstrumentExpression, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
+    NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
+    PreparedMutableInstrumentRuntime,
 };
 
 /// Immutable, control-prepared configuration for one stateful native effect.

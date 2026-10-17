@@ -41,6 +41,8 @@ pub struct PreparedOperatorNote {
     amplitude_velocity_scales: [f32; OPERATORS],
     amplitude_velocity_active: bool,
     key_scaling: bool,
+    pitch: u8,
+    midi_velocity: u8,
 }
 
 impl PreparedOperatorConfiguration {
@@ -267,6 +269,8 @@ impl PreparedOperatorConfiguration {
             }
         }
         Ok(PreparedOperatorNote {
+            pitch,
+            midi_velocity: velocity,
             key_scaling,
             steps,
             velocity: f64::from(velocity) / 127.0,
@@ -548,6 +552,10 @@ impl PreparedOperatorConfiguration {
             .0)
     }
 
+    pub(crate) const fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
     pub(crate) const fn configuration_id(&self) -> u64 {
         self.configuration_id
     }
@@ -668,6 +676,9 @@ impl PreparedOperatorConfiguration {
 }
 
 impl PreparedOperatorNote {
+    pub(crate) fn midi_origin(self) -> (u8, u8) {
+        (self.pitch, self.midi_velocity)
+    }
     /// Encode only the already prepared phase increments and velocity. The
     /// shared-context host supplies the configuration separately.
     pub(crate) fn into_shared_payload(
@@ -685,6 +696,9 @@ impl PreparedOperatorNote {
                     0
                 },
         );
+        payload[5] |= (0x4f50_u64 << 48)
+            | (u64::from(self.pitch) << 32)
+            | (u64::from(self.midi_velocity) << 40);
         payload[6] = u64::from(self.amplitude_velocity_scales[0].to_bits())
             | (u64::from(self.amplitude_velocity_scales[1].to_bits()) << 32);
         payload[7] = u64::from(self.amplitude_velocity_scales[2].to_bits())
@@ -699,7 +713,15 @@ impl PreparedOperatorNote {
         payload: &[u64; hex_lattice::SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS],
     ) -> Option<Self> {
         let steps = std::array::from_fn(|index| payload[index]);
-        let encoded_caps = u32::try_from(payload[5]).ok()?;
+        if payload[5] >> 48 != 0x4f50 {
+            return None;
+        }
+        let pitch = ((payload[5] >> 32) & 255) as u8;
+        let midi_velocity = ((payload[5] >> 40) & 255) as u8;
+        if pitch > 127 || !(1..=127).contains(&midi_velocity) {
+            return None;
+        }
+        let encoded_caps = payload[5] as u32;
         let amplitude_velocity_active = encoded_caps & (1 << 31) != 0;
         let key_scaling = encoded_caps & (1 << 30) != 0;
         let harmonic_caps = encoded_caps & !((1 << 31) | (1 << 30));
@@ -707,7 +729,7 @@ impl PreparedOperatorNote {
             return None;
         }
         let velocity = f64::from_bits(payload[OPERATORS]);
-        if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+        if !velocity.is_finite() || velocity != f64::from(midi_velocity) / 127.0 {
             return None;
         }
         let amplitude_velocity_scales =
@@ -732,6 +754,8 @@ impl PreparedOperatorNote {
             return None;
         }
         Some(Self {
+            pitch,
+            midi_velocity,
             key_scaling,
             steps,
             velocity,

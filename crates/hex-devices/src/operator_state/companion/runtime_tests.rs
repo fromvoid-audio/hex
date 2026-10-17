@@ -49,7 +49,7 @@ impl NativeInstrumentClock for Clock {
     }
 }
 fn settings() -> OperatorSettings {
-    let mut settings = OperatorSettings::defaults();
+    let mut settings = crate::operator_state::tests::legacy_settings();
     for i in 0..4 {
         settings.fields[i * 3] = 1.0;
         settings.fields[i * 3 + 1] = if i == 0 { 1.0 } else { 0.0 };

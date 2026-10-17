@@ -313,6 +313,7 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
     pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
     capture_runtime: u64,
     capture_epoch: u64,
@@ -498,6 +499,7 @@ impl SessionPlayback {
         // Exhaustive owning-field match: other buffers belong to the Session
         // container group, not independent transferable device/context groups.
         let Self {
+            live_expression,
             computer_keyboard,
             capture_runtime: _,
             capture_epoch: _,
@@ -547,7 +549,7 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        if computer_keyboard.is_some() {
+        if live_expression.is_some() || computer_keyboard.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         for index in 0..device_chains.len() {
@@ -602,6 +604,38 @@ impl SessionPlayback {
         self.route_state_generation = self.route_state_generation.wrapping_add(1);
     }
 
+    pub(crate) fn attach_live_expression(
+        &mut self,
+        input: Arc<crate::live_expression::LiveExpressionInput>,
+    ) -> Result<(), crate::Invalid> {
+        let index = self
+            .revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|track| track.canonical_track_id() == Some(input.track))
+            .ok_or(crate::Invalid("controller input track unavailable"))?;
+        if !self
+            .mutable_instruments
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(
+                crate::mutable_instrument::MutableInstrumentTrackRuntime::supports_live_expression,
+            )
+        {
+            return Err(crate::Invalid(
+                "this instrument mode does not support controller input",
+            ));
+        }
+        let previous = self.live_expression.replace(input);
+        if self.validate_candidate_runtime_storage(0).is_err() {
+            self.live_expression = previous;
+            return Err(crate::Invalid(
+                "controller input exceeds graph storage budget",
+            ));
+        }
+        Ok(())
+    }
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
         Self::new_with_policy(revision, false)
     }
@@ -909,6 +943,10 @@ impl SessionPlayback {
                 })
                 .transpose()
                 .map_err(SessionPlaybackError::from)?;
+            let mut runtime = runtime;
+            if let Some(runtime) = runtime.as_mut() {
+                runtime.expression_identity = track.instrument_id;
+            }
             mutable_instruments.push(runtime);
         }
         let mut mutable_events = Vec::new();
@@ -1026,6 +1064,7 @@ impl SessionPlayback {
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {
+            live_expression: None,
             computer_keyboard: None,
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
@@ -1455,3 +1494,6 @@ mod compensation_tests;
 
 #[cfg(test)]
 mod routing_tests;
+
+#[cfg(test)]
+mod live_expression_tests;

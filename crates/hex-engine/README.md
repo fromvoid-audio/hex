@@ -12,6 +12,9 @@ independent. See [host timing and tails](../../docs/lattice-instruments.md#host-
 and [instrument admission](../../docs/lattice-instruments.md#variable-size-mutable-runtime-admission).
 
 Own musical state, typed playback commands, timing, and deterministic rendering.
+A transient generation/track/instrument-bound controller lease freezes one
+pressure/bend/wheel snapshot per render transaction; no native MIDI dependency
+enters the engine. See [controller input](../../docs/controller-input.md).
 
 ## Dependencies
 

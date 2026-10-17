@@ -2,9 +2,10 @@
 
 Pulse2170 added control-side metadata and validated settings for the original
 four-envelope FM kernel. Pulse2172 registers that metadata as the distinct
-`hex.instrument.operator` builtin. Zero effective self-feedback uses the shared
-analytic context contract; nonzero effective feedback selects the bounded native
-mutable runtime. This is a bounded original acyclic FM device with builtin periodic
+`hex.instrument.operator` builtin, displayed as Vector. New operator-mode patches
+use the shared mutable runtime for global controls, voice allocation and quality
+processing. Historical legacy-mode patches retain their original analytic,
+feedback, LFO or harmonic processing selection. This is an original acyclic FM device with builtin periodic
 waveforms and a User harmonic bank, not full Operator behavior or proof of Live numerical parity.
 The standalone and registered bounded self-feedback contracts are documented in
 [Operator feedback](operator-feedback.md). Further oscillator controls,
@@ -12,7 +13,11 @@ transport-specific behavior and remaining Operator behavior remain separate work
 The registered Clean carrier filter and its state extension are defined in
 [Operator filter](operator-filter.md).
 
-`hex.instrument.operator`, state version12, owns exactly1,488 bytes. The harmonic suffix follows
+`hex.instrument.operator`, state version15, owns exactly1,728 bytes. The v15
+global/controller suffix adds112 bytes after v14's1,616-byte state; v14 adds128
+companion-envelope bytes after the1,488-byte v12/v13 state. See
+[Vector globals](vector-global.md) for mode, migration, IDs and transfer laws.
+The harmonic suffix follows
 the complete 416-byte v11 filter state. Its 36-byte filter suffix follows the unchanged 380-byte version8 prefix, which adds four
 strict enable words to the 364-byte v7 prefix described below. State versions9–10
 remain reserved and rejected. The v7 prefix contains the original
@@ -110,7 +115,9 @@ post-repair validation and native interaction/listening remain open. See
 [enable requirements](operator-enable.md) and
 [continuation contract and evidence](operator-enable-continuation.md).
 
-The current registry has363 descriptors: the earlier92, seven filter controls and
+The current registry has424 descriptors: the395 through v14, algorithm600,
+eight global controls601–608 and twenty assignments620–639. The v12 registry
+had363 descriptors: the earlier92, seven filter controls and
 264 harmonic amplitudes/range/Repeat controls. The 1,072-byte v12 suffix keeps
 four 64-amplitude banks with independent range, Repeat and cached User mode.
 See [operator harmonics](operator-harmonics.md) for editing, migration and

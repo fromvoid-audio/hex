@@ -8,6 +8,10 @@ thin GPUI layer: validated project commands, prepared audio import,
 undo/redo, read-only media views, and playback compilation all pass through one
 session.
 
+Transient controller activation validates project generation and exact instrument
+identity, retains the lease across parameter revisions, and cancels it on project
+replacement or instrument removal. It creates no project/history edit.
+
 The control worker owns a project-scoped time-selection clipboard. Copy is
 metadata-only; cut adopts the captured clipboard after prepared compilation;
 paste compiles before history commit. Successful project opening clears it.
