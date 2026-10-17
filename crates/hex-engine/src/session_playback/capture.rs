@@ -22,6 +22,104 @@ pub enum OutputCaptureId {
     Return(ReturnId),
 }
 
+/// Actual direct post-device/post-fader track output, or Main including Returns
+/// and master gain. Monitor-only metronome/browser audio is outside this tap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectSignal {
+    Track(u64),
+    Master,
+    /// This runtime cannot supply the requested current canonical owners.
+    Unavailable,
+}
+
+/// Speculative synchronous samples. Publish only after complete rendering and
+/// final caller output/context validation. Real-time observers must not allocate,
+/// block, panic, retain the borrow or destroy an owner.
+pub type ProjectSignalObserver<'observer> =
+    dyn for<'frames> FnMut(ProjectSignal, usize, &'frames [Frame]) + 'observer;
+
+/// Borrowed, bounded live selection. Unlike the offline capture plan, this does
+/// not change scheduling or restrict loops/Session launches. IDs must be sorted,
+/// distinct canonical TrackIds; callers validate them against the active source.
+pub struct ProjectOutputTap<'a, 'observer> {
+    tracks: &'a [u64],
+    observer: &'a mut ProjectSignalObserver<'observer>,
+}
+impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
+    pub fn tracks(&self) -> &[u64] {
+        self.tracks
+    }
+    /// Forward a speculative borrowed span through a chunk-offset adapter.
+    pub fn observe(&mut self, signal: ProjectSignal, offset: usize, frames: &[Frame]) {
+        (self.observer)(signal, offset, frames);
+    }
+    pub fn new(
+        tracks: &'a [u64],
+        observer: &'a mut ProjectSignalObserver<'observer>,
+    ) -> Option<Self> {
+        (tracks.len() <= hex_project::MAX_TRACKS
+            && tracks.iter().all(|id| *id != 0)
+            && tracks.windows(2).all(|pair| pair[0] < pair[1]))
+        .then_some(Self { tracks, observer })
+    }
+    pub(crate) fn main(&mut self, frames: &[Frame]) {
+        (self.observer)(ProjectSignal::Master, 0, frames);
+    }
+    pub(crate) fn unavailable(&mut self) {
+        (self.observer)(ProjectSignal::Unavailable, 0, &[]);
+    }
+}
+
+pub(super) trait CaptureSink {
+    fn selects(&self, id: OutputCaptureId) -> bool;
+    fn add(
+        &mut self,
+        id: OutputCaptureId,
+        offset: usize,
+        frames: &[Frame],
+    ) -> Result<(), SessionPlaybackError>;
+    fn commit(&mut self, _frames: usize) {}
+    fn invalidate(&mut self) {}
+}
+impl CaptureSink for ProjectOutputTap<'_, '_> {
+    fn selects(&self, id: OutputCaptureId) -> bool {
+        matches!(id, OutputCaptureId::Track(id) if self.tracks.binary_search(&id.value()).is_ok())
+    }
+    fn add(
+        &mut self,
+        id: OutputCaptureId,
+        offset: usize,
+        frames: &[Frame],
+    ) -> Result<(), SessionPlaybackError> {
+        if let OutputCaptureId::Track(id) = id
+            && self.selects(OutputCaptureId::Track(id))
+        {
+            (self.observer)(ProjectSignal::Track(id.value()), offset, frames);
+        }
+        Ok(())
+    }
+}
+
+impl CaptureSink for OutputCapture<'_, '_> {
+    fn selects(&self, id: OutputCaptureId) -> bool {
+        OutputCapture::selects(self, id)
+    }
+    fn add(
+        &mut self,
+        id: OutputCaptureId,
+        offset: usize,
+        frames: &[Frame],
+    ) -> Result<(), SessionPlaybackError> {
+        OutputCapture::add(self, id, offset, frames)
+    }
+    fn commit(&mut self, frames: usize) {
+        OutputCapture::commit(self, frames);
+    }
+    fn invalidate(&mut self) {
+        OutputCapture::invalidate(self);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputCaptureError {
     UnsupportedRuntime,

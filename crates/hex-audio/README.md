@@ -10,6 +10,11 @@ The bounded worker shares FFT scratch, cadence, freshness and retirement across
 both layers. Output-only APIs project the output of the same reader; legacy
 captures leave input absent. See [EQ signal and custody contracts](../../docs/eq.md#live-input-and-output-spectra).
 
+Project-wide spectra reuse the same worker/reaper with a fixed packet pool,
+independent selected-track layers and explicit work/storage/freshness bounds.
+See [project spectrum](../../docs/project-spectrum.md) for taps, lifecycle and
+measured source-profile limits.
+
 The desktop's nonblocking initial open uses `request_initial_open()` and polls
 its one-result handle; the lifecycle worker uses the device's actual default
 rate without assuming a project rate. Recovery uses

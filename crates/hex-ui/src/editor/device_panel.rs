@@ -48,7 +48,7 @@ mod return_drag;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
-mod spectrum_display;
+pub(super) mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
 pub(super) use send_controls::return_send_numeric_control;

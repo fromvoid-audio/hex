@@ -14,6 +14,10 @@ from normalized points without assigning device-specific meaning to them.
 axes. Callers supply normalized samples and display their own axis ranges;
 the widget has no DSP, device state or telemetry dependency.
 
+`layered_spectrum_plot` validates and paints up to257 independently colored
+normalized curves. The product owns signal identities, units and selection;
+the widget never combines layers or owns audio analysis.
+
 Utility is the current visual testbed for the shared Lattice device interface.
 Frames, knobs, sliders, value fields, switches, selectors and popup behavior are
 library controls, not Utility-specific implementations. Device panels compose

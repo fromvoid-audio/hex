@@ -1,0 +1,289 @@
+use super::*;
+use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
+use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
+use hex_project::{Command, Created, Editor, ElementColor, Project};
+use hex_session::service::ViewState;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+fn publish(view: &mut EditorView, project: Project) {
+    let old = view.state.as_ref().unwrap();
+    view.state = Some(Arc::new(ViewState {
+        canonical_audio_source: None,
+        project: Arc::new(project),
+        waveforms: old.waveforms.clone(),
+        audio_clip_waveforms: old.audio_clip_waveforms.clone(),
+        midi_preview: Arc::clone(&old.midi_preview),
+        gain_preview: old.gain_preview.clone(),
+        timeline_frames: old.timeline_frames,
+        can_undo: old.can_undo,
+        can_redo: old.can_redo,
+        revision: old.revision + 1,
+        unsaved: old.unsaved,
+        document_path: old.document_path.clone(),
+    }));
+}
+fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
+    let ids = view.project_spectrum_ids();
+    let mut selection =
+        hex_audio::spectrum_worker::ProjectSelection::new(&ids, view.project_generation, 1, 48_000)
+            .unwrap();
+    selection.token = 2;
+    PublishedProjectSpectrum {
+        selection,
+        applied_revision: 1,
+        captured_at: now,
+        processed_at: now,
+        frames: std::array::from_fn(|i| hex_audio::spectrum::SpectrumFrame {
+            sample_rate_hz: 48_000,
+            bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
+        }),
+    }
+}
+#[gpui::test]
+fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_context(
+    cx: &mut TestAppContext,
+) {
+    for count in [0, 1, 2, 256] {
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        for i in 0..count {
+            assert!(matches!(
+                model
+                    .execute(Command::AddTrack {
+                        name: format!("track {i}")
+                    })
+                    .unwrap(),
+                Created::Track(_)
+            ));
+        }
+        let project = model.project().clone();
+        let (handle, editor) = editor_window(cx, project.clone(), Arc::default());
+        let _visual = VisualTestContext::from_window(handle, cx);
+        editor.update(cx, |view, _| {
+            let ids: Vec<_> = project.tracks().iter().map(|t| t.id()).collect();
+            if let Some(first) = ids.first() {
+                view.track_selection.select(&project, *first, false, false);
+            }
+            if let Some(last) = ids.last() {
+                view.track_selection.select(&project, *last, true, false);
+            }
+            let now = Instant::now();
+            view.project_spectrum.result = Some(result(view, now));
+            let layers = view.project_spectrum_layers(now);
+            assert_eq!(
+                layers.len(),
+                count + 1,
+                "no selection cap or selected-track sum"
+            );
+            for (index, track) in project.tracks().iter().enumerate() {
+                assert_eq!(
+                    layers[index].color,
+                    theme::element_colors(track.color()).accent
+                );
+                assert!(
+                    (layers[index].points[0][1] - (96.0 - 6.0 - (index + 1) as f32 * 0.25) / 96.0)
+                        .abs()
+                        < 1e-6
+                );
+            }
+            assert!(
+                (layers.last().unwrap().points[0][1] - 90.0 / 96.0).abs() < 1e-6,
+                "master paints last"
+            );
+            if let Some(track) = ids.first() {
+                let mut changed = Editor::new(project.clone(), 8).unwrap();
+                changed
+                    .execute(Command::SetTrackColor {
+                        track: *track,
+                        color: ElementColor::Orange,
+                    })
+                    .unwrap();
+                publish(view, changed.project().clone());
+                let recolored = view.project_spectrum_layers(now);
+                assert_eq!(recolored.len(), count + 1);
+                assert_eq!(
+                    recolored[0].color,
+                    theme::element_colors(ElementColor::Orange).accent
+                );
+                assert_eq!(
+                    recolored[0].points, layers[0].points,
+                    "color change does not reset or change signal data"
+                );
+                changed.execute(Command::RemoveTrack(*track)).unwrap();
+                publish(view, changed.project().clone());
+                assert!(
+                    view.project_spectrum_layers(now).is_empty(),
+                    "removed IDs clear synchronously"
+                );
+            }
+            view.project_spectrum.result = Some(result(view, now));
+            assert!(
+                view.project_spectrum_layers(
+                    now + view
+                        .project_spectrum
+                        .result
+                        .as_ref()
+                        .unwrap()
+                        .selection
+                        .stale_after()
+                        + Duration::from_millis(1)
+                )
+                .is_empty()
+            );
+            view.project_spectrum.output_identity = Some(123);
+            assert!(
+                view.project_spectrum_layers(now).is_empty(),
+                "closed/replaced output clears even with reused project IDs"
+            );
+            view.project_spectrum.output_identity = None;
+            view.project_generation += 1;
+            assert!(
+                view.project_spectrum_layers(now).is_empty(),
+                "project replacement clears reused IDs"
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for (width, height) in [(880.0, 540.0), (1500.0, 650.0)] {
+        visual.simulate_resize(size(px(width), px(height)));
+        visual.run_until_parked();
+        let toolbar = visual.debug_bounds("editor-toolbar").unwrap();
+        let panel = visual.debug_bounds("project-spectrum").unwrap();
+        assert!(panel.origin.y >= toolbar.bottom());
+        assert!(
+            panel.size.height >= px(72.0)
+                && panel.size.height <= px(bounded_height(5000.0, height))
+        );
+        let content = visual.debug_bounds("arrangement-content").unwrap();
+        assert!(content.origin.y >= panel.bottom());
+        assert!(
+            content.size.height >= px(60.0),
+            "workspace remains usable: {content:?}"
+        );
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+        let grip = visual
+            .debug_bounds("project-spectrum-resize")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(grip.x, grip.y - px(5000.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(
+            point(px(-20.0), grip.y - px(5000.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("project-spectrum").unwrap().size.height,
+            px(72.0)
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(view.project_spectrum.resize.is_none())
+        });
+        let grip = visual
+            .debug_bounds("project-spectrum-resize")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(grip.x, grip.y + px(5000.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("project-spectrum").unwrap().size.height,
+            px(72.0),
+            "escape restores prior view height"
+        );
+        let grip = visual
+            .debug_bounds("project-spectrum-resize")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(grip.x, grip.y + px(5000.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(
+            point(px(-20.0), grip.y + px(5000.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("project-spectrum").unwrap().size.height,
+            px(bounded_height(5000.0, height))
+        );
+        let toggle = visual
+            .debug_bounds("project-spectrum-toggle")
+            .unwrap()
+            .center();
+        visual.simulate_click(toggle, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("project-spectrum").unwrap().size.height,
+            px(22.0)
+        );
+        assert!(visual.debug_bounds("project-spectrum-plot").is_none());
+        let toggle = visual
+            .debug_bounds("project-spectrum-toggle")
+            .unwrap()
+            .center();
+        visual.simulate_click(toggle, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, before)
+        });
+    }
+}
+
+#[gpui::test]
+fn project_spectrum_keeps_workspace_with_populated_details_and_returns(cx: &mut TestAppContext) {
+    let (project, _, _, _) = audio_project();
+    let mut canonical = Editor::new(project, 8).unwrap();
+    for index in 0..4 {
+        canonical
+            .execute(Command::AddReturnTrack {
+                name: format!("return {index}"),
+            })
+            .unwrap();
+    }
+    let (handle, editor) = editor_window(cx, canonical.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    editor.update(cx, |view, cx| {
+        view.clip_view_open = true;
+        view.device_panel_active = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let viewport = visual.debug_bounds("clip-detail-viewport").unwrap();
+    let content = visual.debug_bounds("arrangement-content").unwrap();
+    assert!(viewport.size.height >= px(48.0));
+    assert!(
+        viewport.size.height < px(213.0),
+        "real device details remain in a scroll viewport"
+    );
+    assert!(
+        content.size.height >= px(60.0),
+        "timeline survives populated detail and routing chrome: {content:?}"
+    );
+}

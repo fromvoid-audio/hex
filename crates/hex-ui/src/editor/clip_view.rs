@@ -137,6 +137,13 @@ impl EditorView {
                 CLIP_DETAIL_BODY_HEIGHT
             };
         }
+        self.project_spectrum.detail_height = detail.as_ref().map(|_| {
+            if self.device_panel_active {
+                213.0
+            } else {
+                self.clip_detail_body_height
+            }
+        });
         let label = if self.device_panel_active {
             "devices"
         } else if !open {
@@ -329,11 +336,28 @@ impl EditorView {
             .debug_selector(|| "clip-view".into());
         if open {
             if let Some(detail) = detail {
-                panel = panel.child(detail);
+                let preferred = if self.device_panel_active {
+                    213.0
+                } else {
+                    self.clip_detail_body_height
+                };
+                let height = self.project_spectrum_detail_height(window, preferred);
+                panel = panel.child(
+                    div()
+                        .id("clip-detail-viewport")
+                        .debug_selector(|| "clip-detail-viewport".into())
+                        .h(px(height))
+                        .flex_shrink_0()
+                        .overflow_y_scroll()
+                        .child(detail),
+                );
             } else {
                 panel = panel.child(
                     div()
-                        .h(px(self.clip_detail_body_height))
+                        .h(px(self.project_spectrum_detail_height(
+                            window,
+                            self.clip_detail_body_height,
+                        )))
                         .flex_shrink_0()
                         .px(px(6.0))
                         .flex()

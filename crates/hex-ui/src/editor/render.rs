@@ -385,6 +385,7 @@ impl Render for EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .child(self.fade_pointer_events(cx))
+            .child(self.project_spectrum_pointer_events(cx))
             .track_focus(&self.focus)
             .key_context(if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
@@ -578,6 +579,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_project_spectrum_resize(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
@@ -1061,6 +1066,7 @@ impl Render for EditorView {
             }))
             .child(self.title_bar(cx))
             .child(self.transport(cx))
+            .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))

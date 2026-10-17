@@ -1201,14 +1201,29 @@ impl Playback {
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_signal_observers(output, observer, None)
+    }
+
+    /// Observe the actual project mix before monitor-only metronome audio.
+    /// A fallback without the canonical Session renderer reports Unavailable
+    /// through the project tap and preserves its ordinary audio behavior.
+    pub fn render_with_signal_observers(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), Invalid> {
         let start = self.position();
         let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime
-                .render_with_node_signal_observer(output, observer)
+                .render_with_signal_observers(output, observer, project)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
             return Ok(());
+        }
+        if let Some(project) = project.as_mut() {
+            project.unavailable();
         }
         if self.session_unavailable.is_some()
             && (self
@@ -1329,14 +1344,28 @@ impl Playback {
         pages: &mut P,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_pages_and_signal_observers(output, pages, observer, None)
+    }
+
+    /// Page-backed project/device observations from one actual render pass.
+    pub fn render_with_pages_and_signal_observers<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), Invalid> {
         let start = self.position();
         let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime
-                .render_with_pages_and_node_signal_observer(output, pages, observer)
+                .render_with_pages_and_signal_observers(output, pages, observer, project)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
             return Ok(());
+        }
+        if let Some(project) = project.as_mut() {
+            project.unavailable();
         }
         if observer.is_some() {
             return Err(Invalid(
@@ -1344,6 +1373,20 @@ impl Playback {
             ));
         }
         self.render_pages_fallback(output, pages)
+    }
+
+    /// Bounded current canonical identity check, intended once per selection or
+    /// active revision change rather than once per captured sample.
+    pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
+        self.session_runtime.is_some()
+            && tracks.len() <= hex_project::MAX_TRACKS
+            && tracks.iter().all(|id| {
+                self.project.tracks().iter().any(|track| {
+                    track
+                        .canonical_track_id()
+                        .is_some_and(|track| track.value() == *id)
+                })
+            })
     }
 
     fn render_pages_fallback<P: MediaPages + ?Sized>(

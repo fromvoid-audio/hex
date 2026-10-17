@@ -265,6 +265,59 @@ impl Client {
             .as_mut()?
             .try_latest()
     }
+    pub fn project_spectrum_available(&self) -> bool {
+        self.endpoints
+            .owner_ref()
+            .and_then(|e| e.spectrum_reader.as_ref())
+            .is_some_and(|r| r.project_available())
+    }
+    pub fn project_spectrum_select(
+        &self,
+        tracks: &[u64],
+        generation: u64,
+        floor: u64,
+        rate: u32,
+    ) -> Result<crate::spectrum_worker::ProjectSelection, &'static str> {
+        if !self.project_spectrum_available() {
+            return Err("project spectrum unavailable");
+        }
+        self.endpoints
+            .owner_ref()
+            .ok_or("audio client is closed")?
+            .status
+            .project_spectrum
+            .select(tracks, generation, floor, rate)
+    }
+    pub fn project_spectrum_clear(&self) -> Result<(), &'static str> {
+        self.endpoints
+            .owner_ref()
+            .ok_or("audio client is closed")?
+            .status
+            .project_spectrum
+            .clear()
+    }
+    pub fn project_spectrum_desired(&self) -> Option<crate::spectrum_worker::ProjectSelection> {
+        self.endpoints
+            .owner_ref()?
+            .status
+            .project_spectrum
+            .read()
+            .filter(|s| s.active)
+    }
+    pub fn project_spectrum_latest(
+        &mut self,
+    ) -> Option<crate::spectrum_worker::PublishedProjectSpectrum> {
+        let endpoints = self.endpoints.owner_mut()?;
+        let selection = endpoints
+            .status
+            .project_spectrum
+            .read()
+            .filter(|s| s.active)?;
+        endpoints
+            .spectrum_reader
+            .as_mut()?
+            .try_latest_project_at(Instant::now(), selection)
+    }
     /// One fresh, aligned pair; input is absent for legacy output-only captures.
     pub fn spectrum_latest_pair(&mut self) -> Option<crate::spectrum_worker::PublishedSpectra> {
         self.endpoints

@@ -1100,7 +1100,31 @@ fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
         tested.computer_keyboard = Some(Box::new(keyboard));
         let before = (tested.arrangement_frame, tested.performance_frame);
         let mut output = [[0.0; 2]; 128];
-        tested.render(&mut output).unwrap();
+        let mut master = [[0.0; 2]; 128];
+        let mut stem = [[0.0; 2]; 128];
+        let mut observer = |signal, offset: usize, frames: &[Frame]| match signal {
+            ProjectSignal::Master => master[offset..offset + frames.len()].copy_from_slice(frames),
+            ProjectSignal::Track(1) => {
+                for (to, from) in stem[offset..offset + frames.len()].iter_mut().zip(frames) {
+                    to[0] += from[0];
+                    to[1] += from[1];
+                }
+            }
+            ProjectSignal::Track(_) => panic!("unexpected track"),
+            ProjectSignal::Unavailable => panic!("stopped canonical monitor is available"),
+        };
+        let mut tap = ProjectOutputTap::new(&[1], &mut observer).unwrap();
+        tested
+            .render_with_signal_observers(&mut output, None, Some(&mut tap))
+            .unwrap();
+        assert_eq!(
+            master, output,
+            "stopped monitor master is actual rendered PCM"
+        );
+        assert!(
+            stem.iter().flatten().any(|s| *s != 0.0),
+            "post-device history is retained in its direct track layer"
+        );
         assert!(
             output.iter().any(|frame| *frame != [0.0; 2]),
             "compensated={compensated}"
@@ -1112,4 +1136,84 @@ fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
         tested.render(&mut output).unwrap();
         assert_eq!(output, [[0.0; 2]; 128]);
     }
+}
+
+#[test]
+fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
+    for looping in [false, true] {
+        let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+        snapshot.loop_region = looping.then(|| LoopRegion::new(0, 1024, true).unwrap());
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let prepared = prepare_audio(&project);
+        let mut observed = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        let mut reference = SessionPlayback::new(prepared).unwrap();
+        observed.apply(SessionPlaybackCommand::Play).unwrap();
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        // Live selection does not weaken the offline plan's explicit contract.
+        if looping {
+            assert!(matches!(
+                observed.output_capture_plan(&[], 1536),
+                Err(OutputCaptureError::UnsupportedRuntime)
+            ));
+        }
+        let mut tracks = [[[0.0; 2]; 1536]; 2];
+        let mut master = [[0.0; 2]; 1536];
+        let mut seen = [false; 1536];
+        let mut observe = |signal, offset: usize, frames: &[Frame]| {
+            let end = offset + frames.len();
+            match signal {
+                ProjectSignal::Track(id) => {
+                    let layer = match id {
+                        1 => 0,
+                        6 => 1,
+                        _ => panic!("unselected owner"),
+                    };
+                    for (to, from) in tracks[layer][offset..end].iter_mut().zip(frames) {
+                        to[0] += from[0];
+                        to[1] += from[1];
+                    }
+                }
+                ProjectSignal::Master => {
+                    assert!(seen[offset..end].iter().all(|seen| !seen));
+                    master[offset..end].copy_from_slice(frames);
+                    seen[offset..end].fill(true);
+                }
+                ProjectSignal::Unavailable => panic!("valid live selection unavailable"),
+            }
+        };
+        let mut tap = ProjectOutputTap::new(&[1, 6], &mut observe).unwrap();
+        let mut output = [[0.0; 2]; 1536];
+        observed
+            .render_with_signal_observers(&mut output, None, Some(&mut tap))
+            .unwrap();
+        let mut expected = output;
+        reference.render(&mut expected).unwrap();
+        assert_eq!(output, expected, "observation must not alter actual audio");
+        assert_eq!(master, output);
+        assert!(seen.iter().all(|seen| *seen));
+        for index in 0..1536 {
+            let frame = if looping { index % 1024 } else { index };
+            let sounding = (3..1027).contains(&frame);
+            let a = if sounding { [0.1, -0.1] } else { [0.0; 2] };
+            let b = if sounding { [0.3, -0.075] } else { [0.0; 2] };
+            for channel in 0..2 {
+                assert!((tracks[0][index][channel] - a[channel]).abs() < 1e-6);
+                assert!((tracks[1][index][channel] - b[channel]).abs() < 1e-6);
+            }
+            // Shared Return is independent of the direct track stems.
+            if sounding {
+                assert_ne!(master[index], [a[0] + b[0], a[1] + b[1]]);
+            }
+        }
+    }
+}
+
+#[test]
+fn live_project_selection_refuses_unsorted_duplicate_and_unbounded_id_lists() {
+    let mut observer = |_, _, _: &[Frame]| {};
+    for ids in [&[0][..], &[2, 1], &[1, 1]] {
+        assert!(ProjectOutputTap::new(ids, &mut observer).is_none());
+    }
+    assert!(ProjectOutputTap::new(&[1; hex_project::MAX_TRACKS + 1], &mut observer).is_none());
+    assert!(ProjectOutputTap::new(&[], &mut observer).is_some());
 }
