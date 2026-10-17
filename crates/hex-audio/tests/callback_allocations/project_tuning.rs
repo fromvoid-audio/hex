@@ -2,6 +2,106 @@
 use super::*;
 
 #[test]
+fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing() {
+    for kind in ["hex.instrument.fm4", "hex.instrument.operator"] {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "tuned native".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            DeviceTypeId::new(kind).unwrap(),
+        )
+        .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+        let mut previous = None::<(Project, Arc<PreparedRevision>)>;
+        let mut hint = None;
+        for (index, hz) in [240.0, 333.0, 196.0, 333.0].into_iter().enumerate() {
+            let mut scale = editor.project().tuning().scale();
+            scale.set_reference(60, hz, 0).unwrap();
+            editor
+                .execute(Command::SetTuning(
+                    hex_tuning::ProjectTuning::new(
+                        true,
+                        scale,
+                        editor.project().tuning().audition(),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+            let project = editor.project().clone();
+            let revision = Arc::new(
+                if let Some((source, old)) = &previous {
+                    PreparedRevision::prepare_tuning_from(
+                        &project,
+                        &BTreeMap::new(),
+                        Arc::new(SineTable::new()),
+                        source,
+                        old,
+                    )
+                } else {
+                    PreparedRevision::prepare(
+                        &project,
+                        &BTreeMap::new(),
+                        Arc::new(SineTable::new()),
+                        None,
+                    )
+                }
+                .unwrap(),
+            );
+            let mut candidate = Playback::from_prepared(Arc::clone(&revision));
+            if let Some(hint) = &hint {
+                candidate
+                    .prepare_computer_keyboard_for_tuning(&project, track, Arc::clone(&input), hint)
+                    .unwrap();
+            } else {
+                candidate
+                    .prepare_computer_keyboard(&project, track, Arc::clone(&input))
+                    .unwrap();
+                hint = candidate.computer_keyboard_tuning_hint();
+                assert!(hint.is_some());
+            }
+            if index == 2 {
+                input.set_key(0, None).unwrap();
+            }
+            control.publish(candidate).unwrap();
+            let mut output = [[0.0; 2]; 137];
+            measured_block(&mut callback, &mut output);
+            assert!(control.status.rejected_revision().is_none(), "{kind}");
+            assert!(!input.is_cancelled(), "{kind}");
+            assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+            assert!(
+                output.iter().flatten().any(|sample| sample.abs() > 0.00001),
+                "{kind}: held and released voices must remain audible"
+            );
+            control.reclaim();
+            previous = Some((project, revision));
+        }
+        control.request_shutdown();
+        let mut output = [[0.0; 2]; 137];
+        measured_shutdown(&mut callback, &mut output);
+        control.reclaim();
+    }
+}
+
+#[test]
 fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
