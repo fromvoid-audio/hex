@@ -11,6 +11,8 @@ mod audio_event_editor;
 mod browser;
 mod browser_input;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod clip_border_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod clip_clipboard_ui_test;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
