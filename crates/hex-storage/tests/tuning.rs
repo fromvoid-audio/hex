@@ -23,13 +23,13 @@ fn refuses(value: &Value) {
 }
 
 #[test]
-fn required_schema30_tuning_roundtrips_every_waveform_enabled_and_disabled() {
+fn required_schema31_tuning_roundtrips_every_waveform_enabled_and_disabled() {
     for enabled in [false, true] {
         for waveform in [Waveform::Triangle, Waveform::Square, Waveform::Saw] {
             let project = tuned(enabled, waveform);
             let bytes = encode(&project).unwrap();
             let doc: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(doc["version"], 30);
+            assert_eq!(doc["version"], 31);
             assert_eq!(
                 doc["tuning"]["scale"]["cents"].as_array().unwrap().len(),
                 48
@@ -51,6 +51,7 @@ fn schema29_migrates_explicit_disabled_equal_temperament_and_refuses_tuning() {
     value["version"] = json!(29);
     refuses(&value);
     value.as_object_mut().unwrap().remove("tuning");
+    value.as_object_mut().unwrap().remove("device_assets");
     let migrated = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
     assert_eq!(migrated.tuning(), ProjectTuning::default());
     assert_eq!(
