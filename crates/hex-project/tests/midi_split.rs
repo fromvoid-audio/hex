@@ -194,6 +194,8 @@ fn invalid_boundary_splits_preserve_project_and_redo() {
 fn split_refuses_project_clip_limit_and_note_duplication_limit() {
     let clips: Vec<_> = (0..MAX_CLIPS)
         .map(|index| MidiClipSnapshot {
+            name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             id: 2 + index as u64,
             start_raw: 0,
             length_raw: beat(2).raw(),
@@ -214,6 +216,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
