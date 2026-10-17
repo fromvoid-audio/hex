@@ -1,3 +1,13 @@
+## shared stereo/gain kernels — #2671 / PR288, 17 october 2026
+
+Real production stereo kernels move to dependency-free hex-dsp with Lattice API
+reexports. Gate/Saturator share validated amplitude/decibel units on control.
+Kernel/device/lattice and authoring fixtures plus affected Clippy/architecture
+checks pass; before/after release PCM digests match in all five admitted cases.
+See [source/profile evidence](docs/native-dsp.md). Full exact final-source local
+CI remains required; broader DSP families and native/reference qualification
+remain open. No host cap or device-law changes.
+
 ## native device authoring bootstrap — #2670 / PR285, 17 october 2026
 
 Opt-in Lattice conformance helpers exercise codecs, state-aware parameters,
