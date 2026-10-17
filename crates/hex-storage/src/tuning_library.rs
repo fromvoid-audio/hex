@@ -118,11 +118,23 @@ pub fn duplicate(directory: &Path, slot: usize) -> Result<usize, String> {
     Ok(target)
 }
 /// Export is create-new; an existing file is never silently replaced.
+/// Filesystems without hardlinks use an exclusively created destination. A failed
+/// write may leave that new file incomplete; destinations are never deleted.
 pub fn export_file(path: &Path, name: &str, scale: Scale) -> Result<(), String> {
     let text = preset::encode(name, scale).map_err(|e| e.to_string())?;
     publish(path, text.as_bytes(), false)
 }
 fn publish(destination: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
+    publish_with_link(destination, bytes, replace, |source, target| {
+        fs::hard_link(source, target)
+    })
+}
+fn publish_with_link(
+    destination: &Path,
+    bytes: &[u8],
+    replace: bool,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("tuning preset path has no parent")?;
@@ -161,14 +173,31 @@ fn publish(destination: &Path, bytes: &[u8], replace: bool) -> Result<(), String
             fs::rename(&temporary, destination)
                 .map_err(|e| format!("cannot publish tuning slot · {e}"))?;
         } else {
-            fs::hard_link(&temporary, destination)
-                .map_err(|e| format!("cannot publish new tuning preset · {e}"))?;
+            if link(&temporary, destination).is_err() {
+                let mut destination = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(destination)
+                    .map_err(|e| format!("cannot publish new tuning preset · {e}"))?;
+                destination.write_all(bytes).and_then(|()| destination.sync_all())
+                    .map_err(|e| format!("new tuning preset could not be completed · incomplete file retained · {e}"))?;
+            }
             fs::remove_file(&temporary)
                 .map_err(|e| format!("tuning saved but temporary cleanup failed · {e}"))?;
         }
         #[cfg(unix)]
         File::open(parent)
             .and_then(|f| f.sync_all())
+            .or_else(|error| {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+                ) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
             .map_err(|e| format!("tuning saved but directory sync failed · {e}"))?;
         Ok(())
     })();
@@ -196,6 +225,26 @@ mod tests {
         ));
         fs::create_dir(&p).unwrap();
         Directory(p)
+    }
+    #[test]
+    fn review_create_new_export_does_not_require_hardlinks_or_replace_existing_files() {
+        let d = directory();
+        let path = d.0.join("removable.freqs");
+        let text = preset::encode("portable", Scale::equal(19)).unwrap();
+        let no_links =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        publish_with_link(&path, text.as_bytes(), false, no_links).unwrap();
+        assert_eq!(read_file(&path).unwrap().scale, Scale::equal(19));
+        assert!(publish_with_link(&path, b"replacement", false, no_links).is_err());
+        assert_eq!(fs::read(&path).unwrap(), text.as_bytes());
+        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1);
+        let raced = d.0.join("raced.freqs");
+        let competing_writer = |_: &Path, target: &Path| {
+            fs::write(target, b"another writer's file")?;
+            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+        };
+        assert!(publish_with_link(&raced, text.as_bytes(), false, competing_writer).is_err());
+        assert_eq!(fs::read(&raced).unwrap(), b"another writer's file");
     }
     #[test]
     fn library_roundtrip_rename_duplicate_and_full_refusal() {

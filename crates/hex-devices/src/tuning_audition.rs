@@ -335,6 +335,8 @@ fn poly_blep(phase: f64, step: f64) -> f64 {
     }
 }
 
+impl std::error::Error for AuditionError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,5 +478,3 @@ mod tests {
         assert_eq!(target, before);
     }
 }
-
-impl std::error::Error for AuditionError {}

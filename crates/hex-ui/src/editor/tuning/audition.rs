@@ -136,7 +136,7 @@ impl EditorView {
             }
         }
         self.tuning.held_keys = held;
-        if input.rejected()
+        if input.take_rejection()
             && self.tuning.error.as_deref() != Some("audition note refused · pitch or voice limit")
         {
             self.tuning.error = Some("audition note refused · pitch or voice limit".into());

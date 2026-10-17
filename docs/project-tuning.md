@@ -120,6 +120,19 @@ These define transport ownership, not Hex native musical behavior.
 
 ## validation and delivery
 
+Save and Export compare their captured project generation/revision before reading
+the working scale or writing a file. Stale requests preserve existing slots and
+create no export. Pitch-line dragging includes the first degree; protected-root
+removal remains refused. Audition covers MIDI key127 and consumes each callback
+refusal notification once, so successful edits are not overwritten by an old error.
+
+Slot replacement retains staged same-directory rename. Create-new exports and
+duplicates never replace a destination: where hard links are unavailable, an
+exclusive file creation writes the validated bounded preset. A failed write can
+leave an incomplete newly created file, reported explicitly and retained rather
+than deleted. Filesystems without directory-sync support cannot promise that
+extra durability step. Existing files and racing destinations stay intact.
+
 The runtime continuation contract, scoped memory changes and evidence boundaries
 are in [native runtime](project-tuning-runtime.md). The complete feature inventory
 above remains authoritative; a passing runtime test is not editor/MTS completion.

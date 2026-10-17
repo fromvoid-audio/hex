@@ -2,6 +2,68 @@ use super::*;
 use hex_tuning::{Audition, ProjectTuning};
 use std::time::{Duration, Instant};
 
+fn stale_library_write(export: bool) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = Scratch(std::env::temp_dir().join(format!(
+        "hex-stale-tuning-write-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )));
+    std::fs::create_dir(&directory.0).unwrap();
+    let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
+    let original = tuning(333.0).scale();
+    hex_storage::tuning_library::save(&directory.0, 1, "original", original).unwrap();
+    let slot = directory.0.join("slot-1.freqs");
+    let original_bytes = std::fs::read(&slot).unwrap();
+    for (generation, revision) in [(1, 0), (0, 1)] {
+        let path = directory.0.join("export.freqs");
+        let operation = if export {
+            TuningLibraryOperation::Export {
+                path: path.clone(),
+                name: "export".into(),
+            }
+        } else {
+            TuningLibraryOperation::Save {
+                slot: 1,
+                name: "replacement".into(),
+            }
+        };
+        let (result, prepared) = run_tuning_library_operation_in(
+            &mut session,
+            TuningLibraryContext {
+                request_generation: 0,
+                request_revision: 0,
+                operation_id: 1,
+                current_generation: generation,
+                current_revision: revision,
+            },
+            operation,
+            None,
+            &directory.0,
+        );
+        assert!(result.error.is_some(), "stale save/export must be refused");
+        assert!(prepared.is_none());
+        assert!(!path.exists(), "stale export must create no file");
+        assert_eq!(std::fs::read(&slot).unwrap(), original_bytes);
+    }
+}
+
+#[test]
+fn review_stale_tuning_save_preserves_existing_slot_after_revision_or_generation_change() {
+    stale_library_write(false);
+}
+
+#[test]
+fn review_stale_tuning_export_creates_no_file_after_revision_or_generation_change() {
+    stale_library_write(true);
+}
+
 fn next(service: &Service) -> Event {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

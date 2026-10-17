@@ -761,10 +761,6 @@ impl EditorView {
         } else if let Some(i) = hit {
             self.tuning.selected = i;
             self.tuning.pair = s.root_degree();
-            if i == 0 {
-                cx.notify();
-                return;
-            }
             self.tuning_change(self.tuning.value, NumericEventPhase::Begin);
             self.tuning.drag = Some(Drag {
                 degree: i,

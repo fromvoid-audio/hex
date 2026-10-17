@@ -22,6 +22,7 @@ pub struct TuningAuditionInput {
     cancelled: AtomicBool,
     rejected: AtomicBool,
 }
+
 impl TuningAuditionInput {
     pub fn new(project_generation: u64) -> Self {
         Self {
@@ -38,8 +39,10 @@ impl TuningAuditionInput {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Acquire)
     }
-    pub fn rejected(&self) -> bool {
-        self.rejected.load(Acquire)
+    /// Consume one callback refusal notification without latching future UI errors.
+    pub fn take_rejection(&self) -> bool {
+        self.rejected
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
     pub fn held_keys(&self) -> [u64; 2] {
         self.held.each_ref().map(|word| word.load(Acquire))
@@ -167,5 +170,52 @@ impl Runtime {
         for (word, mask) in self.input.held.iter().zip(self.synth.held_key_mask()) {
             word.store(mask, Release);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(root_key: u8, hz: f64) -> hex_project::Project {
+        let mut snapshot = hex_project::Project::new(48_000).unwrap().snapshot();
+        let mut scale = hex_tuning::Scale::equal(12);
+        scale.set_reference(root_key, hz, 0).unwrap();
+        snapshot.tuning =
+            hex_tuning::ProjectTuning::new(false, scale, hex_tuning::Audition::default()).unwrap();
+        hex_project::Project::from_snapshot(snapshot).unwrap()
+    }
+
+    #[test]
+    fn review_highest_midi_key_encodes_renders_and_releases_without_sentinel_collision() {
+        let input = Arc::new(TuningAuditionInput::new(0));
+        let mut runtime = Runtime::prepare(&project(127, 220.0), Arc::clone(&input)).unwrap();
+        input.set_key(0, Some((127, 100, 1))).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        runtime.mix(&mut output);
+        assert_eq!(input.held_keys(), [0, 1 << 63]);
+        assert!(output.iter().any(|frame| frame[0] != 0.0));
+        assert!(!input.take_rejection());
+        input.set_key(0, None).unwrap();
+        runtime.mix(&mut output);
+        assert_eq!(input.held_keys(), [0; 2]);
+    }
+
+    #[test]
+    fn review_audition_rejection_is_reported_once_and_supported_notes_recover() {
+        let input = Arc::new(TuningAuditionInput::new(0));
+        let mut runtime = Runtime::prepare(&project(60, 20_000.0), Arc::clone(&input)).unwrap();
+        input.set_key(0, Some((127, 100, 1))).unwrap();
+        runtime.mix(&mut [[0.0; 2]; 64]);
+        assert!(input.take_rejection());
+        input.set_key(0, Some((0, 100, 2))).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        runtime.mix(&mut output);
+        assert_eq!(input.held_keys(), [1, 0]);
+        assert!(output.iter().any(|frame| frame[0] != 0.0));
+        assert!(
+            !input.take_rejection(),
+            "reported refusal must not remain latched"
+        );
     }
 }
