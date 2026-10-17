@@ -130,9 +130,9 @@ pub(super) fn prepare_clip(
             && old.instrument_enabled == instrument_enabled
     });
     let source = if let Some(old) = cached {
-        Arc::clone(&old.source)
+        old.source.clone_on_control()
     } else {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiSourceTemplate::prepare_source(
                 destination,
                 clip.id(),
@@ -152,14 +152,14 @@ pub(super) fn prepare_clip(
             && old.mutable_limits == mutable_limits
     });
     let instrument = if let Some(old) = cached_instrument {
-        Arc::clone(&old.instrument)
+        old.instrument.clone_on_control()
     } else if let Some(limits) = mutable_limits {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiInstrumentTemplate::prepare_events(&source, limits)
                 .map_err(template_error)?,
         )
     } else {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiInstrumentTemplate::prepare_with_bank_and_contexts(
                 &source,
                 bank.clone_on_control(),

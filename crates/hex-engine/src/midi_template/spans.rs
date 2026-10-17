@@ -4,6 +4,8 @@ use super::{
     require_positive_frame_advance,
 };
 mod density;
+#[cfg(test)]
+mod storage_tests;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::ScopedMidiNote};
 use density::admit_voice_density;
 use hex_devices::SineTable;
@@ -610,6 +612,73 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn visit_storage_contents_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            track,
+            clip,
+            sample_rate,
+            admitted_max_micro_bpm,
+            first_pass,
+            period,
+            release_raw,
+            intro,
+            repeats,
+            intro_nodes,
+            repeat_nodes,
+            intro_root,
+            repeat_root,
+            max_active_voices,
+            max_query_onsets,
+            max_span_hits,
+            max_query_visits,
+            max_period_windows,
+            bank,
+            shared_contexts,
+            release_frames,
+            event_source,
+        } = self;
+        let _: (
+            &hex_project::TrackId,
+            &hex_project::ClipId,
+            &u32,
+            &u64,
+            &u64,
+            &Option<u64>,
+            &u64,
+        ) = (
+            track,
+            clip,
+            sample_rate,
+            admitted_max_micro_bpm,
+            first_pass,
+            period,
+            release_raw,
+        );
+        let _: (&Option<usize>, &Option<usize>) = (intro_root, repeat_root);
+        let _: (&usize, &usize, &usize, &usize, &usize) = (
+            max_active_voices,
+            max_query_onsets,
+            max_span_hits,
+            max_query_visits,
+            max_period_windows,
+        );
+        let _: (&u64, &bool) = (release_frames, event_source);
+        ledger.vec(intro)?;
+        ledger.vec(repeats)?;
+        ledger.vec(intro_nodes)?;
+        ledger.vec(repeat_nodes)?;
+        for span in intro.iter().chain(repeats) {
+            let _: VoiceSpan = *span;
+        }
+        for node in intro_nodes.iter().chain(repeat_nodes) {
+            let _: IntervalNode = *node;
+        }
+        crate::midi_note_bank::storage::visit_contents(bank, ledger)?;
+        crate::shared_analytic::resource_storage::visit_table_contents(shared_contexts, ledger)
+    }
     pub(crate) fn visit_note_bank_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

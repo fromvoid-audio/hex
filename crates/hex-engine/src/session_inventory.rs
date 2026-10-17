@@ -1,5 +1,7 @@
 //! Immutable control-side inventory of every canonical Session cell.
 pub(crate) mod audio_assembly;
+#[cfg(test)]
+mod midi_storage_tests;
 mod routed_midi;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
@@ -133,8 +135,8 @@ pub struct PreparedSessionMidiClip {
     pub scene: SceneId,
     pub name: String,
     source_identity: MidiSourceIdentity,
-    source: Arc<PreparedMidiSourceTemplate>,
-    instrument: Arc<PreparedMidiInstrumentTemplate>,
+    source: crate::owned_shared::OwnedShared<PreparedMidiSourceTemplate>,
+    instrument: crate::owned_shared::OwnedShared<PreparedMidiInstrumentTemplate>,
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     tuning_identity: crate::shared_analytic::TuningIdentity,
@@ -320,6 +322,17 @@ impl std::fmt::Debug for PreparedSessionInventory {
 }
 
 impl PreparedSessionInventory {
+    pub(crate) fn visit_midi_templates_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            crate::midi_template::storage::visit_source(&clip.source, ledger, role)?;
+            crate::midi_template::storage::visit_instrument(&clip.instrument, ledger, role)?;
+        }
+        Ok(())
+    }
     pub(crate) fn visit_midi_note_banks_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

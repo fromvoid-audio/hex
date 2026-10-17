@@ -497,3 +497,19 @@ Actual receipt headers consume the existing policy allowance; the complete-bank
 byte ceiling remains 47,747,072 on the qualified 64-bit layout. These selected
 rows do not declare enclosing template storage, full graph construction peak,
 active runtime custody or native publication/retirement complete.
+
+Actual Session/routed source and instrument templates now retain their original
+container receipts alongside bank and context receipts. Their selected prepared
+MIDI inventory includes all source edge/span and instrument voice/index backing
+capacities, nested supported owners, compiled Arrangement span/index buffers and
+each physical alias/header. Empty repeat arrays can have allocated spare capacity
+and are included. Real cached-revision tests retain the original source/instrument
+bodies through predecessor retirement; unique physical fields are not counted
+again merely because two revisions share them. Raw outer template Arcs refuse
+even when their nested bank/context declarations are legitimate.
+
+This selected template view excludes canonical `MidiSourceIdentity` model-source
+storage, enclosing Session clip/revision containers and full construction peak.
+The public provenance boundary for those existing canonical model owners is
+recorded separately; it remains Unknown pending the coordinated decision. No
+pointer/count/hash claim, alternate PCM owner/cache or registry admission is added.
