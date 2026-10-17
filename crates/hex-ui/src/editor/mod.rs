@@ -802,11 +802,8 @@ impl EditorView {
         let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
-<<<<<<< HEAD
                 view.cancel_project_spectrum_resize(cx);
-=======
                 view.cancel_track_resize(cx);
->>>>>>> origin/main
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
@@ -831,11 +828,8 @@ impl EditorView {
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 view.cancel_fade_gesture(cx);
-<<<<<<< HEAD
                 view.cancel_project_spectrum_resize(cx);
-=======
                 view.cancel_track_resize(cx);
->>>>>>> origin/main
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
                 view.audio_event_editor.gesture = None;
@@ -853,11 +847,8 @@ impl EditorView {
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
             view.cancel_fade_gesture(cx);
-<<<<<<< HEAD
             view.cancel_project_spectrum_resize(cx);
-=======
             view.cancel_track_resize(cx);
->>>>>>> origin/main
             view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();

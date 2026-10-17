@@ -584,11 +584,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-<<<<<<< HEAD
-                if view.cancel_project_spectrum_resize(cx) {
-=======
-                if view.cancel_track_resize(cx) {
->>>>>>> origin/main
+                if view.cancel_project_spectrum_resize(cx) | view.cancel_track_resize(cx) {
                     cx.stop_propagation();
                     return;
                 }
