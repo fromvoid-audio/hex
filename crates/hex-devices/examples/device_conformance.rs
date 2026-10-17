@@ -28,8 +28,8 @@ fn value(value: ParameterValue) -> String {
         ParameterValue::Choice(value) => value.to_string(),
     }
 }
-fn record(
-    definition: &dyn NativeDeviceMetadata,
+fn record<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
     state: &NativeDeviceState,
     class: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {

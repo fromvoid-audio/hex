@@ -25,7 +25,10 @@ impl fmt::Display for ConformanceFailure {
 }
 impl std::error::Error for ConformanceFailure {}
 
-fn fail(definition: &dyn NativeDeviceMetadata, stage: &'static str) -> ConformanceFailure {
+fn fail<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
+    stage: &'static str,
+) -> ConformanceFailure {
     ConformanceFailure {
         device: match definition.type_id().as_str() {
             Ok(id) => id.to_owned(),
@@ -34,8 +37,8 @@ fn fail(definition: &dyn NativeDeviceMetadata, stage: &'static str) -> Conforman
         stage,
     }
 }
-fn contract<T>(
-    definition: &dyn NativeDeviceMetadata,
+fn contract<T, D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
     stage: &'static str,
     result: Result<T, DeviceContractError>,
 ) -> Result<T, ConformanceFailure> {
@@ -45,8 +48,8 @@ fn contract<T>(
 /// Check a current or legacy fixture through the actual codec and descriptors.
 /// Each device supplies its meaningful legacy/malformed fixtures separately.
 /// Parameter edits start from the same state, avoiding order-dependent patches.
-pub fn check_metadata(
-    definition: &dyn NativeDeviceMetadata,
+pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
     fixture: &NativeDeviceState,
 ) -> Result<usize, ConformanceFailure> {
     let state = contract(
@@ -353,8 +356,8 @@ pub fn check_instrument(
     Ok(InstrumentClass::Analytic)
 }
 
-fn render_instrument(
-    definition: &dyn NativeDeviceMetadata,
+fn render_instrument<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
     pair: &mut crate::NativeInstrumentRuntimePair,
     partitions: &[usize],
 ) -> Result<Vec<StereoFrame>, ConformanceFailure> {
