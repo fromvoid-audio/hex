@@ -6,6 +6,14 @@
 - Native zoom/snap/toggle acceptance remains pending; automated evidence is
   recorded with the focused PR.
 
+## arrangement clip painting — 17 october 2026
+
+Double-click empty track space, hold the second press, drag right, then release
+creates an empty MIDI clip through the existing undoable placement command.
+Snapped/free preview and cancellation are source implemented. Four focused rendered
+UI tests and the source/format guards pass; native user acceptance is pending. See [clip painting](docs/clip-paint.md)
+for scope and the finite native checklist.
+
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
 
 - Worker batch failures retain member/path metadata through the UI boundary;
