@@ -5,7 +5,10 @@ use std::{fmt, sync::Arc};
 
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
 pub const MAX_DEVICE_TYPE_ID_BYTES: usize = 128;
-pub const MAX_PARAMETER_ID: u32 = 65_535;
+/// Device-owned IDs exclude zero and the two host gain identifiers.
+/// Devices deriving IDs from stable object identities must use checked
+/// arithmetic and refuse exhaustion instead of wrapping/reusing an ID.
+pub const MAX_PARAMETER_ID: u32 = u32::MAX - 2;
 pub const MAX_NATIVE_DEVICE_TYPES: usize = 256;
 pub const MAX_PARAMETERS_PER_DEVICE: usize = 512;
 pub const MAX_PARAMETER_SNAPSHOT_ENTRIES: usize = 64;
@@ -257,7 +260,7 @@ impl ParameterDescriptor {
     }
 }
 
-// Registry metadata is static, but its visible text and selector work must still
+// Metadata visible text and selector work must still
 // satisfy the shared display contract before either registry admits a device.
 fn valid_parameter_text(value: &str) -> bool {
     !value.is_empty()
@@ -428,6 +431,46 @@ impl fmt::Display for DeviceContractError {
 }
 impl std::error::Error for DeviceContractError {}
 
+/// Validate a complete device-owned descriptor set, including dynamic overrides.
+/// Host input/output controls are outside this device parameter namespace.
+pub fn validate_parameter_descriptors(
+    descriptors: &[ParameterDescriptor],
+) -> Result<(), DeviceContractError> {
+    if descriptors.len() > MAX_PARAMETERS_PER_DEVICE {
+        return Err(DeviceContractError::InvalidDescriptor);
+    }
+    for (index, descriptor) in descriptors.iter().enumerate() {
+        descriptor.validate_descriptor()?;
+        if descriptors[..index]
+            .iter()
+            .any(|prior| prior.id == descriptor.id)
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+    }
+    Ok(())
+}
+
+/// Enumerate and validate state-owned descriptors on the control side. Callers
+/// must use this boundary even when a definition overrides enumeration.
+/// State migration/codec validation belongs to the caller; enumeration must not
+/// call registry migration or construct defaults recursively.
+pub fn validated_state_descriptors<D: NativeDeviceMetadata + ?Sized>(
+    definition: &D,
+    state: &NativeDeviceState,
+) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
+    state.type_id().validate()?;
+    if state.type_id() != definition.type_id() {
+        return Err(DeviceContractError::WrongDeviceType);
+    }
+    if state.state_version() != definition.state_version() {
+        return Err(DeviceContractError::UnsupportedStateVersion);
+    }
+    let descriptors = definition.descriptors_for_state(state)?;
+    validate_parameter_descriptors(&descriptors)?;
+    Ok(descriptors)
+}
+
 /// Device metadata/state operations; implementations own their codec.
 pub trait NativeDeviceMetadata: Sync {
     fn type_id(&self) -> DeviceTypeId;
@@ -437,7 +480,18 @@ pub trait NativeDeviceMetadata: Sync {
         None
     }
     fn state_version(&self) -> u32;
+    /// Static catalog descriptors; per-instance consumers use the validated
+    /// state descriptor boundary instead.
     fn descriptors(&self) -> &'static [ParameterDescriptor];
+    /// Owned descriptors for a current, codec-validated state. Dynamic devices
+    /// may override this; consumers validate the returned list independently.
+    /// This must not migrate through the registry or construct default state.
+    fn descriptors_for_state(
+        &self,
+        _state: &NativeDeviceState,
+    ) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
+        Ok(self.descriptors().to_vec())
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError>;
     fn migrate_state(
         &self,
@@ -459,8 +513,8 @@ pub trait NativeDeviceMetadata: Sync {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         let migrated = self.migrate_state(state)?;
-        let descriptor = self
-            .descriptors()
+        let descriptors = validated_state_descriptors(self, &migrated)?;
+        let descriptor = descriptors
             .iter()
             .find(|descriptor| descriptor.id == parameter)
             .ok_or(DeviceContractError::UnknownParameter)?;
@@ -482,8 +536,8 @@ pub trait NativeDeviceMetadata: Sync {
         state: &NativeDeviceState,
         snapshot: &DeviceParameterSnapshot,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        snapshot.validate(self.descriptors())?;
         let mut candidate = self.migrate_state(state)?;
+        snapshot.validate(&validated_state_descriptors(self, &candidate)?)?;
         for &(parameter, value) in snapshot.entries() {
             candidate = self.patch_parameter(&candidate, parameter, value)?;
         }
@@ -708,6 +762,18 @@ mod tests {
                 .unwrap()
         );
         assert!(definition.parameter_enabled(&off, MODE_PARAMETER).unwrap());
+    }
+
+    #[test]
+    fn parameter_ids_preserve_the_full_device_domain_and_refuse_host_ids() {
+        for value in [1, 65_535, 65_536, MAX_PARAMETER_ID] {
+            assert_eq!(ParameterId::new(value).unwrap().value(), value);
+            assert!(ParameterId::from_static(value).validate().is_ok());
+        }
+        for value in [0, u32::MAX - 1, u32::MAX] {
+            assert!(ParameterId::new(value).is_err());
+            assert!(ParameterId::from_static(value).validate().is_err());
+        }
     }
 
     #[test]

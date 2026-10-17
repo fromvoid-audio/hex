@@ -12,7 +12,7 @@ struct ProposedEqTwin {
     fir: kernel::History,
 }
 #[test]
-fn actual_eq_twin_storage_and_complete_shared_ownership_refuse_overcap() {
+fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() {
     let state = EQ8_DEFINITION.default_state().unwrap();
     let prepared = EQ8_DEFINITION
         .prepare_processor(&state, 48000)
@@ -25,7 +25,10 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_refuse_overcap() {
         (632, 8)
     );
     assert_eq!(size_of::<ProposedEqTwin>(), 4424);
-    assert!(size_of::<ProposedEqTwin>() > hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
+    // Historical 4 KiB refusal evidence remains true; the current 64 KiB
+    // per-twin policy does not itself admit this private prototype.
+    assert!(size_of::<ProposedEqTwin>() > 4_096);
+    assert!(size_of::<ProposedEqTwin>() <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
     let runtime = prepared.create_runtime();
     let eq = runtime.as_any().downcast_ref::<Eq8Runtime>().unwrap();
     let a = Box::new(ProposedEqTwin {
@@ -68,7 +71,7 @@ impl hex_lattice::PreparedNativeProcessor for OvercapProbe {
         1
     }
     fn declared_runtime_bytes(&self) -> usize {
-        size_of::<ProposedEqTwin>()
+        hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES + 1
     }
     fn create_runtime(&self) -> Box<dyn hex_lattice::NativeProcessorRuntime> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -79,7 +82,7 @@ impl hex_lattice::PreparedNativeProcessor for OvercapProbe {
     }
 }
 #[test]
-fn real_chain_admission_refuses_actual_proposed_payload_before_any_twin_factory() {
+fn real_chain_admission_refuses_current_overcap_payload_before_any_twin_factory() {
     use hex_lattice::{
         NativeRuntimeChain, PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
     };
