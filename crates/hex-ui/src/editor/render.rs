@@ -482,6 +482,9 @@ impl Render for EditorView {
                     cx.notify();
                 }
             }))
+            .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
+                view.search_browser(window, cx);
+            }))
             .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
                 view.begin_clip_name(window, cx);
             }))

@@ -219,6 +219,7 @@ actions!(
     [
         TogglePlay,
         ToggleBrowser,
+        SearchBrowser,
         ThemeSettingsEscape,
         BrowserPrevious,
         BrowserNext,
@@ -319,6 +320,7 @@ fn bind_editor_keys(cx: &mut App) {
         escape_binding(),
         KeyBinding::new("cmd-i", ImportAudio, Some("hex_editor")),
         KeyBinding::new("cmd-alt-b", ToggleBrowser, None),
+        KeyBinding::new("cmd-f", SearchBrowser, None),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),

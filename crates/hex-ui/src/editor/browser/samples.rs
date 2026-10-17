@@ -142,7 +142,7 @@ impl EditorView {
                         match cached {
                             Ok(mut catalog) if roots == view.sample_roots() => {
                                 catalog.retain_roots(&roots);
-                                view.browser.samples.replace(catalog);
+                                view.apply_sample_catalog(catalog, cx);
                             }
                             Err(error) => {
                                 view.browser.samples.status =
@@ -185,23 +185,7 @@ impl EditorView {
                     } else {
                         Some(status.join(" · "))
                     };
-                    let selected = (view.browser.section == BrowserSection::Samples)
-                        .then(|| {
-                            view.browser_visible_entries(cx)
-                                .get(view.browser.selected_index)
-                                .map(|entry| entry.path.clone())
-                        })
-                        .flatten();
-                    view.browser.samples.replace(scan.catalog);
-                    if view.browser.section == BrowserSection::Samples {
-                        view.browser.selected_index = selected
-                            .and_then(|path| {
-                                view.browser_visible_entries(cx)
-                                    .iter()
-                                    .position(|entry| entry.path == path)
-                            })
-                            .unwrap_or(0);
-                    }
+                    view.apply_sample_catalog(scan.catalog, cx);
                 } else {
                     view.browser.samples.pending = true;
                 }
@@ -212,6 +196,17 @@ impl EditorView {
             });
         })
         .detach();
+    }
+
+    fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
+        let remap = matches!(
+            self.browser.section,
+            BrowserSection::All | BrowserSection::Samples
+        );
+        let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
+        if self.browser.samples.replace(catalog) && remap {
+            self.restore_browser_selection(selection, cx);
+        }
     }
 
     pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
@@ -285,10 +280,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
                             view.browser.samples.source = source.clone();
-                            view.browser.selected_index = 0;
-                            view.browser
-                                .scroll
-                                .scroll_to_item(0, gpui::ScrollStrategy::Top);
+                            view.browser.reset_results();
                             cx.notify();
                         }),
                     )

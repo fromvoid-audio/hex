@@ -53,3 +53,39 @@ apps and unsaved projects are preserved. No native acceptance claim yet.
 the same background persistence and add-folder paths remain in use. The new
 section/icon settings are transient and do not modify this preferences schema.
 See [browser composition](browser-layout.md) and Pulse #2672 for their persistence.
+
+## Global browser search
+
+Command-F from the editor opens the browser, chooses the `all` library section,
+focuses its search field and selects the previous query. Typing filters immediately
+by case-insensitive name across supported entries in the current folder and the
+registered native device catalog. Samples, devices and projects remain available
+as category filters. Repeating Command-F from search/results replaces the query;
+Escape clears it. Active IME composition is unmarked before selecting the whole
+query. Moving the caret or text selection leaves the result viewport unchanged;
+only a changed query resets it. Clicking the search field restores caret editing
+without moving the result viewport. Device and file highlights both require result
+focus. Open context/controller menus are dismissed; leaving theme
+settings cancels its unsaved preview (an in-flight save must finish first).
+A clip-name draft commits using the existing blur behavior before search takes focus.
+An unfinished gain numeric draft keeps its focus and value: finish it with Enter
+or cancel with Escape before invoking Command-F. Native-device and return-send
+numeric drafts pass through the existing finalization barrier: valid values commit
+before focus moves; invalid values preserve their draft and focus for repair.
+Device rows retain drag-to-track/rail behavior; Enter on an
+all-view device displays that instruction rather than importing a file. Clicking a
+device keeps browser keyboard focus in Session too. The first arrow key selects
+the first match; subsequent arrows move through results. Query/category changes
+reveal the first row. Accepted background scans preserve the selected file path
+or device identity when new files change row offsets.
+
+The existing library listing remains nonrecursive and capped at 2048 enumerated
+entries. This is not an index of every subfolder or saved place. Folder scans stay
+on the background worker; typing only filters cached results. This UI state is
+transient and does not dirty the project or write preferences.
+
+Native user checklist: press Command-F from Arrangement, Session and a device
+control with the browser collapsed; type a sample/project/device name; confirm
+filtered results, repeat Command-F to replace the query, clear with Escape, and
+drag a matched sample/device to its normal destination. Native macOS interaction
+and reference parity remain unverified by cloud source tests.
