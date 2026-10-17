@@ -140,3 +140,10 @@ retain the measured current sizes. No production budget or runtime limit is
 raised. All136 Operator-state tests pass after this proof repair. The failed full
 receipt remains `artifacts/local-ci/20261017T132900Z-db43c519/summary.json`;
 final exact-source full validation must be rerun after the repair.
+
+The next full run at `1414d69d` exposed the corresponding engine admission
+boundary assertion:425 complete companion-context recipes fit, rather than426,
+under the unchanged2MiB ceiling. Its computed next-recipe refusal remains.
+The earlier device-state proof repair is retained; this engine assertion and
+its owning README now report the current asset-metadata charge. The failed run
+is `artifacts/local-ci/20261017T133404Z-073b6e04/summary.json`.

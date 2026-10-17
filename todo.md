@@ -5,7 +5,9 @@ at6ed1e8fc. Charge the actual16-byte asset-reference field even when empty:
 shared context3008, capture context2628; the unchanged2MiB retained ceiling fits
 409 typed or412 inline recipes. Boundary refusal and no-mutation checks remain;
 no production cap is raised. All136 Operator-state tests pass after repair.
-Failed full receipt and focused repair log are retained; final full CI pending.
+The next full run found the same engine boundary:425 recipes fit rather than426;
+the unchanged ceiling and next-recipe refusal remain. Both failed full receipts
+and focused repair logs are retained; final full CI pending.
 
 ## native parameter semantics — #2674 / PR290, 17 october 2026
 
