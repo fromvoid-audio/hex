@@ -1,4 +1,10 @@
 //! Bounded metadata and authored state shared across native device boundaries.
+mod device_assets;
+#[cfg(test)]
+mod device_assets_tests;
+pub use device_assets::{
+    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, MAX_DEVICE_ASSET_REFERENCES,
+};
 mod parameter_semantics;
 #[cfg(test)]
 mod parameter_semantics_tests;
@@ -281,6 +287,7 @@ pub struct NativeDeviceState {
     payload: Arc<[u8]>,
     input_gain_millidb: i32,
     output_gain_millidb: i32,
+    asset_references: Option<Arc<[DeviceAssetReference]>>,
 }
 impl NativeDeviceState {
     pub fn new(
@@ -301,6 +308,7 @@ impl NativeDeviceState {
             payload: Arc::from(payload),
             input_gain_millidb: 0,
             output_gain_millidb: 0,
+            asset_references: None,
         })
     }
     pub const fn type_id(&self) -> DeviceTypeId {
@@ -308,6 +316,53 @@ impl NativeDeviceState {
     }
     pub const fn state_version(&self) -> u32 {
         self.state_version
+    }
+    /// Canonical slot order; empty states have no reference-list allocation.
+    pub fn asset_references(&self) -> &[DeviceAssetReference] {
+        self.asset_references.as_deref().unwrap_or(&[])
+    }
+    /// Bind host-owned project identities without changing the DSP payload.
+    /// Resolution and file/resource preparation remain separate host operations.
+    pub fn with_asset_references(
+        mut self,
+        mut references: Vec<DeviceAssetReference>,
+    ) -> Result<Self, DeviceContractError> {
+        if references.len() > MAX_DEVICE_ASSET_REFERENCES {
+            return Err(DeviceContractError::StateTooLarge);
+        }
+        references.sort_unstable_by_key(|reference| reference.slot);
+        if references
+            .windows(2)
+            .any(|pair| pair[0].slot == pair[1].slot)
+        {
+            return Err(DeviceContractError::MalformedState);
+        }
+        self.asset_references = if references.is_empty() {
+            None
+        } else {
+            Some(Arc::from(references))
+        };
+        Ok(self)
+    }
+    /// Restore host metadata after a provider reconstructs its opaque state.
+    /// Explicit host binding edits use `with_asset_references` instead.
+    pub fn with_host_metadata_from(mut self, source: &Self) -> Result<Self, DeviceContractError> {
+        if self.type_id != source.type_id {
+            return Err(DeviceContractError::WrongDeviceType);
+        }
+        self.input_gain_millidb = source.input_gain_millidb;
+        self.output_gain_millidb = source.output_gain_millidb;
+        self.asset_references.clone_from(&source.asset_references);
+        Ok(self)
+    }
+    /// Supported runtime admission remains asset-free until resource leases exist.
+    /// Check the supplied state before a codec can reconstruct it without bindings.
+    pub fn require_asset_free_processing(&self) -> Result<(), DeviceContractError> {
+        if self.asset_references.is_some() {
+            Err(DeviceContractError::AssetResourcesUnavailable)
+        } else {
+            Ok(())
+        }
     }
     /// Host-owned input trim, independent of the device's opaque DSP payload.
     pub const fn input_gain_millidb(&self) -> i32 {
@@ -359,6 +414,7 @@ impl NativeDeviceState {
         self.type_id == other.type_id
             && self.state_version == other.state_version
             && self.payload == other.payload
+            && self.asset_references == other.asset_references
     }
     pub fn input_gain_linear(&self) -> f32 {
         10.0_f32.powf(self.input_gain_db() / 20.0)
@@ -376,6 +432,7 @@ impl NativeDeviceState {
             payload,
             input_gain_millidb: _,
             output_gain_millidb: _,
+            asset_references: _,
         } = self;
         (
             payload.len(),
@@ -407,6 +464,7 @@ pub enum DeviceContractError {
     RuntimeBudgetExceeded,
     RuntimeAllocation,
     UnsupportedProcessingClass,
+    AssetResourcesUnavailable,
 }
 impl fmt::Display for DeviceContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -429,6 +487,7 @@ impl fmt::Display for DeviceContractError {
                 Self::RuntimeAllocation => "native processor runtime allocation failed",
                 Self::UnsupportedProcessingClass =>
                     "native device processing class is not admitted",
+                Self::AssetResourcesUnavailable => "native device asset resources are not prepared",
             }
         )
     }
@@ -527,7 +586,7 @@ pub trait NativeDeviceMetadata: Sync {
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
-        let migrated = self.migrate_state(state)?;
+        let migrated = self.migrate_state(state)?.with_host_metadata_from(state)?;
         let descriptors = validated_state_descriptors(self, &migrated)?;
         let descriptor = descriptors
             .iter()
@@ -551,11 +610,13 @@ pub trait NativeDeviceMetadata: Sync {
         state: &NativeDeviceState,
         snapshot: &DeviceParameterSnapshot,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut candidate = self.migrate_state(state)?;
+        let mut candidate = self.migrate_state(state)?.with_host_metadata_from(state)?;
         validate_parameter_snapshot_for_write(self, &candidate, snapshot)?;
         for &(parameter, value) in snapshot.entries() {
             validate_parameter_write(self, &candidate, parameter, value)?;
-            candidate = self.patch_parameter(&candidate, parameter, value)?;
+            candidate = self
+                .patch_parameter(&candidate, parameter, value)?
+                .with_host_metadata_from(state)?;
         }
         Ok(candidate)
     }

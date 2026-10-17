@@ -1926,6 +1926,9 @@ impl Project {
                     .map(Created::Asset)
             }
             Command::RemoveAsset(id) => {
+                if self.device_uses_asset(id) {
+                    return Err(Invalid("media is still referenced by a device"));
+                }
                 if self
                     .tracks
                     .iter()

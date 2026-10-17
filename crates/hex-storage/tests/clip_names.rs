@@ -187,6 +187,7 @@ fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
     let mut legacy = value.clone();
     legacy["version"] = 25.into();
     legacy.as_object_mut().unwrap().remove("tuning");
+    legacy.as_object_mut().unwrap().remove("device_assets");
     legacy.as_object_mut().unwrap().remove("track_colors");
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("clip_names");
