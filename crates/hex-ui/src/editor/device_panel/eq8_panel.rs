@@ -356,16 +356,23 @@ pub(super) fn spectrum_toggle(
         .audio
         .as_ref()
         .and_then(|audio| audio.spectrum_error.clone())
-        .unwrap_or_else(|| "show post-eq output spectrum".to_owned());
+        .unwrap_or_else(|| {
+            if selected {
+                "hide live eq spectrum".to_owned()
+            } else {
+                "enable live eq spectrum · input/output samples are analyzed while audio runs"
+                    .to_owned()
+            }
+        });
     hex_widgets::device_action(
-        theme::text("∿"),
+        theme::text("spectrum"),
         theme::device_segment_style(selected && available),
     )
     .id(ElementId::Name(
         format!("eq8-spectrum-{}", device.value()).into(),
     ))
     .debug_selector(move || format!("eq8-spectrum-{}", device.value()))
-    .w(px(18.0))
+    .px(px(3.0))
     .h(px(13.0))
     .cursor_pointer()
     .tooltip(move |_, cx| {

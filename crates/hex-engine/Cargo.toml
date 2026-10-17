@@ -25,3 +25,6 @@ required-features = ["instrument-test-support"]
 [[example]]
 name = "playback_stack"
 required-features = ["instrument-test-support"]
+
+[dev-dependencies]
+hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

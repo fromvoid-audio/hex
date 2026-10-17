@@ -52,6 +52,8 @@ widgets = (
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    # Audition row controls normalize labels; miniature waveform contains no text.
+    'self.browser_audition_row(', 'mini_waveform(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
@@ -63,6 +65,7 @@ widgets = (
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    'super::musical_audio_controls::warp_header(',
     'super::waveform::prepared_waveform_view_cached(',
     'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
@@ -74,7 +77,7 @@ widgets = (
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
-    'menu_message(', 'action_button(', 'action_button_sized(', 'entity.clone())', 'control.entity.clone())',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
@@ -85,6 +88,8 @@ widgets = (
     'super::super::device_preset::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
+    # Track sizing composes non-text pointer handles and capture listeners.
+    'self.track_resize_events(', 'self.track_width_resize_handle(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
     'returns)', 'add)', 'return_button(', 'render_return_effect(',
     'render_return_add_menu(',
@@ -109,6 +114,8 @@ widgets = (
     'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
     'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

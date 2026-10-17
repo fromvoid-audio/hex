@@ -14,6 +14,7 @@ mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
 mod clip_name;
+mod clip_selection;
 
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -41,6 +42,7 @@ mod export;
 mod external_audio_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod external_audio_drop_ui_test;
+mod fade_handles;
 mod fades;
 mod gain_lane;
 mod gain_recording;
@@ -92,6 +94,9 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_layout;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_layout_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -502,6 +507,7 @@ pub(super) struct EditorView {
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
+    clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
@@ -578,7 +584,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
     _scrub_focus_lifecycle: gpui::Subscription,
-    track_scroll: gpui::UniformListScrollHandle,
+    track_scroll: track_layout::TrackScroll,
+    track_layout: track_layout::TrackLayout,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -610,6 +617,8 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    fade_key_held: bool,
+    active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
@@ -789,7 +798,11 @@ impl EditorView {
             }
         });
         let focus = cx.focus_handle();
-        let scrub_focus_blur = cx.on_blur(&focus, window, |view, _, cx| {
+        let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
+            if !view.focus.is_focused(window) {
+                view.cancel_fade_gesture(cx);
+                view.cancel_track_resize(cx);
+            }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
             if view.cancel_scrub() | view.cancel_clip_paint() {
@@ -812,6 +825,8 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_fade_gesture(cx);
+                view.cancel_track_resize(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
                 view.audio_event_editor.gesture = None;
@@ -828,6 +843,8 @@ impl EditorView {
             }
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
+            view.cancel_fade_gesture(cx);
+            view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
@@ -860,6 +877,7 @@ impl EditorView {
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
+            clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
@@ -937,7 +955,8 @@ impl EditorView {
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
             _scrub_focus_lifecycle: scrub_focus_blur,
-            track_scroll: gpui::UniformListScrollHandle::new(),
+            track_scroll: track_layout::TrackScroll::new(),
+            track_layout: track_layout::TrackLayout::default(),
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
@@ -970,6 +989,8 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            fade_key_held: false,
+            active_fade_drag: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
@@ -1257,6 +1278,7 @@ impl EditorView {
             self.update_track_selection_status();
         }
         self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
     }

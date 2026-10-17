@@ -529,3 +529,103 @@ fn normalized_automation_endpoints_stay_inside_every_descriptor_domain() {
         }
     }
 }
+
+#[test]
+fn declared_semantics_follow_node_identity_and_existing_normalized_laws() {
+    use hex_lattice_contract::{ParameterAutomation as A, validated_parameter_semantics};
+    let mut settings = EqState::default();
+    settings.add(node(7)).unwrap();
+    settings.add(node(12)).unwrap();
+    let id = NodeId::new(7).unwrap();
+    let original = settings.encode().unwrap();
+    for field in NodeParameter::ALL {
+        let parameter = id.parameter(field).unwrap();
+        let semantics = validated_parameter_semantics(&EQ_DEFINITION, &original, parameter)
+            .unwrap()
+            .unwrap();
+        assert_eq!(semantics.automation, A::DeviceArrangementEnvelope);
+        for n in [0.0, 0.125, 0.25, 0.5, 0.9, 1.0] {
+            let expected = field.value(n);
+            let actual = semantics
+                .normalization
+                .denormalize(descriptor(id, field).unwrap(), n)
+                .unwrap();
+            match (actual, expected) {
+                (ParameterValue::Float(a), ParameterValue::Float(b)) => {
+                    assert!((a - b).abs() <= b.abs().max(1.0) * 2e-6)
+                }
+                (a, b) => assert_eq!(a, b),
+            }
+            let actual = semantics
+                .normalization
+                .normalize(descriptor(id, field).unwrap(), expected)
+                .unwrap();
+            assert!((actual - field.normalized(expected).unwrap()).abs() < 2e-6);
+        }
+    }
+    let parameter = id.parameter(NodeParameter::Frequency).unwrap();
+    let before = validated_parameter_semantics(&EQ_DEFINITION, &original, parameter).unwrap();
+    settings.nodes.swap(0, 1);
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &settings.encode().unwrap(), parameter)
+            .unwrap(),
+        before
+    );
+    settings.remove(id).unwrap();
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &settings.encode().unwrap(), parameter),
+        Err(DeviceContractError::UnknownParameter)
+    );
+    assert!(settings.add(node(7)).is_err());
+    settings.add(node(13)).unwrap();
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &settings.encode().unwrap(), parameter),
+        Err(DeviceContractError::UnknownParameter)
+    );
+}
+
+#[test]
+fn legacy_shelf_semantics_report_actual_lane_refusals_without_disabling_authored_values() {
+    use hex_lattice_contract::{ParameterAutomation as A, validated_parameter_semantics};
+    let mut settings = EqState::default();
+    let mut shelf = node(3);
+    shelf.kind = NodeKind::LowShelf;
+    shelf.legacy_shelf = true;
+    settings.add(shelf).unwrap();
+    let state = settings.encode().unwrap();
+    for field in [NodeParameter::Kind, NodeParameter::Gain, NodeParameter::Q] {
+        let semantics = validated_parameter_semantics(
+            &EQ_DEFINITION,
+            &state,
+            shelf.id.parameter(field).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(semantics.automation, A::Unsupported);
+        assert!(
+            settings
+                .set_lane(AutomationLane {
+                    node: shelf.id,
+                    parameter: field,
+                    points: vec![AutomationPoint {
+                        beat: 0,
+                        normalized: 0.5
+                    }]
+                })
+                .is_err()
+        );
+    }
+    let frequency = shelf.id.parameter(NodeParameter::Frequency).unwrap();
+    assert_eq!(
+        validated_parameter_semantics(&EQ_DEFINITION, &state, frequency)
+            .unwrap()
+            .unwrap()
+            .automation,
+        A::DeviceArrangementEnvelope
+    );
+    assert!(
+        EQ_DEFINITION
+            .parameter_enabled(&state, shelf.id.parameter(NodeParameter::Gain).unwrap())
+            .unwrap()
+    );
+}

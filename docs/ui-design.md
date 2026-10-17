@@ -409,3 +409,58 @@ project-tempo adaptive grid, ruler/time selection, event waveforms, drag preview
 and focus-scoped clip editing shortcuts. A `source` tab retains source/warp
 inspection. Both use the existing detail height and left control column. See
 [audio events](audio-events.md) for edit semantics, limits and native acceptance.
+
+Arrangement audio and MIDI clips do not show a container hover tooltip over
+their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
+context menus and renaming retain their existing behavior. Distinct controls,
+including fade handles and track names, retain their own descriptive tooltips.
+
+## contiguous clip header selection — #2769 / PR377
+
+Clicking a clip header starts a clip-selection anchor. Shift-click selects the
+inclusive chronological interval between that anchor and the clicked clip on
+the same track, including audio and MIDI clips. Reverse clicks work; repeated
+Shift-clicks resize the interval around the original anchor. Equal start times
+use stable clip-ID order. A Shift-click on another track starts a new anchor;
+this change defines no cross-track range. Command-click toggles membership and
+sets the anchor; Command-Shift-click adds the interval to existing membership.
+The existing body time-selection and header drag contracts remain separate.
+
+Every member receives the existing selected fill. A membership epoch invalidates
+retained clip scenes even when the primary clip stays the same. This selection
+is view state and creates no project edit or Undo step. The separate border
+request is Pulse2719/PR335; whole-clip clipboard handling is2770/PR378.
+
+Rendered tests exercise five alternating audio/MIDI clips, forward/reverse and
+repeated ranges, additive toggle/union, another-track clicks and retained-scene
+repainting with an unchanged primary selection. Required full-source evidence is
+recorded on the canonical PR. Native acceptance remains with the coordinator:
+on the approved optimized candidate, click first then Shift-click fifth, reverse
+and shrink the range, toggle/add with Command, click another row, then confirm
+header dragging and body time-selection still work. No app replacement or Mac
+execution is part of these source checks.
+
+## arrangement track sizing
+
+The right-hand track-header column resizes from its left edge, including the
+pinned main header in an empty project. The complete existing controls set the
+176 px minimum; the maximum reuses the 480 px browser default and retains the
+existing 560 px workspace budget minus that minimum header (384 px timeline).
+The current arrangement width can therefore reduce the maximum. These are
+implementation layout bounds, not numerical requirements supplied by the user.
+
+An individual regular header's bottom edge changes that header and lane together.
+The existing 44 px row is the minimum, and the visible track viewport at pointer
+capture is the height limit. The main row remains pinned at its existing height.
+The gesture measures displacement from the original pointer, clamps without
+accumulating error, applies the final release position, and restores the prior
+value on Escape, focus/window changes, lost-button input or stale source revision.
+
+Sizing is editor display state, like the viewport; it does not create an audio
+edit, dirty the project, add Undo entries or change the saved project format.
+Header width lasts for the view; per-track heights reset on project replacement
+and disappear for removed IDs. Timeline/ruler/grid/overview/cursor/drop geometry
+shares the same effective width. GPUI's variable-height list retains logical
+scroll anchors; it prepares the bounded row set on structural/viewport-width changes and only
+invalidates the resized row during a height drag. Native smoothness, physical
+pointer capture and minimum-size control acceptance require the finite Mac check.

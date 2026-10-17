@@ -5,7 +5,7 @@ impl SessionPlayback {
     pub(super) fn render_keyboard_monitor(
         &mut self,
         output: &mut [Frame],
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         for chain in &mut self.device_chains {
@@ -56,13 +56,14 @@ impl SessionPlayback {
                     track.apply_ordered_suffix(frames);
                 } else if let Some(observer) = observer.as_mut() {
                     chain
-                        .process_range_observed(
+                        .process_range_tapped(
                             track.instrument_position()..chain.len(),
                             frames,
                             offset,
-                            &mut |owner, device, kind, offset, frames| {
+                            &mut |owner, device, kind, phase, offset, frames| {
                                 observer(
                                     crate::PostNodeIdentity::new(owner, device, kind),
+                                    phase,
                                     offset,
                                     frames,
                                 )

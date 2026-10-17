@@ -3,6 +3,7 @@
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
+mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
@@ -17,6 +18,7 @@ mod clip_copy;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
     default_instrument_state,
@@ -187,15 +189,8 @@ impl Asset {
     }
 }
 
-/// Half-open timeline interval. Looping repeats [source_offset, source_offset + source_length).
-/// Linear fade domain is fixed while clips are split; trims reanchor the domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClipFade {
-    span: u64,
-    offset: u64,
-    fade_in: u64,
-    fade_out: u64,
-}
+mod clip_fade;
+pub use clip_fade::ClipFade;
 
 /// Edge used by the canonical absolute-frame clip trim command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,92 +200,6 @@ pub enum TrimEdge {
     /// Exclusive timeline end frame.
     Right,
 }
-impl ClipFade {
-    pub fn new(span: u64, offset: u64, fade_in: u64, fade_out: u64) -> Result<Self, Invalid> {
-        if span == 0 {
-            return Err(Invalid("fade span must be positive"));
-        }
-        let end = offset
-            .checked_add(1)
-            .ok_or(Invalid("fade offset overflow"))?;
-        if end > span {
-            return Err(Invalid("fade offset must be inside its span"));
-        }
-        if fade_in > span || fade_out > span {
-            return Err(Invalid("fade lengths must not exceed their span"));
-        }
-        Ok(Self {
-            span,
-            offset,
-            fade_in,
-            fade_out,
-        })
-    }
-
-    pub fn neutral(span: u64) -> Result<Self, Invalid> {
-        Self::new(span, 0, 0, 0)
-    }
-
-    pub fn span(self) -> u64 {
-        self.span
-    }
-    pub fn offset(self) -> u64 {
-        self.offset
-    }
-    pub fn fade_in(self) -> u64 {
-        self.fade_in
-    }
-    pub fn fade_out(self) -> u64 {
-        self.fade_out
-    }
-
-    pub fn validate_segment(self, duration: u64) -> Result<(), Invalid> {
-        if duration == 0 {
-            return Err(Invalid("clip fade segment exceeds its domain"));
-        }
-        let end = self
-            .offset
-            .checked_add(duration)
-            .ok_or(Invalid("clip fade segment exceeds its domain"))?;
-        if end > self.span {
-            return Err(Invalid("clip fade segment exceeds its domain"));
-        }
-        Ok(())
-    }
-
-    pub fn with_offset(self, offset: u64, duration: u64) -> Result<Self, Invalid> {
-        let fade = Self::new(self.span, offset, self.fade_in, self.fade_out)?;
-        fade.validate_segment(duration)?;
-        Ok(fade)
-    }
-
-    /// Original Hex linear endpoint law; overlapping fades multiply.
-    pub fn gain_at(self, frame: u64) -> f32 {
-        let Some(position) = self.offset.checked_add(frame) else {
-            return 0.0;
-        };
-        if position >= self.span {
-            return 0.0;
-        }
-        let mut gain = 1.0_f64;
-        if self.fade_in > 0 && position < self.fade_in {
-            gain *= if self.fade_in == 1 {
-                1.0
-            } else {
-                position as f64 / (self.fade_in - 1) as f64
-            };
-        }
-        if self.fade_out > 0 && position >= self.span - self.fade_out {
-            gain *= if self.fade_out == 1 {
-                0.0
-            } else {
-                (self.span - 1 - position) as f64 / (self.fade_out - 1) as f64
-            };
-        }
-        gain as f32
-    }
-}
-
 /// Saved audio-clip gain in integer millidecibels, before track processing.
 /// The finite -60..=24 dB range does not imply normalization or output limiting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -387,6 +296,19 @@ impl Clip {
 
     pub(crate) fn audio_edit_mut(&mut self) -> Option<&mut AudioClipEdit> {
         self.edit.as_mut().map(Arc::make_mut)
+    }
+
+    /// Trim the selected lower fade handle and its clip edge together. `frame`
+    /// is the absolute edge (exclusive for the right edge), with source/domain
+    /// bounds and the authored upper fade endpoint applied by the model.
+    pub fn preview_fade_edge_trim(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        crate::clip_fade_trim::preview(self, edge, frame, asset_playback_frames, tempo)
     }
 
     pub fn preview_edge_trim_with_tempo(
@@ -534,6 +456,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
@@ -555,6 +478,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -571,6 +495,11 @@ impl Project {
             meter_map: MeterMap::common_time(),
         })
     }
+    /// Project-saved tuning and audition settings; no local library identity.
+    pub fn tuning(&self) -> hex_tuning::ProjectTuning {
+        self.tuning
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }

@@ -7,16 +7,18 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-tuning': set(),
+    'hex-dsp': set(),
     'hex-midi': set(),
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
-    'hex-project': {'hex-lattice-contract'},
-    'hex-lattice': {'hex-lattice-contract'},
-    'hex-devices': {'hex-lattice', 'hex-lattice-contract'},
+    'hex-project': {'hex-lattice-contract', 'hex-tuning'},
+    'hex-lattice': {'hex-lattice-contract', 'hex-dsp'},
+    'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
-    'hex-storage': {'hex-project', 'hex-lattice-contract'},
+    'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning'},
     'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},

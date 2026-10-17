@@ -4,11 +4,11 @@
 //! parity, native interaction, physical deadlines or complete feature coverage.
 use crate::{
     DeviceMeter, NativeDeviceDefinition, NativeDeviceRegistry, NativeRuntimeChain,
-    PreparedProcessorInstance, ProcessorChainOwner, StereoFrame,
+    PreparedRuntimeInstance, ProcessorChainOwner, StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterKind,
-    ParameterValue, validated_state_descriptors,
+    ParameterValue,
 };
 use std::{fmt, sync::Arc};
 
@@ -73,9 +73,9 @@ pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
     let descriptors = contract(
         definition,
         "state descriptors",
-        validated_state_descriptors(definition, &state),
+        hex_lattice_contract::validated_state_parameters(definition, &state),
     )?;
-    for descriptor in &descriptors {
+    for (descriptor, semantics) in &descriptors {
         let current = contract(
             definition,
             "read parameter",
@@ -91,6 +91,15 @@ pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
             "parameter availability",
             definition.parameter_enabled(&state, descriptor.id),
         )?;
+        if semantics.is_some_and(|s| s.access == hex_lattice_contract::ParameterAccess::ReadOnly) {
+            if definition
+                .patch_parameter(&state, descriptor.id, current)
+                .is_ok()
+            {
+                return Err(fail(definition, "read-only parameter accepted"));
+            }
+            continue;
+        }
         if enabled {
             let patched = contract(
                 definition,
@@ -156,12 +165,12 @@ fn chain(
     let prepared = contract(
         definition,
         "effect preparation",
-        registry.prepare_device(state, rate),
+        registry.prepare_runtime_device(state, rate),
     )?;
     contract(
         definition,
         "runtime admission",
-        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
             meter: Arc::new(DeviceMeter::default()),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,
@@ -170,7 +179,7 @@ fn chain(
             bypassed,
             sample_rate: rate,
             configuration: Some(Arc::new(state.clone())),
-            definition: prepared.processor.map(Arc::from),
+            definition: prepared.processor,
         }]),
     )
 }
@@ -392,3 +401,6 @@ fn render_instrument<D: NativeDeviceMetadata + ?Sized>(
 
 #[cfg(test)]
 mod tests;
+
+/// Registered original fixture for owned-effect host proofs, never a browser device.
+pub mod owned_delay;

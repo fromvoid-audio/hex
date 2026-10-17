@@ -130,6 +130,15 @@ pub type MainOutputObserver<'observer> = dyn for<'frames> FnMut(&'frames [Frame]
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
+pub use hex_lattice::NodeSignalPhase;
+
+/// Synchronous input/output signals around one native entry, before host input
+/// trim and after the entire effect/output trim. Both borrows are speculative
+/// until the full render and caller's final output validation succeed.
+/// Real-time observers must not allocate, block or retain either sample borrow.
+pub type NodeSignalObserver<'observer> =
+    dyn for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]) + 'observer;
+
 /// Maximum stable track routes exposed to native callback telemetry.
 pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;
 
@@ -350,6 +359,7 @@ fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -
         Error::RuntimeBudgetExceeded => "native device runtime exceeds its bounded budget",
         Error::RuntimeAllocation => "native device runtime allocation failed",
         Error::UnsupportedProcessingClass => "native device processing class is not admitted",
+        Error::AssetResourcesUnavailable => "native device asset resources are unavailable",
     })
 }
 
@@ -417,6 +427,11 @@ impl Audio {
     /// Shared immutable stereo PCM, available for import validation and analysis.
     pub fn frames(&self) -> &[Frame] {
         &self.frames
+    }
+    /// Control-side capacity of the retained PCM buffer, in stereo frames.
+    /// This excludes owner/graph metadata and is not a resource-admission proof.
+    pub fn pcm_capacity_frames(&self) -> usize {
+        self.frames.values.capacity()
     }
     /// True when two audio handles retain the same immutable PCM allocation.
     /// Exact retained PCM identity for control-side cache/summary reuse.
@@ -525,7 +540,7 @@ impl Clip {
         }
         fade.validate_segment(duration)
             .map_err(|error| Invalid(error.0))?;
-        let metadata = if fade.fade_in() == 0 && fade.fade_out() == 0 {
+        let metadata = if fade.is_neutral() {
             None
         } else {
             Some(Box::new(ClipMetadata {
@@ -680,7 +695,7 @@ impl Clip {
             metadata: Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
-                fade: (fade.fade_in() != 0 || fade.fade_out() != 0).then_some(fade),
+                fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
             })),
         })
@@ -698,7 +713,7 @@ pub struct Track {
     instrument_position: usize,
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
     ordered_suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
+    device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -725,7 +740,7 @@ pub(crate) struct ReturnBus {
     pub gain: f32,
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
-    pub device_chain: std::sync::Arc<[hex_lattice::PreparedProcessorInstance]>,
+    pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -869,7 +884,7 @@ impl Track {
         effects: Option<hex_lattice::StereoMatrix>,
         ordered_prefix: Option<hex_lattice::StereoMatrix>,
         ordered_suffix: Option<hex_lattice::StereoMatrix>,
-        device_chain: Vec<hex_lattice::PreparedProcessorInstance>,
+        device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
     ) -> Result<Self, Invalid> {
         let stateful = !device_chain.is_empty();
         let ordered = instrument_position != 0;
@@ -983,11 +998,11 @@ impl Track {
             .try_reserve_exact(self.device_chain.len())
             .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
         instances.extend(self.device_chain.iter().cloned());
-        hex_lattice::NativeRuntimeChain::new(instances)
+        hex_lattice::NativeRuntimeChain::new_prepared(instances)
     }
 
     pub(crate) fn device_runtime_storage_preflight_bytes(&self) -> Option<usize> {
-        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_instances(
+        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
             &self.device_chain,
         )
     }
@@ -1020,7 +1035,7 @@ impl Track {
             .iter()
             .filter_map(|device| device.definition.as_ref())
             .try_fold(0_usize, |total, definition| {
-                total.checked_add(definition.declared_runtime_bytes().checked_mul(2)?)
+                total.checked_add(definition.declared_pair_bytes()?)
             })
     }
 
@@ -2120,7 +2135,7 @@ impl RendererRuntime {
                         };
                     }
                     instances.extend(bus.device_chain.iter().cloned());
-                    match hex_lattice::NativeRuntimeChain::new(instances) {
+                    match hex_lattice::NativeRuntimeChain::new_prepared(instances) {
                         Ok(chain) => {
                             return_chains.push(chain);
                             return_scratch.push([[0.0; 2]; 256]);
@@ -2385,7 +2400,32 @@ impl RendererRuntime {
         position: &mut u64,
         playing: bool,
         output: &mut [Frame],
+        pages: Option<&mut P>,
+    ) -> Result<(), Invalid> {
+        let mut began = false;
+        let result =
+            self.render_with_pages_inner(project, position, playing, output, pages, &mut began);
+        if result.is_err() && began {
+            for chain in self
+                .device_chains
+                .iter_mut()
+                .chain(self.return_chains.iter_mut())
+            {
+                chain.rollback_block();
+            }
+            output.fill([0.0; 2]);
+        }
+        result
+    }
+
+    fn render_with_pages_inner<P: MediaPages + ?Sized>(
+        &mut self,
+        project: &Project,
+        position: &mut u64,
+        playing: bool,
+        output: &mut [Frame],
         mut pages: Option<&mut P>,
+        began: &mut bool,
     ) -> Result<(), Invalid> {
         if let Some(message) = self.runtime_error {
             return Err(Invalid(message));
@@ -2413,6 +2453,7 @@ impl RendererRuntime {
             return Ok(());
         }
         let block_start = *position;
+        *began = true;
         if self.compensation.is_some() {
             self.render_compensated(project, block_start, output, pages.as_deref_mut())?;
             *position = next;

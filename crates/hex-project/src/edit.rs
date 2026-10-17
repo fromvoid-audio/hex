@@ -15,6 +15,8 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Replace validated project tuning and audition settings in one history step.
+    SetTuning(hex_tuning::ProjectTuning),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
     EditAudioEvents {
         clip: ClipId,
@@ -359,6 +361,12 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
+    /// Resize an Arrangement audio clip with its lower fade endpoint as one edit.
+    TrimClipFadeEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        frame: u64,
+    },
     MoveClip {
         clip: ClipId,
         track: TrackId,
@@ -405,6 +413,11 @@ pub enum Command {
         clip: ClipId,
         fade_in: u64,
         fade_out: u64,
+    },
+    /// Reanchor a complete fade envelope to the current Arrangement clip.
+    SetClipFadeEnvelope {
+        clip: ClipId,
+        fade: ClipFade,
     },
     /// Set Arrangement or Session audio clip gain, in -60_000..=24_000 millidecibels.
     SetAudioClipGain {
@@ -906,12 +919,7 @@ pub(crate) fn preview_edge_trim(
         || source_length != clip.source_length
         || source_phase != clip.source_phase;
     let fade = if changed {
-        ClipFade::new(
-            duration,
-            0,
-            clip.fade.fade_in().min(duration),
-            clip.fade.fade_out().min(duration),
-        )?
+        clip.fade.reanchor(duration)?
     } else {
         clip.fade
     };
@@ -1185,6 +1193,10 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SetTuning(tuning) => {
+                self.tuning = tuning;
+                Ok(Created::None)
+            }
             Command::EditAudioEvents { clip, operation } => {
                 crate::audio_events::apply(self, clip, operation)?;
                 Ok(Created::None)
@@ -1920,6 +1932,9 @@ impl Project {
                     .map(Created::Asset)
             }
             Command::RemoveAsset(id) => {
+                if self.device_uses_asset(id) {
+                    return Err(Invalid("media is still referenced by a device"));
+                }
                 if self
                     .tracks
                     .iter()
@@ -2080,12 +2095,7 @@ impl Project {
                 let old_fade = original.fade;
                 let old_source_offset = original.source_offset;
                 let old_source_length = original.source_length;
-                let fade = ClipFade::new(
-                    duration,
-                    0,
-                    old_fade.fade_in().min(duration),
-                    old_fade.fade_out().min(duration),
-                )?;
+                let fade = old_fade.reanchor(duration)?;
                 let target = self.clip_mut(clip)?;
                 target.start = start;
                 target.duration = duration;
@@ -2108,6 +2118,17 @@ impl Project {
                 } else {
                     preview_edge_trim(original, edge, frame, asset_frames)?
                 };
+                *self.clip_mut(clip)? = trimmed;
+                Ok(Created::None)
+            }
+            Command::TrimClipFadeEdge { clip, edge, frame } => {
+                let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+                let asset_frames = self
+                    .asset(original.asset)
+                    .ok_or(Invalid("media no longer exists"))?
+                    .playback_frames;
+                let trimmed =
+                    original.preview_fade_edge_trim(edge, frame, asset_frames, self.tempo_map())?;
                 *self.clip_mut(clip)? = trimmed;
                 Ok(Created::None)
             }
@@ -2134,6 +2155,17 @@ impl Project {
                         .ok_or(Invalid("audio clip no longer exists"))?;
                     target.gain = gain;
                 }
+                Ok(Created::None)
+            }
+            Command::SetClipFadeEnvelope { clip, fade } => {
+                let target = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+                if fade.span() != target.duration || fade.offset() != 0 {
+                    return Err(Invalid("edited fade must match the current clip"));
+                }
+                if target.edit.is_some() {
+                    return crate::audio_edit::set_fade_envelope(self, clip, fade);
+                }
+                self.clip_mut(clip)?.fade = fade;
                 Ok(Created::None)
             }
             Command::SetClipFades {
