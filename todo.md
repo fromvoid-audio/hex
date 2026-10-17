@@ -306,6 +306,23 @@ real editor keybindings. Graph-scoped Escape preserves existing cancellation
 before ancestor editor actions. Full exact-source CI and optimized native input
 acceptance remain required.
 
+## project master and selected-track spectra — #2738 / PR349, 17 october 2026
+
+Added actual independent Master/direct post-device/post-fader track taps, forwarded
+through ordinary/compensated/stopped-monitor/streamed rendering without changing
+PCM or offline capture restrictions. All selected canonical tracks retain their
+own color/layer, up to 256 plus Master. One fixed pool and the existing worker/
+reaper enforce contribution/storage/freshness bounds; incremental work yields to
+EQ between batches. The view-only panel collapses/resizes and clears stale owner,
+selection, generation and output identities. Constrained populated details use a
+compact live plot; larger windows restore preferred height and full controls.
+Source tests cover actual PCM/Returns/loops, allocation/custody/budget refusal,
+anti-phase stereo, independent tones, rates/silence, all 256 identities, responsive
+geometry and existing compact device interactions. Optimized actual-worker source
+profiles are retained with their concurrency/outlier limitations. Exact-source
+full local CI and coordinated native visual/input/listening/performance checks
+remain required. See [tap, lifecycle, limits and profile](docs/project-spectrum.md).
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback

@@ -17,6 +17,10 @@ undo/redo, project
 open/save/save-as and background PCM16 WAV export. The older four-track generated
 Arrangement/Session prototype remains available with `--demo`.
 App text uses lowercase and embedded Ioskeley Mono with compact Yield styling.
+A built-in [project spectrum](docs/project-spectrum.md) below the toolbar shows
+actual Master and independent track-colored layers for every selected track,
+with bounded capture/analysis and responsive collapse/height controls. Source
+checks and native visual/listening acceptance are recorded separately.
 Canonical Session scenes and independent MIDI/stop cells persist in schema 11.
 Every revision prepares their immutable inventory before edits/history/open commit,
 with compatible source reuse and structural per-track work envelopes. Playback

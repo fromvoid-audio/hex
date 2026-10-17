@@ -1,7 +1,7 @@
 //! Shared analyzer display scale; response-curve gain axes remain independent.
 pub(super) const MIN_DBFS: f32 = -96.0;
 
-pub(super) fn level(dbfs: f32) -> f32 {
+pub(in crate::editor) fn level(dbfs: f32) -> f32 {
     ((dbfs - MIN_DBFS) / -MIN_DBFS).clamp(0.0, 1.0)
 }
 
