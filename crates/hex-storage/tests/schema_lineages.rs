@@ -35,7 +35,7 @@ fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
         let project = decode(original).unwrap();
         let encoded = encode(&project).unwrap();
         let doc = value(&encoded);
-        assert_eq!(doc["version"], 26);
+        assert_eq!(doc["version"], 27);
         assert_eq!(decode(&encoded).unwrap(), project);
         assert_eq!(
             doc["tracks"][0]["devices"][0]["payload"],
@@ -177,7 +177,7 @@ fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields(
     doc["tracks"][0]["devices"][0]["unknown"] = true.into();
     assert!(decode(&bytes(&doc)).is_err());
     let mut doc = base;
-    doc["version"] = 27.into();
+    doc["version"] = 28.into();
     assert!(decode(&bytes(&doc)).is_err());
     // Output-only22 must never silently accept input gains by widening its DTO.
     let mut doc = value(FOUNDATION[3]);

@@ -28,10 +28,16 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
             },
         })
         .unwrap();
+    editor
+        .execute(Command::RenameClip {
+            clip,
+            name: "edited audio".into(),
+        })
+        .unwrap();
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 26);
+    assert_eq!(value["version"], 27);
     for mutate in 0..4 {
         let mut bad = value.clone();
         match mutate {
@@ -50,9 +56,9 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
         }
         assert!(hex_storage::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
     }
-    // A genuine schema25 document still migrates to one implicit event.
+    // A genuine schema26 document still migrates to one implicit event.
     let mut legacy = value;
-    legacy["version"] = 25.into();
+    legacy["version"] = 26.into();
     legacy.as_object_mut().unwrap().remove("audio_event_state");
     let migrated = hex_storage::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert_eq!(migrated.clip(clip).unwrap().audio_events().events.len(), 1);

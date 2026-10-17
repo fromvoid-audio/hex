@@ -1,4 +1,4 @@
-//! Schema26 adds a strict event-state overlay to the complete schema25 envelope.
+//! Schema27 adds a strict event-state overlay to the complete schema26 envelope.
 use crate::StorageError;
 use hex_project::{AudioEvent, AudioEvents, Project, TrackContentSnapshot};
 use serde::{Deserialize, Serialize};
@@ -49,7 +49,7 @@ struct Event {
 }
 
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let base = super::musical_audio::DocumentV25::from_project(project)?;
+    let base = super::clip_names::DocumentV26::from_project(project)?;
     let mut document = serde_json::to_value(base)?;
     let states: Vec<_> = project
         .tracks()
@@ -79,7 +79,7 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     let object = document
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid audio event envelope"))?;
-    object.insert("version".into(), 26.into());
+    object.insert("version".into(), 27.into());
     object.insert("audio_event_state".into(), serde_json::to_value(states)?);
     Ok(document)
 }
@@ -89,7 +89,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid audio event envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(26) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(27) {
         return Err(StorageError::Invalid("invalid audio event version"));
     }
     let states: Vec<State> = serde_json::from_value(
@@ -104,8 +104,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid("audio event state limit reached"));
     }
-    object.insert("version".into(), 25.into());
-    let base = super::musical_audio::DocumentV25::decode(&serde_json::to_vec(&value)?)?;
+    object.insert("version".into(), 26.into());
+    let base = super::clip_names::DocumentV26::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
     let mut by_clip = std::collections::BTreeMap::new();
     for state in states {

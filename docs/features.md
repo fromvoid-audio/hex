@@ -6,6 +6,7 @@ is a separate versioned reference gate, not implied by implementing the feature.
 
 | Area | Current state | Next acceptance workflow |
 | --- | --- | --- |
+| Clip conversion | Clip View converts MIDI to a float WAV in place and audio to empty editable MIDI, with one-step history and Arrangement/Session identity; [limits and acceptance](clip-conversion.md) | Native conversion/listening/save-reopen checklist |
 | Hybrid tracks | Unified audio/MIDI collections under one track/mix; Arrangement source-sum, schema-13 roundtrip/history, Session switching, worker/UI and allocation checks pass | User native mixed-source import/edit/save/launch and listening acceptance |
 | Native desktop | GPUI shell, scrollable workspace | Resize, focus, accessible keyboard and controls |
 | Audio output | CPAL default output, visible error, source-integrated restart of the default output with stopped graph/cursor restore | Native failure/restart acceptance, device selection, disconnect recovery and long stress run |
@@ -21,7 +22,7 @@ is a separate versioned reference gate, not implied by implementing the feature.
 | Routing/latency | Canonical typed Track/Return stereo inputs, acyclic root-resolved MIDI sources and bounded declared-latency compensation through Arrangement, Session, capture and export; compatible handoffs retain in-flight state, timing/layout changes require Stop | Native routing/listening and physical deadline acceptance, general device I/O, feedback and measured reference comparison |
 | Automation | Bounded canonical track-gain point editing and delivered-quantum touch recording; shared sample-offset playback, strict persistence, loop-normalized single-edit history and compensated origin clocks | Optional optimized native editing/recording/listening checks; general device-parameter automation remains future work |
 | Warp/resampling | Versioned control-worker windowed-sinc source-rate conversion; bounded resident Arrangement preparation for distinct Beats/Re-Pitch/Tones/Texture/Complex/Complex Pro algorithms, source gain envelopes and pitch; immutable roots preserve split/crop processing origin, with PCM lifetime accounting and shared native/offline compilation; see [musical editing](musical-editing.md) | Native listening/interaction, measured reference quality, warped streamed sources and Session loops, device-rate conversion; mode names do not establish Ableton DSP identity |
-| Projects | Schema-26 hybrid audio/MIDI, musical audio domains, typed routing, gain lanes, device host gains, neutral import provenance and independent Session metadata; strict historical schema migration; native Arrangement open/save, create-new Save As; token-checked Save Current with one rolling recovery copy; explicit prior-version CLI recovery; unsaved state and repaired native close guard | Native musical/Session/device save/reopen, broader native Save/Save As/relink/recovery acceptance; latest-only untitled and saved-journal source contracts are in [project recovery](project-recovery.md) |
+| Projects | Schema-27 hybrid audio/MIDI, musical audio domains, typed routing, gain lanes, device host gains, neutral import provenance and independent Session metadata; strict historical schema migration; native Arrangement open/save, create-new Save As; token-checked Save Current with one rolling recovery copy; explicit prior-version CLI recovery; unsaved state and repaired native close guard | Native musical/Session/device save/reopen, broader native Save/Save As/relink/recovery acceptance; latest-only untitled and saved-journal source contracts are in [project recovery](project-recovery.md) |
 | Editing history | Canonical native metadata undo/redo | Undo/redo all project edits, selection, shortcuts, clipboard |
 | Export | Shared streamed CLI and native background PCM16 stereo WAV; native create-new export captures a compiled revision and renders the linear arrangement | Progress/cancellation, overwrite, stems, arbitrary ranges, deterministic export acceptance |
 | Plugin hosting | Planned, separate boundary | Host chosen formats, state, latency, failure behavior |
@@ -120,6 +121,6 @@ Direct numeric entry and draggable detail markers remain deferred; see
 Native visual/interaction acceptance remains pending with the user.
 
 Nested Arrangement [audio events](audio-events.md) now have canonical edits,
-resident preparation, schema26 persistence and a focused lower waveform editor.
+resident preparation, schema27 persistence and a focused lower waveform editor.
 Native acceptance and the documented streamed/cross-root/clock-conversion gaps
 remain open; source completion does not establish those workflows.

@@ -352,6 +352,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_clip_name(window, cx);
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
@@ -402,7 +403,9 @@ impl Render for EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
-            .key_context(if self.theme_settings.open {
+            .key_context(if self.clip_name_edit.is_some() {
+                "hex_clip_name hex_text_editing"
+            } else if self.theme_settings.open {
                 "hex_theme_settings"
             } else if self.controller_input_is_open() {
                 "hex_controller_input"
@@ -501,6 +504,15 @@ impl Render for EditorView {
                     cx.notify();
                 }
             }))
+            .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
+                view.begin_clip_name(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CommitClipName, window, cx| {
+                view.finish_clip_name(true, window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CancelClipName, window, cx| {
+                view.finish_clip_name(false, window, cx);
+            }))
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
@@ -570,7 +582,8 @@ impl Render for EditorView {
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
-                let time_selection_canceled = view.cancel_time_selection_gesture();
+                let time_selection_canceled =
+                    view.cancel_time_selection_gesture() | view.cancel_clip_paint();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
                     view.midi_selection.clear()

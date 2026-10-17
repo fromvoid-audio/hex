@@ -72,6 +72,7 @@ impl MidiSource {
 /// A MIDI Arrangement clip has finite timeline placement and an independent source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
+    pub(crate) name: String,
     pub(crate) id: ClipId,
     pub(crate) start: BeatTime,
     pub(crate) length: BeatTime,
@@ -97,6 +98,9 @@ impl MidiClipTrim {
 }
 
 impl MidiClip {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
     /// Preview an edge edit in O(1) metadata work without copying authored notes.
     /// Right extension may expose silence for a one-shot. Left edits preserve the
     /// exclusive end and advance/rewind the source marker; loop-phase rewinds
@@ -362,6 +366,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let id = ClipId(project.allocate_id()?);
             let clips = &mut project.track_mut(track)?.content.midi_clips;
             clips.push(MidiClip {
+                name: "clip".into(),
                 id,
                 start,
                 length,
@@ -518,6 +523,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
+                name: left.name.clone(),
                 id: right_id,
                 start: beat,
                 length: right_length,
@@ -797,6 +803,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             }
             let clips = &mut project.track_mut(track)?.content.midi_clips;
             clips.push(MidiClip {
+                name: source.name.clone(),
                 id,
                 start,
                 length: source.length,
@@ -1117,6 +1124,7 @@ pub(crate) fn overwrite_midi_interval(
                 .ok_or(Invalid("midi note count overflow"))?;
             let length = BeatTime::from_raw(right_end - right_start);
             Some(MidiClip {
+                name: original.name.clone(),
                 id: if right_id_is_new {
                     ClipId(0)
                 } else {

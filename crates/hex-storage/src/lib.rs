@@ -129,7 +129,7 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the complete schema26 envelope, preserving nested audio events, host gains, import
+/// Encode the complete schema27 envelope, preserving nested audio events, host gains, import
 /// provenance, typed routing and complete gain-lane metadata together.
 /// Historical readers remain explicit.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
@@ -149,6 +149,14 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.tracks().iter().any(|t| {
+        t.clips().iter().any(|c| c.name() != "clip")
+            || t.midi_clips().iter().any(|c| c.name() != "clip")
+    }) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save arrangement clip names",
+        ));
+    }
     schema::musical_audio::refuse_legacy_audio(project)?;
     if !project.audio_feeds().is_empty() || !project.midi_routes().is_empty() {
         return Err(StorageError::Invalid(

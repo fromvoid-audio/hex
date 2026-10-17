@@ -65,12 +65,12 @@ separate derived-audio budget reservation. Playback consumes ordinary prepared
 immutable PCM; it never scans event lists or allocates in the audio callback.
 Splits and moves share unchanged media, with source/root identity in cache keys.
 
-Schema26 adds a complete `audio_event_state` table to the existing complete
-schema25 envelope. Every Arrangement audio clip appears exactly once, including
+Schema27 adds a complete `audio_event_state` table to the existing complete
+schema26 envelope. Every Arrangement audio clip appears exactly once, including
 implicit sequences. Unknown/duplicate fields, missing owners, duplicate/missing
 rows and malformed event bounds are refused. The original JSON token stream is
 checked for duplicate keys before adapting the older envelope. Strict schemas
-1–25 still migrate to implicit events and retain all previous state. Older
+1–26 still migrate to implicit events and retain all previous state. Older
 explicit writers refuse event-bearing processing roots rather than dropping them.
 
 Current preparation uses the existing resident transformed-audio path and its

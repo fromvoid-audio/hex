@@ -163,6 +163,7 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    pub name: String,
     pub id: u64,
     pub start_raw: u64,
     pub length_raw: u64,
@@ -186,6 +187,7 @@ pub struct MidiNoteSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipSnapshot {
+    pub name: String,
     pub id: u64,
     pub asset: u64,
     pub start: u64,
@@ -281,6 +283,7 @@ impl Project {
                             .audio_clips
                             .iter()
                             .map(|clip| ClipSnapshot {
+                                name: clip.name.clone(),
                                 id: clip.id.0,
                                 asset: clip.asset.0,
                                 start: clip.start,
@@ -299,6 +302,7 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                name: clip.name.clone(),
                                 id: clip.id.0,
                                 start_raw: clip.start.raw(),
                                 length_raw: clip.length.raw(),
@@ -593,6 +597,7 @@ impl Project {
             let mut compiled_audio = Vec::with_capacity(audio_clips.len());
             for clip in audio_clips {
                 insert_id(clip.id, &mut ids, &mut max_id)?;
+                name_valid(&clip.name)?;
                 let media = assets
                     .get(&AssetId(clip.asset))
                     .ok_or(Invalid("clip media reference is missing"))?;
@@ -610,6 +615,7 @@ impl Project {
                     return Err(Invalid("clip source phase is outside its source interval"));
                 }
                 compiled_audio.push(Clip {
+                    name: clip.name.clone(),
                     id: ClipId(clip.id),
                     asset: AssetId(clip.asset),
                     start: clip.start,
@@ -626,6 +632,7 @@ impl Project {
             let mut compiled_midi = Vec::with_capacity(midi_clips.len());
             for clip in midi_clips {
                 insert_id(clip.id, &mut ids, &mut max_id)?;
+                name_valid(&clip.name)?;
                 let start = crate::BeatTime::from_raw(clip.start_raw);
                 let length = crate::BeatTime::from_raw(clip.length_raw);
                 let source_length = crate::BeatTime::from_raw(clip.source_length_raw);
@@ -669,6 +676,7 @@ impl Project {
                     });
                 }
                 compiled_midi.push(MidiClip {
+                    name: clip.name.clone(),
                     id: ClipId(clip.id),
                     start,
                     length,
