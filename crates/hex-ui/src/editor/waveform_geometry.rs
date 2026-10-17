@@ -41,6 +41,7 @@ struct WaveformGeometryKey {
     width: u32,
     height: u32,
     scale: u32,
+    grid: Option<[u64; 5]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,12 +74,13 @@ enum WaveformMappingKey {
 
 pub(super) struct WaveformGeometry {
     pub(super) channels: [WaveformChannelGeometry; 2],
+    columns: usize,
 }
 
 pub(super) struct WaveformChannelGeometry {
     pub(super) centerline: Path<Pixels>,
     pub(super) waveform: Path<Pixels>,
-    #[cfg(all(test, feature = "ui-test-support"))]
+    #[cfg(test)]
     outline: Vec<gpui::Point<Pixels>>,
 }
 
@@ -206,6 +208,29 @@ pub(super) enum WaveformMapping {
     },
 }
 
+/// A sampling lattice shared by all clips in a timeline viewport. Clip edges
+/// select columns from it; they never change its density or horizontal origin.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WaveformGrid {
+    pub(super) start: u64,
+    pub(super) end: u64,
+    pub(super) left: f32,
+    pub(super) width: f32,
+    pub(super) columns: usize,
+}
+
+impl WaveformGrid {
+    fn key(self) -> [u64; 5] {
+        [
+            self.start,
+            self.end,
+            u64::from(self.left.to_bits()),
+            u64::from(self.width.to_bits()),
+            self.columns as u64,
+        ]
+    }
+}
+
 pub(super) struct WaveformGeometryRequest<'a> {
     pub(super) mapping: &'a WaveformMapping,
     pub(super) visible_start: u64,
@@ -213,6 +238,7 @@ pub(super) struct WaveformGeometryRequest<'a> {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) scale: f32,
     pub(super) columns: usize,
+    pub(super) grid: Option<WaveformGrid>,
 }
 
 pub(super) fn cached_waveform_geometry(
@@ -220,13 +246,14 @@ pub(super) fn cached_waveform_geometry(
     waveform: &Arc<CachedWaveform>,
     request: &WaveformGeometryRequest<'_>,
 ) -> Option<Arc<WaveformGeometry>> {
-    let key = waveform_geometry_key(
+    let mut key = waveform_geometry_key(
         request.mapping,
         request.visible_start,
         request.visible_end,
         request.bounds,
         request.scale,
     );
+    key.grid = request.grid.map(WaveformGrid::key);
     if let Some(geometry) = cache
         .try_borrow_mut()
         .ok()
@@ -241,13 +268,14 @@ pub(super) fn cached_waveform_geometry(
         request.visible_end,
         request.bounds,
         request.columns,
+        request.grid,
     )?);
     if let Ok(mut cache) = cache.try_borrow_mut() {
         cache.insert(
             key,
             Arc::clone(waveform),
             Arc::clone(&geometry),
-            request.columns,
+            geometry.columns,
         );
     }
     Some(geometry)
@@ -305,6 +333,7 @@ fn waveform_geometry_key(
         width: f32::from(bounds.size.width).to_bits(),
         height: f32::from(bounds.size.height).to_bits(),
         scale: scale.to_bits(),
+        grid: None,
     }
 }
 
@@ -315,10 +344,40 @@ pub(super) fn prepare_waveform_geometry(
     visible_end: u64,
     bounds: Bounds<Pixels>,
     columns: usize,
+    grid: Option<WaveformGrid>,
 ) -> Option<WaveformGeometry> {
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
-    let frames = visible_end.saturating_sub(visible_start);
+    let grid = grid.unwrap_or(WaveformGrid {
+        start: visible_start,
+        end: visible_end,
+        left: f32::from(bounds.origin.x),
+        width,
+        columns,
+    });
+    let frames = grid.end.checked_sub(grid.start)?;
+    if frames == 0
+        || grid.columns == 0
+        || grid.columns > 4096
+        || !grid.left.is_finite()
+        || !grid.width.is_finite()
+        || grid.width <= 0.0
+        || !height.is_finite()
+        || height <= 0.0
+    {
+        return None;
+    }
+    // Include a neighbor on either side so cropping does not reshape the
+    // silhouette segment at the visible edge. The clip's overflow mask crops it.
+    let first = ((u128::from(visible_start.saturating_sub(grid.start)) * grid.columns as u128)
+        / u128::from(frames))
+    .min(grid.columns as u128) as usize;
+    let last = (u128::from(visible_end.saturating_sub(grid.start)) * grid.columns as u128)
+        .div_ceil(u128::from(frames))
+        .min(grid.columns as u128) as usize;
+    let first = first.saturating_sub(1).min(grid.columns);
+    let last = last.saturating_add(1).min(grid.columns);
+    let columns = last.saturating_sub(first);
     let gain = match mapping {
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
@@ -328,10 +387,13 @@ pub(super) fn prepare_waveform_geometry(
         WaveformMapping::Source { .. } => 1.0,
     };
     let mut stereo_peaks = Vec::with_capacity(columns);
-    for column in 0..columns {
-        let start = visible_start.saturating_add(fraction_u64(frames, column, columns));
-        let end = visible_start
-            .saturating_add(fraction_u64(frames, column + 1, columns))
+    for column in first..last {
+        let start = grid
+            .start
+            .saturating_add(fraction_u64(frames, column, grid.columns));
+        let end = grid
+            .start
+            .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
             WaveformMapping::Stretch(projection) => {
@@ -342,15 +404,17 @@ pub(super) fn prepare_waveform_geometry(
                 timeline_origin,
                 root_offset,
                 ..
-            } => start
-                .checked_sub(*timeline_origin)
-                .and_then(|start| start.checked_add(*root_offset))
-                .zip(
-                    end.checked_sub(*timeline_origin)
-                        .and_then(|end| end.checked_add(*root_offset)),
-                )
-                .and_then(|(start, end)| usize::try_from(start).ok().zip(usize::try_from(end).ok()))
-                .and_then(|(start, end)| aggregate_peaks(waveform, start, end)),
+            } => {
+                // A viewport bin may begin before the cropped clip origin while
+                // still addressing the retained full root. Combine the signed
+                // translation before clamping; subtracting origin first erases
+                // valid edge bins and changes their shape during a left trim.
+                let translation = i128::from(*root_offset) - i128::from(*timeline_origin);
+                let available = waveform.source_frames as i128;
+                let start = (i128::from(start) + translation).clamp(0, available) as usize;
+                let end = (i128::from(end) + translation).clamp(0, available) as usize;
+                aggregate_peaks(waveform, start, end)
+            }
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,
@@ -391,10 +455,10 @@ pub(super) fn prepare_waveform_geometry(
         let mut maxima = Vec::with_capacity(columns);
         let mut minima = Vec::with_capacity(columns);
         for (column, peaks) in stereo_peaks.iter().enumerate() {
-            let x = (column as f32 + 0.5) * width / columns as f32;
+            let x = grid.left + ((first + column) as f32 + 0.5) * grid.width / grid.columns as f32;
             let (top, bottom) = peak_vertical_bounds(peaks[channel], center, amplitude);
-            maxima.push(point(bounds.origin.x + px(x), bounds.origin.y + px(top)));
-            minima.push(point(bounds.origin.x + px(x), bounds.origin.y + px(bottom)));
+            maxima.push(point(px(x), bounds.origin.y + px(top)));
+            minima.push(point(px(x), bounds.origin.y + px(bottom)));
         }
 
         let mut centerline = PathBuilder::stroke(px(0.5));
@@ -435,12 +499,13 @@ pub(super) fn prepare_waveform_geometry(
         channels.push(WaveformChannelGeometry {
             centerline,
             waveform,
-            #[cfg(all(test, feature = "ui-test-support"))]
+            #[cfg(test)]
             outline: maxima.into_iter().chain(minima).collect(),
         });
     }
     Some(WaveformGeometry {
         channels: channels.try_into().ok()?,
+        columns,
     })
 }
 
@@ -508,9 +573,222 @@ mod tests {
                 origin + 96_000,
                 bounds,
                 32,
+                None,
             )
             .expect("waveform geometry"),
         )
+    }
+
+    #[test]
+    fn resize_preserves_interior_stereo_outline_at_fractional_edges_and_column_cap() {
+        let source = waveform();
+        for (width, scale) in [(783.25, 1.0), (783.25, 2.0), (5000.25, 2.0)] {
+            let grid = WaveformGrid {
+                start: 0,
+                end: 96_000,
+                left: 125.25,
+                width,
+                columns: waveform_column_count(width, scale),
+            };
+            for prepared in [false, true] {
+                let draw = |start: u64, end: u64| {
+                    let mapping = if prepared {
+                        // A retained prepared root's offset follows a left crop.
+                        WaveformMapping::Prepared {
+                            timeline_origin: start,
+                            root_offset: start,
+                            gain: hex_project::ClipGain::UNITY,
+                        }
+                    } else {
+                        WaveformMapping::Source { timeline_origin: 0 }
+                    };
+                    let extent = Bounds::new(
+                        point(px(grid.left + start as f32 / 96_000.0 * width), px(34.0)),
+                        size(px((end - start) as f32 / 96_000.0 * width), px(44.0)),
+                    );
+                    prepare_waveform_geometry(
+                        &source,
+                        &mapping,
+                        start,
+                        end,
+                        extent,
+                        waveform_column_count(f32::from(extent.size.width), scale),
+                        Some(grid),
+                    )
+                    .unwrap()
+                };
+                let baseline = draw(4_900, 91_100);
+                // Both trim directions, subpixel motion, crop and newly exposed
+                // audio. Compare the actual outline points fed to PathBuilder.
+                for (start, end) in [
+                    (5_001, 91_100),
+                    (4_900, 90_999),
+                    (6_103, 89_087),
+                    (4_003, 92_017),
+                ] {
+                    let resized = draw(start, end);
+                    for channel in 0..2 {
+                        let interior = |geometry: &WaveformGeometry| {
+                            geometry.channels[channel]
+                                .outline
+                                .iter()
+                                .filter(|p| {
+                                    let x = f32::from(p.x);
+                                    x > grid.left + width * 0.2 && x < grid.left + width * 0.8
+                                })
+                                .map(|p| (f32::from(p.x).to_bits(), f32::from(p.y).to_bits()))
+                                .collect::<Vec<_>>()
+                        };
+                        let expected = interior(&baseline);
+                        assert!(expected.len() > 100);
+                        assert!(
+                            interior(&resized) == expected,
+                            "unchanged outline must not shift: width={width} scale={scale} prepared={prepared} crop={start}..{end}"
+                        );
+                    }
+                    assert!(resized.columns <= 4096);
+                }
+                let revealed = draw(4_003, 92_017);
+                assert!(
+                    revealed.channels[0]
+                        .outline
+                        .iter()
+                        .any(|p| f32::from(p.x) < grid.left + width * 4_900.0 / 96_000.0)
+                );
+                assert!(
+                    revealed.channels[0]
+                        .outline
+                        .iter()
+                        .any(|p| f32::from(p.x) > grid.left + width * 91_100.0 / 96_000.0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_crop_sampling_is_invariant_across_grid_bins_before_clip_origin() {
+        let source = waveform();
+        let grid = WaveformGrid {
+            start: 0,
+            end: 96_000,
+            left: 125.25,
+            width: 783.25,
+            columns: 784,
+        };
+        let extent = Bounds::new(
+            point(px(125.25 + 5_001.0 / 96_000.0 * 783.25), px(34.0)),
+            size(px(700.0), px(44.0)),
+        );
+        let draw = |origin, offset| {
+            prepare_waveform_geometry(
+                &source,
+                &WaveformMapping::Prepared {
+                    timeline_origin: origin,
+                    root_offset: offset,
+                    gain: hex_project::ClipGain::UNITY,
+                },
+                5_001,
+                91_100,
+                extent,
+                700,
+                Some(grid),
+            )
+            .unwrap()
+        };
+        let full_root = draw(0, 0);
+        let retained_crop = draw(5_001, 5_001);
+        for channel in 0..2 {
+            assert!(
+                retained_crop.channels[channel].outline == full_root.channels[channel].outline,
+                "same accepted root/time positions retain edge-bin peaks after a crop"
+            );
+        }
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[test]
+    fn canonical_trim_and_lower_fade_resize_keep_loop_and_one_shot_outline_still() {
+        use hex_project::{Command, Created, Editor, TrimEdge};
+        let source = waveform();
+        let (project, track, _, imported) = super::super::clip_drag_ui_test::audio_project();
+        let asset = project.clip(imported).unwrap().asset();
+        let mut editor = Editor::new(project, 8).unwrap();
+        for looping in [false, true] {
+            let Created::Clip(id) = editor
+                .execute(Command::PlaceClip {
+                    track,
+                    asset,
+                    start: 4_000,
+                    duration: 84_000,
+                    source_offset: 100,
+                    source_length: if looping { 1701 } else { 84_000 },
+                    looping,
+                })
+                .unwrap()
+            else {
+                panic!("placed clip")
+            };
+            let clip = editor.project().clip(id).unwrap();
+            let grid = WaveformGrid {
+                start: 0,
+                end: 96_000,
+                left: 125.25,
+                width: 783.25,
+                columns: 1567,
+            };
+            let draw = |clip: &Clip| {
+                let start = clip.start();
+                let end = start + clip.duration();
+                let extent = Bounds::new(
+                    point(
+                        px(grid.left + start as f32 / 96_000.0 * grid.width),
+                        px(34.0),
+                    ),
+                    size(px(clip.duration() as f32 / 96_000.0 * grid.width), px(44.0)),
+                );
+                prepare_waveform_geometry(
+                    &source,
+                    &WaveformMapping::Clip {
+                        clip: clip.clone(),
+                        timeline_origin: start,
+                    },
+                    start,
+                    end,
+                    extent,
+                    32,
+                    Some(grid),
+                )
+                .unwrap()
+            };
+            let baseline = draw(clip);
+            for lower_fade in [false, true] {
+                for (edge, frame) in [(TrimEdge::Left, 5_001), (TrimEdge::Right, 86_117)] {
+                    let cropped = if lower_fade {
+                        clip.preview_fade_edge_trim(
+                            edge,
+                            frame,
+                            96_000,
+                            editor.project().tempo_map(),
+                        )
+                        .unwrap()
+                    } else {
+                        clip.preview_edge_trim(edge, frame, 96_000).unwrap()
+                    };
+                    let after = draw(&cropped);
+                    for channel in 0..2 {
+                        let interior = |g: &WaveformGeometry| {
+                            g.channels[channel]
+                                .outline
+                                .iter()
+                                .filter(|p| f32::from(p.x) > 300.0 && f32::from(p.x) < 700.0)
+                                .copied()
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(interior(&after), interior(&baseline));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -577,6 +855,7 @@ mod tests {
                     visible_end: 96_000,
                     bounds: bounds(),
                     scale: 2.0,
+                    grid: None,
                     columns: 32,
                 },
             )
@@ -636,6 +915,7 @@ mod tests {
                 visible_end: origin + 96_000,
                 bounds: extent,
                 scale: 2.0,
+                grid: None,
                 columns: 19,
             };
             retained.push((
@@ -654,6 +934,7 @@ mod tests {
                 visible_end: origin + 96_000,
                 bounds: extent,
                 scale: 2.0,
+                grid: None,
                 columns: 19,
             };
             let repeated = cached_waveform_geometry(&cache, &source, &request).unwrap();
@@ -717,6 +998,7 @@ mod tests {
             bounds: extent,
             scale: 2.0,
             columns,
+            grid: None,
         };
         let rounds = 20;
 
@@ -737,6 +1019,7 @@ mod tests {
                 visible_end,
                 extent,
                 columns,
+                None,
             ));
         }
         let uncached_started = Instant::now();
@@ -748,6 +1031,7 @@ mod tests {
                 visible_end,
                 extent,
                 columns,
+                None,
             ));
         }
         let uncached_elapsed = uncached_started.elapsed();
