@@ -3864,3 +3864,11 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   full local CI and optimized/native delivery are coordinator-owned and pending
   until their candidate evidence is recorded. See docs/eq.md for limitations and
   the finite native checklist. Headless evidence is not native/listening acceptance.
+
+
+EQ #2654 final integration evidence: feature source `238bcb858426cc0caa192463d4395578be7030f2`
+includes merged metadata #2657/PR273 and current main. Targeted device, rendered
+UI, engine arrangement/loop/seek/export, identity reservation, legacy-layout and
+actual callback allocation checks pass. The release profile above is recorded
+in `docs/performance.md`; full exact-candidate local CI and stable optimized
+installation remain coordinator work. Native user checklist: `docs/eq.md`.
