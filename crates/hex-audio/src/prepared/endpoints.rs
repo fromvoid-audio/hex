@@ -209,6 +209,11 @@ impl Client {
             e.sample_preview.cancel();
         }
     }
+    pub fn preview_snapshot(&self) -> Option<crate::sample_preview::Snapshot> {
+        self.endpoints
+            .owner_ref()
+            .map(|e| e.sample_preview.snapshot())
+    }
     /// Resident compatibility only; the Verified constructor seals preview before
     /// this client becomes visible and can never place owning PCM here.
     pub fn reclaim_preview(&mut self) {
@@ -264,6 +269,14 @@ impl Client {
             .spectrum_reader
             .as_mut()?
             .try_latest()
+    }
+    /// One fresh, aligned pair; input is absent for legacy output-only captures.
+    pub fn spectrum_latest_pair(&mut self) -> Option<crate::spectrum_worker::PublishedSpectra> {
+        self.endpoints
+            .owner_mut()?
+            .spectrum_reader
+            .as_mut()?
+            .try_latest_pair()
     }
     pub fn spectrum_desired(&self) -> Option<spectrum_target::SpectrumTarget> {
         self.endpoints

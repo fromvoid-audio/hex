@@ -1,4 +1,5 @@
 //! Compact, bounded left-side media and project browser.
+mod audition;
 mod samples;
 
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
@@ -7,6 +8,7 @@ use gpui::{
     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathPromptOptions, Window, canvas, div, prelude::*, px, relative, rgb, uniform_list,
 };
+use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::BrowserPlaces;
 use hex_project::Command;
@@ -22,9 +24,9 @@ use std::{
 
 mod layout;
 
-const DEFAULT_WIDTH: f32 = 480.0;
+pub(super) const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
-const MIN_WORKSPACE_WIDTH: f32 = 560.0;
+pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
@@ -53,7 +55,7 @@ struct PreviewRequest {
     slot: PreviewSlot,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PreviewSlot {
     metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
     error: Rc<RefCell<Option<String>>>,
@@ -170,7 +172,14 @@ pub(super) struct BrowserState {
     playback_generation: u64,
     playback_in_flight: bool,
     playback_pending: Option<PlaybackPreviewRequest>,
+    auto_audition: bool,
+    playback_phase: Phase,
+    playback_output: Option<(u64, u64)>,
+    playback_path: Option<PathBuf>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
+    preview_selected: Option<PreviewKey>,
+    #[cfg(test)]
+    preview_preparations: usize,
     preview_in_flight: Option<PreviewRequest>,
     preview_pending: Option<PreviewRequest>,
     device_catalog: Option<
@@ -196,7 +205,7 @@ impl BrowserState {
             let query = &search.read(cx).content;
             if *query != previous_query {
                 previous_query.clone_from(query);
-                view.browser.reset_results();
+                view.reset_browser_results();
             }
             cx.notify();
         });
@@ -233,9 +242,16 @@ impl BrowserState {
             scroll: gpui::UniformListScrollHandle::new(),
             _search_observer: observer,
             playback_generation: 0,
+            auto_audition: true,
+            playback_phase: Phase::Idle,
+            playback_output: None,
+            playback_path: None,
             playback_in_flight: false,
             playback_pending: None,
             preview_cache: HashMap::new(),
+            preview_selected: None,
+            #[cfg(test)]
+            preview_preparations: 0,
             preview_in_flight: None,
             preview_pending: None,
             device_catalog: None,
@@ -499,7 +515,7 @@ impl EditorView {
 
     fn request_browser_scan(&mut self, directory: PathBuf, cx: &mut Context<Self>) {
         if directory != self.browser.directory {
-            self.browser.reset_results();
+            self.reset_browser_results();
         }
         let start = self.browser.scans.request(directory.clone());
         self.browser.directory = directory.clone();
@@ -510,15 +526,31 @@ impl EditorView {
         }
     }
 
+    fn reset_browser_results(&mut self) {
+        if self.browser.playback_output.is_some() {
+            self.cancel_browser_sample_playback();
+            self.status = "sample preview stopped".into();
+        }
+        self.browser.reset_results();
+    }
+
     pub(super) fn cancel_browser_sample_playback(&mut self) {
         self.browser.playback_generation = self.browser.playback_generation.saturating_add(1);
         self.browser.playback_pending = None;
+        self.browser.playback_phase = Phase::Idle;
+        self.browser.playback_output = None;
+        self.browser.playback_path = None;
         if let Some(audio) = self.audio.as_mut() {
             audio.control.preview_cancel();
         }
     }
 
     fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.browser.playback_output.is_some() {
+            self.cancel_browser_sample_playback();
+        }
+        self.browser.playback_phase = Phase::Unavailable;
+        self.status = "sample preview unavailable".into();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("sample preview is unavailable in verified streaming mode".into());
             return;
@@ -535,6 +567,7 @@ impl EditorView {
             self.error = None;
         }
         self.browser.playback_generation = generation;
+        self.browser.playback_path = Some(path.clone());
         self.browser.playback_pending = None;
         let Some(audio) = self.audio.as_mut() else {
             self.error = Some("sample preview unavailable · no audio output".into());
@@ -543,7 +576,7 @@ impl EditorView {
         let output_generation = match audio.control.preview_request() {
             Ok(token) => token,
             Err(error) => {
-                self.error = Some(error.to_string().into());
+                self.error = Some(format!("sample preview failed · {error}").into());
                 return;
             }
         };
@@ -558,6 +591,9 @@ impl EditorView {
             path,
             sample_rate: audio.sample_rate,
         };
+        self.browser.playback_phase = Phase::Preparing;
+        self.browser.playback_output = Some((output_identity, output_generation));
+        self.status = "sample preview preparing".into();
         if self.browser.playback_in_flight {
             self.browser.playback_pending = Some(request);
         } else {
@@ -604,9 +640,13 @@ impl EditorView {
                             {
                                 view.error = None;
                             }
-                            view.status = "sample preview started".into();
+                            // Callback acknowledgement, not publication, marks playback.
                         }
                         Err(error) => {
+                            audio.control.preview_cancel();
+                            view.browser.playback_output = None;
+                            view.browser.playback_phase = Phase::Unavailable;
+                            view.status = "sample preview failed".into();
                             view.error = Some(format!("sample preview failed · {error}").into())
                         }
                     }
@@ -638,34 +678,93 @@ impl EditorView {
         cx.notify();
     }
 
+    pub(super) fn poll_browser_sample_playback(&mut self) -> bool {
+        let Some((identity, generation)) = self.browser.playback_output else {
+            return false;
+        };
+        let phase = self
+            .audio
+            .as_ref()
+            .filter(|audio| audio.control.output_identity() == Some(identity))
+            .and_then(|audio| audio.control.preview_snapshot())
+            .map_or(Phase::Unavailable, |snapshot| {
+                if snapshot.generation == generation
+                    || (snapshot.generation == 0 && snapshot.phase == Phase::Idle)
+                {
+                    snapshot.phase
+                } else {
+                    Phase::Unavailable
+                }
+            });
+        self.accept_browser_sample_phase(phase)
+    }
+
+    fn accept_browser_sample_phase(&mut self, phase: Phase) -> bool {
+        if self.browser.playback_phase == phase {
+            return false;
+        }
+        self.browser.playback_phase = phase;
+        self.status = match phase {
+            Phase::Idle => "sample preview stopped",
+            Phase::Preparing => "sample preview preparing",
+            Phase::Playing => "sample preview playing",
+            Phase::Finished => "sample preview finished",
+            Phase::Unavailable => "sample preview unavailable",
+        }
+        .into();
+        if matches!(phase, Phase::Finished | Phase::Idle) {
+            self.browser.playback_output = None;
+        } else if phase == Phase::Unavailable {
+            self.cancel_browser_sample_playback();
+            self.browser.playback_phase = Phase::Unavailable;
+            self.error = Some("sample preview unavailable · audio output stopped".into());
+        }
+        true
+    }
+
+    fn browser_selection_audition(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.browser.playback_output.is_some() && self.browser.playback_path != path {
+            self.cancel_browser_sample_playback();
+            self.status = "sample preview stopped".into();
+        }
+        if self.browser.auto_audition
+            && let Some(path) = path
+        {
+            self.play_browser_sample(path, cx);
+        }
+    }
+
     fn browser_preview_cell(&mut self, path: PathBuf, sample_rate: u32) -> PreviewSlot {
         let key = PreviewKey { path, sample_rate };
         if let Some(metadata) = self.browser.preview_cache.get(&key) {
             return metadata.clone();
         }
-        if self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY {
-            let protected = self
-                .browser
-                .preview_in_flight
-                .iter()
-                .chain(self.browser.preview_pending.iter())
-                .map(|request| &request.key);
-            if let Some(evicted) = self
-                .browser
-                .preview_cache
-                .keys()
-                .find(|candidate| !protected.clone().any(|key| key == *candidate))
-                .cloned()
-            {
-                self.browser.preview_cache.remove(&evicted);
-            }
-        }
-        let slot = PreviewSlot {
-            metadata: Rc::new(RefCell::new(None)),
-            error: Rc::new(RefCell::new(None)),
-        };
+        self.evict_browser_preview_slot();
+        let slot = PreviewSlot::default();
         self.browser.preview_cache.insert(key, slot.clone());
         slot
+    }
+
+    fn evict_browser_preview_slot(&mut self) {
+        if self.browser.preview_cache.len() < PREVIEW_CACHE_CAPACITY {
+            return;
+        }
+        let protected = self
+            .browser
+            .preview_in_flight
+            .iter()
+            .chain(self.browser.preview_pending.iter())
+            .map(|request| &request.key)
+            .chain(self.browser.preview_selected.iter());
+        if let Some(evicted) = self
+            .browser
+            .preview_cache
+            .keys()
+            .find(|candidate| !protected.clone().any(|key| key == *candidate))
+            .cloned()
+        {
+            self.browser.preview_cache.remove(&evicted);
+        }
     }
 
     fn request_browser_audio_preview(
@@ -675,7 +774,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Rc<RefCell<Option<Rc<AudioPreview>>>> {
         let slot = self.browser_preview_cell(path.clone(), sample_rate);
-        if slot.metadata.borrow().is_some() {
+        if slot.metadata.borrow().is_some() || slot.error.borrow().is_some() {
             return slot.metadata;
         }
         self.queue_browser_audio_preview(PreviewKey { path, sample_rate }, slot.clone(), cx);
@@ -695,24 +794,8 @@ impl EditorView {
             metadata: drag.metadata.clone(),
             error: drag.metadata_error.clone(),
         };
-        if !self.browser.preview_cache.contains_key(&key)
-            && self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY
-        {
-            let protected = self
-                .browser
-                .preview_in_flight
-                .iter()
-                .chain(self.browser.preview_pending.iter())
-                .map(|request| &request.key);
-            if let Some(evicted) = self
-                .browser
-                .preview_cache
-                .keys()
-                .find(|candidate| !protected.clone().any(|item| item == *candidate))
-                .cloned()
-            {
-                self.browser.preview_cache.remove(&evicted);
-            }
+        if !self.browser.preview_cache.contains_key(&key) {
+            self.evict_browser_preview_slot();
         }
         self.browser.preview_cache.insert(key.clone(), slot.clone());
         *slot.metadata.borrow_mut() = None;
@@ -763,6 +846,10 @@ impl EditorView {
     }
 
     fn start_browser_audio_preview(&mut self, request: PreviewRequest, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.browser.preview_preparations += 1;
+        }
         self.browser.preview_in_flight = Some(request.clone());
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
@@ -828,7 +915,7 @@ impl EditorView {
             let state = self.state.as_ref()?;
             let body = self.arrangement_bounds?;
             let viewport = self.visible_viewport(state.timeline_frames);
-            let timeline_width = body.width - super::tracks::TRACK_HEADER_WIDTH;
+            let timeline_width = body.width - self.track_header_width();
             if !timeline_width.is_finite() || timeline_width <= 0.0 || viewport.length == 0 {
                 return None;
             }
@@ -1070,7 +1157,7 @@ impl EditorView {
         self.browser.open = true;
         self.browser.section = BrowserSection::All;
         self.browser.layout.reveal_all();
-        self.browser.reset_results();
+        self.reset_browser_results();
         self.browser.search.update(cx, |input, cx| {
             input.focus_and_select_all(window, cx);
         });
@@ -1097,6 +1184,7 @@ impl EditorView {
     }
 
     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
+        let previous = (self.browser.results_focused, self.browser.selected_index);
         let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
         self.browser.selected_index = if !self.browser.results_focused || count == 0 {
             0
@@ -1106,6 +1194,14 @@ impl EditorView {
             self.browser.selected_index.saturating_sub(1).min(count - 1)
         };
         self.browser.results_focused = count > 0;
+        if previous != (self.browser.results_focused, self.browser.selected_index) {
+            let path = self
+                .browser_visible_entries(cx)
+                .get(self.browser.selected_index)
+                .filter(|entry| entry.kind == EntryKind::WaveAudio)
+                .map(|entry| entry.path.clone());
+            self.browser_selection_audition(path, cx);
+        }
         self.browser
             .scroll
             .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
@@ -1151,7 +1247,7 @@ impl EditorView {
             .focus_handle()
             .is_focused(window)
         {
-            self.browser.reset_results();
+            self.reset_browser_results();
             self.browser.search.update(cx, |input, cx| {
                 input.clear(cx);
             });
@@ -1195,7 +1291,7 @@ impl EditorView {
                 .scroll
                 .scroll_to_item(index, gpui::ScrollStrategy::Top);
         } else {
-            self.browser.reset_results();
+            self.reset_browser_results();
         }
     }
 
@@ -1708,7 +1804,17 @@ impl EditorView {
                     browser_generation,
                     snap_grid,
                 )| {
-                    let slot = self.browser_preview_cell(path.clone(), sample_rate);
+                    // Rendering a row must not fill/evict the metadata cache.
+                    // Hover/drag admission owns preparation, not composition.
+                    let slot = self
+                        .browser
+                        .preview_cache
+                        .get(&PreviewKey {
+                            path: path.clone(),
+                            sample_rate,
+                        })
+                        .cloned()
+                        .unwrap_or_default();
                     let viewport = self.visible_viewport(timeline_frames);
                     drag::BrowserAudioDrag {
                         project_generation,
@@ -1768,16 +1874,21 @@ impl EditorView {
                     // Keep the editor's focusable ancestor from replacing the
                     // explicit browser focus during this mouse-down's bubble.
                     window.prevent_default();
-                    if click_kind == EntryKind::WaveAudio {
-                        view.play_browser_sample(click_path.clone(), cx);
-                    }
+                    view.browser_selection_audition(
+                        (click_kind == EntryKind::WaveAudio).then(|| click_path.clone()),
+                        cx,
+                    );
                     cx.notify();
                     if event.click_count >= 2 {
                         match click_kind {
                             EntryKind::Directory => {
                                 view.request_browser_scan(click_path.clone(), cx)
                             }
-                            EntryKind::WaveAudio => view.import_browser_audio(click_path.clone()),
+                            EntryKind::WaveAudio => {
+                                // Sample double-click remains selection/audition.
+                                // Import is an explicit Enter or drag/drop action.
+                                cx.stop_propagation();
+                            }
                             EntryKind::Project => view.open_browser_project(click_path.clone(), cx),
                         }
                     }

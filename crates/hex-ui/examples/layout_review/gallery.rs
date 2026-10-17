@@ -296,6 +296,7 @@ impl Fixture {
                         [1.0, 1.0],
                     ],
                     analyzer: None,
+                    input_analyzer: None,
                     nodes: Vec::new(),
                 },
                 theme::device_style(theme::DeviceStyleRole::Display),

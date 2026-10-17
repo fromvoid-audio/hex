@@ -38,6 +38,7 @@ pub(super) struct Panel {
     authored_state: NativeDeviceState,
     selected: Option<NodeId>,
     armed: bool,
+    show_input: bool,
     bank: u8,
     automation: Option<NodeParameter>,
     selected_point: Option<usize>,
@@ -122,6 +123,7 @@ pub(super) fn render_body(
                 authored_state: canonical.clone(),
                 selected: state.nodes.first().map(|n| n.id),
                 armed: false,
+                show_input: true,
                 bank: 0,
                 automation: None,
                 selected_point: None,
@@ -214,6 +216,7 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(automation.is_none());
+            let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_model(
                 model,
                 theme::device_style(theme::DeviceStyleRole::Display),
@@ -287,6 +290,26 @@ pub(super) fn render_body(
         );
     }
     toolbar = toolbar.child(spectrum_toggle(view, cx, device, owner, eq::EQ_TYPE_ID));
+    let show_input = view
+        .device_panel
+        .eq_panels
+        .get(&device)
+        .is_some_and(|panel| panel.show_input);
+    toolbar = toolbar.child(
+        action_button(
+            format!("eq-spectrum-input-{}", device.value()),
+            "input",
+            "show actual pre-eq input spectrum; output stays visible",
+            theme::DeviceActionRole::Normal,
+            show_input,
+        )
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                panel.show_input = !panel.show_input;
+            }
+            cx.notify();
+        })),
+    );
     let armed = view
         .device_panel
         .eq_panels
@@ -791,46 +814,63 @@ fn response_model(
         })
         .collect();
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    let analyzer = view
+    let spectra = view.device_panel.spectrum_result.as_ref().filter(|result| {
+        view.audio
+            .as_ref()
+            .and_then(|audio| audio.control.spectrum_desired())
+            .is_some_and(|target| {
+                target.identity == identity
+                    && target.token == result.output.stamp.target
+                    && target.project_generation == result.output.stamp.generation
+                    && target.sample_rate_hz == result.output.stamp.sample_rate_hz
+                    && result.output.stamp.applied_revision >= target.activation_floor
+            })
+    });
+    let show_input = view
         .device_panel
-        .spectrum_result
-        .as_ref()
-        .filter(|result| {
-            view.audio
-                .as_ref()
-                .and_then(|audio| audio.control.spectrum_desired())
-                .is_some_and(|target| {
-                    target.identity == identity
-                        && target.token == result.stamp.target
-                        && target.project_generation == result.stamp.generation
-                        && target.sample_rate_hz == result.stamp.sample_rate_hz
-                        && result.stamp.applied_revision >= target.activation_floor
-                })
-        })
-        .map(|result| {
-            result
-                .frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .map(|(index, db)| {
-                    let (low, high) =
-                        hex_audio::spectrum::band_bounds_hz(result.frame.sample_rate_hz, index)
-                            .unwrap_or((20.0, 20000.0));
-                    [
-                        (((low * high).sqrt() / 20.0).ln() / (upper / 20.0).ln()).clamp(0.0, 1.0),
-                        ((db + 72.0) / 72.0).clamp(0.0, 1.0),
-                    ]
-                })
-                .collect()
-        });
+        .eq_panels
+        .get(&device)
+        .is_some_and(|panel| panel.show_input);
+    let (analyzer, input_analyzer) = spectrum_layers(spectra, show_input, upper);
     Some(ResponseGraphModel {
         primary,
         secondary,
         analyzer,
+        input_analyzer,
         nodes,
     })
 }
+type SpectrumCurve = Vec<[f32; 2]>;
+
+fn spectrum_layers(
+    spectra: Option<&hex_audio::spectrum_worker::PublishedSpectra>,
+    show_input: bool,
+    upper: f32,
+) -> (Option<SpectrumCurve>, Option<SpectrumCurve>) {
+    let curve = |frame: &hex_audio::spectrum::SpectrumFrame| {
+        frame
+            .bins_dbfs
+            .iter()
+            .enumerate()
+            .map(|(index, db)| {
+                let (low, high) = hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)
+                    .unwrap_or((20.0, 20000.0));
+                [
+                    (((low * high).sqrt() / 20.0).ln() / (upper / 20.0).ln()).clamp(0.0, 1.0),
+                    super::spectrum_display::level(*db),
+                ]
+            })
+            .collect()
+    };
+    (
+        spectra.map(|pair| curve(&pair.output.frame)),
+        spectra
+            .and_then(|pair| pair.input.as_ref())
+            .filter(|_| show_input)
+            .map(curve),
+    )
+}
+
 fn automation_model(
     state: &EqState,
     node: NodeId,
@@ -869,6 +909,7 @@ fn automation_model(
         primary: curve.clone(),
         secondary: curve,
         analyzer: None,
+        input_analyzer: None,
         nodes,
     })
 }
@@ -1328,6 +1369,40 @@ fn handle_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hiding_input_retains_output_and_uses_identical_spectrum_coordinates() {
+        use hex_audio::{
+            spectrum::SpectrumFrame,
+            spectrum_worker::{
+                PublishedSpectra, PublishedSpectrum, SpectrumStamp, SpectrumTargetId,
+            },
+        };
+        let frame = SpectrumFrame {
+            sample_rate_hz: 48_000,
+            bins_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
+        };
+        let pair = PublishedSpectra {
+            input: Some(frame.clone()),
+            output: PublishedSpectrum {
+                stamp: SpectrumStamp {
+                    target: SpectrumTargetId(1),
+                    generation: 2,
+                    sample_rate_hz: 48_000,
+                    applied_revision: 3,
+                },
+                frame,
+                captured_at: std::time::Instant::now(),
+                processed_at: std::time::Instant::now(),
+            },
+        };
+        let shown = spectrum_layers(Some(&pair), true, 20_000.0);
+        assert_eq!(shown.0, shown.1, "equal signals align on the same axes");
+        let hidden = spectrum_layers(Some(&pair), false, 20_000.0);
+        assert_eq!(hidden.0, shown.0, "input visibility cannot hide output");
+        assert!(hidden.1.is_none());
+        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None));
+    }
 
     #[test]
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
