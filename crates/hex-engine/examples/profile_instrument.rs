@@ -141,6 +141,7 @@ fn fixture(workload: Workload) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(workload.instrument_position),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: clip_length,

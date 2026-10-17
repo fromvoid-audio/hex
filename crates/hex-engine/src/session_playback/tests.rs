@@ -1034,6 +1034,7 @@ fn mixed_audio_midi_project(source_start: u64, source_end: u64) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+            name: "clip".into(),
             id: 8,
             start_raw: 0,
             length_raw: 4 << 32,
@@ -1116,6 +1117,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+            name: "clip".into(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id: 15,
@@ -1157,6 +1159,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: 2,
                 start_raw: 0,
                 length_raw: 16 << 32,
@@ -1786,6 +1789,7 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        name: "clip".into(),
         edit: None,
         gain: hex_project::ClipGain::UNITY,
         id: 6,
@@ -1988,6 +1992,7 @@ fn removing_track_keeps_its_unquiescent_arrangement_effect_suffix() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        name: "clip".into(),
         edit: None,
         gain: hex_project::ClipGain::UNITY,
         id: 6,
@@ -3724,6 +3729,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     });
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            name: "clip".into(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id: audio_clip,
@@ -4896,6 +4902,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     });
     source.tracks[0].content = TrackContentSnapshot::Hybrid {
         audio_clips: vec![ClipSnapshot {
+            name: "clip".into(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id: audio_clip,
@@ -6367,6 +6374,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: arrangement_clip,
                 start_raw: 0,
                 length_raw: 16 << 32,
@@ -8341,6 +8349,7 @@ fn reordered_tracks_keep_project_order_and_deleted_arrangement_tail_uses_old_mix
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: 16 << 32,

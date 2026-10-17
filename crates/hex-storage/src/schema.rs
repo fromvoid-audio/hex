@@ -1,4 +1,5 @@
 pub(crate) mod branch_audio;
+pub(crate) mod clip_names;
 pub(crate) mod combined;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
@@ -2027,6 +2028,9 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
+        if header.version == 26 {
+            return clip_names::DocumentV26::decode(bytes);
+        }
         if header.version == 25 {
             return musical_audio::DocumentV25::decode(bytes);
         }
@@ -2241,6 +2245,7 @@ impl DocumentV10 {
                                 clips
                                     .into_iter()
                                     .map(|c| MidiClipSnapshot {
+                                        name: "clip".into(),
                                         id: c.id,
                                         start_raw: c.start_raw,
                                         length_raw: c.length_raw,
@@ -2373,6 +2378,7 @@ impl DocumentV9 {
                             clips
                                 .into_iter()
                                 .map(|c| MidiClipSnapshot {
+                                    name: "clip".into(),
                                     id: c.id,
                                     start_raw: c.start_raw,
                                     length_raw: c.length_raw,
@@ -2474,6 +2480,7 @@ fn midi_v10_from_snapshot(clip: MidiClipSnapshot) -> MidiClipDtoV10 {
 
 fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
     MidiClipSnapshot {
+        name: "clip".into(),
         id: clip.id,
         start_raw: clip.start_raw,
         length_raw: clip.length_raw,
@@ -2654,6 +2661,7 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
         .into_iter()
         .map(|clip| {
             Ok(ClipSnapshot {
+                name: "clip".into(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
@@ -2766,6 +2774,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        name: "clip".into(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
@@ -2816,6 +2825,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                     )
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
+                        name: "clip".into(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
@@ -2857,6 +2867,7 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
             let fade = ClipFade::neutral(clip.duration.max(1))
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
+                name: "clip".into(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: clip.id,

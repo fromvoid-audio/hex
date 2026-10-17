@@ -1,10 +1,13 @@
-## adaptive arranger grid — 17 october 2026
+## clip selection and inline names — #2660 / PR276, 17 october 2026
 
-- Arranger snapping uses one adaptive size with shared painting/snap spacing;
-  the toolbar toggles adaptive/off instead of cycling fixed sizes.
-- Future context-menu size selection: Pulse #2694, Hex 0.1.
-- Native zoom/snap/toggle acceptance remains pending; automated evidence is
-  recorded with the focused PR.
+Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
+and press Command-R to edit its name in place. Enter/blur commit, Escape cancels;
+typing owns editing keys. Canonical RenameClip, history, copy/split preservation,
+strict schema26 names and legacy defaults are implemented. See
+[clip names](docs/clip-names.md) for contracts and native checklist.
+Focused project/storage and rendered rename tests pass; exact final-source local
+CI evidence is retained with PR276. Native macOS visual/input acceptance remains
+separate and unverified. No optimized macOS build is produced on this Linux host.
 
 ## arrangement clip painting — 17 october 2026
 
@@ -3891,6 +3894,10 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
 
+17 October 2026 — split browser visual composition: Pulse #2678 / PR294;
+see docs/browser-layout.md for scope and native review checklist. Full functional
+follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
+Command-F. Tag assignment/filtering, collections and history remain pending.
 
 ## 17 october 2026 — track header hover
 
@@ -3902,3 +3909,11 @@ acceptance remains open: hover selected/unselected headers and nested controls,
 then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
+
+## adaptive arranger grid — 17 october 2026
+
+- Arranger snapping uses one adaptive size with shared painting/snap spacing;
+  the toolbar toggles adaptive/off instead of cycling fixed sizes.
+- Future context-menu size selection: Pulse #2694, Hex 0.1.
+- Native zoom/snap/toggle acceptance remains pending; automated evidence is
+  recorded with the focused PR.
