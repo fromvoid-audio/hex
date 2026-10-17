@@ -71,6 +71,11 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    equal divisions, just major and selected-note snap. Check pitch-space point
    selection, Reach/dice changes and lattice/pair/whole-scale statistics.
 4. Save/load/rename/duplicate among eight local slots using disposable names.
+   Use an empty/disposable slot; never overwrite an occupied user preset to
+   manufacture acceptance. If none is available, leave that write check pending.
+   Save/reopen with a locally pending tuning Change and with a reserved Commit:
+   both must persist the latest value. Closing/quitting an acknowledged but
+   uncommitted preview must prompt; canceling close must preserve the work.
    Import/export FREQS1/2/3 scratch fixtures, including malformed refusal.
    Save/reopen a tuning scratch project and verify working scale/audition,
    independent of slot names. The storage fixtures above verify both schema31
@@ -85,7 +90,9 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    and saw; change level/attack/release and tuning while holding/releasing notes.
    Numeric/text focus must not play notes. Modified key release, deactivation,
    close, Stop and project replacement must leave no stuck note or autorepeat
-   restart. Include a refused held high note, then retune it into the supported
+   restart. Press Stop while reference preparation or publication is pending:
+   the delayed candidate must not restart a held tone. Include a refused held
+   high note, then retune it into the supported
    range without releasing the physical key: it should become audible while
    already sounding voices keep their phase/envelope. Check held/recent reference
    and Arrangement/Session gate highlights.
