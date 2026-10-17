@@ -72,6 +72,9 @@ pub use audio_only_inputs::{
 pub mod native_device_resources;
 #[cfg(feature = "instrument-test-support")]
 #[doc(hidden)]
+pub use mutable_instrument::resource_fixture::MutableResourceHostFixture;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
 pub use shared_analytic::inline_fixture::{
     InlineResourceFixtureConfiguration, InlineResourceHostFixture,
 };

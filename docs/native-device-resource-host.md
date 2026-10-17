@@ -103,10 +103,11 @@ identity, so equal authored state/content cannot substitute another actual bank.
 The actual carried-note path is tested after caller custody is released and a
 candidate reuses the slot; final root destruction is observed on control.
 
-Mutable track runtimes retain the configuration lease and pass it through actual
-controller preflight and processing. History inheritance/retarget checks the
-actual source configuration; tail moves retain that owner. Checkpoint capture/
-restore clones the same scope on control and charges its buffer before cloning.
+Mutable track runtimes retain the immutable configuration and pass its borrowed
+resources through actual controller preflight and processing. History inheritance/
+retarget checks the actual source configuration; tail moves retain that owner.
+Checkpoint capture/restore reserves bounded control aliases of the same immutable
+lease/binding body; no new binding buffer or PCM copy is created.
 Uncertified resource-backed analytic-seed imports refuse. Asset-free hosts still
 construct with None. Shared control preparation still supplies None until its
 resident source plan/all-role admission is integrated; no registry gate is open.
@@ -444,3 +445,13 @@ The existing checkpoint upper bound conservatively reserves nested metadata per
 snapshot; the physical union ledger separately counts its shared allocation once.
 A refused lease-to-configuration conversion returns the unchanged original lease
 for bounded retry. No provider owns PCM, and no process memory cap changes.
+
+
+The instrument-test-support mutable-host fixture exercises the real track wrapper
+with original Mono/Stereo configuration owners after bank retirement. Instrumented
+callbacks cover reset, speculative rollback and partitioned processing with zero
+total/net allocation/free. An independent nonconstant stereo oracle reproduces
+all 64 frames across 17-frame partitions and ends in silence. Deliberately
+committing speculative state fails that oracle; restored rollback passes. This
+fixture uses the unregistered resource ABI conformance provider, not Sampler note
+semantics, a native publication permit or a final reaper-drop receipt.

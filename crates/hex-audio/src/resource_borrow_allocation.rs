@@ -505,8 +505,56 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
         .unwrap()
     };
     let mut effects = [effect(ids[0].value()), effect(ids[1].value())];
+    let mutable = |id| {
+        let state = state
+            .clone()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(id).unwrap(),
+            }])
+            .unwrap();
+        let resources = candidate
+            .prepare_configuration_on_control(&state, 4096)
+            .unwrap();
+        hex_engine::MutableResourceHostFixture::prepare_on_control(&state, 44_100, resources)
+            .unwrap()
+    };
+    let mut mutable_hosts = [mutable(ids[0].value()), mutable(ids[1].value())];
     drop(candidate_lease);
     drop(candidate); // only actual current/retained configuration owners remain
+    let mut mutable_sum = [0.0_f32; 2];
+    let mut mutable_output = [[0.0_f32; 2]; 64];
+    let mut speculative = [[0.0_f32; 2]; 17];
+    let mutable_measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            for (index, host) in mutable_hosts.iter_mut().enumerate() {
+                host.reset();
+                speculative.fill([0.0; 2]);
+                host.process_segment(0, &mut speculative, false).unwrap();
+                mutable_output.fill([0.0; 2]);
+                for (partition, block) in mutable_output.chunks_mut(17).enumerate() {
+                    host.process_segment((partition * 17) as u64, block, true)
+                        .unwrap();
+                }
+                assert_eq!(&mutable_output[..17], &speculative);
+                for actual in mutable_output {
+                    assert_eq!(actual, if index == 0 { [0.25; 2] } else { [0.5, -0.75] });
+                    mutable_sum[0] += actual[0];
+                    mutable_sum[1] += actual[1];
+                }
+            }
+        }
+    });
+    assert_eq!(
+        (
+            mutable_measurement.count_total,
+            mutable_measurement.bytes_total,
+            mutable_measurement.count_current,
+            mutable_measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(mutable_sum, [1536.0, -1024.0]);
     let mut effect_sum = [0.0_f32; 2];
     let mut effect_output = [[1.0_f32; 2]; 64];
     let effect_measurement = allocation_counter::measure(|| {
@@ -576,4 +624,116 @@ impl hex_lattice::PreparedNativeProcessor for ScopedPcmEffect {
     fn create_runtime(&self) -> Box<dyn hex_lattice::NativeProcessorRuntime> {
         Box::new(self.0.clone())
     }
+}
+
+#[test]
+fn actual_mutable_host_replays_nonconstant_pcm_after_speculation_without_callback_allocation() {
+    use hex_engine::native_device_resources::{
+        DeviceResourceBank, DeviceResourceCatalog, OriginalResourceLayout, OriginalResourceSource,
+        ResourceCatalogReservation,
+    };
+    use hex_engine::{AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource};
+    use std::sync::atomic::AtomicBool;
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported constructor; no mutable host ownership proof");
+        return;
+    }
+    let expected: [[f32; 2]; 64] =
+        std::array::from_fn(|i| [i as f32 / 64.0, (63 - i) as f32 / -128.0]);
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(44_100).unwrap(), 8).unwrap();
+    let hex_project::Created::Asset(asset) = editor
+        .execute(hex_project::Command::AddAsset {
+            path: "mutable-ramp.wav".into(),
+            sample_rate: 44_100,
+            frames: 64,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let source = OwnedAudioSource::try_resident(44_100, expected.to_vec())
+        .ok()
+        .unwrap();
+    let inputs = OwnedAudioInputs::try_new(
+        vec![(asset, source)],
+        AudioStorageReservation {
+            allocation_items: 8,
+            handle_obligations: 8,
+            max_prepared_data_bytes: 65_536,
+            max_construction_data_bytes: 65_536,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap()
+    .prepare_input_storage_on_control()
+    .ok()
+    .unwrap();
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &inputs,
+        &[OriginalResourceSource {
+            asset,
+            sample_rate: 44_100,
+            frames: 64,
+            layout: OriginalResourceLayout::Stereo,
+        }],
+        ResourceCatalogReservation {
+            metadata_bytes: 65_536,
+            hash_frames: 64,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let bank = DeviceResourceBank::try_new_on_control(
+        inputs,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let state = NativeDeviceState::new(DeviceTypeId::from_static("test.mutable-ramp"), 1, vec![])
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+    let configuration = bank.prepare_configuration_on_control(&state, 4096).unwrap();
+    let mut host =
+        hex_engine::MutableResourceHostFixture::prepare_on_control(&state, 44_100, configuration)
+            .unwrap();
+    drop(bank); // Only the actual host's retained configuration now owns PCM.
+    let mut output = [[0.0_f32; 2]; 64];
+    let mut speculative = [[0.0_f32; 2]; 17];
+    let mut silence = [[0.0_f32; 2]; 3];
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..16 {
+            host.reset();
+            speculative.fill([0.0; 2]);
+            host.process_segment(0, &mut speculative, false).unwrap();
+            assert_eq!(speculative, expected[..17]);
+            output.fill([0.0; 2]);
+            for (index, block) in output.chunks_mut(17).enumerate() {
+                host.process_segment((index * 17) as u64, block, true)
+                    .unwrap();
+            }
+            assert_eq!(output, expected);
+            silence.fill([0.0; 2]);
+            host.process_segment(64, &mut silence, true).unwrap();
+            assert_eq!(silence, [[0.0; 2]; 3]);
+        }
+    });
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
 }

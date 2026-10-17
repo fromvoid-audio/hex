@@ -12,6 +12,8 @@ use hex_lattice::{
 };
 use hex_project::{BeatTime, ClipId, NoteId, TrackId};
 
+#[cfg(feature = "instrument-test-support")]
+pub(crate) mod resource_fixture;
 #[cfg(test)]
 mod resource_tests;
 
