@@ -1709,7 +1709,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     let (list_before, scroll_before) = editor.read_with(cx, |view, _| {
         (
             view.track_scroll.logical_scroll_top_index(),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     visual.simulate_event(gpui::ScrollWheelEvent {
@@ -1721,7 +1721,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     let (list_after, scroll_after) = editor.read_with(cx, |view, _| {
         (
             view.track_scroll.logical_scroll_top_index(),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     assert_eq!(
@@ -1744,7 +1744,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     visual.simulate_event(gpui::ScrollWheelEvent {
@@ -1757,7 +1757,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     assert_eq!(after_limit_wheel, at_zoom_limit);
@@ -1944,8 +1944,8 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
         (
             view.visible_viewport(state.timeline_frames),
             view.arrangement_pan.is_some(),
-            view.track_scroll.0.borrow().base_handle.offset(),
-            view.track_scroll.0.borrow().base_handle.max_offset(),
+            view.track_scroll.offset(),
+            view.track_scroll.max_offset(),
         )
     });
     let timeline_width = f32::from(body.size.width - px(176.0));
@@ -1969,7 +1969,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
     );
     visual.run_until_parked();
     let bottom_offset = editor.read_with(cx, |view, _| {
-        let handle = view.track_scroll.0.borrow().base_handle.clone();
+        let handle = view.track_scroll.clone();
         (handle.offset().y, handle.max_offset().height)
     });
     assert_eq!(
@@ -1978,9 +1978,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
     );
     visual.simulate_mouse_move(outside, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
-    let top_offset = editor.read_with(cx, |view, _| {
-        view.track_scroll.0.borrow().base_handle.offset().y
-    });
+    let top_offset = editor.read_with(cx, |view, _| view.track_scroll.offset().y);
     assert_eq!(top_offset, px(0.0), "vertical pan clamps at the first row");
     visual.simulate_mouse_up(outside, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
@@ -1988,7 +1986,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
             view.arrangement_pan.is_some(),
         )
     });
@@ -2006,7 +2004,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     assert_eq!(
@@ -2420,6 +2418,38 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
     });
+    // A real second mouse-down with a valid target track must never import.
+    editor.update(visual, |view, _| view.selected_track = Some(track));
+    for auto in [true, false] {
+        editor.update(visual, |view, _| view.browser.auto_audition = auto);
+        let (before, state) = editor.read_with(visual, |view, _| {
+            (
+                view.browser.playback_generation,
+                view.state.clone().unwrap(),
+            )
+        });
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: row.center(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+        editor.read_with(visual, |view, _| {
+            assert_eq!(view.browser.playback_generation, before + u64::from(auto));
+            assert!(
+                view.pending_requests.is_empty(),
+                "double-click cannot enqueue import"
+            );
+            assert!(view.last_enqueued_import_to_track.is_none());
+            assert!(view.last_enqueued_import_to_new_track.is_none());
+            assert!(view.pending_audio_commands.is_empty());
+            assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &state));
+            assert!(view.browser.results_focused);
+        });
+    }
+    editor.update(visual, |view, _| view.browser.auto_audition = true);
     let contexts = visual
         .update_window(handle, |_, window, cx| {
             let view = editor.read(cx);
@@ -2434,7 +2464,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     assert!(contexts.2, "{contexts:?}");
     visual.simulate_keystrokes("right");
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser.playback_generation, 2, "{contexts:?}");
+        assert_eq!(view.browser.playback_generation, 3, "{contexts:?}");
         assert!(view.pending_requests.is_empty());
     });
     // Clicking search restores text focus. Left/right then insert at the
@@ -2445,7 +2475,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     visual.simulate_keystrokes("right l o left right o");
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).content, "loo");
-        assert_eq!(view.browser.playback_generation, 2);
+        assert_eq!(view.browser.playback_generation, 3);
     });
     std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(visual, |view, cx| {
@@ -2459,14 +2489,14 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     visual.simulate_keystrokes("down right up right");
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.selected_index, 0);
-        assert_eq!(view.browser.playback_generation, 4);
+        assert_eq!(view.browser.playback_generation, 5);
         assert!(view.pending_requests.is_empty());
     });
     // Enter keeps the existing explicit import path.
     editor.update(visual, |view, _| view.selected_track = Some(track));
     visual.simulate_keystrokes("enter");
     editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser.playback_generation, 4);
+        assert_eq!(view.browser.playback_generation, 5);
         let (imported_path, imported_track, _, _) = view
             .last_enqueued_import_to_track
             .as_ref()
@@ -3071,4 +3101,102 @@ fn browser_result_reset_cancels_preparing_and_playing_audition(cx: &mut TestAppC
             );
         }
     });
+}
+
+#[gpui::test]
+fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, directory, path) = browser_drag_fixture(cx);
+    for i in 0..40 {
+        std::fs::write(
+            directory.0.join(format!("sample-{i:02}.wav")),
+            mono_pcm_wav(32),
+        )
+        .unwrap();
+    }
+    let metadata = Rc::new(hex_session::service::prepare_audio_preview(&path, 48_000).unwrap());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.apply_sample_catalog(
+            hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
+            cx,
+        );
+        view.browser.results_focused = true;
+        view.browser.selected_index = 0;
+        let slot = view.browser_preview_cell(path.clone(), 48_000);
+        *slot.metadata.borrow_mut() = Some(metadata.clone());
+        // Uniform-list rendering may compose more rows than cache capacity.
+        let entries = view.browser_visible_entries(cx);
+        let cached_before = view.browser.preview_cache.len();
+        for (index, entry) in entries.iter().cloned().enumerate() {
+            let _ = view.browser_row(index, entry, cx);
+        }
+        assert_eq!(
+            view.browser.preview_cache.len(),
+            cached_before,
+            "rendering visible rows cannot mutate the preparation cache"
+        );
+        let cached = view.browser_preview_cell(path.clone(), 48_000);
+        assert!(
+            cached
+                .metadata
+                .borrow()
+                .as_ref()
+                .is_some_and(|value| Rc::ptr_eq(value, &metadata)),
+            "rendering other rows must not evict/reprepare the selected waveform"
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(lane).unwrap();
+    let color = visual.rendered_background(lane);
+    let canonical = editor.read_with(&visual, |view, _| view.state.clone().unwrap());
+    for index in 0..3 {
+        let row = visual
+            .debug_bounds(Box::leak(format!("browser-entry-{index}").into_boxed_str()))
+            .unwrap();
+        visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("browser-audition-waveform").unwrap();
+        let slot = editor.read_with(&visual, |view, cx| {
+            let selected = view.browser_visible_entries(cx)[index].path.clone();
+            view.browser.preview_cache[&super::PreviewKey {
+                path: selected,
+                sample_rate: 48_000,
+            }]
+                .clone()
+        });
+        let preparations = editor.read_with(&visual, |view, _| view.browser.preview_preparations);
+        for _ in 0..4 {
+            visual.simulate_mouse_move(waveform.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(slot.metadata.borrow().is_some());
+                assert_eq!(
+                    view.browser.preview_preparations, preparations,
+                    "hover cannot reprepare"
+                );
+                let key = view.browser.preview_selected.as_ref().unwrap();
+                assert!(Rc::ptr_eq(
+                    &view.browser.preview_cache[key].metadata,
+                    &slot.metadata
+                ));
+                assert!(view.browser.preview_in_flight.is_none());
+                assert!(view.browser.preview_pending.is_none());
+                assert_eq!(view.browser.playback_generation, 0, "hover cannot audition");
+                assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
+                assert!(view.pending_audio_commands.is_empty());
+            });
+            assert_eq!(visual.debug_bounds(lane).unwrap(), bounds);
+            assert_eq!(visual.rendered_background(lane), color);
+            assert_eq!(
+                visual.debug_bounds("browser-audition-waveform").unwrap(),
+                waveform
+            );
+        }
+    }
 }
