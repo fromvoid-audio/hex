@@ -1,7 +1,7 @@
 use super::*;
 use crate::{AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource};
 use hex_lattice_contract::{DeviceAssetReference, DeviceTypeId};
-const PCM: [[f32; 2]; 4] = [[0.25, -0.75], [-0.5, 1.0], [0.75, -0.25], [-1.0, 0.5]];
+pub(crate) const PCM: [[f32; 2]; 4] = [[0.25, -0.75], [-0.5, 1.0], [0.75, -0.25], [-1.0, 0.5]];
 pub(crate) fn ids() -> Vec<AssetId> {
     let mut editor =
         hex_project::Editor::new(hex_project::Project::new(44_100).unwrap(), 8).unwrap();

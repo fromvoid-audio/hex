@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) mod retained;
 pub use retained::{
-    DeviceResourceBank, DeviceResourceBankRefusal, OriginalSourceLease, PreparedDeviceResourceLease,
+    DeviceResourceBank, DeviceResourceBankRefusal, DeviceResourceConfiguration,
+    OriginalSourceLease, PreparedDeviceResourceLease,
 };
 /// Borrowed control preparation only, never a publication permit. Each host
 /// retains its own checked configuration lease before the bank can retire.
@@ -330,3 +331,6 @@ impl<'a> ScopedDeviceResources<'a> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod effect_scope_tests;

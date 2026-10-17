@@ -354,3 +354,111 @@ impl PreparedDeviceResourceLease {
         ledger.vec(bindings)
     }
 }
+
+impl hex_lattice::HostDeviceResourceScope for PreparedDeviceResourceLease {
+    fn same_configuration(&self, other: &Self) -> bool {
+        PreparedDeviceResourceLease::same_configuration(self, other)
+    }
+}
+
+/// Immutable configuration custody shared only by actual host owners. The
+/// existing OwnedShared constructor retains one lease/binding vector; aliases
+/// do not create another PCM store. Control keeps an anchor while the runtime
+/// is active, so union inventory never borrows mutable callback state.
+/// This does not grant publication or permit callback-side owning clone/drop.
+pub struct DeviceResourceConfiguration {
+    lease: OwnedShared<PreparedDeviceResourceLease>,
+    handle: u64,
+}
+impl DeviceResourceBank {
+    pub fn prepare_configuration_on_control(
+        &self,
+        state: &NativeDeviceState,
+        max_metadata_bytes: usize,
+    ) -> Result<DeviceResourceConfiguration, ResourcePreparationError> {
+        let (_, overhead) = OwnedShared::<PreparedDeviceResourceLease>::declared_parts()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        let extra = overhead
+            .checked_add(std::mem::size_of::<DeviceResourceConfiguration>())
+            .ok_or(AudioStorageError::Overflow)?;
+        let lease_budget = max_metadata_bytes
+            .checked_sub(extra)
+            .ok_or(ResourcePreparationError::MetadataCapacity)?;
+        let lease = self.prepare_lease_on_control(state, lease_budget)?;
+        let handle = crate::audio_only_inputs::handle()?;
+        Ok(DeviceResourceConfiguration {
+            lease: OwnedShared::new_owned(lease),
+            handle,
+        })
+    }
+}
+impl DeviceResourceConfiguration {
+    /// Quote this physical alias header before taking another owning handle.
+    /// Keep and retire the resulting handle through the host's existing paths.
+    pub fn try_clone_on_control(
+        &self,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, ResourcePreparationError> {
+        if std::mem::size_of::<Self>() > max_metadata_bytes {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        let handle = crate::audio_only_inputs::handle()?;
+        Ok(Self {
+            lease: self.lease.clone_on_control(),
+            handle,
+        })
+    }
+    pub fn declared_metadata_bytes(&self) -> Result<usize, ResourcePreparationError> {
+        let (_, overhead) = self
+            .lease
+            .parts()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        self.lease
+            .declared_metadata_bytes()?
+            .checked_add(overhead)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .ok_or(AudioStorageError::Overflow.into())
+    }
+    fn visit_storage<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let visited = ledger.contains_shared_storage(self.lease.arc());
+        ledger.shared(
+            self.lease.arc(),
+            self.lease.parts(),
+            crate::audio_storage::Owner::exclusive(self),
+            self.handle,
+            None,
+        )?;
+        if !visited {
+            self.lease.visit_storage(ledger)?;
+        }
+        Ok(())
+    }
+}
+impl DeviceResources for DeviceResourceConfiguration {
+    fn len(&self) -> usize {
+        self.lease.len()
+    }
+    fn get(&self, index: usize) -> Option<DeviceResourceView<'_>> {
+        self.lease.get(index)
+    }
+}
+impl hex_lattice::HostDeviceResourceScope for DeviceResourceConfiguration {
+    fn same_configuration(&self, other: &Self) -> bool {
+        self.lease.same_configuration(&other.lease)
+    }
+}
+impl<'a> AudioRootStorageLedger<'a> {
+    pub fn borrow_device_resource_configuration_on_control(
+        &mut self,
+        configuration: &'a DeviceResourceConfiguration,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            ledger.root(configuration, role)?;
+            configuration.visit_storage(ledger)
+        })
+    }
+}

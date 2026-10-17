@@ -463,8 +463,80 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
         configuration(ids[0].value()),
     )
     .unwrap();
+    let effect = |id| {
+        let state = state
+            .clone()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(id).unwrap(),
+            }])
+            .unwrap();
+        let resources = candidate
+            .prepare_configuration_on_control(&state, 4096)
+            .unwrap();
+        let prepared = resource_pcm::prepare_effect(
+            &state,
+            &DevicePreparationContext {
+                sample_rate: 44_100,
+                tuning: &TuningTable::default(),
+                resources: &resources,
+            },
+            0,
+        )
+        .unwrap();
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![
+            hex_lattice::PreparedScopedRuntimeInstance {
+                resources,
+                instance: hex_lattice::PreparedRuntimeInstance {
+                    meter: std::sync::Arc::new(hex_lattice::DeviceMeter::default()),
+                    owner: hex_lattice::ProcessorChainOwner::Track(1),
+                    device_id: 1,
+                    device_type: state.type_id(),
+                    matrix: hex_lattice::StereoMatrix::identity(),
+                    bypassed: false,
+                    sample_rate: 44_100,
+                    configuration: Some(std::sync::Arc::new(state)),
+                    definition: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+                        std::sync::Arc::new(ScopedPcmEffect(prepared)),
+                    )),
+                },
+            },
+        ])
+        .unwrap()
+    };
+    let mut effects = [effect(ids[0].value()), effect(ids[1].value())];
     drop(candidate_lease);
     drop(candidate); // only actual current/retained configuration owners remain
+    let mut effect_sum = [0.0_f32; 2];
+    let mut effect_output = [[1.0_f32; 2]; 64];
+    let effect_measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            for (index, effect) in effects.iter_mut().enumerate() {
+                effect.reset();
+                effect.begin_block();
+                effect_output.fill([1.0; 2]);
+                for block in effect_output.chunks_mut(17) {
+                    effect.process_block(block);
+                }
+                effect.commit_block();
+                for actual in effect_output {
+                    assert_eq!(actual, if index == 0 { [0.25; 2] } else { [0.5, -0.75] });
+                    effect_sum[0] += actual[0];
+                    effect_sum[1] += actual[1];
+                }
+            }
+        }
+    });
+    assert_eq!(
+        (
+            effect_measurement.count_total,
+            effect_measurement.bytes_total,
+            effect_measurement.count_current,
+            effect_measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(effect_sum, [1536.0, -1024.0]);
     let mut sum = [0.0_f32; 2];
     let measurement = allocation_counter::measure(|| {
         for _ in 0..32 {
@@ -490,4 +562,18 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     assert_eq!(sum, [1536.0, -1024.0]);
     drop(fixture); // actual configuration/root teardown on control
     eprintln!("native bank callback probe: supported-controls=completed");
+}
+
+// Scalar-only factory; actual host entries own the resource configuration.
+struct ScopedPcmEffect(resource_pcm::BorrowedPcmEffect);
+impl hex_lattice::PreparedNativeProcessor for ScopedPcmEffect {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<resource_pcm::BorrowedPcmEffect>()
+    }
+    fn create_runtime(&self) -> Box<dyn hex_lattice::NativeProcessorRuntime> {
+        Box::new(self.0.clone())
+    }
 }

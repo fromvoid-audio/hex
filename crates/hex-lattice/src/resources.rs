@@ -80,6 +80,29 @@ impl DeviceResources for BorrowedDeviceResources<'_> {
 }
 pub static EMPTY_DEVICE_RESOURCES: BorrowedDeviceResources<'static> = BorrowedDeviceResources(&[]);
 
+/// Host-owned configuration scope. Runtime entries retain/move this owner;
+/// providers only receive DeviceResources borrows. Equality authorizes history
+/// compatibility only: it is never storage, publication or retirement proof.
+pub trait HostDeviceResourceScope: DeviceResources + Send {
+    fn same_configuration(&self, other: &Self) -> bool;
+}
+/// Asset-free host scope with no owning storage or per-entry allocation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoDeviceResourceScope;
+impl DeviceResources for NoDeviceResourceScope {
+    fn len(&self) -> usize {
+        0
+    }
+    fn get(&self, _: usize) -> Option<DeviceResourceView<'_>> {
+        None
+    }
+}
+impl HostDeviceResourceScope for NoDeviceResourceScope {
+    fn same_configuration(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// One current preparation boundary. Never construct or validate this on callback.
 /// Tuning is already validated; resource PCM verification occurs on control under
 /// the host's existing work/cancellation/memory limits before root publication.

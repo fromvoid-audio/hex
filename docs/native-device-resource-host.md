@@ -348,3 +348,42 @@ The existing16MiB current,18MiB scoped and36MiB paired bounds are unchanged.
 Only the owning layout fixture's exact byte assertions changed; detached-effect
 and harmonic stack fixtures are untouched. This is not complete effect-host,
 all-role metadata, atomic publication or saturated reaper qualification.
+
+## effect entry resource custody
+
+The existing `NativeRuntimeChain` stores a host scope in each actual runtime
+entry. Its default asset-free scope is zero-sized. A scoped prepared instance
+moves its scope into that entry; history, rollback/commit, active processing,
+clocked bypass and whole-chain tail moves use the same retained configuration.
+Both legacy twins and owned transactions receive only `DeviceResources` borrows.
+No provider factory or coefficient payload owns PCM.
+
+History identity still finds the old stable device even when its resource scope
+changed. The host then refuses inheritance unless the actual scopes match, or
+the old entry is explicitly excluded because its history stays with a tail.
+Configuration matching and parameter retargeting apply the same scope guard.
+Equal authored state and equal provider keys cannot bypass a foreign root.
+A negative test removing the scope guards fails the independent host assertion.
+
+`DeviceResourceConfiguration` retains one immutable lease/binding vector through
+the existing constructor-paired `OwnedShared` family. Bounded control aliases
+retain this same allocation and original PCM. The configuration header, actual
+shared allocation/header, binding capacity and every physical alias join the
+existing ledger. Omitted owners refuse closure. An inventory of actual current,
+candidate, tail, history and pending-reclaim fields accepts exact retained/peak
+bytes, refuses one byte less and refuses exhausted handle rows. This inventory
+is control-only; it never borrows a concurrently active mutable runtime.
+
+Actual host-entry tests cover bank retirement, source slot reuse, partitioned
+PCM, rollback/retry, committed bypass advancement, foreign-scope history refusal
+and whole-chain moves. Both legacy and owned effect transactions are exercised.
+The actual mono/stereo host-entry callback probe checks independent PCM values
+and zero total/net allocations and frees after caller banks retire.
+
+These changes do not extend the selected native constructor's existing Utility
+physical-runtime visitor or its sealed group-transfer origin proof. Production
+Arrangement/Session/keyboard/export preparation, all-role whole-graph metadata,
+atomic publication and saturated reaper/final-drop coverage remain unfinished.
+An immutable alias anchor and selected closed handles alone cannot qualify an
+active runtime or prove retirement. Resource-backed registry processing stays
+closed until that integration is complete; no memory ceiling is raised.
