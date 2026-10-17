@@ -84,6 +84,7 @@ fn assert_empty_session(project: &Project) {
 
 fn remove_gain_lane_fields(document: &mut serde_json::Value) {
     document.as_object_mut().unwrap().remove("audio_clip_state");
+    document.as_object_mut().unwrap().remove("fade_shapes");
     document
         .as_object_mut()
         .unwrap()
@@ -164,7 +165,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -202,6 +203,10 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    schema_sixteen
+        .as_object_mut()
+        .unwrap()
+        .remove("fade_shapes");
     schema_sixteen
         .as_object_mut()
         .unwrap()
@@ -377,7 +382,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -525,6 +530,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
     legacy.as_object_mut().unwrap().remove("track_colors");
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
@@ -571,6 +577,10 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    schema_fifteen
+        .as_object_mut()
+        .unwrap()
+        .remove("fade_shapes");
     schema_fifteen
         .as_object_mut()
         .unwrap()
@@ -623,7 +633,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -685,7 +695,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     assert_eq!(json["tracks"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
@@ -717,11 +727,12 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
 #[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     json["version"] = 13.into();
     json.as_object_mut().unwrap().remove("track_colors");
     json.as_object_mut().unwrap().remove("accented_clips");
     json.as_object_mut().unwrap().remove("audio_clip_state");
+    json.as_object_mut().unwrap().remove("fade_shapes");
     json.as_object_mut().unwrap().remove("audio_event_state");
 
     json.as_object_mut().unwrap().remove("clip_names");
@@ -871,7 +882,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -998,13 +1009,14 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     json["version"] = (json["version"].as_u64().unwrap() + 1).into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
     json.as_object_mut().unwrap().remove("track_colors");
     json.as_object_mut().unwrap().remove("accented_clips");
     json.as_object_mut().unwrap().remove("audio_clip_state");
+    json.as_object_mut().unwrap().remove("fade_shapes");
     json.as_object_mut().unwrap().remove("audio_event_state");
 
     json.as_object_mut().unwrap().remove("clip_names");
@@ -1131,7 +1143,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 28);
+    assert_eq!(current_json["version"], 29);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
@@ -1139,6 +1151,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     json.as_object_mut().unwrap().remove("track_colors");
     json.as_object_mut().unwrap().remove("accented_clips");
     json.as_object_mut().unwrap().remove("audio_clip_state");
+    json.as_object_mut().unwrap().remove("fade_shapes");
     json.as_object_mut().unwrap().remove("audio_event_state");
 
     json.as_object_mut().unwrap().remove("clip_names");
@@ -1191,6 +1204,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    legacy_v2.as_object_mut().unwrap().remove("fade_shapes");
     legacy_v2
         .as_object_mut()
         .unwrap()
@@ -1236,6 +1250,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    legacy_v3.as_object_mut().unwrap().remove("fade_shapes");
     legacy_v3
         .as_object_mut()
         .unwrap()
@@ -1279,6 +1294,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    legacy_v4.as_object_mut().unwrap().remove("fade_shapes");
     legacy_v4
         .as_object_mut()
         .unwrap()
@@ -1320,6 +1336,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    legacy_v5.as_object_mut().unwrap().remove("fade_shapes");
     legacy_v5
         .as_object_mut()
         .unwrap()
@@ -1357,6 +1374,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    legacy_v6.as_object_mut().unwrap().remove("fade_shapes");
     legacy_v6
         .as_object_mut()
         .unwrap()
@@ -1388,6 +1406,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .as_object_mut()
         .unwrap()
         .remove("audio_clip_state");
+    legacy_v7.as_object_mut().unwrap().remove("fade_shapes");
     legacy_v7
         .as_object_mut()
         .unwrap()
@@ -1541,6 +1560,7 @@ fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
     value.as_object_mut().unwrap().remove("track_colors");
     value.as_object_mut().unwrap().remove("accented_clips");
     value.as_object_mut().unwrap().remove("audio_clip_state");
+    value.as_object_mut().unwrap().remove("fade_shapes");
     value.as_object_mut().unwrap().remove("audio_event_state");
 
     value.as_object_mut().unwrap().remove("clip_names");
@@ -1789,6 +1809,7 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
     legacy.as_object_mut().unwrap().remove("track_colors");
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
@@ -1818,6 +1839,7 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
     legacy.as_object_mut().unwrap().remove("track_colors");
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
@@ -1889,7 +1911,7 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 28);
+    assert_eq!(json["version"], 29);
     assert_eq!(decode(&bytes).unwrap(), *editor.project());
     for value in [
         serde_json::json!(-60_001),
@@ -1912,6 +1934,7 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
     legacy.as_object_mut().unwrap().remove("track_colors");
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
 
     legacy.as_object_mut().unwrap().remove("clip_names");

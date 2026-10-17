@@ -229,12 +229,7 @@ pub(crate) fn reset_region(
     if changed_source {
         clip.source_phase = 0;
     }
-    clip.fade = ClipFade::new(
-        duration,
-        0,
-        old.domain.fade.fade_in().min(duration),
-        old.domain.fade.fade_out().min(duration),
-    )?;
+    clip.fade = old.domain.fade.reanchor(duration)?;
     let mut edit = AudioClipEdit::capture(&clip);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.pitch_cents = old.domain.pitch_cents;
@@ -257,6 +252,18 @@ pub(crate) fn set_fades(
     fade_in: u64,
     fade_out: u64,
 ) -> Result<crate::Created, Invalid> {
+    let duration = project
+        .clip(id)
+        .ok_or(Invalid("audio clip is missing"))?
+        .duration;
+    set_fade_envelope(project, id, ClipFade::new(duration, 0, fade_in, fade_out)?)
+}
+
+pub(crate) fn set_fade_envelope(
+    project: &mut crate::Project,
+    id: crate::ClipId,
+    fade: ClipFade,
+) -> Result<crate::Created, Invalid> {
     let mut clip = project
         .clip(id)
         .cloned()
@@ -266,7 +273,6 @@ pub(crate) fn set_fades(
         .clone()
         .ok_or(Invalid("audio domain is missing"))?;
     let edit = Arc::make_mut(&mut owned_edit);
-    let fade = ClipFade::new(clip.duration, 0, fade_in, fade_out)?;
     let domain = Arc::make_mut(&mut edit.domain);
     domain.fade = fade;
     domain.fade_start = edit.view_start;
