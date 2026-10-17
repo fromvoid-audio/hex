@@ -87,51 +87,69 @@ fn assert_stereo_pcm(wav: &[u8], expected: &[i16]) {
 
 #[test]
 fn saved_fade_endpoints_and_recursive_splits_export_identical_pcm() {
-    let fixture = Fixture::new(13);
-    let (mut editor, clip) = fixture.editor(13);
-    editor
-        .execute(Command::SetClipFades {
-            clip,
-            fade_in: 5,
-            fade_out: 5,
-        })
-        .unwrap();
-    let original = fixture.render(editor.project(), "faded");
-    assert_stereo_pcm(
-        &original,
-        &[
-            0, 2048, 4096, 6144, 8192, 8192, 8192, 8192, 8192, 6144, 4096, 2048, 0,
-        ],
-    );
-    let Created::Clip(right) = editor
-        .execute(Command::SplitClip { clip, frame: 2 })
-        .unwrap()
-    else {
-        panic!("split creates right clip");
-    };
-    editor
-        .execute(Command::SplitClip { clip, frame: 1 })
-        .unwrap();
-    let Created::Clip(tail) = editor
-        .execute(Command::SplitClip {
-            clip: right,
-            frame: 10,
-        })
-        .unwrap()
-    else {
-        panic!("split creates tail");
-    };
-    editor
-        .execute(Command::SplitClip {
-            clip: tail,
-            frame: 11,
-        })
-        .unwrap();
-    assert_eq!(fixture.render(editor.project(), "split"), original);
-    assert!(editor.undo());
-    assert_eq!(fixture.render(editor.project(), "undo"), original);
-    assert!(editor.redo());
-    assert_eq!(fixture.render(editor.project(), "redo"), original);
+    for shaped in [false, true] {
+        let fixture = Fixture::new(13);
+        let (mut editor, clip) = fixture.editor(13);
+        if shaped {
+            editor
+                .execute(Command::SetClipFadeEnvelope {
+                    clip,
+                    fade: hex_project::ClipFade::new(13, 0, 5, 5)
+                        .unwrap()
+                        .with_shape(1, 1, 500, -500)
+                        .unwrap(),
+                })
+                .unwrap();
+        } else {
+            editor
+                .execute(Command::SetClipFades {
+                    clip,
+                    fade_in: 5,
+                    fade_out: 5,
+                })
+                .unwrap();
+        }
+        let original = fixture.render(editor.project(), "faded");
+        let expected: &[i16] = if shaped {
+            &[
+                0, 0, 820, 2050, 4099, 8192, 8192, 8192, 7372, 6142, 4093, 0, 0,
+            ]
+        } else {
+            &[
+                0, 2048, 4096, 6144, 8192, 8192, 8192, 8192, 8192, 6144, 4096, 2048, 0,
+            ]
+        };
+        assert_stereo_pcm(&original, expected);
+        let Created::Clip(right) = editor
+            .execute(Command::SplitClip { clip, frame: 2 })
+            .unwrap()
+        else {
+            panic!("split creates right clip");
+        };
+        editor
+            .execute(Command::SplitClip { clip, frame: 1 })
+            .unwrap();
+        let Created::Clip(tail) = editor
+            .execute(Command::SplitClip {
+                clip: right,
+                frame: 10,
+            })
+            .unwrap()
+        else {
+            panic!("split creates tail");
+        };
+        editor
+            .execute(Command::SplitClip {
+                clip: tail,
+                frame: 11,
+            })
+            .unwrap();
+        assert_eq!(fixture.render(editor.project(), "split"), original);
+        assert!(editor.undo());
+        assert_eq!(fixture.render(editor.project(), "undo"), original);
+        assert!(editor.redo());
+        assert_eq!(fixture.render(editor.project(), "redo"), original);
+    }
 }
 
 #[test]

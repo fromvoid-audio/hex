@@ -12,7 +12,7 @@ See [reference inventory](docs/research/reference.md).
 
 The default GPUI desktop now edits a canonical audio project, with background WAV
 import, cached waveforms, compiled CoreAudio playback, track gain/balance/mute/solo
-and master gain, clip nudge/trim/delete/split/duplicate, editable linear fades and source-implemented pointer dragging, timeline zoom/pan/fit,
+and master gain, clip nudge/trim/delete/split/duplicate, editable fades with hold-f endpoint/curve handles and source-implemented pointer dragging, timeline zoom/pan/fit,
 undo/redo, project
 open/save/save-as and background PCM16 WAV export. The older four-track generated
 Arrangement/Session prototype remains available with `--demo`.

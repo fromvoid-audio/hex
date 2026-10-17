@@ -161,36 +161,31 @@ pub struct ProjectedAudioFade<'a> {
 }
 impl ProjectedAudioFade<'_> {
     /// Finite curve knots in the same root-output clock, with explicit rounding.
-    pub fn breakpoints(&self) -> Result<[Option<u64>; 4], Invalid> {
-        let domain = &self.edit.domain;
-        let fade = domain.fade;
-        let positions = [
-            fade.fade_in().checked_sub(1),
-            fade.span()
-                .checked_sub(fade.fade_out())
-                .and_then(|n| n.checked_sub(1)),
-            fade.span().checked_sub(fade.fade_out()),
-            fade.span().checked_sub(1),
-        ];
-        let mut result = [None; 4];
-        for (index, position) in positions.into_iter().enumerate() {
-            let Some(age) = position.and_then(|position| position.checked_sub(fade.offset()))
-            else {
-                continue;
-            };
-            let root = if let Some(projection) = &domain.fade_projection {
-                let first = audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
-                let beat = audio_projection_beat(&projection.tempo, first + i128::from(age))?;
-                let local =
-                    i128::from(projection.local_start_raw) + beat - projection.origin_beat_raw;
-                u64::try_from(audio_projection_frame(self.tempo, self.origin + local)? - self.first)
-                    .ok()
-            } else {
-                domain.fade_start.checked_add(age)
-            };
-            result[index] = root.filter(|frame| *frame < self.length);
+    pub fn breakpoints(&self) -> Result<[Option<u64>; 8], Invalid> {
+        let mut result = [None; 8];
+        for (index, position) in self.edit.domain.fade.breakpoints().into_iter().enumerate() {
+            if let Some(position) = position {
+                result[index] = self.frame_at_domain_position(position)?;
+            }
         }
         Ok(result)
+    }
+    /// Project an authored fade-domain knot into the prepared root output clock.
+    pub fn frame_at_domain_position(&self, position: u64) -> Result<Option<u64>, Invalid> {
+        let domain = &self.edit.domain;
+        let Some(age) = position.checked_sub(domain.fade.offset()) else {
+            return Ok(None);
+        };
+        let root = if let Some(projection) = &domain.fade_projection {
+            let first = audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
+            let beat = audio_projection_beat(&projection.tempo, first + i128::from(age))?;
+            let local = i128::from(projection.local_start_raw) + beat - projection.origin_beat_raw;
+            u64::try_from(audio_projection_frame(self.tempo, self.origin + local)? - self.first)
+                .ok()
+        } else {
+            domain.fade_start.checked_add(age)
+        };
+        Ok(root.filter(|frame| *frame < self.length))
     }
 
     pub fn gain_at(&self, root_output_frame: u64) -> Result<f32, Invalid> {
@@ -198,7 +193,7 @@ impl ProjectedAudioFade<'_> {
             return Err(Invalid("fade sample is outside the prepared root"));
         }
         let domain = &self.edit.domain;
-        if domain.fade.fade_in() == 0 && domain.fade.fade_out() == 0 {
+        if domain.fade.is_neutral() {
             return Ok(1.0);
         }
         let age = if let Some(projection) = &domain.fade_projection {
@@ -492,9 +487,7 @@ impl AudioClipEdit {
         Ok(())
     }
     pub(crate) fn unanchor(&mut self, tempo: &TempoMap) -> Result<(), Invalid> {
-        if self.musical_start.is_some()
-            && (self.domain.fade.fade_in() != 0 || self.domain.fade.fade_out() != 0)
-        {
+        if self.musical_start.is_some() && !self.domain.fade.is_neutral() {
             return Err(Invalid(
                 "musical audio with a retained fade cannot switch to frame anchoring; clear the fade first",
             ));
@@ -513,6 +506,12 @@ impl AudioClipEdit {
             domain.fade.offset(),
             domain.fade.fade_in().min(length),
             domain.fade.fade_out().min(length),
+        )?
+        .with_shape(
+            domain.fade.in_start(),
+            domain.fade.out_end_offset(),
+            domain.fade.in_curve(),
+            domain.fade.out_curve(),
         )?;
         domain.fade_start = 0;
         domain.fade_projection = None;
@@ -547,5 +546,6 @@ impl AudioClipEdit {
 mod commands;
 pub use commands::default_audio_warp;
 pub(crate) use commands::{
-    apply, move_clip, project_clip, reset_region, set_fades, source_policy, trim_view,
+    apply, move_clip, project_clip, reset_region, set_fade_envelope, set_fades, source_policy,
+    trim_view,
 };

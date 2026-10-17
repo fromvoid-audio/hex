@@ -515,7 +515,7 @@ impl Clip {
         }
         fade.validate_segment(duration)
             .map_err(|error| Invalid(error.0))?;
-        let metadata = if fade.fade_in() == 0 && fade.fade_out() == 0 {
+        let metadata = if fade.is_neutral() {
             None
         } else {
             Some(Box::new(ClipMetadata {
@@ -670,7 +670,7 @@ impl Clip {
             metadata: Some(Box::new(ClipMetadata {
                 gain: 1.0,
                 source_phase: 0,
-                fade: (fade.fade_in() != 0 || fade.fade_out() != 0).then_some(fade),
+                fade: (!fade.is_neutral()).then_some(fade),
                 streamed: Some(source),
             })),
         })

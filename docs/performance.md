@@ -2700,3 +2700,40 @@ The original demo profile also ran at64/128/256/512 frames: p50
 These are headless throughput measurements, separate from allocation probes,
 CoreAudio device stress, listening, Windows native validation and Live parity.
 Compensation does not remove causal or physical latency.
+
+
+## Clip fade endpoint and curve evaluation — 17 october 2026
+
+A bounded scalar microbenchmark compares the original `ClipFade::gain_at` at
+`3b41e2ef` with the extended model. Linux x86_64 cloud executor, Intel Xeon
+Platinum 8573C, Rust1.94.0 `rustc -O`, wall-clock `Instant`; no other local build
+ran during measurement, but host scheduling/activity was uncontrolled. Each of
+five retained trials evaluates 5,000,000 black-boxed frame positions modulo48,000,
+with black-boxed metadata and an accumulated f64 checksum. Construction, printing
+and compilation are outside timing. There is no discarded trial or warm-up.
+Both linear variants use span48,000, offset0 and two24,000-frame fades. The curved
+variant adds two1,000-frame silent endpoints and bends750/-750.
+
+| trial | original linear ns/call | extended linear ns/call | extended curved ns/call |
+| --- | ---: | ---: | ---: |
+| 1 | 5.6785 | 4.6868 | 10.9217 |
+| 2 | 14.4631 | 4.8522 | 8.1381 |
+| 3 | 5.9604 | 4.4618 | 6.1812 |
+| 4 | 5.8187 | 6.5176 | 6.6557 |
+| 5 | 5.7709 | 7.4708 | 7.6114 |
+
+Median calls were5.819/4.852/7.611ns. Linear checksums match exactly in every
+trial; this is not a speedup claim given the shared-host variance. The rational
+curve adds finite arithmetic without transcendental calls, allocation or mutable
+ramp state. Neutral compiled clips still bypass per-sample fade multiplication.
+The benchmark measures neither complete playback nor native callback deadlines,
+100-track input/paint latency, listening or measured Ableton parity. The actual
+prepared callback allocation probe also exercises curved fades independently.
+
+Harness, raw CSVs and binaries are retained locally in
+`artifacts/fade-handles/gain_profile.rs`, `gain-profile-idle.csv` and
+`gain_profile`. The harness includes the original model from the cited commit
+and the current model directly, with identical scalar loops. Rebuild using
+`rustc --edition 2024 -O artifacts/fade-handles/gain_profile.rs -o
+artifacts/fade-handles/gain_profile`; the harness path is executor-local.
+Candidate model SHA-256: `1a63e639ddc4eb5c3d7f5469eb7e68ef88d1b45ab6c65480b34081fbfedfd1dc`.

@@ -1,6 +1,7 @@
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
+pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
 mod host_gain;
@@ -2027,6 +2028,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 27 {
+            return fade_shapes::DocumentV27::decode(bytes);
         }
         if header.version == 26 {
             return clip_names::DocumentV26::decode(bytes);

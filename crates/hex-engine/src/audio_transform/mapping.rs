@@ -219,7 +219,7 @@ pub(super) fn apply_fade(
     cancel: &AtomicBool,
 ) -> Result<(), Invalid> {
     let domain = &edit.domain;
-    if domain.fade.fade_in() == 0 && domain.fade.fade_out() == 0 {
+    if domain.fade.is_neutral() {
         return Ok(());
     }
     let projected = edit.projected_fade(tempo)?;

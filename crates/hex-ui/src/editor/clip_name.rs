@@ -7,6 +7,8 @@ use gpui::{
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
 
+pub(super) const CLIP_NAME_HEIGHT: f32 = 16.0;
+
 pub(super) struct NameEdit {
     clip: ClipId,
     generation: u64,
@@ -172,7 +174,7 @@ impl EditorView {
             .top_0()
             .left_0()
             .right_0()
-            .h(px(16.0))
+            .h(px(CLIP_NAME_HEIGHT))
             .px_1()
             .overflow_hidden()
             .text_xs()

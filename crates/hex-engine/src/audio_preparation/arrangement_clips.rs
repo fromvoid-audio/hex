@@ -235,7 +235,7 @@ impl ArrangementClips {
             });
             let index = self.rows.len() - 1;
             let target = &mut self.rows[index];
-            let fade = (s.fade.fade_in() != 0 || s.fade.fade_out() != 0).then_some(s.fade);
+            let fade = (!s.fade.is_neutral()).then_some(s.fade);
             if s.gain != 1.0
                 || fade.is_some()
                 || s.phase != 0
@@ -314,8 +314,7 @@ impl ArrangementClips {
                 || r.metadata.as_ref().is_some_and(|m| {
                     m.streamed.is_some()
                         || m.source_phase != s.phase
-                        || m.fade
-                            != (s.fade.fade_in() != 0 || s.fade.fade_out() != 0).then_some(s.fade)
+                        || m.fade != (!s.fade.is_neutral()).then_some(s.fade)
                 })
                 || s.disposal != Disposal::Unstarted
                 || owner.handle != s.handle
