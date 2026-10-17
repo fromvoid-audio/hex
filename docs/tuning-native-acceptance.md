@@ -19,6 +19,7 @@ Run the Mac-specific package checks from the exact checkout:
 
 ```sh
 cargo test -p hex-mts --locked
+cargo test -p hex-storage --test tuning --test device_assets --locked
 cargo test -p hex-audio --features allocation-probe --test callback_allocations --locked
 CARGO_TARGET_DIR=third_party/mts-esp-master/target cargo test --manifest-path third_party/mts-esp-master/Cargo.toml --locked
 CARGO_TARGET_DIR=third_party/mts-esp-master/target cargo clippy --manifest-path third_party/mts-esp-master/Cargo.toml --all-targets --locked -- -D warnings
@@ -71,8 +72,12 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    selection, Reach/dice changes and lattice/pair/whole-scale statistics.
 4. Save/load/rename/duplicate among eight local slots using disposable names.
    Import/export FREQS1/2/3 scratch fixtures, including malformed refusal.
-   Save/reopen a schema31 project with both tuning and a device asset binding;
-   verify exact working scale/audition and bindings, independent of slot names.
+   Save/reopen a tuning scratch project and verify working scale/audition,
+   independent of slot names. The storage fixtures above verify both schema31
+   data families together. For a reviewed bound-device project fixture, record
+   any unsupported resource-processing refusal separately: the file and current
+   project must stay intact, with no silent removal of bindings or conversion.
+   Resource-backed playback admission remains the native host owner's gate.
 5. With no selected track and project tuning disabled, audition triangle, square
    and saw; change level/attack/release and tuning while holding/releasing notes.
    Numeric/text focus must not play notes. Modified key release, deactivation,
