@@ -65,6 +65,18 @@ The entire Session package passes182 tests; final exact-source CI remains pendin
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
 
+## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+
+The selected Arrangement audio clip now exposes Warp and a direct implemented
+algorithm picker above source controls. Beats defaults to transient preservation;
+existing modes, parameters, canonical maps/history and worker preparation remain.
+Independent PCM, persistence, engine seek/partition, native/export and both
+actual-input UI checks pass. An unused UI-test import was removed after the first
+full run was deliberately interrupted; corrected exact-source full checks remain.
+See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
+No Mac execution or app installation; full sampler/resource work stays open.
+
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
@@ -123,6 +135,19 @@ Existing node and automation-point gestures retain their paths. Targeted rendere
 regressions and source checks are recorded with PR342; full exact-source CI,
 optimized delivery and native interaction/listening remain separate evidence.
 See [eq editing contract](docs/eq.md).
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
+coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4652,3 +4677,18 @@ and shutdown report unavailable. Two fixed atomic acknowledgements add no
 callback allocation, locks or final PCM disposal. Browser layout and transport
 integration remain canonical Pulse2664 / PR280. Source does not establish that
 the reported endless audition is a backend loop; native listening remains open.
+
+
+## compact browser audition — pulse2664 / PR280, 17 october 2026
+
+Replace the overflowing bottom preview column with one 22 px auto/Play-Stop/mini
+waveform row below the existing tags. Default-on automatic audition covers changed
+mouse/Up/Down selection; manual Play/Right remains independent. Real callback
+state distinguishes preparation, audible PCM, completion and unavailable output.
+Stop and selection resets invalidate stale requests without touching project
+transport. Cached neutral combined-channel extrema preserve out-of-phase peaks;
+no per-paint decoding or callback allocation is introduced. Headless regressions
+cover width bounds, focus, toggle/manual semantics, completion, cancellation,
+actual Client-to-callback silence and list-boundary retrigger prevention. Native
+layout/listening and broader historical scrub/playhead wishlist remain open;
+Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
