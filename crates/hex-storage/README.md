@@ -151,9 +151,10 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema25, the complete envelope for device input/output host gains,
+New saves use schema26, extending the schema25 envelope for device input/output host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
-and recording epochs. All playback consumers share the admitted lane model. The
+and recording epochs with independent Arrangement clip names. All playback
+consumers share the admitted lane model. The
 ordinary writer does not select formats based on which fields happen to be empty.
 
 Historical versions18 and19 have two recorded shapes from independent branches.
