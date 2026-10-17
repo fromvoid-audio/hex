@@ -116,3 +116,28 @@ backpressure/environment limits are in `docs/performance.md`. Remaining evidence
 exact-tree local CI, paced/native display throughput, native UI interaction and
 listening, and any physical-device deadline claim. The analyzer is original
 telemetry; no Live algorithm or visual parity is claimed.
+
+## aligned native input/output — Pulse2730
+
+Whole-entry phase-tagged taps add actual input before host input trim and output
+after device processing/output trim. Existing output-only observers remain
+adapters. The callback requires independent exact coverage of both phases for
+one selected stable identity, then publishes one paired packet only after final
+output validation and the existing generation/rate/revision/epoch checks.
+Overlap, incomplete coverage, rollback and validation failure discard both
+signals and consume a sequence. Track/Return, compensated, keyboard-monitor and
+streamed render paths carry the same phase and exact output offsets.
+
+The same 32-packet queue and single worker/reader/reaper carry the pair. Each
+packet adds a fixed input array; the worker adds two boxed input windows and
+reuses FFT scratch sequentially. Native accounting charges the actual enlarged
+queue and all four stereo window boxes. One result carries both transforms
+with common context, capture time, cadence and freshness. Legacy captures have
+no input result; the output reader projects the same newest-result cache.
+
+Flexible EQ defaults input visibility on; hiding input preserves output and
+target activation. Both layers use the same coordinate mapping, with separate
+theme-injected colors behind response and nodes. The explicit **spectrum** action
+enables analysis; an inactive toggle explains an absent live trace. Legacy EQ8
+keeps its output-only display. See [EQ controls](eq.md#live-input-and-output-spectra)
+for the finite native checklist and evidence limits.
