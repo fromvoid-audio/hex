@@ -404,15 +404,17 @@ pub(super) fn prepare_waveform_geometry(
                 timeline_origin,
                 root_offset,
                 ..
-            } => start
-                .checked_sub(*timeline_origin)
-                .and_then(|start| start.checked_add(*root_offset))
-                .zip(
-                    end.checked_sub(*timeline_origin)
-                        .and_then(|end| end.checked_add(*root_offset)),
-                )
-                .and_then(|(start, end)| usize::try_from(start).ok().zip(usize::try_from(end).ok()))
-                .and_then(|(start, end)| aggregate_peaks(waveform, start, end)),
+            } => {
+                // A viewport bin may begin before the cropped clip origin while
+                // still addressing the retained full root. Combine the signed
+                // translation before clamping; subtracting origin first erases
+                // valid edge bins and changes their shape during a left trim.
+                let translation = i128::from(*root_offset) - i128::from(*timeline_origin);
+                let available = waveform.source_frames as i128;
+                let start = (i128::from(start) + translation).clamp(0, available) as usize;
+                let end = (i128::from(end) + translation).clamp(0, available) as usize;
+                aggregate_peaks(waveform, start, end)
+            }
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,
@@ -696,8 +698,8 @@ mod tests {
         let full_root = draw(0, 0);
         let retained_crop = draw(5_001, 5_001);
         for channel in 0..2 {
-            assert_eq!(
-                retained_crop.channels[channel].outline, full_root.channels[channel].outline,
+            assert!(
+                retained_crop.channels[channel].outline == full_root.channels[channel].outline,
                 "same accepted root/time positions retain edge-bin peaks after a crop"
             );
         }
