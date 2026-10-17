@@ -415,8 +415,34 @@ impl EditorView {
                     .unwrap_or_default()
                     .iter()
                     .map(|track| {
+                        let track_id = track.id();
                         div()
                             .id(("session-track", track.id().value()))
+                            .debug_selector(move || format!("session-track-{}", track_id.value()))
+                            .relative()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top_0()
+                                    .h(px(2.0))
+                                    .bg(rgb(theme::element_colors(track.color()).accent)),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener(
+                                    move |view, event: &gpui::MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        view.open_track_color_context_menu(
+                                            event.position,
+                                            track_id,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ),
+                            )
                             .w(px(TRACK_COLUMN_WIDTH))
                             .flex_shrink_0()
                             .px_2()
@@ -932,7 +958,32 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                        .bg(rgb(theme::clip_fill(
+                            track.color(),
+                            clip.flavor(),
+                            selected_cell,
+                        )))
+                        .text_color(rgb(match clip.flavor() {
+                            hex_project::ClipFlavor::Muted => {
+                                theme::element_colors(track.color()).muted_text
+                            }
+                            hex_project::ClipFlavor::Accent => {
+                                theme::element_colors(track.color()).accent_text
+                            }
+                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                view.open_clip_context_menu(
+                                    event.position,
+                                    track_id,
+                                    clip_id,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
                         .child(self.clip_name_label(clip_id, &title))
                         .child(
                             self.session_icon(
@@ -998,7 +1049,32 @@ impl EditorView {
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
+                        .bg(rgb(theme::clip_fill(
+                            track.color(),
+                            clip.flavor(),
+                            selected_cell,
+                        )))
+                        .text_color(rgb(match clip.flavor() {
+                            hex_project::ClipFlavor::Muted => {
+                                theme::element_colors(track.color()).muted_text
+                            }
+                            hex_project::ClipFlavor::Accent => {
+                                theme::element_colors(track.color()).accent_text
+                            }
+                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                view.open_clip_context_menu(
+                                    event.position,
+                                    track_id,
+                                    clip_id,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
                         .child(self.clip_name_label(clip_id, clip.name()))
                         .child(
                             self.session_icon(

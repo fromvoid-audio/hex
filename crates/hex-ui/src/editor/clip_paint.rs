@@ -188,7 +188,11 @@ impl EditorView {
                 .w(relative((end - start) as f32 / viewport.length as f32))
                 .border_1()
                 .border_color(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .bg(rgb(theme::clip_fill(
+                    self.state.as_ref()?.project.track(track)?.color(),
+                    hex_project::ClipFlavor::Muted,
+                    false,
+                )))
                 .opacity(0.3),
         )
     }

@@ -1,3 +1,6 @@
+use crate::output_meter::MeterInput;
+use hex_audio::prepared::Status;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::time::{Duration, Instant};
 
 const DIAGNOSTIC_REFRESH: Duration = Duration::from_secs(1);
@@ -12,6 +15,56 @@ pub(super) struct AudioFrame {
     pub deadline_misses: u64,
     pub callback_us: u64,
     pub render_fault: bool,
+    pub device_fault: bool,
+    pub shutdown_complete: bool,
+}
+
+impl AudioFrame {
+    /// One control-side observation of the actual callback status. Channel peaks
+    /// remain independent relaxed loads, with no age or coherent-pair guarantee.
+    pub(super) fn capture(status: &Status) -> Self {
+        Self {
+            playing: status.playing.load(Relaxed),
+            position: status.position.load(Relaxed),
+            peak_left: status.peak_left.load(Relaxed),
+            peak_right: status.peak_right.load(Relaxed),
+            applied_revision: status.applied_revision.load(Relaxed),
+            deadline_misses: status.deadline_misses.load(Relaxed),
+            callback_us: status.callback_max_ns.load(Relaxed) / 1_000,
+            render_fault: status.render_fault.load(Relaxed),
+            device_fault: status.device_fault.load(Relaxed),
+            shutdown_complete: status.shutdown_complete.load(Acquire),
+        }
+    }
+
+    pub(super) fn meter_input(self) -> MeterInput {
+        if self.shutdown_complete {
+            MeterInput::Offline
+        } else if self.device_fault || self.render_fault {
+            MeterInput::Fault
+        } else if !self.playing {
+            MeterInput::Stopped
+        } else {
+            MeterInput::Last {
+                left: f32::from_bits(self.peak_left),
+                right: f32::from_bits(self.peak_right),
+            }
+        }
+    }
+}
+
+impl super::EditorView {
+    pub(super) fn observe_audio_frame(
+        &mut self,
+        frame: Option<AudioFrame>,
+        visible_change: bool,
+        now: Instant,
+    ) -> bool {
+        let availability_changed = self.output_meter_frame.is_some() != frame.is_some();
+        self.output_meter_frame = frame;
+        self.redraw_gate
+            .should_redraw(visible_change || availability_changed, frame, now)
+    }
 }
 
 #[derive(Default)]
@@ -28,7 +81,7 @@ impl RedrawGate {
         now: Instant,
     ) -> bool {
         let Some(current) = audio else {
-            return visible_change;
+            return self.rendered.take().is_some() || visible_change;
         };
         let previous = self.rendered;
         let mut changed = visible_change;
@@ -36,7 +89,9 @@ impl RedrawGate {
             changed |= current.playing != previous.playing
                 || current.applied_revision != previous.applied_revision
                 || current.deadline_misses != previous.deadline_misses
-                || current.render_fault != previous.render_fault;
+                || current.render_fault != previous.render_fault
+                || current.device_fault != previous.device_fault
+                || current.shutdown_complete != previous.shutdown_complete;
             changed |= current.position != previous.position;
             if current.playing {
                 changed |= current.peak_left != previous.peak_left
@@ -74,6 +129,8 @@ mod tests {
             deadline_misses: 0,
             callback_us: 10,
             render_fault: false,
+            device_fault: false,
+            shutdown_complete: false,
         }
     }
 
@@ -157,5 +214,78 @@ mod tests {
             Some(latest),
             start + DIAGNOSTIC_REFRESH + Duration::from_millis(16)
         ));
+    }
+}
+
+#[cfg(test)]
+mod meter_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn output_meter_capture_preserves_actual_status_bits_and_unknown_age() {
+        let status = Status::default();
+        status.playing.store(true, Relaxed);
+        for (left, right, text) in [
+            (0.0, 0.000_001, "last l -inf r <-60 dbfs"),
+            (0.001, 0.1, "last l -60.0 r -20.0 dbfs"),
+            (1.0, 2.0, "last l 0.0 r +6.0! dbfs"),
+            (-1.0, f32::INFINITY, "last l invalid r invalid dbfs"),
+            (f32::NAN, 0.5, "last l invalid r -6.0 dbfs"),
+        ] {
+            status.peak_left.store(left.to_bits(), Relaxed);
+            status.peak_right.store(right.to_bits(), Relaxed);
+            let snapshot = AudioFrame::capture(&status);
+            assert_eq!(snapshot.peak_left, left.to_bits());
+            assert_eq!(snapshot.peak_right, right.to_bits());
+            assert_eq!(crate::output_meter::readout(snapshot.meter_input()), text);
+            assert!(
+                crate::output_meter::description(snapshot.meter_input()).contains("age unknown")
+            );
+            // A producer update cannot silently alter an already cached frame.
+            status.peak_right.store(0, Relaxed);
+            assert_eq!(crate::output_meter::readout(snapshot.meter_input()), text);
+        }
+    }
+
+    #[test]
+    fn output_meter_stop_fault_shutdown_and_redraw_do_not_invent_freshness() {
+        let status = Status::default();
+        let start = Instant::now();
+        let mut gate = RedrawGate::default();
+        let stopped = AudioFrame::capture(&status);
+        assert_eq!(stopped.meter_input(), MeterInput::Stopped);
+        gate.should_redraw(false, Some(stopped), start);
+        status.playing.store(true, Relaxed);
+        status.peak_left.store(2.0_f32.to_bits(), Relaxed);
+        let overload = AudioFrame::capture(&status);
+        assert!(gate.should_redraw(false, Some(overload), start));
+        assert!(!gate.should_redraw(false, Some(overload), start + DIAGNOSTIC_REFRESH * 10));
+        assert_eq!(
+            crate::output_meter::readout(overload.meter_input()),
+            "last l +6.0! r -inf dbfs"
+        );
+        status.peak_left.store(0, Relaxed);
+        let quiet = AudioFrame::capture(&status);
+        assert!(gate.should_redraw(false, Some(quiet), start));
+        assert_eq!(
+            crate::output_meter::readout(quiet.meter_input()),
+            "last l -inf r -inf dbfs"
+        );
+        for fault in [&status.device_fault, &status.render_fault] {
+            fault.store(true, Relaxed);
+            let failed = AudioFrame::capture(&status);
+            assert_eq!(failed.meter_input(), MeterInput::Fault);
+            assert!(gate.should_redraw(false, Some(failed), start));
+            fault.store(false, Relaxed);
+            assert!(gate.should_redraw(false, Some(AudioFrame::capture(&status)), start));
+        }
+        status
+            .shutdown_complete
+            .store(true, std::sync::atomic::Ordering::Release);
+        let offline = AudioFrame::capture(&status);
+        assert_eq!(offline.meter_input(), MeterInput::Offline);
+        assert!(gate.should_redraw(false, Some(offline), start));
+        assert!(gate.should_redraw(false, None, start));
+        assert!(!gate.should_redraw(false, None, start));
     }
 }

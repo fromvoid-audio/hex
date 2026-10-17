@@ -21,9 +21,11 @@ pub(crate) fn audio_to_midi(project: &mut Project, id: ClipId) -> Result<Created
         )?;
         let length = beat_length(start, end)?;
         let name = clip.name.clone();
+        let flavor = clip.flavor;
         project.tracks[track].content.audio_clips.remove(index);
         project.tracks[track].content.midi_clips.push(MidiClip {
             name,
+            flavor,
             id,
             start,
             length,
@@ -48,6 +50,7 @@ pub(crate) fn audio_to_midi(project: &mut Project, id: ClipId) -> Result<Created
         .frame_to_beat(clip.source_end - clip.source_start)?;
     let length = beat_length(BeatTime::ZERO, length)?;
     project.session.cells[cell].content = SessionCellContent::Midi(SessionMidiClip {
+        flavor: clip.flavor,
         id,
         name: clip.name.clone(),
         source: Arc::new(MidiSource::defaults(length)),
@@ -90,6 +93,7 @@ pub(crate) fn midi_to_audio(
         let original = project.tracks[track].content.midi_clips.remove(index);
         project.tracks[track].content.audio_clips.push(Clip {
             name: original.name,
+            flavor: original.flavor,
             id,
             asset,
             start,
@@ -117,6 +121,7 @@ pub(crate) fn midi_to_audio(
         return Err(Invalid("midi clip no longer exists"));
     };
     cell.content = SessionCellContent::Audio(SessionAudioClip {
+        flavor: clip.flavor,
         id,
         name: clip.name.clone(),
         asset,

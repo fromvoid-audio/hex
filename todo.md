@@ -1,17 +1,12 @@
-## clip grab headers and editable bodies — pulse2695, 17 october 2026
+## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
 
-- Arrangement audio/MIDI clips use a shaded upper-third grab header and open-hand
-  cursor; clicking the header selects the clip and dragging moves/copies it.
-- Lower bodies share empty-lane point/range selection and double-click-hold MIDI
-  clip painting. Visible edge trims and existing time-area move priority remain.
-- Focused rendered input regression covers both clip kinds, body selection,
-  paint preview/release, canonical placement and Undo. Native macOS acceptance
-  remains user-owned: header hover/move/copy, body selection/paint and edge trim.
-  Validation results and the focused PR are retained with Pulse2695.
-- PR review regressions cover one-click header selection during pending work or
-  another clip's rename, and visible body input across obscured audio/MIDI edges.
-  Header selection stays independent of drag admission; hit routing follows
-  reverse paint order. Both reproducers fail before the repair and pass after.
+Ten shared theme colors replace custom per-clip colors. Track-header menus choose
+one identity, inherited by Arrangement/Session audio and MIDI clips; clip menus
+switch muted/accent flavor. Canonical history, schema27 persistence and explicit
+legacy defaults are source implemented; copy/split/trim/conversion retain flavor.
+Project/storage tests, context-menu/cache repaint tests and source guards pass.
+Exact full local-CI evidence is recorded with the PR; native acceptance is separate.
+Native macOS acceptance is pending. See [element colors](docs/element-colors.md).
 
 ## browser outward tag editor and resizable picker — 17 october 2026
 
@@ -57,6 +52,21 @@ undo/redo; they pass after reproducing the prior leftward limitation. The user
 confirmed rightward painting works. Native leftward/reversal acceptance remains
 pending. See [clip painting](docs/clip-paint.md)
 for scope and the finite native checklist.
+
+## clip grab headers and editable bodies — pulse2695, 17 october 2026
+
+- Arrangement audio/MIDI clips use a shaded upper-third grab header and open-hand
+  cursor; clicking the header selects the clip and dragging moves/copies it.
+- Lower bodies share empty-lane point/range selection and double-click-hold MIDI
+  clip painting. Visible edge trims and existing time-area move priority remain.
+- Focused rendered input regression covers both clip kinds, body selection,
+  paint preview/release, canonical placement and Undo. Native macOS acceptance
+  remains user-owned: header hover/move/copy, body selection/paint and edge trim.
+  Validation results and the focused PR are retained with Pulse2695.
+- PR review regressions cover one-click header selection during pending work or
+  another clip's rename, and visible body input across obscured audio/MIDI edges.
+  Header selection stays independent of drag admission; hit routing follows
+  reverse paint order. Both reproducers fail before the repair and pass after.
 
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
 
@@ -1560,6 +1570,110 @@ remain separate from time editing and DSP.
 
 Publication license, release distribution and additional platforms remain separate
 future decisions. No release or broad compatibility claim is implied by this list.
+
+## dense UI and accessibility — issue29 / PR188 evidence
+
+Historical source checkpoints below retain their original verification and native
+acceptance boundaries. Pulse owns the current issue status.
+
+## dense controls and accessibility integration — #29 / PR188, 16 october 2026
+
+Integrated current main into the canonical branch while preserving its current
+schema25, input/output gain, keyboard, streamed-demand and capture contracts.
+Windowed device cards/rows, focus ownership, output-meter source snapshots and
+the excluded GPUI accessibility boundary remain separate from audio behavior.
+Whole-device snapshot gestures now pin their rows; a focused regression checks
+that active rows remain mounted. Input- and output-gain controls retain their
+identity across scrolling; existing Track/Return regressions failed before
+that reconciler repair and now pass. Windowed bodies use the shared widget surface
+with a single content inset, checked scroll extent and a source-guard negative
+control against replacing that surface. Current source checks are retained in
+the PR; exact Mac compilation, the three AppKit lifecycle tests and actual
+AX/VoiceOver/input/paint acceptance remain required. No native acceptance claim.
+
+## accessibility/cache composition — #29 / PR188, 16 october 2026
+
+After merging the independent cache optimization PR264, integrated main5607b14c
+into the accessibility candidate. Cached views now retain both current-draw
+epoch invalidation and invalid-accessibility-snapshot recovery. Reconstructed
+the combined GPUI delta against the exact verified original archive; applying
+the patch reproduces every recorded source hash. The rendered cached AX recovery
+regression passes; final full combined CI is retained with PR188. Actual Mac
+compilation, three AppKit tests and native accessibility acceptance remain open.
+
+## 17 October 2026 — issue29 macOS accessibility verification
+
+Continued canonical PR188 locally. The AppKit backend compiles; the three original
+native accessibility tests and a new real-object selector regression pass with
+Hex's macos-blade features. The regression fails before correcting the SDK boolean
+getter selectors and passes afterward, covering enabled/focused updates and hidden
+revoked elements. External GPUI diff/provenance remain tied to the verified0.2.2
+archive; no Hex unsafe boundary or renderer changes. See docs/native-accessibility.md.
+Exact-final full local CI and optimized stable-path delivery are recorded on
+PR188/Pulse29. Real Inspector/VoiceOver, close/veto, popup choices and input/paint
+acceptance remain unverified; this entry does not claim whole-ticket completion.
+
+## current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `ebb55d08`, preserving the streaming constructor/status contracts,
+Vector global panel and state-aware owned descriptors alongside retained windowed
+controls and accessibility admission. Hidden-row reconciliation compares owned
+descriptors and retires changed ranges plus pending values under unchanged IDs;
+the Track/Return/instrument regressions now cover that case. Both prior histories
+remain below.
+
+The combined MIDI/menu and248px meter layout initially collapsed the status
+message at880x540. A50px message minimum preserves its space while bounded status
+fields shrink; the existing menu regression now checks stable message/revision
+bounds. All40 focused row/window/accessibility/meter/header/navigation/algorithm/
+project-replacement/controller tests pass, as do UI test compilation, formatting,
+architecture, UI-style and device-composition guards. Exact integrated-source full
+local CI, commit, merge and optimized delivery remain separate primary work;
+these source/scene checks do not establish native acceptance.
+
+## second current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `f0ef237d` after candidate `37b7832e`, preserving clip conversion,
+Arrangement clip painting, track-header hover and source-case batch errors beside
+PR188's window-aware retained controls and accessibility/cache epochs. The new
+conversion selection helper and window-bearing detail-view signature coexist;
+paint previews remain outside cached content and retain live composition.
+
+All56 focused clip-paint/detail/cache/error/project-replacement/accessibility/
+row/window/meter/controller tests pass. UI test compilation, architecture, style,
+device-layout, formatting and diff checks pass. No additional behavior repair was
+needed. Prior exact-source CI remains historical; the combined candidate still
+requires its own commit and full local CI before merge. Optimized delivery and
+native acceptance remain separate evidence.
+
+## browser/name accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `2fa584cf` after candidate `4c0bcbc3`, preserving PR294's split
+browser and PR276's schema26/inline clip names alongside PR188. Auto-merges retain
+name-draft reconciliation, keyboard ownership and cache bypass during editing;
+status minima, meter snapshots, accessibility guards and source-case error surfaces
+remain intact. Both todo histories are preserved. No additional repair was needed.
+
+All21 targeted browser geometry/resize/search, clip-name, controller-layout,
+editor-meter, accessibility, clip-cache and error-display tests pass. UI test
+compilation, architecture/style/device-layout guards, formatting and diff checks
+pass. Prior full CI is historical; exact combined-source full CI and any merge or
+optimized delivery remain primary work. These checks do not establish native
+visual/input acceptance.
+
+## fourth current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `153cc4df` after candidate `bb817c72`, preserving browser picker/
+editor sizing, bidirectional clip painting, held-clip intersection accents and
+adaptive snapping alongside the retained accessibility/cache implementation.
+No runtime repair was needed. All six earlier PR188 evidence entries are retained
+here near the original dense-UI checklist; current main's remaining history,
+including its trailing entries, stays intact.
+
+All11 focused browser sizing, cache geometry, clip-paint, drop-intersection and
+adaptive-toggle tests pass. UI test compilation, architecture/style/device-layout
+guards, formatting and diff checks pass. Exact combined-source full CI, commit,
+merge and optimized delivery remain primary work; native acceptance is separate.
 
 ## storage recovery and retained CI evidence
 

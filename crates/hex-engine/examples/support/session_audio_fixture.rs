@@ -71,6 +71,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         };
         let arrangement_duration = 16_384;
         snapshot_tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -85,6 +86,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: arrangement_clip,
@@ -103,6 +105,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_A,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                flavor: hex_project::ClipFlavor::default(),
                 gain: hex_project::ClipGain::UNITY,
                 id: scene_a_clip,
                 name: format!("one shot a {index:03}"),
@@ -115,6 +118,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             track: track_id,
             scene: SCENE_B,
             content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                flavor: hex_project::ClipFlavor::default(),
                 gain: hex_project::ClipGain::UNITY,
                 id: scene_b_clip,
                 name: format!("one shot b {index:03}"),
