@@ -1,0 +1,15 @@
+{
+  "ref": "refs/heads/evidence/hex-installer-2788-a60adf63-v1",
+  "archive": "hex-installer-2788-a60adf63-evidence-v1.tar.gz",
+  "bytes": 406550,
+  "sha256": "da171e461c3f3af46b3be6cf99c9a2ac29f92dafce082914fcc935423a7cc476",
+  "payload_count": 70,
+  "member_count": 71,
+  "source": "f4d631248c2ae02db31f07c8a7e882e80a550913",
+  "original_candidate": "a60adf63d771772965d4d5511cda1e6fe453ec4e",
+  "included_heads": 46,
+  "cloud_original_sha256": "d8ca4d4cb2bbbf178bd8d4644e72f78bf821844e0a9e833605e4175f412c55b1",
+  "native_original_sha256": "024fde063cd9255d6d1d80d3935b583e6bf12d84200a8f41680503eb58f9cd28",
+  "native_raw_bytes_in_archive": false,
+  "warning": "Evidence only, never checkout/build/merge ref"
+}
