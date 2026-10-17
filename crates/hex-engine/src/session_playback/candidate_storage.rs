@@ -6,6 +6,19 @@ use crate::{
     audio_storage::{Location, Owner},
 };
 impl SessionPlayback {
+    pub(crate) fn visit_mutable_resource_owners_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        for runtime in self.mutable_instruments.iter().flatten() {
+            runtime.visit_resource_owner_on_control(ledger, role)?;
+        }
+        for tail in self.tail_mutable_instruments.iter().flatten() {
+            tail.runtime.visit_resource_owner_on_control(ledger, role)?;
+        }
+        Ok(())
+    }
     pub(crate) fn visit_inline_resource_owners_on_control<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
@@ -194,4 +207,17 @@ fn chain_storage<'a>(
         )?;
     }
     Ok(())
+}
+
+impl<'a> AudioRootStorageLedger<'a> {
+    /// Selected mutable configuration fields of the actual control-held kernel,
+    /// including retained tails. Runtime payloads, surrounding vector capacity,
+    /// active callback custody and whole-graph admission are outside this view.
+    pub fn borrow_session_mutable_resource_owners_on_control(
+        &mut self,
+        session: &'a SessionPlayback,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| session.visit_mutable_resource_owners_on_control(ledger, role))
+    }
 }

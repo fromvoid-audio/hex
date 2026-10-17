@@ -211,7 +211,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
-    resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
@@ -228,6 +228,17 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn visit_resource_owner_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        if let Some(configuration) = &self.resources {
+            ledger.root(configuration, role)?;
+            configuration.visit_storage(ledger)?;
+        }
+        Ok(())
+    }
     pub(crate) fn resource_scope_storage_bytes(&self) -> Option<usize> {
         match &self.resources {
             Some(lease) => lease
@@ -240,7 +251,7 @@ impl MutableInstrumentTrackRuntime {
     pub(crate) fn clone_resources_on_control(
         &self,
     ) -> Result<
-        Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+        Option<crate::native_device_resources::DeviceResourceConfiguration>,
         MutableInstrumentRuntimeError,
     > {
         self.resources
@@ -292,6 +303,35 @@ impl MutableInstrumentTrackRuntime {
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
         resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    ) -> Result<Self, MutableInstrumentRuntimeError> {
+        let resources = resources
+            .map(|lease| {
+                let (_, overhead) = crate::owned_shared::OwnedShared::<
+                    crate::native_device_resources::PreparedDeviceResourceLease,
+                >::declared_parts()
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+                let bytes = lease
+                    .declared_metadata_bytes()
+                    .map_err(|_| MutableInstrumentRuntimeError::Budget)?
+                    .checked_add(overhead)
+                    .and_then(|bytes| {
+                        bytes.checked_add(std::mem::size_of::<
+                            crate::native_device_resources::DeviceResourceConfiguration,
+                        >())
+                    })
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?;
+                lease
+                    .try_into_configuration_on_control(bytes)
+                    .map_err(|_| MutableInstrumentRuntimeError::Budget)
+            })
+            .transpose()?;
+        Self::new_with_configuration(prepared, sample_rate, resources)
+    }
+
+    pub(crate) fn new_with_configuration(
+        prepared: &dyn PreparedMutableInstrumentRuntime,
+        sample_rate: u32,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let max_tail_frames =
             max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;

@@ -56,8 +56,45 @@ fn actual_mutable_host_keeps_its_scope_through_rollback_checkpoint_and_tail_move
     .unwrap();
     let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000, Some(lease)).unwrap();
     let resources = runtime.clone_resources_on_control().unwrap();
-    let mut snapshot = MutableInstrumentTrackRuntime::new(&factory, 48_000, resources).unwrap();
+    let mut snapshot =
+        MutableInstrumentTrackRuntime::new_with_configuration(&factory, 48_000, resources).unwrap();
     assert!(snapshot.can_inherit_from(&runtime));
+    // These are the actual runtime fields, not detached test aliases. Missing
+    // either owner must leave the shared configuration body unclosed.
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 32,
+            root_rows: 8,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        })
+        .unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&source, crate::AudioStorageRole::Caller)
+        .unwrap();
+    ledger
+        .borrow_device_resource_configuration_on_control(
+            runtime.resources.as_ref().unwrap(),
+            crate::AudioStorageRole::Current,
+        )
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    let before = ledger.summary().unwrap();
+    ledger
+        .borrow_device_resource_configuration_on_control(
+            snapshot.resources.as_ref().unwrap(),
+            crate::AudioStorageRole::Archive,
+        )
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    let after = ledger.summary().unwrap();
+    assert_eq!(after.data_allocations, before.data_allocations);
+    assert_eq!(
+        after.data_bytes - before.data_bytes,
+        std::mem::size_of::<crate::native_device_resources::DeviceResourceConfiguration>()
+    );
+    drop(ledger);
     let track = track();
     let mut onsets = MutableOnsetBuffer::default();
     let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);

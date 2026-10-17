@@ -192,8 +192,9 @@ impl MutableRuntimeCheckpointStore {
         let resources = source
             .clone_resources_on_control()
             .map_err(map_runtime_error)?;
-        let mut snapshot = MutableInstrumentTrackRuntime::new(factory, sample_rate, resources)
-            .map_err(map_runtime_error)?;
+        let mut snapshot =
+            MutableInstrumentTrackRuntime::new_with_configuration(factory, sample_rate, resources)
+                .map_err(map_runtime_error)?;
         snapshot.inherit_from(source).map_err(map_runtime_error)?;
 
         self.entries[slot_index] = Some(Entry {
@@ -279,8 +280,9 @@ impl MutableRuntimeCheckpointStore {
             .runtime
             .clone_resources_on_control()
             .map_err(map_runtime_error)?;
-        let mut candidate = MutableInstrumentTrackRuntime::new(factory, sample_rate, resources)
-            .map_err(map_runtime_error)?;
+        let mut candidate =
+            MutableInstrumentTrackRuntime::new_with_configuration(factory, sample_rate, resources)
+                .map_err(map_runtime_error)?;
         candidate
             .inherit_from(&entry.runtime)
             .map_err(map_runtime_error)?;
@@ -326,5 +328,25 @@ fn map_runtime_error(error: MutableInstrumentRuntimeError) -> MutableRuntimeChec
             MutableRuntimeCheckpointError::CheckpointBudgetExceeded
         }
         _ => MutableRuntimeCheckpointError::RuntimeIncompatible,
+    }
+}
+
+impl<'a> crate::AudioRootStorageLedger<'a> {
+    /// Selected actual checkpoint configuration handles only. The in-memory
+    /// store must be held on control; this does not inventory its runtime
+    /// payloads, revision, enclosing slots or authorize graph publication.
+    pub fn borrow_mutable_checkpoint_resource_owners_on_control(
+        &mut self,
+        store: &'a MutableRuntimeCheckpointStore,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.mutate(|ledger| {
+            for entry in store.entries.iter().flatten() {
+                entry
+                    .runtime
+                    .visit_resource_owner_on_control(ledger, role)?;
+            }
+            Ok(())
+        })
     }
 }

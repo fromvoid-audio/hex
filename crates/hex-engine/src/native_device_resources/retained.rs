@@ -299,35 +299,6 @@ impl OriginalSourceLease {
     }
 }
 impl PreparedDeviceResourceLease {
-    pub(crate) fn try_clone_on_control(
-        &self,
-        max_metadata_bytes: usize,
-    ) -> Result<Self, ResourcePreparationError> {
-        if quoted_bytes::<ScopeBinding>(self.scope.bindings.len(), std::mem::size_of::<Self>())?
-            > max_metadata_bytes
-        {
-            return Err(ResourcePreparationError::MetadataCapacity);
-        }
-        let mut bindings = Vec::new();
-        bindings
-            .try_reserve_exact(self.scope.bindings.len())
-            .map_err(|_| AudioStorageError::Allocation)?;
-        if quoted_bytes::<ScopeBinding>(bindings.capacity(), std::mem::size_of::<Self>())?
-            > max_metadata_bytes
-        {
-            return Err(ResourcePreparationError::MetadataCapacity);
-        }
-        bindings.extend_from_slice(&self.scope.bindings);
-        let handle = crate::audio_only_inputs::handle()?;
-        Ok(Self {
-            root: self.root.clone_on_control(),
-            scope: DeviceResourceScope {
-                catalog: self.scope.catalog,
-                bindings,
-            },
-            handle,
-        })
-    }
     pub(crate) fn same_configuration(&self, other: &Self) -> bool {
         self.root.catalog.id == other.root.catalog.id && self.scope.bindings == other.scope.bindings
     }
@@ -411,11 +382,9 @@ impl DeviceResourceBank {
             .checked_sub(extra)
             .ok_or(ResourcePreparationError::MetadataCapacity)?;
         let lease = self.prepare_lease_on_control(state, lease_budget)?;
-        let handle = crate::audio_only_inputs::handle()?;
-        Ok(DeviceResourceConfiguration {
-            lease: OwnedShared::new_owned(lease),
-            handle,
-        })
+        lease
+            .try_into_configuration_on_control(max_metadata_bytes)
+            .map_err(|refusal| refusal.reason)
     }
 }
 impl DeviceResourceConfiguration {
@@ -445,7 +414,7 @@ impl DeviceResourceConfiguration {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
             .ok_or(AudioStorageError::Overflow.into())
     }
-    fn visit_storage<'a>(
+    pub(crate) fn visit_storage<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
@@ -497,5 +466,48 @@ impl<'a> AudioRootStorageLedger<'a> {
             ledger.root(configuration, role)?;
             configuration.visit_storage(ledger)
         })
+    }
+}
+
+/// A refused immutable-anchor construction returns the identical original lease.
+pub struct ResourceConfigurationRefusal {
+    pub reason: ResourcePreparationError,
+    pub lease: PreparedDeviceResourceLease,
+}
+impl PreparedDeviceResourceLease {
+    pub fn try_into_configuration_on_control(
+        self,
+        max_metadata_bytes: usize,
+    ) -> Result<DeviceResourceConfiguration, ResourceConfigurationRefusal> {
+        let result = (|| {
+            let (_, overhead) = OwnedShared::<PreparedDeviceResourceLease>::declared_parts()
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            let quote = self
+                .declared_metadata_bytes()?
+                .checked_add(overhead)
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<DeviceResourceConfiguration>())
+                })
+                .ok_or(AudioStorageError::Overflow)?;
+            if quote > max_metadata_bytes {
+                return Err(ResourcePreparationError::MetadataCapacity);
+            }
+            crate::audio_only_inputs::handle().map_err(ResourcePreparationError::from)
+        })();
+        match result {
+            Ok(handle) => Ok(DeviceResourceConfiguration {
+                lease: OwnedShared::new_owned(self),
+                handle,
+            }),
+            Err(reason) => Err(ResourceConfigurationRefusal {
+                reason,
+                lease: self,
+            }),
+        }
+    }
+}
+impl DeviceResourceConfiguration {
+    pub(crate) fn same_configuration(&self, other: &Self) -> bool {
+        self.lease.same_configuration(&other.lease)
     }
 }

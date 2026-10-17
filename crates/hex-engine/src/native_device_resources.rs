@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) mod retained;
 pub use retained::{
     DeviceResourceBank, DeviceResourceBankRefusal, DeviceResourceConfiguration,
-    OriginalSourceLease, PreparedDeviceResourceLease,
+    OriginalSourceLease, PreparedDeviceResourceLease, ResourceConfigurationRefusal,
 };
 /// Borrowed control preparation only, never a publication permit. Each host
 /// retains its own checked configuration lease before the bank can retire.

@@ -424,11 +424,23 @@ whole graph known, permit concurrent active-runtime borrowing, prove saturated
 reaper retirement or open registry processing. Enclosing graph visitors can
 reuse the contents visitor without charging embedded owner headers twice.
 
-Actual owner handle receipt storage doubles a retained slot from8to16bytes on
-the measured64-bit source. Current release/span storage remains16,601,096bytes;
-scoped storage is17,256,456bytes and the256-owner table handle/index/header
-charge is9,304bytes. Fixed16/18/36MiB and context payload caps remain unchanged.
+Actual owner handle receipt storage doubles a retained slot from 8 to 16 bytes on
+the measured 64-bit source. Current release/span storage remains 16,601,096 bytes;
+scoped storage is 17,256,456 bytes and the 256-owner table handle/index/header
+charge is 9,304 bytes. Fixed 16/18/36 MiB and context payload caps remain unchanged.
 Only the matching source layout model/header assertions changed; no harmonic
 stack fixture or behavioral assertion was weakened. Whole-host resource
 preparation, atomic publication and actual reaper/final-drop qualification
 remain in progress under389, before usable sampler2679 and full goal3.
+
+Mutable runtime configuration checkpoint: actual track owners, control-captured
+checkpoints and moved tails retain bounded aliases of the existing immutable
+`DeviceResourceConfiguration` body. Checkpoint capture/restore no longer allocates
+another binding vector. Selected Session and checkpoint-store inventories visit
+these actual fields; every alias must be present for closure. This view excludes
+runtime payloads, enclosing containers, revision metadata and active callback
+custody. Shared-body closure alone cannot authorize publication or retirement.
+The existing checkpoint upper bound conservatively reserves nested metadata per
+snapshot; the physical union ledger separately counts its shared allocation once.
+A refused lease-to-configuration conversion returns the unchanged original lease
+for bounded retry. No provider owns PCM, and no process memory cap changes.

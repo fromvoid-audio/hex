@@ -508,3 +508,41 @@ fn closed_scope_checks_actual_slots_and_rate_before_runtime_construction() {
     .unwrap();
     assert_eq!(resources.get(0).unwrap().sample_rate, 44_100);
 }
+
+#[test]
+fn refused_configuration_anchor_returns_the_identical_lease_for_exact_budget_retry() {
+    let Some((owner, ids)) = owner() else { return };
+    let state = tests::state(ids[0]);
+    let lease = owner.prepare_lease_on_control(&state, 4096).unwrap();
+    let before = lease.get(0).unwrap();
+    let identity = before.identity;
+    let pointer = match before.pcm {
+        DeviceResourcePcm::Mono(samples) => samples.as_ptr() as usize,
+        DeviceResourcePcm::Stereo(frames) => frames.as_ptr() as usize,
+    };
+    let (_, overhead) =
+        crate::owned_shared::OwnedShared::<PreparedDeviceResourceLease>::declared_parts().unwrap();
+    let exact = lease.declared_metadata_bytes().unwrap()
+        + overhead
+        + std::mem::size_of::<DeviceResourceConfiguration>();
+    let refused = lease
+        .try_into_configuration_on_control(exact - 1)
+        .err()
+        .unwrap();
+    assert_eq!(refused.reason, ResourcePreparationError::MetadataCapacity);
+    let view = refused.lease.get(0).unwrap();
+    assert_eq!(view.identity, identity);
+    let returned_pointer = match view.pcm {
+        DeviceResourcePcm::Mono(samples) => samples.as_ptr() as usize,
+        DeviceResourcePcm::Stereo(frames) => frames.as_ptr() as usize,
+    };
+    assert_eq!(pointer, returned_pointer);
+    let config = refused
+        .lease
+        .try_into_configuration_on_control(exact)
+        .ok()
+        .unwrap();
+    assert_eq!(config.declared_metadata_bytes().unwrap(), exact);
+    drop(owner);
+    assert_eq!(config.get(0).unwrap().pcm.frame(0), Some([0.25, -0.75]));
+}

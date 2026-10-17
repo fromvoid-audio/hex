@@ -11271,3 +11271,122 @@ mod mutable_long_tail_tests;
 
 #[path = "stream_action_tests.rs"]
 mod stream_action_tests;
+
+#[test]
+fn actual_mutable_session_tail_and_checkpoint_inventory_requires_all_configuration_handles() {
+    use crate::native_device_resources::{
+        DeviceResourceBank, DeviceResourceCatalog, tests as fixtures,
+    };
+    let ids = fixtures::ids();
+    let Some(inputs) = fixtures::bank(&ids) else {
+        return;
+    };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &inputs,
+        &fixtures::specs(&ids),
+        fixtures::limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let bank = DeviceResourceBank::try_new_on_control(
+        inputs,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let factory = revision
+        .session()
+        .mutable_instrument_factory(track)
+        .unwrap();
+    let lease = bank
+        .prepare_lease_on_control(&fixtures::state(ids[0]), 4096)
+        .unwrap();
+    // The existing feedback fixture supplies checkpoint/history behavior. The
+    // borrowed-PCM mutable fixture separately checks actual DSP samples. Here
+    // configuration handles live in the real Session/store fields throughout.
+    playback.mutable_instruments[0] =
+        Some(MutableInstrumentTrackRuntime::new(factory, 48_000, Some(lease)).unwrap());
+    let resources = playback.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .clone_resources_on_control()
+        .unwrap();
+    playback.tail_mutable_instruments[0] = Some(MutableInstrumentTail {
+        track_id: track,
+        runtime: MutableInstrumentTrackRuntime::new_with_configuration(factory, 48_000, resources)
+            .unwrap(),
+    });
+    let mut checkpoints = MutableRuntimeCheckpointStore::new();
+    checkpoints.capture_track(&playback, track).unwrap();
+    let reservation = crate::AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 32,
+        root_rows: 16,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let inventory = |reservation| {
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+        ledger.borrow_device_resource_bank_on_control(&bank, crate::AudioStorageRole::Caller)?;
+        ledger.borrow_session_mutable_resource_owners_on_control(
+            &playback,
+            crate::AudioStorageRole::Current,
+        )?;
+        assert!(ledger.validate_closed_shared_handles().is_err());
+        let before = ledger.summary()?;
+        ledger.borrow_mutable_checkpoint_resource_owners_on_control(
+            &checkpoints,
+            crate::AudioStorageRole::Archive,
+        )?;
+        ledger.validate_closed_shared_handles()?;
+        let after = ledger.summary()?;
+        assert_eq!(after.data_allocations, before.data_allocations);
+        assert_eq!(
+            after.data_bytes - before.data_bytes,
+            std::mem::size_of::<crate::native_device_resources::DeviceResourceConfiguration>()
+        );
+        Ok::<_, crate::AudioStorageError>(after)
+    };
+    let summary = inventory(reservation).unwrap();
+    assert_eq!(
+        inventory(crate::AudioStorageLedgerReservation {
+            max_retained_bytes: summary.retained_bytes,
+            max_construction_peak_bytes: summary.construction_peak_bytes,
+            ..reservation
+        })
+        .unwrap(),
+        summary
+    );
+    assert!(
+        inventory(crate::AudioStorageLedgerReservation {
+            max_retained_bytes: summary.retained_bytes - 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    assert!(
+        inventory(crate::AudioStorageLedgerReservation {
+            max_construction_peak_bytes: summary.construction_peak_bytes - 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    checkpoints.restore_track(&mut playback, track).unwrap();
+    checkpoints.clear();
+    drop(bank);
+    // The real current/tail handles still close after archive and source-bank
+    // control retirement. This does not claim final callback/reaper admission.
+    let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_session_mutable_resource_owners_on_control(
+            &playback,
+            crate::AudioStorageRole::Current,
+        )
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+}
