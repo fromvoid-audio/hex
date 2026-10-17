@@ -7,17 +7,18 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-tuning': set(),
     'hex-dsp': set(),
     'hex-midi': set(),
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
-    'hex-project': {'hex-lattice-contract'},
-    'hex-lattice': {'hex-lattice-contract', 'hex-dsp'},
+    'hex-project': {'hex-lattice-contract', 'hex-tuning'},
+    'hex-lattice': {'hex-lattice-contract', 'hex-dsp', 'hex-tuning'},
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
-    'hex-storage': {'hex-project', 'hex-lattice-contract'},
+    'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning'},
     'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
@@ -38,10 +39,12 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    'hex-engine': {'hex-tuning'},
+    'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
     'hex-desktop': {'hex-project'},
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
-    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning'},
+    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},

@@ -456,6 +456,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
@@ -477,6 +478,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -493,6 +495,47 @@ impl Project {
             meter_map: MeterMap::common_time(),
         })
     }
+    /// Project-saved tuning and audition settings; no local library identity.
+    pub fn tuning(&self) -> hex_tuning::ProjectTuning {
+        self.tuning
+    }
+
+    /// Compare every canonical field except project tuning without cloning metadata.
+    /// Used by prepared tuning publications; it does not authorize playback itself.
+    pub fn same_except_tuning(&self, other: &Self) -> bool {
+        let Self {
+            tuning: _,
+            routing,
+            audio_feeds,
+            midi_routes,
+            import_provenance,
+            sample_rate,
+            next_id,
+            assets,
+            tracks,
+            returns,
+            session,
+            loop_region,
+            master_gain,
+            tempo_map,
+            meter_map,
+        } = self;
+        routing == &other.routing
+            && audio_feeds == &other.audio_feeds
+            && midi_routes == &other.midi_routes
+            && import_provenance == &other.import_provenance
+            && sample_rate == &other.sample_rate
+            && next_id == &other.next_id
+            && assets == &other.assets
+            && tracks == &other.tracks
+            && returns == &other.returns
+            && session == &other.session
+            && loop_region == &other.loop_region
+            && master_gain == &other.master_gain
+            && tempo_map == &other.tempo_map
+            && meter_map == &other.meter_map
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }

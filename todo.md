@@ -17,6 +17,43 @@ independent PCM oracle at all four documented rates. Runtime code, features,
 dependencies and admission limits are unchanged. Full final-source CI remains
 pending; retained failure/success logs are separate from native acceptance.
 
+## project tuning runtime continuation — #2740 / PR351, 17 october 2026
+
+Cloud takeover repairs the invalid Operator event-preflight fixture and stale
+sampler/table footprint accounting without increasing scoped memory ceilings.
+Ordinary worker edits invalidate tuning-family inheritance while audible keyboard
+cancellation remains at publication; a prepared/refused candidate cannot silence
+the installed lease. Focused native DSP/engine/Session, non-octave mapping,
+Operator PCM16 export and actual callback total/net-zero allocation checks pass.
+The optional combined feature/all-target matrix still exposes existing2722/PR338;
+required scoped Clippy passes. Release copy-cost evidence and full exact-source
+local CI remain pending at this checkpoint. See
+[runtime contract](docs/project-tuning-runtime.md). Full native editor/audition,
+MTS, coordinated current combined schema and Mac/user acceptance remain required
+goal4 work; no complete tuning delivery or merge is claimed.
+
+Full workspace verification exposed a real neutral-path regression in the paused
+runtime: a table inside every Operator configuration grew legacy feedback/LFO
+twins beyond their8KiB contract. The repair keeps small configurations free of
+tables/heap owners and passes an optional borrowed table to note preparation;
+only the already-wide custom mutable factory/runtime retains that fixed data.
+Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
+are restored, without raising limits or adding callback table construction.
+All313 device tests, packing proof and volume/history proof pass; renewed full
+workspace/final CI remains required. Earlier failed runner evidence is retained.
+## combined current project format — #2739 / PR350, 17 october 2026
+
+After asset PR297 landed, cloud5 integrates both active capabilities in one
+schema31: required complete tuning and device-asset manifest for every project,
+including empty/default values. Prior alpha30 refuses explicitly without
+conversion, rewriting or deletion. The manifest is a reusable bounded current
+payload, not a historical30 dispatch reader. Existing older readers stay intact;
+legacy writers continue to refuse data loss. Combined non-octave tuning/assets,
+Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
+covered by the owning storage fixtures. All storage/project/tuning tests and
+strict affected all-target Clippy pass; final complete integrated checks remain
+required. No historical30 reader or automatic user-file conversion was added.
+
 ## device asset state storage proof — pulse2681 / PR297, 17 october 2026
 
 Integrated full checks exposed five stale Operator storage-size/boundary proofs
@@ -4448,6 +4485,19 @@ wrong-signer rejection, receipt/resource tamper rejection and legacy compatibili
 No app installation, privacy-setting changes or native permission-persistence
 acceptance is established by these fixtures; full candidate CI and delivery remain
 with the PR coordinator.
+
+## native project tuning / freqs — pulse2739–2742, 17 october 2026
+
+Goal4 retains the complete user-requested native Freqs editor, project-saved scale,
+project-wide native playback and MTS-ESP integration. Reference source and the
+finite feature checklist are pinned in [project tuning](docs/project-tuning.md).
+The first focused prerequisite (#2739/PR350) adds safe validated scale/analysis,
+portable Freqs codec, canonical undoable project/audition data and strict schema30
+with neutral legacy defaults. Enabled tuned playback refuses at Arrangement and
+Session admission until #2740 replaces that guard with verified pitch integration.
+Editor/library/audition (#2741) and desktop MTS publication (#2742) remain open;
+this prerequisite provides no native tuning feature or user-test build by itself.
+Targeted and exact final local validation results are retained on the canonical PR.
 
 ## 17 October 2026 — W06 host binding extraction in progress
 

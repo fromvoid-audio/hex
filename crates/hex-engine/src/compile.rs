@@ -285,6 +285,8 @@ fn compile_project_inner<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: &crate::audio_transform::AudioTransformPreparation,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    // #2740 supplies the pitch-aware runtime. Refuse until then rather than
+    // accepting a saved tuned project and silently playing equal temperament.
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
@@ -345,7 +347,11 @@ fn compile_project_inner<'a>(
             .instrument()
             .map(|slot| {
                 instrument_registry
-                    .prepare_instrument(slot.state(), snapshot.sample_rate())
+                    .prepare_instrument_with_tuning(
+                        slot.state(),
+                        snapshot.sample_rate(),
+                        shared_contexts.tuning(),
+                    )
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
@@ -531,6 +537,7 @@ fn compile_project_inner<'a>(
             .with_track_id(track.id())
             .with_midi_source_index((source_index != track_index).then_some(source_index))
             .with_instrument_config(track.instrument())
+            .with_tuning_identity(shared_contexts.tuning_identity())
             .with_instrument_latency(instrument_latency, instrument_runtime_latency)
             .with_mutable_instrument(mutable_instrument, mutable_looping_source)
             .with_sends(sends)

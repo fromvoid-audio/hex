@@ -344,6 +344,46 @@ impl Playback {
         track: hex_project::TrackId,
         input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
     ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard_impl(project, track, input, None)
+    }
+    /// Reuse a checked tuning-only family and its exact physical lease. The
+    /// caller prepares that family through PreparedRevision::prepare_tuning_from.
+    pub fn prepare_computer_keyboard_for_tuning(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        hint: &crate::computer_keyboard::ComputerKeyboardTuningHint,
+    ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard_impl(project, track, input, Some(hint))
+    }
+    /// Controller-only publication retains the same checked lease promotion
+    /// hint after a tuned Operator has returned to neutral through Undo.
+    pub fn prepare_computer_keyboard_for_controller_activation_with_tuning_hint(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        hint: &crate::computer_keyboard::ComputerKeyboardTuningHint,
+    ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard_for_tuning(project, track, input, hint)
+    }
+    pub fn computer_keyboard_tuning_hint(
+        &self,
+    ) -> Option<crate::computer_keyboard::ComputerKeyboardTuningHint> {
+        self.session_runtime
+            .as_ref()?
+            .computer_keyboard
+            .as_ref()?
+            .tuning_hint()
+    }
+    fn prepare_computer_keyboard_impl(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        hint: Option<&crate::computer_keyboard::ComputerKeyboardTuningHint>,
+    ) -> Result<(), Invalid> {
         let canonical = project
             .tracks()
             .iter()
@@ -371,9 +411,26 @@ impl Playback {
                 "computer keyboard monitoring is unavailable with positive latency devices",
             ));
         }
-        let candidate = Box::new(crate::computer_keyboard::ComputerKeyboardRuntime::prepare(
-            project, track, input,
-        )?);
+        let family = self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid(
+                "computer keyboard requires prepared revision provenance",
+            ))?
+            .tuning_family();
+        if self.project.shared_contexts().tuning()
+            != &project.tuning().table().map_err(|e| Invalid(e.0))?
+        {
+            return Err(Invalid("computer keyboard tuning does not match playback"));
+        }
+        let mut candidate = Box::new(if let Some(hint) = hint {
+            crate::computer_keyboard::ComputerKeyboardRuntime::prepare_for_tuning(
+                project, track, input, family, hint,
+            )?
+        } else {
+            crate::computer_keyboard::ComputerKeyboardRuntime::prepare(project, track, input)?
+        });
+        candidate.set_tuning_family(family);
         let previous = runtime.computer_keyboard.replace(candidate);
         if runtime.validate_candidate_runtime_storage(0).is_err() {
             runtime.computer_keyboard = previous;
@@ -1070,7 +1127,13 @@ impl Playback {
                     .as_ref()
                     .zip(previous.prepared_revision.as_ref())
                     .is_some_and(|(next, old)| Arc::ptr_eq(next, old));
-                if !exact_revision || !next.can_preserve_from(old) {
+                let tuning_revision = next.tuning_preservation_matches(old)
+                    && self
+                        .prepared_revision
+                        .as_ref()
+                        .zip(previous.prepared_revision.as_ref())
+                        .is_some_and(|(next, old)| next.tuning_family() == old.tuning_family());
+                if (!exact_revision && !tuning_revision) || !next.can_preserve_from(old) {
                     return Err(PlaybackHandoffError::Session(
                         crate::SessionPlaybackError::DeviceRuntime,
                     ));

@@ -703,6 +703,7 @@ pub struct Track {
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
+    tuning_identity: shared_analytic::TuningIdentity,
     instrument_bypassed: bool,
     instrument_input_gain: f32,
     instrument_output_gain: f32,
@@ -847,6 +848,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
@@ -897,6 +899,7 @@ impl Track {
             sends: Vec::new(),
             instrument_id: None,
             instrument_state: None,
+            tuning_identity: Default::default(),
             instrument_bypassed: false,
             instrument_input_gain: 1.0,
             instrument_output_gain: 1.0,
@@ -940,8 +943,13 @@ impl Track {
         self.instrument_runtime_latency = runtime;
         self
     }
+    pub(crate) fn with_tuning_identity(mut self, tuning: shared_analytic::TuningIdentity) -> Self {
+        self.tuning_identity = tuning;
+        self
+    }
     pub(crate) fn instrument_config_matches(&self, other: &Self) -> bool {
-        self.instrument_id == other.instrument_id
+        self.tuning_identity == other.tuning_identity
+            && self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_bypassed == other.instrument_bypassed
     }

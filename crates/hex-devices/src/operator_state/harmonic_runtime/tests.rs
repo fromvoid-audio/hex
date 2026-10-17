@@ -323,3 +323,120 @@ fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
     }
     assert_eq!(size_of::<Spectrum>(), 2_800);
 }
+
+#[test]
+fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_feedback() {
+    fn make(settings: OperatorSettings, hz: f64) -> Factory {
+        let configuration = settings.prepare_configuration(48000).unwrap();
+        Factory::new_with_tuning(
+            settings,
+            configuration,
+            crate::shared_sine_table(),
+            48000,
+            Some(hex_lattice::TuningTable::new([hz; 128]).unwrap()),
+        )
+        .unwrap()
+    }
+    for lfo in [false, true] {
+        let mut settings = crate::operator_state::tests::legacy_settings();
+        settings.harmonics.custom[0] = true;
+        settings.harmonics.authored[0] = true;
+        settings.feedback[0] = 0.2;
+        settings
+            .tuning
+            .patch(ParameterId::from_static(65), ParameterValue::Bool(true))
+            .unwrap();
+        settings
+            .tuning
+            .patch(ParameterId::from_static(66), ParameterValue::Float(170.0))
+            .unwrap();
+        if lfo {
+            settings.lfo.0[0] = 1;
+            settings.lfo.0[5] = 0.2f32.to_bits();
+        }
+        let source = make(settings, 240.0);
+        let target = make(settings, 333.0);
+        let last = make(settings, 196.0);
+        let mut old = source.create_runtime();
+        let events = [
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 42,
+                pitch: 60,
+                velocity: 100,
+            },
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 43,
+                pitch: 64,
+                velocity: 80,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 700,
+                occurrence_id: 43,
+            },
+        ];
+        old.preflight_events(&events, 777).unwrap();
+        old.process_block(&events, &mut [[0.0; 2]; 777]);
+        let proof = Target(target.configuration.configuration_id());
+        let mut next = target.create_runtime();
+        assert!(!next.can_copy_history_from(old.as_ref()));
+        assert!(next.can_retarget_history_from(old.as_ref(), &proof));
+        next.retarget_history_from(old.as_ref(), &proof);
+        let a = old.as_any().downcast_ref::<Runtime>().unwrap();
+        let b = next.as_any().downcast_ref::<Runtime>().unwrap();
+        for (a, b) in a.voices.iter().zip(&b.voices).filter(|(a, _)| a.id != 0) {
+            assert_eq!(
+                (
+                    a.id,
+                    a.age,
+                    a.gate,
+                    a.phases,
+                    a.previous,
+                    a.lfo_fraction,
+                    a.lfo_cycle
+                ),
+                (
+                    b.id,
+                    b.age,
+                    b.gate,
+                    b.phases,
+                    b.previous,
+                    b.lfo_fraction,
+                    b.lfo_cycle
+                )
+            );
+            let old_steps = PreparedOperatorConfiguration::lfo_steps(&a.note);
+            let steps = PreparedOperatorConfiguration::lfo_steps(&b.note);
+            assert_eq!(
+                steps[1], old_steps[1],
+                "fixed hz oscillator ignores project table"
+            );
+            assert_ne!(steps[0], old_steps[0]);
+        }
+        next.process_block(&[], &mut [[0.0; 2]; 136]);
+        let mut third = last.create_runtime();
+        let proof = Target(last.configuration.configuration_id());
+        assert!(third.can_retarget_history_from(next.as_ref(), &proof));
+        third.retarget_history_from(next.as_ref(), &proof);
+        let b = next.as_any().downcast_ref::<Runtime>().unwrap();
+        let c = third.as_any().downcast_ref::<Runtime>().unwrap();
+        for (b, c) in b.voices.iter().zip(&c.voices).filter(|(b, _)| b.id != 0) {
+            assert_eq!(
+                (b.id, b.age, b.gate, b.phases, b.previous),
+                (c.id, c.age, c.gate, c.phases, c.previous)
+            );
+        }
+        let invalid = make(settings, 30000.0);
+        let refused = invalid.create_runtime();
+        let proof = Target(invalid.configuration.configuration_id());
+        assert!(!refused.can_retarget_history_from(next.as_ref(), &proof));
+        let mut before = [[0.0; 2]; 137];
+        let mut expected = before;
+        let mut exact = last.create_runtime();
+        exact.copy_history_from(c);
+        third.process_block(&[], &mut before);
+        exact.process_block(&[], &mut expected);
+        assert_eq!(before, expected);
+    }
+}

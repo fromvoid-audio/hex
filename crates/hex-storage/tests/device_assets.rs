@@ -63,7 +63,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let legacy = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&legacy).unwrap()["version"],
-        29
+        31
     );
     assert_eq!(
         hex_storage::decode(&legacy).unwrap().snapshot(),
@@ -78,6 +78,20 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     assert_eq!(editor.project().snapshot(), before);
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), bound);
+    let mut scale = hex_tuning::Scale::equal(7);
+    scale.set_reference(60, 333.125, 2).unwrap();
+    scale.set_period(1901.955);
+    let tuning =
+        hex_tuning::ProjectTuning::new(true, scale, hex_tuning::Audition::default()).unwrap();
+    editor.execute(Command::SetTuning(tuning)).unwrap();
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().snapshot(),
+        bound,
+        "tuning Undo preserves asset bindings"
+    );
+    assert!(editor.redo());
+    assert_eq!(editor.project().tuning(), tuning);
     let track = editor.project().tracks()[0].id();
     let opaque = NativeDeviceState::new(
         hex_lattice_contract::DeviceTypeId::new("test.asset-effect").unwrap(),
@@ -110,7 +124,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        30
+        31
     );
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), editor.project().snapshot());
@@ -225,4 +239,50 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
         1,
     );
     assert!(hex_storage::decode(duplicated.as_bytes()).is_err());
+}
+
+#[test]
+fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
+    let (mut editor, device, asset) = fixture();
+    editor
+        .execute(replacement(&editor, device, vec![reference(asset)]))
+        .unwrap();
+    let source: serde_json::Value =
+        serde_json::from_slice(&hex_storage::encode(editor.project()).unwrap()).unwrap();
+    let directory = std::env::temp_dir().join(format!(
+        "hex-alpha-format-refusal-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("user-project.hex");
+    for (tuning, assets) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut value = source.clone();
+        value["version"] = 30.into();
+        if !tuning {
+            value.as_object_mut().unwrap().remove("tuning");
+        }
+        if !assets {
+            value.as_object_mut().unwrap().remove("device_assets");
+        }
+        let bytes = serde_json::to_vec(&value).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            hex_storage::load(&path),
+            Err(hex_storage::StorageError::Invalid(
+                "unsupported alpha project format 30"
+            ))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read_dir(&directory).unwrap().count(),
+            1,
+            "no conversion/recovery sidecar is written by refusal"
+        );
+    }
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
 }
