@@ -14,7 +14,8 @@ ownership and prepared admission govern applying a preset. See
 
 ## Dependencies
 
-hex-project for model validation, hex-lattice-contract for bounded device state,
+hex-project for model validation, hex-tuning for validated scale/audition values,
+hex-lattice-contract for bounded device state,
 serde/serde_json for versioned project JSON,
 fs2 0.4.3 for nonblocking control-side advisory file locks (Rust1.85-compatible),
 and std for bounded file access and same-directory publication.
@@ -151,7 +152,7 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema29: schema28 audio events, schema27 inherited track colors/per-clip flavors,
+New saves use schema30: project tuning and audition settings, schema28 audio events, schema27 inherited track colors/per-clip flavors,
 schema26 names, required fade-shape metadata and device host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
 and recording epochs with independent Arrangement clip names. All playback
@@ -220,3 +221,14 @@ Schemas25–28 migrate to edge-aligned linear defaults and reject the new table;
 schema29 rejects missing/null, duplicate, orphan, malformed or oversized entries.
 Explicit historical encoders refuse shaped envelopes. Named clips retain their
 complete schema26 metadata. See [clip fades](../../docs/clip-fades.md).
+
+Schema30 adds required `tuning` with enable state, a validated repeating scale
+(3–48 active degrees, all 48 stored cents, root key/frequency/degree and period),
+and separate audition waveform/level/envelope settings. Unknown or duplicate
+fields, missing/null tuning, invalid values and malformed degree arrays refuse
+admission. Schemas1–29 retain strict readers and explicitly migrate to disabled
+A440 12-tone equal temperament; they reject the new tuning field. Explicit
+schema20/22 writers refuse any nondefault tuning or audition settings rather
+than discard them. Local library preset names and MTS-ESP process ownership are
+not saved in this envelope. Runtime tuning and audible audition remain separate
+engine/audio/session responsibilities.

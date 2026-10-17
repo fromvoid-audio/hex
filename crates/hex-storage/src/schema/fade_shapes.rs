@@ -104,6 +104,9 @@ impl<'a> DocumentV29<'a> {
             .collect();
         Ok(Self { base, fade_shapes })
     }
+    pub(super) fn use_tuning_version(&mut self) {
+        self.base.base.version = 30;
+    }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         // Validate the original token stream before Value adaptation can discard
         // duplicate keys, exactly as the underlying strict event codec does.
