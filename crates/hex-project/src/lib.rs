@@ -3,6 +3,7 @@
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
+mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
@@ -17,6 +18,7 @@ mod clip_copy;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
     default_instrument_state,
@@ -294,6 +296,19 @@ impl Clip {
 
     pub(crate) fn audio_edit_mut(&mut self) -> Option<&mut AudioClipEdit> {
         self.edit.as_mut().map(Arc::make_mut)
+    }
+
+    /// Trim the selected lower fade handle and its clip edge together. `frame`
+    /// is the absolute edge (exclusive for the right edge), with source/domain
+    /// bounds and the authored upper fade endpoint applied by the model.
+    pub fn preview_fade_edge_trim(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        crate::clip_fade_trim::preview(self, edge, frame, asset_playback_frames, tempo)
     }
 
     pub fn preview_edge_trim_with_tempo(
