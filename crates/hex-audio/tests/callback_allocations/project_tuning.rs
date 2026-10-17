@@ -237,6 +237,50 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
         control.reclaim();
         previous = Some(revision);
     }
+    // Unsupported transient reference voices cannot veto the canonical graph.
+    // Retuning back retries the still-held physical input without a new keydown.
+    for (root_key, hz, unsupported) in [(48, 20_000.0, true), (60, 196.0, false)] {
+        let mut scale = editor.project().tuning().scale();
+        scale.set_reference(root_key, hz, 0).unwrap();
+        editor
+            .execute(Command::SetTuning(
+                hex_tuning::ProjectTuning::new(true, scale, editor.project().tuning().audition())
+                    .unwrap(),
+            ))
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                previous
+                    .as_ref()
+                    .map(|revision| revision.session().as_ref()),
+            )
+            .unwrap(),
+        );
+        let mut candidate =
+            Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        candidate
+            .prepare_tuning_audition(editor.project(), Arc::clone(&input))
+            .unwrap();
+        control.publish(candidate).unwrap();
+        let mut output = [[0.0; 2]; 137];
+        measured_block(&mut callback, &mut output);
+        assert!(control.status.rejected_revision().is_none());
+        assert!(!input.is_cancelled());
+        if unsupported {
+            assert_eq!(input.held_keys(), [0; 2]);
+            assert!(input.take_rejection());
+            assert_eq!(output, [[0.0; 2]; 137]);
+        } else {
+            assert_ne!(input.held_keys()[0] & (1 << 60), 0);
+            assert!(output.iter().any(|frame| frame[0] != 0.0));
+            assert!(!input.take_rejection());
+        }
+        control.reclaim();
+        previous = Some(revision);
+    }
     control.command(PlaybackCommand::Stop).unwrap();
     let mut output = [[0.0; 2]; 137];
     measured_block(&mut callback, &mut output);

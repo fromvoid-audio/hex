@@ -235,9 +235,10 @@ impl Synth {
         self.next_age = 1;
     }
 
-    /// Retarget all current voices to new tuning/settings without changing
-    /// phase, envelope, ownership, held state, age, or velocity. Every active
-    /// key and the sample rate are preflighted before `self` is modified.
+    /// Retarget supported voices without changing phase, envelope, ownership,
+    /// held state, age or velocity. Unsupported reference voices are retired;
+    /// they cannot veto an otherwise valid project graph. A different sample
+    /// rate still refuses before `self` is modified.
     pub fn retarget_from(
         &mut self,
         source: &Self,
@@ -246,14 +247,14 @@ impl Synth {
         if source.prepared.sample_rate != target.sample_rate {
             return Err(AuditionError::SampleRateMismatch);
         }
-        for voice in source.voices.iter().filter(|voice| voice.active) {
-            let index = usize::from(voice.key);
-            if index >= KEY_COUNT || !target.supported[index] {
-                return Err(AuditionError::UnsupportedKey);
-            }
-        }
         *self = *source;
         self.prepared = target;
+        for voice in self.voices.iter_mut().filter(|voice| voice.active) {
+            let index = usize::from(voice.key);
+            if index >= KEY_COUNT || !target.supported[index] {
+                *voice = Voice::default();
+            }
+        }
         Ok(())
     }
 
@@ -439,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn retarget_preserves_complete_voice_state_or_refuses_atomically() {
+    fn review_final_retarget_preserves_supported_voices_and_retires_unsupported_ones() {
         let old_frequencies = frequencies(48_000);
         let mut source = Synth::new(prepared(48_000, old_frequencies, Waveform::Triangle));
         source.note_on(60, 0.7, 22).unwrap();
@@ -462,14 +463,21 @@ mod tests {
         );
 
         let mut target = Synth::new(prepared(48_000, old_frequencies, Waveform::Square));
-        let old_target = target;
         let mut unsupported = old_frequencies;
         unsupported[64] = 24_000.0;
-        assert_eq!(
-            target.retarget_from(&source, prepared(48_000, unsupported, Waveform::Saw)),
-            Err(AuditionError::UnsupportedKey)
-        );
-        assert_eq!(target, old_target);
+        target
+            .retarget_from(&source, prepared(48_000, unsupported, Waveform::Saw))
+            .unwrap();
+        assert!(target.owns_voice(22));
+        assert!(!target.owns_voice(23));
+        let supported = |synth: &Synth| {
+            *synth
+                .voices
+                .iter()
+                .find(|voice| voice.active && voice.owner == 22)
+                .unwrap()
+        };
+        assert_eq!(supported(&target), supported(&source));
 
         let mut retuned = old_frequencies;
         retuned[60] *= 1.5;

@@ -369,84 +369,96 @@ fn review_identical_import_keeps_worker_revision_clean_and_audio_unchanged() {
 fn review_lifecycle_canonical_edit_publishes_actual_rebased_tuning_pcm() {
     use crate::tuning_gesture::{TuningGestureKey, TuningGestureRequest as Gesture};
     use hex_project::{BeatTime, Created};
-    let service = Service::new(48_000, 16, 8_000_000).unwrap();
-    let _ = next(&service);
-    service
-        .submit(Request::Edit(Command::AddMidiTrack {
-            name: "notes".into(),
-        }))
-        .unwrap();
-    let added = next(&service);
-    let track = added.state.project.tracks()[0].id();
-    service
-        .submit(Request::Edit(Command::PlaceMidiClip {
-            track,
-            start: BeatTime::ZERO,
-            length: BeatTime::ONE,
-        }))
-        .unwrap();
-    let placed = next(&service);
-    let Some(Created::Clip(clip)) = placed.created else {
-        panic!("clip expected")
-    };
-    service
-        .submit(Request::Edit(Command::AddMidiNote {
-            clip,
-            start: BeatTime::ZERO,
-            duration: BeatTime::ONE,
-            pitch: 60,
-            channel: 0,
-            velocity: 100,
-        }))
-        .unwrap();
-    assert!(next(&service).error.is_none());
-    let key = TuningGestureKey {
-        generation: 0,
-        token: 1,
-    };
-    service
-        .submit(Request::TuningGesture(Gesture::Begin { key }))
-        .unwrap();
-    assert!(next(&service).tuning_gesture_ack.unwrap().accepted);
-    service
-        .submit(Request::TuningGesture(Gesture::Change {
-            key,
-            sequence: 1,
-            tuning: tuning(333.0),
-        }))
-        .unwrap();
-    let preview = next(&service);
-    assert!(preview.error.is_none());
-    let mut expected_playback = preview.playback.unwrap();
-    expected_playback.apply(hex_engine::playback::PlaybackCommand::Play);
-    let mut expected = [[0.0; 2]; 256];
-    expected_playback.render(&mut expected).unwrap();
-    assert!(expected.iter().any(|frame| frame[0] != 0.0));
-    service
-        .submit(Request::Edit(Command::RenameTrack {
-            track,
-            name: "renamed".into(),
-        }))
-        .unwrap();
-    let rebased = next(&service);
-    assert!(rebased.error.is_none(), "{:?}", rebased.error);
-    assert_eq!(
-        rebased
-            .tuning_preview
-            .as_ref()
-            .unwrap()
-            .state
-            .project
-            .tuning(),
-        tuning(333.0)
-    );
-    assert_eq!(rebased.state.project.tuning(), ProjectTuning::default());
-    let mut actual_playback = rebased.playback.unwrap();
-    actual_playback.apply(hex_engine::playback::PlaybackCommand::Play);
-    let mut actual = [[0.0; 2]; 256];
-    actual_playback.render(&mut actual).unwrap();
-    assert_eq!(
-        actual, expected,
-        "preview metadata must describe the graph actually published"
-    );
+    for audition_active in [false, true] {
+        let service = Service::new(48_000, 16, 8_000_000).unwrap();
+        let _ = next(&service);
+        service
+            .submit(Request::Edit(Command::AddMidiTrack {
+                name: "notes".into(),
+            }))
+            .unwrap();
+        let added = next(&service);
+        let track = added.state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            }))
+            .unwrap();
+        let placed = next(&service);
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("clip expected")
+        };
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let authored = next(&service);
+        assert!(authored.error.is_none());
+        if audition_active {
+            service
+                .submit(Request::PrepareTuningAudition {
+                    revision: authored.state.revision,
+                    input: Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0)),
+                })
+                .unwrap();
+            assert!(next(&service).error.is_none());
+        }
+        let key = TuningGestureKey {
+            generation: 0,
+            token: 1,
+        };
+        service
+            .submit(Request::TuningGesture(Gesture::Begin { key }))
+            .unwrap();
+        assert!(next(&service).tuning_gesture_ack.unwrap().accepted);
+        service
+            .submit(Request::TuningGesture(Gesture::Change {
+                key,
+                sequence: 1,
+                tuning: tuning(333.0),
+            }))
+            .unwrap();
+        let preview = next(&service);
+        assert!(preview.error.is_none());
+        let mut expected_playback = preview.playback.unwrap();
+        expected_playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut expected = [[0.0; 2]; 256];
+        expected_playback.render(&mut expected).unwrap();
+        assert!(expected.iter().any(|frame| frame[0] != 0.0));
+        service
+            .submit(Request::Edit(Command::RenameTrack {
+                track,
+                name: "renamed".into(),
+            }))
+            .unwrap();
+        let rebased = next(&service);
+        assert!(rebased.error.is_none(), "{:?}", rebased.error);
+        assert_eq!(
+            rebased
+                .tuning_preview
+                .as_ref()
+                .unwrap()
+                .state
+                .project
+                .tuning(),
+            tuning(333.0)
+        );
+        assert_eq!(rebased.state.project.tuning(), ProjectTuning::default());
+        let mut actual_playback = rebased.playback.unwrap();
+        actual_playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut actual = [[0.0; 2]; 256];
+        actual_playback.render(&mut actual).unwrap();
+        assert_eq!(
+            actual, expected,
+            "preview metadata must describe the graph actually published"
+        );
+    }
 }

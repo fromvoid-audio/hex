@@ -268,3 +268,130 @@ fn review_lifecycle_failed_tuning_terminal_refuses_save_as_and_deferred_export(
     );
     assert!(!export_path.exists());
 }
+
+#[gpui::test]
+fn review_final_empty_project_replacement_confirms_active_tuning_draft(cx: &mut TestAppContext) {
+    for new_project in [false, true] {
+        let scratch = scratch();
+        let (_, editor) = window(cx);
+        preview(&editor, cx);
+        editor.update(cx, |view, _| {
+            let mode = hex_session::DocumentAudioMode::Resident;
+            if new_project {
+                view.new_project(mode);
+                assert_eq!(view.pending_new_mode, Some(mode));
+            } else {
+                let path = scratch.0.join("other.sqlite");
+                view.choose_project(path.clone(), mode);
+                assert_eq!(view.pending_open_path.as_ref(), Some(&path));
+            }
+            assert!(
+                !view.opening_project,
+                "first request must obtain replacement confirmation"
+            );
+            assert!(!view.tuning.client.has_pending_terminal());
+            assert_eq!(view.tuning.client.snapshot().unwrap().tuning, tuning(333.0));
+        });
+    }
+}
+#[gpui::test]
+fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut TestAppContext) {
+    let (_, editor) = window(cx);
+    editor.update(cx, |view, cx| {
+        let original = view.tuning.value;
+        let mut scale = original.scale();
+        assert!(scale.move_degree(1, 1.0));
+        let current = ProjectTuning::new(false, scale, original.audition()).unwrap();
+        view.tuning.value = current;
+        view.tuning_numeric(
+            Field::Period,
+            NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value: 600.0,
+            },
+            cx,
+        );
+        assert!(
+            view.tuning.error.is_some(),
+            "structurally rejected compression needs an explanation"
+        );
+        assert_eq!(view.tuning.value, current);
+        assert!(view.tuning.client.snapshot().is_none());
+        view.tuning_numeric(
+            Field::Period,
+            NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value: 1800.0,
+            },
+            cx,
+        );
+        assert!(view.tuning.error.is_none());
+        assert_eq!(view.tuning.value.scale().period_cents(), 1800.0);
+    });
+}
+
+#[gpui::test]
+fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestAppContext) {
+    use hex_session::device_gesture::{GestureTarget, ParameterValue};
+    let (_, editor) = window(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "send".into()
+        })))
+    });
+    let added = next(&editor, cx);
+    let track = added.state.project.tracks()[0].id();
+    editor.update(cx, |view, _| {
+        view.receive(added);
+        assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+            name: "return".into()
+        })));
+    });
+    let added = next(&editor, cx);
+    let return_track = added.state.project.return_tracks()[0].id();
+    editor.update(cx, |view, _| {
+        view.receive(added);
+        view.begin_device_gesture(
+            GestureTarget::ReturnSend {
+                track,
+                return_track,
+            },
+            ParameterValue::Float(0.0),
+        )
+        .unwrap();
+        assert!(view.pump_device_gesture());
+    });
+    let begun = next(&editor, cx);
+    editor.update(cx, |view, _| {
+        view.receive(begun);
+        view.change_device_gesture(ParameterValue::Float(0.2))
+            .unwrap();
+        assert!(view.pump_device_gesture());
+    });
+    let changed = next(&editor, cx);
+    editor.update(cx, |view, _| {
+        view.receive(changed);
+        view.change_device_gesture(ParameterValue::Float(0.3))
+            .unwrap();
+        view.request_tuning_library_list();
+        assert!(
+            view.device_gesture.has_pending_terminal(),
+            "library barrier must reserve the latest local device terminal"
+        );
+    });
+    settle(&editor, cx);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .sends()[0]
+                .gain(),
+            0.3
+        );
+        assert!(view.device_gesture.snapshot().is_none());
+    });
+}
