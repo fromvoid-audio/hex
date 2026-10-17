@@ -1044,6 +1044,10 @@ impl EditorView {
         {
             self.error = None;
         }
+        if !super::device_panel::finalize_controls(self, cx) {
+            cx.notify();
+            return;
+        }
         if self.clip_name_edit.is_some() {
             self.finish_clip_name(true, window, cx);
         }

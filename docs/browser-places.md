@@ -70,7 +70,9 @@ focus. Open context/controller menus are dismissed; leaving theme
 settings cancels its unsaved preview (an in-flight save must finish first).
 A clip-name draft commits using the existing blur behavior before search takes focus.
 An unfinished gain numeric draft keeps its focus and value: finish it with Enter
-or cancel with Escape before invoking Command-F.
+or cancel with Escape before invoking Command-F. Native-device and return-send
+numeric drafts pass through the existing finalization barrier: valid values commit
+before focus moves; invalid values preserve their draft and focus for repair.
 Device rows retain drag-to-track/rail behavior; Enter on an
 all-view device displays that instruction rather than importing a file. Clicking a
 device keeps browser keyboard focus in Session too. The first arrow key selects

@@ -139,7 +139,9 @@ selection, selection identity across scan completion, Session device-click focus
 and category scroll reset. Follow-up regressions cover IME whole-query replacement,
 caret movement preserving manual scroll, search clicks restoring text mode without
 scroll reset, and device highlights waiting for result focus. Unfinished gain numeric drafts refuse search without
-losing focus or text; Escape then Command-F restores normal search. The browser
+losing focus or text; Escape then Command-F restores normal search. Native-device
+and return-send numeric edits use the existing finalization barrier before search:
+invalid drafts retain focus, while repaired valid values commit before filtering. The browser
 and gain-lane suites pass, with existing drag/preview coverage preserved.
 Full runner results are recorded in the PR and Pulse; native acceptance remains
 pending.

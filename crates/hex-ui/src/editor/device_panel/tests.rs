@@ -3996,6 +3996,137 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
 }
 
 #[gpui::test]
+fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let parameter =
+        hex_engine::native_device_view(state.project.track(track).unwrap().devices()[0].state())
+            .unwrap()
+            .parameters
+            .into_iter()
+            .find(|item| item.descriptor.label == "width")
+            .unwrap()
+            .descriptor
+            .id;
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.open = false;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    enter_typed_value(&mut visual, device, parameter, "invalid");
+    let focus = visual.update(|window, cx| window.focused(cx).unwrap());
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            focus.is_focused(window),
+            "invalid device draft must retain focus"
+        );
+        editor.read_with(cx, |view, cx| {
+            assert!(!view.browser.open);
+            assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("finish the device value edit")
+            );
+            let ParameterControl::Float { entity, .. } =
+                &view.device_panel.controls[&ParameterKey { device, parameter }]
+            else {
+                panic!("numeric control")
+            };
+            assert!(entity.read(cx).is_editing());
+        });
+    });
+    visual.simulate_keystrokes("escape");
+    enter_typed_value(&mut visual, device, parameter, "250%");
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    visual.simulate_input("utility");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "utility");
+        let ParameterControl::Float { entity, .. } =
+            &view.device_panel.controls[&ParameterKey { device, parameter }]
+        else {
+            panic!("numeric control")
+        };
+        assert!(!entity.read(cx).is_editing());
+    });
+    pump_until(&editor, cx, |view| {
+        parameter_value(view.state.as_ref().unwrap(), track, device, parameter)
+            == ParameterValue::Float(2.5)
+    });
+}
+
+#[gpui::test]
+fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, return_track, _, _) = actor_return_utility_fixture();
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        view.browser.open = false;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual.debug_bounds(selector).unwrap();
+    visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("2.5");
+    let focus = visual.update(|window, cx| window.focused(cx).unwrap());
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            focus.is_focused(window),
+            "invalid return send must retain focus"
+        );
+        editor.read_with(cx, |view, cx| {
+            assert!(!view.browser.open);
+            assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("finish the device value edit")
+            );
+            assert!(
+                view.device_panel.send_controls[&SendControlKey {
+                    track,
+                    return_track
+                }]
+                    .entity
+                    .read(cx)
+                    .is_editing()
+            );
+        });
+    });
+    visual.simulate_keystrokes("escape cmd-f");
+    visual.simulate_input("utility");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "utility")
+    });
+}
+
+#[gpui::test]
 fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
     cx: &mut TestAppContext,
 ) {
