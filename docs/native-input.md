@@ -232,3 +232,14 @@ optimized oracle also passed. This test uses NoopTextSystem without native
 font/GPU/presentation work and does not establish the native frame budget.
 Temporary production probes are removed. Final full local CI and the canonical
 native 360-sample run remain required; see [method and limits](waveform-display.md).
+
+## Finder metadata and source provenance — 17 october 2026
+
+The GPUI provenance guard tolerates regular files named exactly `.DS_Store`,
+which Finder creates and Git ignores. It still checks every declared source hash
+and rejects unexpected source files, metadata lookalikes and symlinks. No ignored
+file glob or source-hash exception is used. Regression fixtures reproduce the
+primary checkout's root/nested metadata and exercise changed/missing source,
+added source and symlink refusals. `./launch` continues to run full local CI
+because optimized delivery requires exact-source verification; this correction
+does not skip those checks or delete the user's Finder metadata.
