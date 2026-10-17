@@ -1,4 +1,6 @@
 //! Compact, bounded left-side media and project browser.
+mod samples;
+
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme;
 use gpui::{
@@ -147,6 +149,7 @@ pub(super) struct BrowserState {
     places_save_in_flight: bool,
     pending_places_save: Option<BrowserPlaces>,
     pub(super) places_status: Option<String>,
+    samples: samples::SampleBrowser,
     listing: Option<DirectoryListing>,
     loading: bool,
     scans: ScanCoordinator,
@@ -207,6 +210,7 @@ impl BrowserState {
             places_save_in_flight: false,
             pending_places_save: None,
             places_status: None,
+            samples: samples::SampleBrowser::default(),
             listing: None,
             loading: false,
             scans: ScanCoordinator::default(),
@@ -339,6 +343,7 @@ impl EditorView {
     pub(super) fn browser_scan_initial(&mut self, cx: &mut Context<Self>) {
         self.start_browser_places_load(cx);
         self.request_browser_scan(self.browser.directory.clone(), cx);
+        self.start_sample_catalog(cx);
     }
 
     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
@@ -403,6 +408,7 @@ impl EditorView {
                 }
             }
         }
+        self.refresh_sample_catalog(cx);
     }
 
     pub(super) fn queue_browser_places_save(&mut self, cx: &mut Context<Self>) {
@@ -595,7 +601,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        if self.browser.section != BrowserSection::Samples {
+        if self.browser.section == BrowserSection::Instruments {
             return;
         }
         if let Some(entry) = self
@@ -1079,26 +1085,33 @@ impl EditorView {
         cx.notify();
     }
 
-    fn browser_visible_entries(&self, cx: &App) -> Vec<LibraryEntry> {
+    fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
         let query = self.browser.search.read(cx).content.to_lowercase();
-        self.browser
-            .listing
-            .as_ref()
-            .filter(|listing| listing.directory == self.browser.directory)
-            .map(|listing| {
-                listing
-                    .entries
-                    .iter()
-                    .filter(|entry| match self.browser.section {
-                        BrowserSection::Samples => entry.kind != EntryKind::Project,
-                        BrowserSection::Projects => entry.kind != EntryKind::WaveAudio,
-                        BrowserSection::Instruments => false,
-                    })
-                    .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        if self.browser.section == BrowserSection::Samples {
+            return self.browser.samples.visible(&query);
+        }
+        Arc::new(
+            self.browser
+                .listing
+                .as_ref()
+                .filter(|listing| listing.directory == self.browser.directory)
+                .map(|listing| {
+                    listing
+                        .entries
+                        .iter()
+                        .filter(|entry| match self.browser.section {
+                            BrowserSection::Samples => entry.kind != EntryKind::Project,
+                            BrowserSection::Projects => entry.kind != EntryKind::WaveAudio,
+                            BrowserSection::Instruments => false,
+                        })
+                        .filter(|entry| {
+                            query.is_empty() || entry.name.to_lowercase().contains(&query)
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
     }
 
     pub(super) fn browser_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -1129,26 +1142,7 @@ impl EditorView {
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
         let section = self.browser.section;
-        let query = self.browser.search.read(cx).content.to_lowercase();
-        let entries: Vec<LibraryEntry> = self
-            .browser
-            .listing
-            .as_ref()
-            .filter(|listing| listing.directory == path)
-            .map(|listing| {
-                listing
-                    .entries
-                    .iter()
-                    .filter(|entry| match section {
-                        BrowserSection::Samples => entry.kind != EntryKind::Project,
-                        BrowserSection::Projects => entry.kind != EntryKind::WaveAudio,
-                        BrowserSection::Instruments => false,
-                    })
-                    .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
+        let entries = self.browser_visible_entries(cx);
         let row_count = entries.len();
         let rows = uniform_list(
             "library-browser-entries",
@@ -1199,7 +1193,10 @@ impl EditorView {
             })();
             self.browser.device_catalog = Some(catalog);
         }
-        if section == BrowserSection::Samples || section == BrowserSection::Projects {
+        if section == BrowserSection::Samples {
+            panel = panel.child(self.sample_filters(cx));
+        }
+        if section == BrowserSection::Projects {
             panel =
                 panel.child(
                     div()
@@ -1314,6 +1311,23 @@ impl EditorView {
                                 ))),
                         );
                     }
+                }
+            }
+            BrowserSection::Samples => {
+                if row_count == 0 {
+                    panel = panel.child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .pt_2()
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                            .child(theme::text(
+                                "no matching samples · add a folder or change filters",
+                            )),
+                    );
+                } else {
+                    panel = panel.child(rows.flex_1());
                 }
             }
             _ if self.browser.loading
@@ -1559,6 +1573,9 @@ impl EditorView {
         let mut row = div()
             .id(("library-entry", index))
             .debug_selector(|| format!("browser-entry-{index}"))
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .h(px(ROW_HEIGHT))
             .px_1()
             .flex()
@@ -1687,7 +1704,19 @@ impl EditorView {
                 .text_ellipsis()
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(entry.name)),
+                .child(theme::text(
+                    if self.browser.section == BrowserSection::Samples {
+                        format!(
+                            "{} · {}",
+                            entry.name,
+                            entry.path.parent().map_or_else(String::new, |path| path
+                                .to_string_lossy()
+                                .into_owned())
+                        )
+                    } else {
+                        entry.name
+                    },
+                )),
         )
     }
 
@@ -1866,7 +1895,10 @@ impl EditorView {
                                         Some("browser folder limit reached".into());
                                 }
                             }
-                            view.request_browser_scan(path, cx);
+                            view.refresh_sample_catalog(cx);
+                            if view.browser.section != BrowserSection::Samples {
+                                view.request_browser_scan(path, cx);
+                            }
                         }
                     }
                     Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),

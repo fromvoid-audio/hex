@@ -1,4 +1,6 @@
-//! Bounded filesystem listings for the native media browser.
+//! Bounded filesystem listings and persistent sample discovery.
+
+pub mod catalog;
 
 use std::{
     cmp::Ordering,

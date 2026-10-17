@@ -1,3 +1,20 @@
+## 17 october 2026 — indexed samples library (Pulse #2699 / PR317)
+
+Samples combines WAVs recursively discovered in Music and added places, with
+source-folder filters and multi-term path search. A bounded native-path database
+restores cached results then reconciles in background at startup, folder addition,
+manual refresh and 30-second intervals. Deleted/renamed files reconcile; offline
+folders and limits are visible. Existing preview/import/drag paths and the merged
+sidebar/tag/bottom-preview composition are preserved. Projects retains folder
+navigation. See docs/sample-library.md for bounds and cache recovery contracts.
+
+Source evidence: eight hex-library tests pass, including cache roundtrip/corruption,
+native paths, overlapping roots, depth limits and file reconciliation. Integrated
+UI compilation passes. Focused browser interaction tests, strict Clippy and full
+local CI are being run on the final candidate; record their actual results in the
+PR/Pulse evidence. Native macOS visual/listening/restart acceptance remains open;
+no exact Live parity, extra audio codec, or large-library timing claim.
+
 ## held-clip intersection accent — #2696 / PR314, 17 october 2026
 
 Arrangement landing previews tint only occupied audio/MIDI intersections with the

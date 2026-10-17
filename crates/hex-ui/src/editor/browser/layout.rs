@@ -195,6 +195,9 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
                             view.browser.section = section;
+                            if section == BrowserSection::Samples {
+                                view.browser.samples.source = None;
+                            }
                             view.browser.selected_index = 0;
                             view.browser.results_focused = false;
                             cx.notify();
@@ -304,7 +307,18 @@ impl EditorView {
                             if view.browser.section == BrowserSection::Instruments {
                                 view.browser.section = BrowserSection::Samples;
                             }
-                            view.request_browser_scan(path.clone(), cx);
+                            if view.browser.section == BrowserSection::Samples
+                                && path != view.browser.home
+                            {
+                                view.browser.samples.source = Some(path.clone());
+                                view.browser.selected_index = 0;
+                                cx.notify();
+                            } else {
+                                if path == view.browser.home {
+                                    view.browser.section = BrowserSection::Projects;
+                                }
+                                view.request_browser_scan(path.clone(), cx);
+                            }
                         }),
                     )
                     .child(browser_caption("□"))

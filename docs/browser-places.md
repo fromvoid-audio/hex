@@ -24,8 +24,7 @@ state or undo step for adding a browser place.
 Acceptance: add folder, wait for acknowledged save, restart app, same place
 present and usable. Test serialization/defaults/duplicates/limits, missing folder
 retention, malformed/unwritable failures and background load/save coordination.
-User owns native restart/folder-picker checks. Deferred: folder removal/reorder,
-indexing, preview playback and unrelated preferences.
+User owns native restart/folder-picker checks. Deferred: folder removal/reorder and unrelated preferences. Recursive sample indexing is now specified in [sample library](sample-library.md); preview playback is implemented separately.
 
 
 Implementation: schema-1 browser JSON, at most 14 additional places alongside

@@ -80,7 +80,7 @@ crates/
   hex-devices/               independently testable original instrument DSP
   hex-project/               canonical control-side IDs, edits, history and snapshots
   hex-media/                 bounded WAV decode, source-rate conversion and cached waveform peaks
-  hex-library/               bounded control-side folder and supported-file listings
+  hex-library/               bounded folder listings and persistent sample catalog
   hex-preferences/           versioned bounded application browser-place settings
   hex-stream/                verified source worker, bounded page cache and ownership queues
   hex-storage/               versioned metadata and recoverable create-new files
@@ -138,9 +138,8 @@ application lifecycle; `hex-cli` uses project/engine/media/storage/export for
 headless workflows. Media depends on engine/project; storage depends on project
 and owns serialization. Session coordinates project/media/storage/export work
 through bounded control workers; UI uses read-only project views and controller
-commands, not its own editing model. Library owns bounded nonrecursive filesystem listings, preserving original paths;
-UI owns browser navigation, filtering and focus. Library does not decode audio,
-index recursively, edit projects or perform callback work. hex-preferences owns
+commands, not its own editing model. Library owns bounded filesystem listings and recursive WAV discovery with a persistent derived sample catalog, preserving original paths;
+UI owns browser navigation, filtering and focus. Library does not decode audio, edit projects or perform callback work. Catalog enumeration/cache I/O belongs on background control workers; see docs/sample-library.md. hex-preferences owns
 versioned bounded application browser-place serialization and recoverable file
 publication, independent of project storage/history. UI loads/saves it through
 bounded background work. Read docs/browser-places.md; preserve original paths

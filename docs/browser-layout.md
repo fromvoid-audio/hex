@@ -34,6 +34,12 @@ Pulse owns the remaining plans (Hex 0.1):
 The visual implementation is #2678 / PR294. Global Command-F work remains #2659.
 These follow-ups are planning records, not implemented features.
 
+The Samples item now uses the [indexed sample library](sample-library.md): its
+results combine recursively discovered WAVs across configured roots, with source
+filters and refresh in place of folder breadcrumbs. The top search, sidebar,
+tag placeholders and bottom preview retain this composition. Projects continues
+using folder navigation.
+
 ## Native visual/input checklist
 
 User-owned macOS acceptance remains pending. Review the actual native window:

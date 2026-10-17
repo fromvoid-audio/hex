@@ -54,6 +54,9 @@ widgets = (
     'editor)', 'sidebar)', 'panel.w_full(',
     'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
+    # Sample source filters route labels through theme::text.
+    'self.sample_filters(', 'filters)',
+
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',

@@ -119,6 +119,7 @@ fn browser_drag_fixture_with_tracks(
                     document_path: None,
                 }));
                 view.browser.scans.generation = view.browser.scans.generation.saturating_add(1);
+                view.browser.places = vec![directory.0.clone()];
                 view.browser.directory = directory.0.clone();
                 view.browser.listing = Some(DirectoryListing {
                     directory: directory.0.clone(),
@@ -130,6 +131,9 @@ fn browser_drag_fixture_with_tracks(
                     enumerated_entries: 1,
                     truncated: false,
                 });
+                view.browser.samples.replace(
+                    hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
+                );
                 view.browser.section = BrowserSection::Samples;
                 cx.notify();
             });
@@ -2071,6 +2075,7 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
     std::fs::create_dir(&folder).unwrap();
     let visual = &mut VisualTestContext::from_window(handle, cx);
     editor.update(visual, |view, cx| {
+        view.browser.section = BrowserSection::Projects;
         view.browser.listing.as_mut().unwrap().entries = vec![LibraryEntry {
             name: "folder".into(),
             path: folder.clone(),
@@ -2123,7 +2128,10 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .debug_bounds("browser-tag-editor")
         .expect("tag editor");
     let row = visual.debug_bounds("browser-entry-0").expect("sample row");
-    assert!(row.right() <= tag_editor.left());
+    assert!(
+        row.right() <= tag_editor.left(),
+        "row {row:?}, tag editor {tag_editor:?}"
+    );
     editor.update(visual, |view, cx| {
         view.browser.width = super::MIN_WIDTH;
         cx.notify();
@@ -2137,4 +2145,60 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("compact preview");
     assert!(row.size.width > px(0.0));
     assert!(row.bottom() <= preview.top());
+}
+
+#[gpui::test]
+fn samples_catalog_combines_roots_filters_and_refreshes_without_folder_navigation(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, first, original) = browser_drag_fixture(cx);
+    let second = PreferencesTestDirectory::new();
+    let nested = second.0.join("drums");
+    std::fs::create_dir_all(&nested).unwrap();
+    let other = nested.join("loop.WAV");
+    std::fs::write(&other, mono_pcm_wav(16)).unwrap();
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.browser.places = vec![first.0.clone(), second.0.clone()];
+        view.refresh_sample_catalog(cx);
+        // Rapid refreshes must coalesce; the latest roots must win.
+        view.refresh_sample_catalog(cx);
+    });
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind == EntryKind::WaveAudio)
+        );
+        assert!(entries.iter().any(|entry| entry.path == original));
+        assert!(entries.iter().any(|entry| entry.path == other));
+        view.browser.samples.source = Some(second.0.clone());
+        view.browser.search.update(cx, |input, cx| {
+            input.content = "DRUMS loop".into();
+            cx.notify();
+        });
+        let filtered = view.browser_visible_entries(cx);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].path, other);
+        assert_eq!(view.browser.directory, first.0);
+    });
+    std::fs::remove_file(&other).unwrap();
+    editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert!(view.browser_visible_entries(cx).is_empty());
+        assert_eq!(view.browser.samples.catalog.entries().len(), 1);
+        let database = view
+            .browser
+            .preferences_path
+            .with_extension("samples-v1.db");
+        assert_eq!(
+            hex_library::catalog::SampleCatalog::load(&database).unwrap(),
+            view.browser.samples.catalog
+        );
+    });
 }
