@@ -143,7 +143,20 @@ impl EditorView {
                         .into()
                     }),
             )
-            .child(div().flex_1().min_w_0().child(self.browser.search.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            view.browser.results_focused = false;
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.browser.search.clone()),
+            )
             .child(self.browser_icon(
                 "≡",
                 "show or hide tag filters",

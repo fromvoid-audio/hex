@@ -64,7 +64,8 @@ registered native device catalog. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
 Escape clears it. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
-only a changed query resets it. Device and file highlights both require result
+only a changed query resets it. Clicking the search field restores caret editing
+without moving the result viewport. Device and file highlights both require result
 focus. Open context/controller menus are dismissed; leaving theme
 settings cancels its unsaved preview (an in-flight save must finish first).
 A clip-name draft commits using the existing blur behavior before search takes focus.
