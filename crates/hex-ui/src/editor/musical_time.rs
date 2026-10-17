@@ -839,9 +839,7 @@ impl super::EditorView {
 
     pub(super) fn time_controls(&self, cx: &mut Context<Self>) -> Div {
         let Some(state) = self.state.as_ref() else {
-            return div()
-                .w(px(super::tracks::TRACK_HEADER_WIDTH))
-                .flex_shrink_0();
+            return div().w(px(self.track_header_width())).flex_shrink_0();
         };
         let beat = self.cursor_beat();
         let tempo_label = beat.map_or_else(
@@ -861,7 +859,7 @@ impl super::EditorView {
         );
         let enabled = self.time_edit_admitted() && beat.is_some();
         div()
-            .w(px(super::tracks::TRACK_HEADER_WIDTH))
+            .w(px(self.track_header_width()))
             .h_full()
             .flex_shrink_0()
             .flex()

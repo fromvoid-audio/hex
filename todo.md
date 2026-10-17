@@ -1,3 +1,15 @@
+## track header width and row height — pulse2714 / PR330
+
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
@@ -4603,7 +4615,6 @@ and shutdown report unavailable. Two fixed atomic acknowledgements add no
 callback allocation, locks or final PCM disposal. Browser layout and transport
 integration remain canonical Pulse2664 / PR280. Source does not establish that
 the reported endless audition is a backend loop; native listening remains open.
-
 
 ## compact browser audition — pulse2664 / PR280, 17 october 2026
 
