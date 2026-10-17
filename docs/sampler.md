@@ -74,12 +74,20 @@ workflow/listening evidence. No other device-family completion is a prerequisite
 
 ## current source boundary
 
-`hex-devices::sampler` accepts borrowed, validated finite stereo PCM at its
-original rate. Construction happens on control; no decoding, paths, asset IDs,
-project edits, queues, shared-owner clones or resource destruction occur in the
-kernel. `Sample` validation scans PCM once. Preparing another voice does not
-scan or copy the sample. The caller must keep PCM and slice-marker storage alive
-for all borrowed configurations/voices; Rust enforces these lifetimes.
+`hex-devices::sampler` separates scalar source-coordinate preparation from
+borrowed original-rate Mono/Stereo PCM queries. The original `Sample`/`Voice`
+stereo API delegates to that same law. `SampleShape` describes bounded DSP facts;
+it never establishes physical storage, provenance or a source lease.
+
+`PreparedSamplerPlan::bind_source_on_control` checks the actual borrowed view's
+shape/rate and finite PCM once. Its prepared voices carry only copyable scalar
+coefficients, slot and full content/derivation identity; slice marker storage may
+be released after voice preparation. Rendering borrows the retained host
+configuration and refuses missing/replaced identities, rates or layouts with
+silence. There is no per-note PCM scan/copy, owning source handle, forged static
+borrow or second cache. The host must still prove complete admission/custody and
+retain the exact source configuration for current, carried and outgoing voices.
+This adapter boundary does not register the device or open resource processing.
 
 The kernel implements these original laws, pending reference measurement:
 
