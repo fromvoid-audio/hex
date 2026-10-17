@@ -36,6 +36,15 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
+
+Command-T binds the existing AddTrack action under editor/non-text focus.
+Rendered focus and keyboard regressions cover the editor, browser search,
+clip-name input and gain numeric draft; canonical Undo/Redo remains one edit.
+Required exact-source checks and native acceptance are recorded in Pulse/PR.
+Track layout resizing was delivered separately by launcher2714/PR330.
+
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
