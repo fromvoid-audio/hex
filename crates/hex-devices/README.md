@@ -76,3 +76,7 @@ track mixing, manage MIDI state, access audio devices, or host external plugins.
 FM4 uses an original bounded state codec; it does not select Live algorithm
 numbers or implement feedback/chase/polyphony. See
 [FM4 contract](../../docs/fm4.md).
+
+The `device_conformance` example and registry-discovered authoring test use the
+opt-in lattice test helpers without a desktop, project, GPUI or CPAL. See
+[authoring](../../docs/native-device-authoring.md) for JSON reports and limits.

@@ -1,4 +1,6 @@
 //! Validated stereo DSP primitives and the registered native processor seam.
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 mod meter;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,

@@ -1,3 +1,14 @@
+## native device authoring bootstrap — #2670 / PR285, 17 october 2026
+
+Opt-in Lattice conformance helpers exercise codecs, state-aware parameters,
+transactional effect histories and analytic/shared/mutable instrument classes.
+Registry-discovered defaults pass at five rates; broken-provider fixtures prove
+sensitivity. Standalone JSON report includes actual descriptors/defaults/ranges.
+See [authoring](docs/native-device-authoring.md). Full final-source local CI is
+required for this Rust slice; native/reference acceptance and two-new-device/UI
+adapter production proofs remain open. No device DSP or host budget changes.
+
+
 ## nested audio events — pulse2692 / PR308, 17 october 2026
 
 Arrangement audio clips retain their outer editing behavior while a lower event

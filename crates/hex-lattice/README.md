@@ -77,3 +77,8 @@ handling. `zero_input_drain_for_range` charges checked intrinsic latency plus
 residual tail; `output_tail_for_range` continues to report residual tail alone.
 Graph timing, transport history, compensation buffers and handoff policy remain
 engine responsibilities.
+
+The optional `conformance` feature exposes control-side authoring fixtures for
+codec/descriptor contracts, transactional effects and instrument capabilities.
+It uses only existing traits and allocates outside callbacks. See
+[authoring](../../docs/native-device-authoring.md) for checks and finite limits.
