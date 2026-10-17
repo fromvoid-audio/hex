@@ -64,7 +64,8 @@ case-insensitively; indexed samples use the sample library's multi-term path mat
 All ignores the Samples source-folder filter and deduplicates original WAV paths
 across the catalog and folder, retaining folder WAVs outside indexed roots. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
-Escape clears it. Active IME composition is unmarked before selecting the whole
+Escape clears it and restores text mode even if the query was already empty.
+Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
 only a changed query resets it. Clicking the search field restores caret editing
 without moving the result viewport. Device and file highlights both require result
