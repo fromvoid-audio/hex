@@ -4372,3 +4372,24 @@ W06 positive ordering proof: exacte009db34 passes all six focused host binding
 tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
 drag stays finalized and a later real drag works. Final integration/review/full
 local CI and broader W06 deliverables remain pending; no native result claimed.
+
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
+
+The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
+non-divergent local `main`, runs full local CI, builds and installs the optimized
+stable app, and opens the verified candidate. `--test` remains an alias; `--open`
+provides installed-only startup. Build mode refuses before CI when either the
+installed app or a raw `hex-desktop` process is active, asking for a normal save
+and quit without terminating processes. Exact source CI, merge and combined
+delivery evidence remain with the canonical PR workflow.
+
+Cloud continuation recovered the pushed `56e11b4c` checkpoint in the published
+Hex environment at `/workspace/hex`, with activated Rust/Cargo 1.94.0 and all
+seven documented native pkg-config packages available. All 17 focused launcher
+tests pass with Python warnings treated as errors, including raw debug/release
+paths with spaces and refusal when process inspection fails. Full Linux runner
+evidence belongs to PR359; its first attempt stopped safely at unclaimed inherited
+target ownership after the Python suite, guards and formatting passed. No complete
+macOS CI, signing, installation or native acceptance is established. Mac execution
+remains paused until the user explicitly resumes it; PR355 owns signing and sample
+permissions, and the eventual combined app uses one exact verified source.
