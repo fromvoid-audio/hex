@@ -34,3 +34,10 @@ Rust standard library only.
 
 DSP, device implementations, project editing, serialization formats, UI, plugin
 hosting, or runtime device registries.
+
+Optional state-aware parameter semantics retain descriptor units/defaults and
+explicitly distinguish undeclared metadata from unsupported capabilities.
+Validated control queries check dynamic membership and semantic/domain agreement;
+normalization refuses invalid values with explicit discrete/singleton behavior.
+No runtime delivery capability follows from metadata. See
+[parameter semantics](../../docs/native-parameter-semantics.md).

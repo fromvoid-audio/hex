@@ -132,3 +132,11 @@ migration, including direct closed Utility and public prepared-chain admission.
 Direct provider overrides remain responsible for their documented contract.
 Do not register a resource-consuming device until actual prepared leases,
 resource accounting and callback retirement are implemented and verified.
+
+## optional parameter semantics
+
+Providers may declare state-aware normalization, stepping, access and existing
+runtime capabilities without changing descriptor literals. None means undeclared.
+Use the validated neutral queries and preserve stable subobject IDs; read-only
+providers must reject direct patches. Cached host views/report schema2 consume
+these declarations. See [contract and limits](native-parameter-semantics.md).
