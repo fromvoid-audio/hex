@@ -189,22 +189,24 @@ impl EditorView {
             .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .cursor_pointer()
-            .on_click(cx.listener(move |view, _, window, cx| {
-                if view
-                    .clip_name_edit
-                    .as_ref()
-                    .is_some_and(|edit| edit.clip == clip)
-                {
-                    cx.stop_propagation();
-                    return;
-                }
-                if view.clip_name_edit.is_some() {
-                    view.finish_clip_name(true, window, cx);
-                }
-                view.set_selected_clip(track, clip, window, cx);
-                view.focus.focus(window);
-                cx.notify();
-            }))
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    if view
+                        .clip_name_edit
+                        .as_ref()
+                        .is_some_and(|edit| edit.clip == clip)
+                    {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if view.clip_name_edit.is_some() {
+                        view.finish_clip_name(true, window, cx);
+                    }
+                    view.select_clip_header(track, clip, event.modifiers(), window, cx);
+                    view.focus.focus(window);
+                    cx.notify();
+                }),
+            )
             .child(self.clip_name_label(clip, name))
     }
 }
