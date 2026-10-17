@@ -108,6 +108,18 @@ Live limit or permission to silently drop notes. Audio-harness tests measure
 Mono/Stereo processing, events and rollback with zero allocations/frees and
 independent PCM sums; they do not establish whole-root native admission.
 
+The current sampler state codec now retains mode, source-frame bounds, loop and
+slice markers, reverse, pitch/root, gain/pan/velocity, amplitude envelope and voice
+count in a bounded payload (96-byte prefix plus at most 128 four-byte markers).
+Settings edits preserve the actual host gains and asset-reference allocation.
+Only the current version is accepted; truncation, reserved encodings, nonfinite
+values and unsupported versions refuse. No old-alpha conversion is provided.
+Authored preparation requires exactly the matching source slot/asset in the host
+inventory, validates actual source bounds and finite PCM once on control, and
+uses the host's tuning and output rate. Decoded state and marker storage may be
+destroyed after scalar runtime preparation. This does not yet connect file
+loading, canonical device commands, project round-trip or UI interaction.
+
 The kernel implements these original laws, pending reference measurement:
 
 | Area | Implemented contract |
