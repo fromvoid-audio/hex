@@ -113,7 +113,7 @@ impl EditorView {
                     .id("editor-status-message")
                     .debug_selector(|| "editor-status-message".into())
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(50.0))
                     .truncate()
                     .tooltip({
                         let message = error.clone();
@@ -131,7 +131,7 @@ impl EditorView {
                     .id("editor-status-message")
                     .debug_selector(|| "editor-status-message".into())
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(50.0))
                     .truncate()
                     .tooltip({
                         let message = self.status.clone();
@@ -176,7 +176,7 @@ impl EditorView {
                 .id("editor-revision-status")
                 .debug_selector(|| "editor-revision-status".into())
                 .w(px(176.0))
-                .flex_shrink_0()
+                .min_w(px(64.0))
                 .truncate()
                 .text_right()
                 .tooltip({
@@ -233,38 +233,19 @@ impl EditorView {
                     String::new()
                 },
             ));
+        let meter_input = self.output_meter_frame.map_or(
+            crate::output_meter::MeterInput::Offline,
+            super::refresh::AudioFrame::meter_input,
+        );
+        bar = bar.child(
+            crate::output_meter::render(meter_input).tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: crate::output_meter::description(meter_input).into(),
+                })
+                .into()
+            }),
+        );
         if let Some(status) = self.audio_status() {
-            let left = f32::from_bits(status.peak_left.load(Relaxed)).clamp(0.0, 1.0);
-            let right = f32::from_bits(status.peak_right.load(Relaxed)).clamp(0.0, 1.0);
-            bar = bar.child(
-                div()
-                    .w(px(38.0))
-                    .h(px(7.0))
-                    .flex()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * left))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * right))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    ),
-            );
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
             let callback_us = status.callback_max_ns.load(Relaxed) / 1_000;
@@ -285,7 +266,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .tooltip({
@@ -310,7 +291,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -333,7 +314,7 @@ fn status_slot(
         .debug_selector(move || id.into())
         .w(px(width))
         .h_full()
-        .flex_shrink_0()
+        .min_w(px(32.0))
         .truncate()
         .text_right();
     if !label.is_empty() {
@@ -365,7 +346,7 @@ impl Render for EditorView {
         self.clip_content_cache
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
-        let clip_view = self.clip_detail_view(cx);
+        let clip_view = self.clip_detail_view(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()

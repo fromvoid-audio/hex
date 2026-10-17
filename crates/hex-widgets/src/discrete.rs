@@ -59,6 +59,9 @@ impl ToggleConfig {
 
 /// Compact boolean control with caller-owned text and styling.
 pub struct Toggle {
+    accessibility_binding: Option<gpui::AccessibilityBinding>,
+    accessibility_pending: bool,
+    accessibility_lifetime: gpui::AccessibilityLifetime,
     id: SharedString,
     label: SharedString,
     checked: bool,
@@ -70,6 +73,25 @@ pub struct Toggle {
 }
 
 impl Toggle {
+    /// Bind real acknowledged owner state without altering pointer/keyboard behavior.
+    pub fn set_accessibility_binding(
+        &mut self,
+        binding: gpui::AccessibilityBinding,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.accessibility_binding.as_ref().is_none_or(|old| {
+            old.name != binding.name
+                || old.revision != binding.revision
+                || old.value != binding.value
+                || old.pending != binding.pending
+        }) || self.accessibility_pending;
+        self.accessibility_pending = false;
+        self.accessibility_binding = Some(binding);
+        if changed {
+            cx.notify();
+        }
+    }
+
     pub fn new(
         cx: &mut Context<Self>,
         id: impl Into<SharedString>,
@@ -85,6 +107,9 @@ impl Toggle {
 
     pub fn from_config(cx: &mut Context<Self>, config: ToggleConfig) -> Self {
         Self {
+            accessibility_binding: None,
+            accessibility_pending: false,
+            accessibility_lifetime: Default::default(),
             id: config.id,
             label: config.label,
             checked: config.checked,
@@ -258,6 +283,75 @@ impl gpui::Render for Toggle {
             } else {
                 gpui::CursorStyle::Arrow
             });
+        let entity = cx.entity();
+        let owner = entity.downgrade();
+        root = root.accessibility(
+            gpui::AccessibilityDescriptor {
+                id: gpui::AccessibilityId(entity.entity_id().as_u64()),
+                revision: self
+                    .accessibility_binding
+                    .as_ref()
+                    .map_or(0, |binding| binding.revision),
+                lifetime: self.accessibility_lifetime.weak(),
+                name: self
+                    .accessibility_binding
+                    .as_ref()
+                    .map_or_else(|| self.label.clone(), |binding| binding.name.clone()),
+                value: self
+                    .accessibility_binding
+                    .as_ref()
+                    .map(|binding| binding.value.clone())
+                    .unwrap_or(gpui::AccessibilityValue::Toggle(self.checked)),
+                enabled: self.enabled
+                    && !self.accessibility_pending
+                    && self
+                        .accessibility_binding
+                        .as_ref()
+                        .is_none_or(|binding| !binding.pending && (binding.guard)(cx)),
+                focused: self.focus.is_focused(window),
+                status: if self.accessibility_pending
+                    || self
+                        .accessibility_binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.pending)
+                {
+                    Some("pending project edit".into())
+                } else {
+                    None
+                },
+            },
+            move |request, window, cx| {
+                owner
+                    .update(cx, |control, cx| {
+                        if control
+                            .accessibility_binding
+                            .as_ref()
+                            .is_some_and(|binding| binding.revision != request.revision)
+                            || !control.enabled
+                            || control.accessibility_pending
+                            || control
+                                .accessibility_binding
+                                .as_ref()
+                                .is_some_and(|binding| binding.pending || !(binding.guard)(cx))
+                        {
+                            return false;
+                        }
+                        match &request.action {
+                            gpui::AccessibilityAction::Focus => control.focus.focus(window),
+                            gpui::AccessibilityAction::Press => {
+                                control.toggle(window, cx);
+                                if control.accessibility_binding.is_some() {
+                                    control.accessibility_pending = true;
+                                    cx.notify();
+                                }
+                            }
+                            _ => return false,
+                        }
+                        true
+                    })
+                    .unwrap_or(false)
+            },
+        );
         if matches!(
             self.appearance,
             DiscreteControlAppearance::CompactSquare | DiscreteControlAppearance::MicroSquare
@@ -391,6 +485,7 @@ pub struct SelectorChanged {
 
 /// Validated choice construction data for an infallible GPUI entity factory.
 pub struct SelectorConfig {
+    accessibility_name: SharedString,
     id: SharedString,
     choices: Vec<SharedString>,
     selected: usize,
@@ -413,12 +508,19 @@ impl SelectorConfig {
             return Err("selector exceeds 128 options");
         }
         Ok(Self {
+            accessibility_name: "choice".into(),
             id: id.into(),
             choices,
             selected,
             style: style.validate()?,
             appearance: DiscreteControlAppearance::Standard,
         })
+    }
+
+    /// Supply the parameter's human-readable name, separately from its machine ID.
+    pub fn with_accessibility_name(mut self, name: impl Into<SharedString>) -> Self {
+        self.accessibility_name = name.into();
+        self
     }
 
     pub fn with_appearance(mut self, appearance: DiscreteControlAppearance) -> Self {
@@ -429,6 +531,10 @@ impl SelectorConfig {
 
 /// Compact choice field with a bounded foreground popup.
 pub struct Selector {
+    accessibility_binding: Option<gpui::AccessibilityBinding>,
+    accessibility_pending: bool,
+    accessibility_lifetime: gpui::AccessibilityLifetime,
+    accessibility_name: SharedString,
     id: SharedString,
     choices: Vec<SharedString>,
     selected: usize,
@@ -443,6 +549,25 @@ pub struct Selector {
 }
 
 impl Selector {
+    /// Bind real acknowledged owner state without altering pointer/keyboard behavior.
+    pub fn set_accessibility_binding(
+        &mut self,
+        binding: gpui::AccessibilityBinding,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.accessibility_binding.as_ref().is_none_or(|old| {
+            old.name != binding.name
+                || old.revision != binding.revision
+                || old.value != binding.value
+                || old.pending != binding.pending
+        }) || self.accessibility_pending;
+        self.accessibility_pending = false;
+        self.accessibility_binding = Some(binding);
+        if changed {
+            cx.notify();
+        }
+    }
+
     pub fn new(
         cx: &mut Context<Self>,
         id: impl Into<SharedString>,
@@ -458,6 +583,10 @@ impl Selector {
 
     pub fn from_config(cx: &mut Context<Self>, config: SelectorConfig) -> Self {
         Self {
+            accessibility_binding: None,
+            accessibility_pending: false,
+            accessibility_lifetime: Default::default(),
+            accessibility_name: config.accessibility_name,
             id: config.id,
             choices: config.choices,
             selected: config.selected,
@@ -551,6 +680,93 @@ impl Selector {
             });
             cx.notify();
         }
+    }
+
+    fn accessible_root(
+        &self,
+        root: gpui::Stateful<gpui::Div>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let entity = cx.entity();
+        let owner = entity.downgrade();
+        root.accessibility(
+            gpui::AccessibilityDescriptor {
+                id: gpui::AccessibilityId(entity.entity_id().as_u64()),
+                revision: self
+                    .accessibility_binding
+                    .as_ref()
+                    .map_or(0, |binding| binding.revision),
+                lifetime: self.accessibility_lifetime.weak(),
+                name: self.accessibility_binding.as_ref().map_or_else(
+                    || self.accessibility_name.clone(),
+                    |binding| binding.name.clone(),
+                ),
+                value: self
+                    .accessibility_binding
+                    .as_ref()
+                    .map(|binding| binding.value.clone())
+                    .unwrap_or(gpui::AccessibilityValue::Choice {
+                        selected: self.selected,
+                        options: self.choices.clone(),
+                    }),
+                enabled: self.enabled
+                    && !self.accessibility_pending
+                    && self
+                        .accessibility_binding
+                        .as_ref()
+                        .is_none_or(|binding| !binding.pending && (binding.guard)(cx)),
+                focused: self.focus.is_focused(window),
+                status: if self.accessibility_pending
+                    || self
+                        .accessibility_binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.pending)
+                {
+                    Some("pending project edit".into())
+                } else {
+                    None
+                },
+            },
+            move |request, window, cx| {
+                owner
+                    .update(cx, |control, cx| {
+                        if control
+                            .accessibility_binding
+                            .as_ref()
+                            .is_some_and(|binding| binding.revision != request.revision)
+                            || !control.enabled
+                            || control.accessibility_pending
+                            || control
+                                .accessibility_binding
+                                .as_ref()
+                                .is_some_and(|binding| binding.pending || !(binding.guard)(cx))
+                        {
+                            return false;
+                        }
+                        match &request.action {
+                            gpui::AccessibilityAction::Focus => control.focus.focus(window),
+                            gpui::AccessibilityAction::Press => {
+                                control.open = !control.open;
+                                control.focus.focus(window);
+                                cx.notify();
+                            }
+                            gpui::AccessibilityAction::Choose(index)
+                                if *index < control.choices.len() =>
+                            {
+                                control.choose(*index, window, cx);
+                                if control.accessibility_binding.is_some() {
+                                    control.accessibility_pending = true;
+                                    cx.notify();
+                                }
+                            }
+                            _ => return false,
+                        }
+                        true
+                    })
+                    .unwrap_or(false)
+            },
+        )
     }
 
     fn key_down(
@@ -669,7 +885,7 @@ impl gpui::Render for Selector {
                         ),
                 );
             }
-            return row;
+            return self.accessible_root(row, window, cx);
         }
         let selected = self.choices[self.selected].clone();
         let mut root = div()
@@ -846,7 +1062,8 @@ impl gpui::Render for Selector {
                 .with_priority(100),
             );
         }
-        root.debug_selector(|| self.id.to_string())
+        self.accessible_root(root, window, cx)
+            .debug_selector(|| self.id.to_string())
             .on_mouse_down_out(cx.listener(|selector, _, _, cx| {
                 if selector.open {
                     selector.open = false;
