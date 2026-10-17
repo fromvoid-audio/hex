@@ -1,12 +1,13 @@
 //! Browser composition and transient visual review state. Tag storage stays outside the UI.
 use super::*;
 
-const SECTIONS: [(BrowserSection, &str); 3] = [
+const SECTIONS: [(BrowserSection, &str); 4] = [
     (BrowserSection::Samples, "samples"),
     (BrowserSection::Instruments, "devices"),
     (BrowserSection::Projects, "projects"),
+    (BrowserSection::All, "all"),
 ];
-const ICONS: [&str; 6] = ["♫", "⌘", "▤", "◈", "≋", "□"];
+const ICONS: [&str; 7] = ["♫", "⌘", "▤", "◈", "≋", "□", "⌕"];
 const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("content", &["audio clip", "midi clip", "preset", "sample"]),
     ("type", &["loop", "one shot", "impulse response"]),
@@ -23,8 +24,8 @@ pub(super) struct BrowserLayout {
     editor_visible: bool,
     settings_visible: bool,
     group_open: [bool; 6],
-    visible: [bool; 3],
-    icons: [usize; 3],
+    visible: [bool; 4],
+    icons: [usize; 4],
 }
 
 impl Default for BrowserLayout {
@@ -36,8 +37,19 @@ impl Default for BrowserLayout {
             editor_visible: false,
             settings_visible: false,
             group_open: [true, true, false, false, false, false],
-            visible: [true; 3],
-            icons: [0, 1, 2],
+            visible: [true; 4],
+            icons: [0, 1, 2, 6],
+        }
+    }
+}
+
+impl BrowserLayout {
+    pub(super) fn reveal_all(&mut self) {
+        if let Some(index) = SECTIONS
+            .iter()
+            .position(|(section, _)| *section == BrowserSection::All)
+        {
+            self.visible[index] = true;
         }
     }
 }
@@ -131,7 +143,20 @@ impl EditorView {
                         .into()
                     }),
             )
-            .child(div().flex_1().min_w_0().child(self.browser.search.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|view, _, window, cx| {
+                            view.browser.results_focused = false;
+                            window.prevent_default();
+                            cx.notify();
+                        }),
+                    )
+                    .child(self.browser.search.clone()),
+            )
             .child(self.browser_icon(
                 "≡",
                 "show or hide tag filters",
@@ -241,10 +266,13 @@ impl EditorView {
                     })))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
+                        cx.listener(move |view, _, window, cx| {
                             view.browser.section = section;
-                            view.browser.selected_index = 0;
-                            view.browser.results_focused = false;
+                            view.browser.reset_results();
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
                             cx.notify();
                         }),
                     )
@@ -297,7 +325,7 @@ impl EditorView {
                                                 layout.visible.iter().position(|v| *v)
                                         {
                                             view.browser.section = SECTIONS[next].0;
-                                            view.browser.selected_index = 0;
+                                            view.browser.reset_results();
                                         }
                                         cx.notify();
                                     }),
@@ -558,29 +586,18 @@ impl EditorView {
         Some(div().flex().flex_shrink_0().min_h_0().child(editor))
     }
 
-    fn browser_selected_label(&self, cx: &App) -> String {
-        if self.browser.section == BrowserSection::Instruments {
-            let query = self.browser.search.read(cx).content.to_lowercase();
-            self.browser
-                .device_catalog
-                .as_ref()
-                .and_then(|catalog| catalog.as_ref().ok())
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .filter(|(_, entry)| {
-                            query.is_empty() || entry.name.to_lowercase().contains(&query)
-                        })
-                        .nth(self.browser.selected_index)
-                })
+    pub(super) fn browser_selected_label(&self, cx: &App) -> String {
+        let files = self.browser_visible_entries(cx);
+        let index = self.browser.selected_index;
+        if let Some(entry) = files.get(index) {
+            entry.name.clone()
+        } else {
+            self.browser_visible_devices(cx)
+                .get(index.saturating_sub(files.len()))
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
                 )
-        } else {
-            self.browser_visible_entries(cx)
-                .get(self.browser.selected_index)
-                .map_or_else(|| "no item selected".into(), |entry| entry.name.clone())
         }
     }
 
@@ -703,7 +720,7 @@ impl EditorView {
                     .text_ellipsis(),
             );
             preview.child(browser_heading(
-                if self.browser.section == BrowserSection::Instruments {
+                if !self.browser_visible_devices(cx).is_empty() {
                     "device preview · tags pending"
                 } else {
                     "select an item to preview"
