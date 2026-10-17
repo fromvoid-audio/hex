@@ -50,6 +50,19 @@ retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
+## sample bpm and shift edge stretching — pulse2781 / PR387, 17 october2026
+
+Authored original sample BPM, canonical affine edge stretch and metadata-only
+preview/release wiring are implemented in a separate follow-up. Five model/storage
+fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
+both-edge stationary Shift gesture checks pass; excessive stretch refuses project/history
+commit. Escape preview persistence was reproduced and repaired; active-window
+Escape/focus/deactivation and canceled re-entry checks pass. Final exact-source
+CI remains pending on the final projection candidate. Merged388 supplies
+ordinary trim visibility;387 adds accepted-peak changed-root projection for live
+Shift stretch. Stability2764/PR372 stays separate; final projection checks and
+coordinator-owned native acceptance remain pending. See docs/sample-bpm-stretch.md for behavior and
+finite coordinator-only native checklist. No Mac execution or app replacement.
 
 ## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
 

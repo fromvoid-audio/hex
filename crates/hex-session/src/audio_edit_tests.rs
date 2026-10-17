@@ -158,3 +158,24 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
     renderer.render(&mut actual).unwrap();
     assert!(actual.iter().any(|frame| frame[0] != 0.0));
 }
+
+#[test]
+fn excessive_stretch_is_refused_before_project_or_undo_commit() {
+    let (mut session, clip, previous) = fixture();
+    let before = session.project().snapshot();
+    let history = (session.can_undo(), session.can_redo());
+    let result = session.command_prepared_revision(
+        Command::StretchAudioClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 80_000,
+        },
+        Some(&previous),
+    );
+    assert!(
+        result.is_err(),
+        "tenfold output exceeds the existing warp ratio limit"
+    );
+    assert_eq!(session.project().snapshot(), before);
+    assert_eq!((session.can_undo(), session.can_redo()), history);
+}
