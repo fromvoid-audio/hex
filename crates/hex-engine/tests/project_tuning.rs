@@ -89,10 +89,13 @@ fn prepare(project: &Project, previous: Option<&PreparedRevision>) -> Arc<Prepar
 fn sampler(project: &Project) -> hex_lattice::PreparedAnalyticNote {
     hex_devices::native_instrument_registry()
         .unwrap()
-        .prepare_instrument_with_tuning(
+        .prepare_instrument(
             project.tracks()[0].instrument().unwrap().state(),
-            48000,
-            &project.tuning().table().unwrap(),
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &project.tuning().table().unwrap(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
         )
         .unwrap()
         .prepare_note(60, 100)
@@ -135,7 +138,7 @@ fn arrangement_session_and_reused_banks_follow_custom_pitch_and_carried_release_
                 for (i, actual) in out.into_iter().enumerate() {
                     assert_eq!(
                         actual,
-                        b.sample(777 + i as u64, gate),
+                        b.sample(777 + i as u64, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
                         "first tuning: session {session} short {short} at {i}"
                     );
                 }
@@ -146,7 +149,7 @@ fn arrangement_session_and_reused_banks_follow_custom_pitch_and_carried_release_
                 for (i, actual) in out.into_iter().enumerate() {
                     assert_eq!(
                         actual,
-                        c.sample(913 + i as u64, gate),
+                        c.sample(913 + i as u64, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
                         "rapid tuning: session {session} short {short} at {i}"
                     );
                 }
@@ -157,7 +160,10 @@ fn arrangement_session_and_reused_banks_follow_custom_pitch_and_carried_release_
                 fresh.apply(PlaybackCommand::Play);
                 fresh.render(&mut out).unwrap();
                 for (i, actual) in out.into_iter().enumerate() {
-                    assert_eq!(actual, sampler(&p2).sample(i as u64, gate));
+                    assert_eq!(
+                        actual,
+                        sampler(&p2).sample(i as u64, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                    );
                 }
             }
         }

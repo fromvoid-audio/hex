@@ -136,7 +136,8 @@ fn rollback_restores_coefficients_enable_clock_feedback_and_lfo_history() {
     ) -> Vec<StereoFrame> {
         let mut pcm = vec![[0.0; 2]; frames];
         pair.begin_block();
-        pair.process_block(events, &mut pcm).unwrap();
+        pair.process_block(events, &mut pcm, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         pair.commit_block();
         pcm
     }
@@ -201,7 +202,13 @@ fn rollback_restores_coefficients_enable_clock_feedback_and_lfo_history() {
         next_a.retarget_from(&a, &proof).unwrap();
         next_b.retarget_from(&b, &proof).unwrap();
         next_a.begin_block();
-        next_a.process_block(&[], &mut [[0.0; 2]; 128]).unwrap();
+        next_a
+            .process_block(
+                &[],
+                &mut [[0.0; 2]; 128],
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
         next_a.rollback_block();
         assert_eq!(render(&mut next_a, &[], 512), render(&mut next_b, &[], 512));
     }
@@ -281,8 +288,18 @@ fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
         let mut whole = factory.create_runtime();
         let mut partitioned = factory.create_runtime();
         let mut expected = vec![[0.0; 2]; 4096];
-        whole.preflight_events(&[event], expected.len()).unwrap();
-        whole.process_block(&[event], &mut expected);
+        whole
+            .preflight_events(
+                &[event],
+                expected.len(),
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        whole.process_block(
+            &[event],
+            &mut expected,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let mut actual = Vec::new();
         for count in [1, 31, 128, 7, 512, 3417] {
             let mut block = vec![[0.0; 2]; count];
@@ -291,8 +308,10 @@ fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
             } else {
                 &[][..]
             };
-            partitioned.preflight_events(events, count).unwrap();
-            partitioned.process_block(events, &mut block);
+            partitioned
+                .preflight_events(events, count, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            partitioned.process_block(events, &mut block, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             actual.extend(block);
         }
         assert_eq!(expected, actual, "{waveform:?}");
@@ -376,8 +395,13 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
                 occurrence_id: 43,
             },
         ];
-        old.preflight_events(&events, 777).unwrap();
-        old.process_block(&events, &mut [[0.0; 2]; 777]);
+        old.preflight_events(&events, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        old.process_block(
+            &events,
+            &mut [[0.0; 2]; 777],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let proof = Target(target.configuration.configuration_id());
         let mut next = target.create_runtime();
         assert!(!next.can_copy_history_from(old.as_ref()));
@@ -414,7 +438,11 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
             );
             assert_ne!(steps[0], old_steps[0]);
         }
-        next.process_block(&[], &mut [[0.0; 2]; 136]);
+        next.process_block(
+            &[],
+            &mut [[0.0; 2]; 136],
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        );
         let mut third = last.create_runtime();
         let proof = Target(last.configuration.configuration_id());
         assert!(third.can_retarget_history_from(next.as_ref(), &proof));
@@ -435,8 +463,8 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
         let mut expected = before;
         let mut exact = last.create_runtime();
         exact.copy_history_from(c);
-        third.process_block(&[], &mut before);
-        exact.process_block(&[], &mut expected);
+        third.process_block(&[], &mut before, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        exact.process_block(&[], &mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(before, expected);
     }
 }

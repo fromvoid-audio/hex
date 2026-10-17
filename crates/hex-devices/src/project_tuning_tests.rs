@@ -33,7 +33,14 @@ fn instrument(kind: DeviceTypeId, table: &TuningTable) -> Box<dyn PreparedNative
     let registry = native_instrument_registry().unwrap();
     let state = registry.default_state(kind).unwrap();
     registry
-        .prepare_instrument_with_tuning(&state, 48000, table)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: table,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
 }
 #[test]
@@ -45,9 +52,25 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
         operator_state::OPERATOR_TYPE_ID,
     ] {
         let state = registry.default_state(kind).unwrap();
-        let old = registry.prepare_instrument(&state, 48000).unwrap();
+        let old = registry
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let new = registry
-            .prepare_instrument_with_tuning(&state, 48000, &TuningTable::default())
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap();
         let old_context = old.prepare_shared_analytic_context().unwrap();
         let new_context = new.prepare_shared_analytic_context().unwrap();
@@ -55,7 +78,10 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
             let a = old.prepare_note(60, 100).unwrap();
             let b = new.prepare_note(60, 100).unwrap();
             for age in 0..2048 {
-                assert_eq!(old.sample(&a, age, 777), new.sample(&b, age, 777));
+                assert_eq!(
+                    old.sample(&a, age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                    new.sample(&b, age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                );
             }
         } else if let (Some(old), Some(new)) = (
             old.prepare_mutable_runtime().unwrap(),
@@ -87,14 +113,19 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
             let mut y = x;
             a.begin_block();
             b.begin_block();
-            a.process_block(&events, &mut x).unwrap();
-            b.process_block(&events, &mut y).unwrap();
+            a.process_block(&events, &mut x, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            b.process_block(&events, &mut y, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
             assert_eq!(x, y);
         } else {
             let a = old.prepare_note(60, 100).unwrap();
             let b = new.prepare_note(60, 100).unwrap();
             for age in 0..2048 {
-                assert_eq!(a.sample(age, 777), b.sample(age, 777));
+                assert_eq!(
+                    a.sample(age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                    b.sample(age, 777, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                );
             }
         }
     }
@@ -128,11 +159,20 @@ fn sine_custom_pitch_and_rapid_held_or_released_edits_follow_independent_phase_o
             let expected = lookup.sample_phase(step(196.0).wrapping_mul(age).wrapping_add(offset))
                 * amplitude
                 * 0.1;
-            assert_eq!(c.sample(age, gate), [expected; 2]);
+            assert_eq!(
+                c.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+                [expected; 2]
+            );
         }
     }
-    assert_eq!(a.sample(777, 800), b.sample(777, 800));
-    assert_eq!(b.sample(913, 800), c.sample(913, 800));
+    assert_eq!(
+        a.sample(777, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        b.sample(777, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    );
+    assert_eq!(
+        b.sample(913, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+        c.sample(913, 800, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    );
 }
 #[test]
 fn fm4_continuation_preserves_all_oscillator_phases_and_refuses_other_law_changes() {
@@ -140,7 +180,14 @@ fn fm4_continuation_preserves_all_oscillator_phases_and_refuses_other_law_change
     let state = registry.default_state(fm4::device::FM4_TYPE_ID).unwrap();
     let prepare = |state: &NativeDeviceState, hz| {
         registry
-            .prepare_instrument_with_tuning(state, 48000, &table(hz))
+            .prepare_instrument(
+                state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &table(hz),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .prepare_note(60, 100)
             .unwrap()
@@ -149,7 +196,10 @@ fn fm4_continuation_preserves_all_oscillator_phases_and_refuses_other_law_change
     let b = prepare(&state, 333.0);
     let continued = b.continue_from(&a, 777).unwrap();
     for gate in [700, 9000] {
-        assert_eq!(a.sample(777, gate), continued.sample(777, gate));
+        assert_eq!(
+            a.sample(777, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            continued.sample(777, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        );
     }
     let changed = registry
         .patch_parameter(

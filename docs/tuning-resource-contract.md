@@ -127,3 +127,32 @@ measurements separately from Mac physical/listening acceptance.
 No product decision is missing for this boundary. Concrete Rust representation
 and bounded host implementation belong to cloud4; an actual ownership/lifetime
 contradiction should be escalated through the coordinator before changing it.
+
+## analytic processing checkpoint
+
+PR373 now requires a borrowed DeviceResources inventory on inline analytic,
+shared analytic and analytic continuation sampling. Preparation context remains
+one effective rate/table/resource view. A synthetic, unregistered conformance
+provider consumes original mono/stereo PCM through the actual callback; tests
+cover age/gate, direct seek and partition equality, and actual callback total/net
+zero allocations and frees. This is an ABI proof, not sampler/root admission.
+Current engine hosts remain asset-free and explicitly pass the empty inventory.
+The inventory is scoped to one prepared device configuration, so carried voices
+must later receive their original source scope when a new graph reuses slots.
+Lower mutable-instrument preflight/clock/processing and native/owned processor
+processing/bypass callbacks now also borrow and forward the actual inventory.
+The conformance effect consumes real mono/stereo PCM through the actual effect
+trait; bypass preserves dry output while advancing its source cursor. The audio
+allocation probe measures both analytic and effect callbacks with exact PCM sums
+and zero total/net allocations and frees. Outer asset-free host chains still pass
+the empty inventory: per-configuration graph lease scopes, complete coexistence
+union accounting and retirement proof remain pending under unchanged budgets. No neutral shared-library
+2773 implementation or historical-alpha compatibility work is introduced.
+
+The unregistered mutable PCM conformance source now exercises actual committed/
+scratch twins: exact original mono/stereo samples, stale content-identity refusal
+before PCM/history mutation, rollback retry and committed continuation/exhaustion.
+This free-running source intentionally does not implement sampler MIDI semantics.
+The callback allocation probe includes pair preflight/process/commit with exact
+PCM sums and zero total/net allocations and frees. ResourceUnavailable is an
+explicit allocation-free runtime diagnostic; no registry admission is opened.

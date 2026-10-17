@@ -68,7 +68,7 @@ impl hex_lattice::NativeInstrumentDefinition for Definition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let state = self.migrate_state(state)?;
         Ok(Box::new(Context {
@@ -137,7 +137,13 @@ impl PreparedSharedAnalyticContext for Context {
         payload[1] = u64::from(velocity);
         Ok(PreparedSharedAnalyticNote::new(payload, RELEASE))
     }
-    fn sample(&self, _: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> [f32; 2] {
+    fn sample(
+        &self,
+        _: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> [f32; 2] {
         signal(age, gate, self.gain)
     }
 }
@@ -222,6 +228,7 @@ impl PreparedAnalyticContinuation for Context {
         note: &PreparedSharedAnalyticNote,
         age: u64,
         gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<[f32; 2], Error> {
         self.validate_note(note)?;
         if self.refusal == 2 && age % 17 == 0 {

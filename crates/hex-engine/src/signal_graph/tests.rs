@@ -71,7 +71,7 @@ impl NativeDeviceDefinition for Definition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         let delay = u32::from_le_bytes(
@@ -113,7 +113,11 @@ struct Runtime {
     cursor: usize,
 }
 impl NativeProcessorRuntime for Runtime {
-    fn process_block(&mut self, frames: &mut [Frame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [Frame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             if !self.ring.is_empty() {
                 std::mem::swap(frame, &mut self.ring[self.cursor]);
@@ -433,7 +437,7 @@ impl hex_lattice::NativeInstrumentDefinition for InstrumentDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         self.migrate_state(state)?;
         Ok(Box::new(Instrument))
@@ -451,7 +455,7 @@ impl hex_lattice::PreparedNativeInstrument for Instrument {
         Ok(hex_lattice::PreparedAnalyticNote::new(
             [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
             5,
-            |_, age, _, _| if age == 5 { [0.25, -0.5] } else { [0.0; 2] },
+            |_, age, _, _, _| if age == 5 { [0.25, -0.5] } else { [0.0; 2] },
         ))
     }
 }

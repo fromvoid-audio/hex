@@ -174,7 +174,11 @@ impl PreparedMidiNote {
         gate_frames: u64,
     ) -> Result<Frame, Invalid> {
         match self {
-            Self::Inline(note) => Ok(note.sample(age_frames, gate_frames)),
+            Self::Inline(note) => Ok(note.sample(
+                age_frames,
+                gate_frames,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )),
             Self::Shared {
                 context,
                 note,
@@ -209,10 +213,22 @@ impl PreparedMidiNote {
                             Invalid("shared analytic continuation parameters were refused")
                         })?;
                     provider
-                        .sample_with_parameters(target, &parameters, note, age_frames, gate_frames)
+                        .sample_with_parameters(
+                            target,
+                            &parameters,
+                            note,
+                            age_frames,
+                            gate_frames,
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        )
                         .map_err(|_| Invalid("shared analytic continuation sample was refused"))
                 } else {
-                    Ok(owner.context().sample(note, age_frames, gate_frames))
+                    Ok(owner.context().sample(
+                        note,
+                        age_frames,
+                        gate_frames,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    ))
                 }
             }
         }
@@ -256,6 +272,7 @@ fn silent_sample(
     _age_frames: u64,
     _gate_frames: u64,
     _release_frames: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     [0.0; 2]
 }
@@ -548,6 +565,7 @@ mod tests {
         _age: u64,
         _gate: u64,
         _release: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         [payload[0] as f32, (payload[1] + payload[2]) as f32]
     }
@@ -588,8 +606,14 @@ mod tests {
         let PreparedMidiNote::Inline(second_sampler) = second_sampler else {
             panic!("test instrument should use inline analytic notes");
         };
-        assert_eq!(first_sampler.sample(0, 1), [11.0, 160.0]);
-        assert_eq!(second_sampler.sample(0, 1), [29.0, 160.0]);
+        assert_eq!(
+            first_sampler.sample(0, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            [11.0, 160.0]
+        );
+        assert_eq!(
+            second_sampler.sample(0, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
+            [29.0, 160.0]
+        );
         assert!(!Arc::ptr_eq(&first, &second));
     }
 

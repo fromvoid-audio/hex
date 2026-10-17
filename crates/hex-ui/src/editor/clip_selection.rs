@@ -179,6 +179,20 @@ mod tests {
     use hex_project::{BeatTime, Command, Created, Editor};
     use std::sync::Arc;
 
+    fn window(
+        cx: &mut TestAppContext,
+        project: Project,
+    ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
+        let asset = project.tracks()[0].clips()[0].asset();
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            hex_engine::Audio::new(48_000, vec![[0.0; 2]; 96_000]).unwrap(),
+        )]);
+        let (_, preview) = hex_engine::compile::project_with_midi_preview(&project, &media)
+            .expect("real prepared mixed-clip preview");
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::new(preview))
+    }
+
     fn fixture() -> (Project, Vec<ClipId>, ClipId) {
         let (project, track, target, imported) = super::super::clip_drag_ui_test::audio_project();
         let asset = project.clip(imported).unwrap().asset();
@@ -280,8 +294,7 @@ mod tests {
     ) {
         let (project, clips, _) = fixture();
         let original = project.clone();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let (handle, editor) = window(cx, project);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let shift = Modifiers {
@@ -322,8 +335,7 @@ mod tests {
     ) {
         let (project, clips, other) = fixture();
         let target = project.tracks()[1].id();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let (handle, editor) = window(cx, project);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         let command = Modifiers {
@@ -392,8 +404,7 @@ mod tests {
     #[gpui::test]
     fn same_primary_membership_change_repaints_retained_audio_and_midi(cx: &mut TestAppContext) {
         let (project, clips, _) = fixture();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let (handle, editor) = window(cx, project);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         click(&mut visual, clips[0], Modifiers::default());
