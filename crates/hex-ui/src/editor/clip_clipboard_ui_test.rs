@@ -227,21 +227,39 @@ fn copied_whole_clips_survive_destination_click_repeated_paste_undo_and_text_foc
             assert!(view.browser.search.read(cx).content.contains("kept text"));
         });
         // Text copy must not replace the independent Arrangement clipboard.
-        destination(&editor, &mut visual, target, 0.10);
+        let text_destination = destination(&editor, &mut visual, target, 0.10);
         visual.simulate_keystrokes("cmd-v");
         pump(&editor, &mut visual);
+        let persisted = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            for index in 0..copied_count {
+                assert!(
+                    project
+                        .track(target)
+                        .unwrap()
+                        .clips()
+                        .iter()
+                        .any(|c| c.start() == text_destination + index as u64 * 96_000
+                            && c.duration() == 48_000)
+                );
+            }
+            project.snapshot()
+        });
+        let saved_path = path.with_file_name(if multiple {
+            "multiple.hex"
+        } else {
+            "single.hex"
+        });
+        editor.update(&mut visual, |view, _| {
+            view.enqueue(Request::SaveNew(saved_path.clone()));
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |view, _| {
+            view.enqueue(Request::Open(saved_path));
+        });
+        pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            assert!(
-                view.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .track(target)
-                    .unwrap()
-                    .clips()
-                    .iter()
-                    .any(|c| c.duration() == 48_000)
-            )
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), persisted)
         });
     }
 }

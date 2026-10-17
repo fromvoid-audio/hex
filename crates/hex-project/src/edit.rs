@@ -187,13 +187,14 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
-    /// Keyboard paste that preserves original track IDs for multi-row clipboards.
+    /// Paste complete clips, retaining relative timing and stable multi-track owners.
     PasteClips {
         clipboard: std::sync::Arc<crate::ClipClipboard>,
         track: TrackId,
         frame: u64,
         insert: bool,
     },
+    /// Keyboard paste that preserves original track IDs for multi-row clipboards.
     PasteTimeRangeOnSourceTracks {
         clipboard: std::sync::Arc<crate::RangeClipboard>,
         track: TrackId,
