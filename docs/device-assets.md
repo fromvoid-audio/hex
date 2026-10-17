@@ -30,14 +30,16 @@ excluding host gains; `without_host_gains` retains bindings.
 
 ## persistence and refusal
 
-Asset-free projects retain schema29. Asset-bearing projects use schema30: the
-complete strict schema29 body plus a required manifest entry for every device,
+The combined current schema31 always requires tuning and device assets, over
+the complete strict prior body, with a required manifest entry for every device,
 including empty lists. Missing/duplicate/unknown devices, duplicate slots, invalid
 IDs, unresolved catalog assets and oversized lists refuse. Original JSON keys
 are checked before adapting the old body, retaining duplicate-key rejection.
 Schema20/22 writers explicitly refuse references; they cannot silently omit them.
 Presets similarly refuse until a portable asset manifest/remapping exists.
-Paths remain in the existing project asset catalog with original case.
+Paths remain in the existing project asset catalog with original case. Superseded
+alpha schema30 refuses explicitly, regardless of its field combination; opening
+does not convert or rewrite it. Existing readers through29 remain unchanged.
 
 This reference list has no runtime storage-ownership proof. Supported processing
 therefore rejects nonempty references before codec migration, including bypassed

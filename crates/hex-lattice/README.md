@@ -1,5 +1,11 @@
 # hex-lattice
 
+Borrowed `NodeSignalPhase` taps bracket a complete native effect entry: input
+before host input trim, output after processing and output trim. Each pair uses
+the same stable identity, offset and length. Existing post-only observers remain
+supported; observation never transfers sample or runtime ownership. Host render
+success and final output validation still determine whether samples may publish.
+
 Supported registry preparation and public prepared-chain admission currently
 reject nonempty device asset references before provider migration/preparation.
 Metadata queries, state migration and edits preserve host-owned references but

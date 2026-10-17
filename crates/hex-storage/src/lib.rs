@@ -129,14 +129,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema30 when device asset references are present, otherwise schema29.
-/// Both preserve fades, nested events, appearance, routing and gain metadata.
-/// Historical readers remain explicit.
+/// Encode the single current schema31 envelope with required tuning and complete
+/// device asset manifests, preserving all other active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::device_assets::has_references(project) {
-        return encode_document(&schema::device_assets::DocumentV30::from_project(project)?);
-    }
-    encode_document(&schema::fade_shapes::DocumentV29::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV31::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -152,6 +148,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.tuning() != hex_tuning::ProjectTuning::default() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save project tuning",
+        ));
+    }
     schema::device_assets::refuse_legacy(project)?;
     if project.tracks().iter().any(|t| {
         t.clips().iter().any(|c| c.name() != "clip")
