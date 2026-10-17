@@ -728,21 +728,16 @@ impl EditorView {
             .truncate()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(theme::text(track.name()))
+            .child(self.track_name_label(track, cx))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: track_name.clone(),
                 })
                 .into()
-            })
-            .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    view.select_track_with_modifiers(track_id, event.modifiers(), window);
-                    cx.notify();
-                }),
-            );
+            });
         let track_controls = div()
             .debug_selector(move || format!("track-controls-{}", track_id.value()))
+            .on_click(|_, _, cx| cx.stop_propagation())
             .flex()
             .items_center()
             .gap_1()
@@ -877,9 +872,20 @@ impl EditorView {
                     cx.notify();
                 })),
             );
+        let header_focus = self.track_header_focus(track_id, cx);
+        let click_focus = header_focus.clone();
         let header = div()
             .id(("arrangement-track-header", track_id.value()))
             .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
+            .track_focus(&header_focus)
+            .key_context("hex_track_header")
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    view.select_track_with_modifiers(track_id, event.modifiers(), window);
+                    click_focus.focus(window);
+                    cx.notify();
+                }),
+            )
             .w(px(self.track_header_width()))
             .h(px(self.track_height(track_id)))
             .flex_shrink_0()

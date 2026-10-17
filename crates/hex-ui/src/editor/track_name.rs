@@ -207,19 +207,25 @@ impl EditorView {
         cx.notify();
     }
     /// Existing header geometry and tooltip remain owned by tracks.rs.
+    pub(super) fn track_header_focus(
+        &mut self,
+        track: TrackId,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        self.track_name
+            .focuses
+            .entry(track)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
     pub(super) fn track_name_label(
         &mut self,
         track: &Track,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let id = track.id();
-        let focus = self
-            .track_name
-            .focuses
-            .entry(id)
-            .or_insert_with(|| cx.focus_handle())
-            .clone();
-        let click_focus = focus.clone();
+        let click_focus = self.track_header_focus(id, cx);
         let content = if let Some(edit) = &self.track_name.edit
             && edit.track == id
         {
@@ -232,8 +238,6 @@ impl EditorView {
         div()
             .min_w_0()
             .flex_1()
-            .track_focus(&focus)
-            .key_context("hex_track_header")
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     cx.stop_propagation();
@@ -335,10 +339,19 @@ mod tests {
         let (handle, editor) = editor_window(cx, project, Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        click(
-            &mut visual,
-            Box::leak(format!("track-name-{}", track.value()).into_boxed_str()),
+        // The empty header background also owns track focus, not just its name.
+        let header = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let blank = gpui::point(
+            header.right() - gpui::px(12.0),
+            header.top() + gpui::px(1.0),
         );
+        visual.simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
         visual.simulate_keystrokes("cmd-r");
         visual.run_until_parked();
         assert!(visual.debug_bounds("track-name-input").is_some());
