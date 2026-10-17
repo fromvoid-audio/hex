@@ -322,3 +322,187 @@ fn atomic_metadata_preflights_all_access_and_semantics_before_any_private_patch(
         );
     }
 }
+
+// A production harmonic edit writes 64 parameters. Count whole descriptor
+// enumerations instead of asserting wall-clock timing under machine load.
+const BATCH_SIZE: usize = 64;
+const fn batch_descriptors() -> [ParameterDescriptor; BATCH_SIZE] {
+    let mut descriptors = [DESCRIPTOR; BATCH_SIZE];
+    let mut index = 0;
+    while index < BATCH_SIZE {
+        descriptors[index].id = ParameterId::from_static(index as u32 + 1);
+        index += 1;
+    }
+    descriptors
+}
+const BATCH_DESCRIPTORS: [ParameterDescriptor; BATCH_SIZE] = batch_descriptors();
+#[derive(Clone, Copy)]
+enum CandidateChange {
+    None,
+    Remove,
+    Narrow,
+    ReadOnly,
+}
+struct BatchDefinition {
+    enumerations: std::sync::atomic::AtomicUsize,
+    patches: std::sync::atomic::AtomicUsize,
+    change: CandidateChange,
+}
+impl BatchDefinition {
+    fn new(change: CandidateChange) -> Self {
+        Self {
+            enumerations: 0.into(),
+            patches: 0.into(),
+            change,
+        }
+    }
+}
+impl NativeDeviceMetadata for BatchDefinition {
+    fn type_id(&self) -> DeviceTypeId {
+        DeviceTypeId::from_static("fixture.batch")
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &BATCH_DESCRIPTORS
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        NativeDeviceState::new(self.type_id(), 1, vec![0])
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state.type_id() != self.type_id() {
+            return Err(DeviceContractError::WrongDeviceType);
+        }
+        if state.state_version() != 1 {
+            return Err(DeviceContractError::UnsupportedStateVersion);
+        }
+        if !matches!(state.payload(), [0] | [1]) {
+            return Err(DeviceContractError::MalformedState);
+        }
+        Ok(state.clone())
+    }
+    fn parameters_for_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut descriptors = self.descriptors().to_vec();
+        if state.payload() == [1] {
+            match self.change {
+                CandidateChange::Remove => {
+                    descriptors.retain(|d| d.id != ParameterId::from_static(2))
+                }
+                CandidateChange::Narrow => {
+                    descriptors[1].kind = ParameterKind::Float {
+                        min: 1.0,
+                        max: 5.0,
+                        unit: None,
+                    };
+                    descriptors[1].default = ParameterValue::Float(3.0);
+                }
+                _ => {}
+            }
+        }
+        Ok(descriptors)
+    }
+    fn read_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _id: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Ok(DESCRIPTOR.default)
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+        if state.payload() == [1]
+            && id == ParameterId::from_static(2)
+            && matches!(self.change, CandidateChange::ReadOnly)
+        {
+            let mut declaration = semantics();
+            declaration.access = ParameterAccess::ReadOnly;
+            return Ok(Some(declaration));
+        }
+        Ok(None)
+    }
+    fn patch_parameter(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+        _value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        self.patches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if id == ID && !matches!(self.change, CandidateChange::None) {
+            return NativeDeviceState::new(self.type_id(), 1, vec![1]);
+        }
+        Ok(state.clone())
+    }
+}
+#[test]
+fn atomic_semantics_preflight_does_not_repeat_whole_enumeration_per_entry() {
+    let definition = BatchDefinition::new(CandidateChange::None);
+    let source = definition.default_state().unwrap();
+    let values: Vec<_> = BATCH_DESCRIPTORS
+        .iter()
+        .map(|d| (d.id, d.default))
+        .collect();
+    let snapshot = DeviceParameterSnapshot::new(&values).unwrap();
+    definition.patch_parameters(&source, &snapshot).unwrap();
+    assert_eq!(
+        definition
+            .patches
+            .load(std::sync::atomic::Ordering::Relaxed),
+        BATCH_SIZE
+    );
+    assert!(
+        definition
+            .enumerations
+            .load(std::sync::atomic::Ordering::Relaxed)
+            <= BATCH_SIZE + 1,
+        "snapshot preflight redundantly enumerated the full descriptor set"
+    );
+}
+#[test]
+fn atomic_candidate_membership_domain_and_access_are_rechecked_before_patch() {
+    for (change, expected) in [
+        (
+            CandidateChange::Remove,
+            DeviceContractError::UnknownParameter,
+        ),
+        (
+            CandidateChange::Narrow,
+            DeviceContractError::InvalidParameterValue,
+        ),
+        (
+            CandidateChange::ReadOnly,
+            DeviceContractError::InvalidParameterValue,
+        ),
+    ] {
+        let definition = BatchDefinition::new(change);
+        let source = definition.default_state().unwrap();
+        let snapshot = DeviceParameterSnapshot::new(&[
+            (ID, DESCRIPTOR.default),
+            (ParameterId::from_static(2), DESCRIPTOR.default),
+        ])
+        .unwrap();
+        assert_eq!(
+            definition.patch_parameters(&source, &snapshot),
+            Err(expected)
+        );
+        assert_eq!(
+            definition
+                .patches
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(source.payload(), [0]);
+    }
+}
