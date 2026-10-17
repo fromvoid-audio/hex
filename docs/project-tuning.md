@@ -32,23 +32,24 @@ inferred from its private repository.
 ## finite feature acceptance
 
 The table is the requested editor scope. A model or popup alone does not satisfy
-it. Status describes this prerequisite, not completion of the entire feature.
+it. Source implementation and automated checks are recorded below; every native
+interaction/listening item still needs the finite Mac acceptance pass.
 
 | feature | reference behavior | owning follow-up / evidence |
 | --- | --- | --- |
-| entry and editor | top-level `tuning` entry; integrated native editor, useful resizing, focus/shortcuts, lowercase themed controls and bundled typography | #2741 / PR352; pending |
-| nodes | Hz and cents per degree, Enter apply, Escape/blur cancel, arrow stepping and Shift fine, scrolling, context insert/remove; root retained, minimum three | scale math in #2739; native interactions #2741 pending |
-| pitch line | drag/fine, selected frequency/cents readout, double-click insert-and-drag/remove, note numbers and density-aware cents, held/recent MIDI highlights | #2741 pending |
-| pitch space | cohesion/root-affinity variations, selectable point, dice regeneration, live Reach drag | harmonic analysis in #2739; variation/editor #2741 pending |
-| lattice and statistics | circular harmonic relationships, selected pair, root affinity, whole-scale and three-note relationship metrics | analysis in #2739; native display #2741 pending |
-| reference | root degree/key/Hz, repeat 600–2400 cents, ratio snapping and Shift-repeat snapping | model in #2739; native bindings #2741 pending |
-| scale structure | 3–48 notes, typed/step count and visible errors, adjacent MIDI keys advance degrees and wrap periods | model/math #2739; runtime #2740/editor #2741 pending |
-| settings | equal divisions, just major, snap selected node | scale math #2739; native actions #2741 pending |
-| history | canonical undo/redo, Cmd-Z/Cmd-Shift-Z, complete drag or insert gesture is one step | discrete project history #2739; grouped editor gestures #2741 pending |
-| local library | eight named slots, save/load/rename/duplicate/import/export, FREQS1/2/3 compatibility; names remain library metadata | bounded portable codec #2739; background file operations/UI #2741 pending |
-| audition | triangle/square/saw, level, attack, release; live pitch follows tuning with finite voice/note-off ownership | project-saved settings #2739; audio/UI #2741 pending |
+| entry and editor | top-level `tuning` entry; integrated native editor, useful resizing, focus/shortcuts, lowercase themed controls and bundled typography | #2741 / PR352; source implemented, native acceptance pending |
+| nodes | Hz and cents per degree, Enter apply, Escape/blur cancel, arrow stepping and Shift fine, scrolling, context insert/remove; root retained, minimum three | scale math in #2739; native interactions implemented in #2741; Mac acceptance pending |
+| pitch line | drag/fine, selected frequency/cents readout, double-click insert-and-drag/remove, note numbers and density-aware cents, held/recent MIDI highlights | #2741 implemented; native acceptance pending |
+| pitch space | cohesion/root-affinity variations, selectable point, dice regeneration, live Reach drag | harmonic analysis in #2739; variation/editor #2741 implemented; native acceptance pending |
+| lattice and statistics | circular harmonic relationships, selected pair, root affinity, whole-scale and three-note relationship metrics | analysis in #2739; native display #2741 implemented; native acceptance pending |
+| reference | root degree/key/Hz, repeat 600–2400 cents, ratio snapping and Shift-repeat snapping | model in #2739; native bindings #2741 implemented; native acceptance pending |
+| scale structure | 3–48 notes, typed/step count and visible errors, adjacent MIDI keys advance degrees and wrap periods | model/math #2739; runtime #2740/editor #2741 implemented; native acceptance pending |
+| settings | equal divisions, just major, snap selected node | scale math #2739; native actions #2741 implemented; native acceptance pending |
+| history | canonical undo/redo, Cmd-Z/Cmd-Shift-Z, complete drag or insert gesture is one step | discrete project history #2739; grouped editor gestures #2741 implemented; native acceptance pending |
+| local library | eight named slots, save/load/rename/duplicate/import/export, FREQS1/2/3 compatibility; names remain library metadata | bounded portable codec #2739; background file operations/UI #2741 implemented; native acceptance pending |
+| audition | triangle/square/saw, level, attack, release; live pitch follows tuning with finite voice/note-off ownership | project-saved settings #2739; audio/UI #2741 implemented; native acceptance pending |
 | save project | working scale and audition settings travel with project, independent of local library; malformed data refuses safely | #2739 |
-| native playback | one table for native pitched instruments, Arrangement, Session, preview and export; explicit fixed-Hz/held-voice policy | #2740 / PR351 pending |
+| native playback | one table for native pitched instruments, Arrangement, Session, preview and export; explicit fixed-Hz/held-voice policy | #2740 / PR351 implemented and focused-tested; native listening pending |
 | MTS-ESP | master status/client count, safe ownership and lifecycle; compatible clients only | #2742 / PR353 pending |
 
 ## canonical data contract
@@ -76,10 +77,10 @@ Native DSP must consume control-prepared immutable project tuning directly. MTS
 is an external compatibility transport; missing MTS cannot disable native scale
 editing/persistence or silently restore equal temperament. Runtime cache identity,
 held/released voice transfer and fixed oscillator semantics require #2740's tests
-before tuned playback is claimed. This prerequisite explicitly refuses enabled
-tuning at both Arrangement and Session admission, preserving prior project/history
-rather than silently rendering the wrong pitches. #2740 must replace both guards
-with the verified tuned runtime. Offline export never registers an MTS master.
+before tuned playback is claimed. The native runtime in #2740 prepares both
+Arrangement and Session from the effective table, with history and independent
+pitch/PCM tests. Unsupported resource-backed providers still refuse explicitly
+before publication. Offline export never registers an MTS master.
 
 The selected architecture for #2742 is one desktop-owned publisher behind an
 explicitly audited, pinned safe native dependency. Workspace unsafe remains
