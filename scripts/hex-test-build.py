@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -237,11 +238,23 @@ def check_install_workspace(workspace: Path, *, apps: bool = True) -> None:
 def remove_install_workspace(workspace: Path) -> None:
     # Never recursively remove this directory: it can acquire Finder metadata
     # after publication. Inspect every member before unlinking that one file.
-    check_install_workspace(workspace, apps=False)
-    metadata = workspace / ".DS_Store"
-    if metadata.exists():
-        metadata.unlink()
-    workspace.rmdir()
+    for attempt in range(2):
+        check_install_workspace(workspace, apps=False)
+        metadata = workspace / ".DS_Store"
+        if metadata.exists():
+            metadata.unlink()
+        try:
+            workspace.rmdir()
+            break
+        except OSError as error:
+            if error.errno != errno.ENOTEMPTY:
+                raise
+            # Finder can recreate metadata immediately before rmdir. Reinspect
+            # every member, refuse foreign data, and retry only once. Continued
+            # interference remains an honest incomplete installation.
+            check_install_workspace(workspace, apps=False)
+            if attempt == 1:
+                raise
     sync_directory(workspace.parent)
 
 

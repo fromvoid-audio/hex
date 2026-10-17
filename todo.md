@@ -9,7 +9,12 @@ Only regular Finder metadata in the fixed owned workspace is removed. Unknown
 entries, symlinks and directories remain refused/preserved; running-app checks,
 activation locks, signing and source/inventory validation remain intact. Portable
 regressions cover late unexpected members, safe refusal, normal rebuild retry,
-metadata-only recovery and idempotence. Exact final full CI and serial native
+metadata-only recovery and idempotence. Independent review identified the later
+first-rmdir race: a new before-failing regression now verifies one ENOTEMPTY-only
+retry, late unknown/link preservation and bounded exhaustion with actual durable
+release-owner READY/PENDING assertions (compilation/native tools substituted).
+The original b101 run remains frozen historical evidence; repaired-head exact
+full CI and serial native
 fixture/recovery remain pending. No Mac files were changed by this cloud work.
 Recovery uses qualified fixed source and the existing explicit release-adoption
 normal bundle retry, not a manual sidecar/owner write or a finalize-only API.

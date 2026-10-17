@@ -160,6 +160,9 @@ The fixed, locked installation workspace permits one incidental Finder file,
 it never recursively deletes the workspace or accepts other hidden files,
 directories or symlinks as metadata. This also covers Finder adding the file
 after the new app is verified and temporary old-app custody is deleted.
+If Finder recreates it immediately before directory removal, ENOTEMPTY triggers
+one bounded reinspection/retry with the same rules. Unknown members still stop;
+continued interference or any other removal error reports incomplete delivery.
 
 Publication is committed when the new stable app verifies. Cleanup is outside
 the rollback block: after custody deletion there is no prior app to restore.
