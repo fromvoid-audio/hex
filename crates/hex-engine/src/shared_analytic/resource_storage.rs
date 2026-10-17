@@ -233,3 +233,82 @@ impl<'a> AudioRootStorageLedger<'a> {
         self.mutate(|ledger| session.visit_inline_resource_owners_on_control(ledger, role))
     }
 }
+
+pub(crate) fn visit_table_contents<'a>(
+    table: &'a OwnedShared<SharedAnalyticContextTable>,
+    ledger: &mut AudioRootStorageLedger<'a>,
+) -> Result<(), AudioStorageError> {
+    let visited = ledger.contains_shared_storage(table.arc());
+    ledger.shared(
+        table.arc(),
+        table.parts(),
+        Owner::exclusive(table),
+        crate::audio_only_inputs::handle()?,
+        None,
+    )?;
+    if visited {
+        return Ok(());
+    }
+    let SharedAnalyticContextTable {
+        tuning,
+        tuning_identity,
+        owners,
+        ids,
+        payload_bytes,
+        mutable_continuations,
+    } = table.as_ref();
+    let _: &[f64; 128] = tuning.frequencies();
+    let _: u64 = tuning_identity.0;
+    if *payload_bytes != 0 {
+        // Deep provider contexts are still opaque. A declared count cannot
+        // certify their actual allocation graph.
+        return Err(AudioStorageError::UnknownStorage);
+    }
+    ledger.vec(owners)?;
+    ledger.vec(ids)?;
+    ledger.vec(mutable_continuations)?;
+    for owner in owners {
+        visit_owner_contents(owner, ledger)?;
+    }
+    Ok(())
+}
+pub(crate) fn visit_table<'a>(
+    table: &'a OwnedShared<SharedAnalyticContextTable>,
+    ledger: &mut AudioRootStorageLedger<'a>,
+    role: AudioStorageRole,
+) -> Result<(), AudioStorageError> {
+    // One cached template can be held by multiple real revisions. Its one
+    // physical table field is counted once, while distinct table aliases still
+    // require distinct headers/handles even when their allocation is shared.
+    if ledger.contains_root(table) {
+        return Ok(());
+    }
+    ledger.root(table, role)?;
+    visit_table_contents(table, ledger)
+}
+impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual Arrangement and Session context table headers, backing capacities
+    /// and nested resource-owner metadata. Includes both physical table handles
+    /// when their allocation is shared. Opaque provider contexts and enclosing
+    /// graph/runtime storage remain unsupported;
+    /// this grants no publication or retirement authority. Do not combine with
+    /// overlapping inline-owner-only inventory of the same physical fields.
+    pub fn borrow_revision_context_tables_on_control(
+        &mut self,
+        revision: &'a crate::PreparedRevision,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            visit_table(revision.arrangement().shared_contexts(), ledger, role)?;
+            visit_table(revision.session().shared_contexts(), ledger, role)?;
+            for track in revision.arrangement().tracks() {
+                if let Some(instrument) = &track.instrument {
+                    visit_table(&instrument.shared_contexts, ledger, role)?;
+                }
+            }
+            revision
+                .session()
+                .visit_midi_context_tables_on_control(ledger, role)
+        })
+    }
+}

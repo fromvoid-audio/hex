@@ -732,3 +732,243 @@ fn actual_prepared_context_and_mutable_host_share_one_configuration_body_until_c
         retired + 1
     );
 }
+
+#[test]
+fn actual_prepared_revision_preserves_context_table_receipts_and_both_physical_headers() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    if !crate::pcm_arc::native_layout_known() {
+        return;
+    }
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "table metadata".into(),
+        })
+        .unwrap();
+    let revision = crate::PreparedRevision::prepare(
+        editor.project(),
+        &std::collections::BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let arrangement = revision.arrangement().shared_contexts();
+    let session = revision.session().shared_contexts();
+    assert!(Arc::ptr_eq(arrangement.arc(), session.arc()));
+    assert_eq!(Arc::strong_count(arrangement.arc()), 2);
+    let parts = arrangement.parts().unwrap();
+    assert_eq!(session.parts(), Some(parts));
+    assert!(arrangement.owners.is_empty());
+    assert!(arrangement.owners.capacity() > 0); // Empty does not mean free.
+    assert!(arrangement.mutable_continuations.capacity() > 0);
+    let expected = parts.0
+        + parts.1
+        + 2 * std::mem::size_of_val(arrangement)
+        + arrangement.owners.capacity() * std::mem::size_of::<SharedContextLease>()
+        + arrangement.ids.capacity() * std::mem::size_of::<(SharedContextId, u16)>()
+        + arrangement.mutable_continuations.capacity() * std::mem::size_of::<(TrackId, DeviceId)>();
+    let reservation = AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 32,
+        root_rows: 16,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let mut omitted = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    omitted
+        .mutate(|ledger| {
+            resource_storage::visit_table(arrangement, ledger, AudioStorageRole::Current)
+        })
+        .unwrap();
+    assert!(omitted.validate_closed_shared_handles().is_err());
+    drop(omitted);
+    let inventory = |reservation| {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+        ledger.borrow_revision_context_tables_on_control(&revision, AudioStorageRole::Current)?;
+        ledger.validate_closed_shared_handles()?;
+        ledger.summary()
+    };
+    let summary = inventory(reservation).unwrap();
+    assert_eq!(summary.data_bytes, expected);
+    assert_eq!(summary.data_allocations, 3); // Body and two spare Vec buffers.
+    assert_eq!(summary.unresolved_handles, 2);
+    assert_eq!(
+        inventory(AudioStorageLedgerReservation {
+            max_retained_bytes: summary.retained_bytes,
+            max_construction_peak_bytes: summary.construction_peak_bytes,
+            ..reservation
+        })
+        .unwrap(),
+        summary
+    );
+    assert!(
+        inventory(AudioStorageLedgerReservation {
+            max_retained_bytes: summary.retained_bytes - 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    assert!(
+        inventory(AudioStorageLedgerReservation {
+            max_construction_peak_bytes: summary.construction_peak_bytes - 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    assert!(
+        inventory(AudioStorageLedgerReservation {
+            handle_rows: 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    // Borrowing a genuine extra control handle cannot manufacture a new body.
+    let archive = arrangement.clone_on_control();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_revision_context_tables_on_control(&revision, AudioStorageRole::Current)
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    let before = ledger.summary().unwrap();
+    ledger
+        .mutate(|ledger| resource_storage::visit_table(&archive, ledger, AudioStorageRole::Archive))
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    let after = ledger.summary().unwrap();
+    assert_eq!(after.data_allocations, before.data_allocations);
+    assert_eq!(
+        after.data_bytes - before.data_bytes,
+        std::mem::size_of_val(&archive)
+    );
+}
+
+#[test]
+fn raw_context_table_arc_cannot_gain_a_constructor_receipt_from_empty_fields_or_alias_counts() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let raw = crate::owned_shared::OwnedShared::untracked(Arc::new(
+        SharedAnalyticContextTable::default(),
+    ));
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 32,
+        root_rows: 16,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    })
+    .unwrap();
+    assert!(matches!(
+        ledger.mutate(|ledger| resource_storage::visit_table(
+            &raw,
+            ledger,
+            AudioStorageRole::Current
+        )),
+        Err(crate::AudioStorageError::UnknownStorage)
+    ));
+    assert!(ledger.summary().is_err());
+    assert_eq!(Arc::strong_count(raw.arc()), 1);
+}
+
+#[test]
+fn actual_cached_midi_template_keeps_its_original_table_receipt_across_revision_retirement() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    use hex_project::{BeatTime, Command, Created};
+    if !crate::pcm_arc::native_layout_known() {
+        return;
+    }
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "retained midi table".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "source scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let length = BeatTime::from_quarters(4).unwrap();
+    let Created::SessionClip(cell) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "source cell".into(),
+            source_length: length,
+        })
+        .unwrap()
+    else {
+        panic!("cell")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    for clip in [cell, clip] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let table = Arc::new(hex_devices::SineTable::new());
+    let media = std::collections::BTreeMap::new();
+    let first =
+        crate::PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None)
+            .unwrap();
+    let second =
+        crate::PreparedRevision::prepare(editor.project(), &media, table, Some(first.session()))
+            .unwrap();
+    assert!(std::ptr::eq(
+        first.session().midi_clips()[0].instrument_template(),
+        second.session().midi_clips()[0].instrument_template()
+    ));
+    assert!(!Arc::ptr_eq(
+        first.arrangement().shared_contexts().arc(),
+        second.arrangement().shared_contexts().arc()
+    ));
+    let reservation = AudioStorageLedgerReservation {
+        data_rows: 128,
+        handle_rows: 64,
+        root_rows: 32,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_revision_context_tables_on_control(&second, AudioStorageRole::Current)
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    ledger
+        .borrow_revision_context_tables_on_control(&first, AudioStorageRole::Predecessor)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    let union = ledger.summary().unwrap();
+    drop(ledger);
+    drop(first);
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_revision_context_tables_on_control(&second, AudioStorageRole::Current)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    let retained = ledger.summary().unwrap();
+    assert!(retained.data_bytes < union.data_bytes);
+    // Both old cached and fresh current table bodies remain, with fewer actual
+    // header fields. Retiring the old revision does not copy/recreate its body.
+    assert_eq!(retained.data_allocations, union.data_allocations);
+}

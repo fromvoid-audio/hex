@@ -1895,7 +1895,8 @@ pub(crate) struct InstrumentTrack {
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
     pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
-    pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    pub(crate) shared_contexts:
+        owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
 }
 
@@ -2031,11 +2032,11 @@ impl Project {
         return_buses: Vec<ReturnBus>,
         loop_region: Option<hex_project::LoopRegion>,
         master_gain: f32,
-        shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
     ) -> Result<Self, Invalid> {
         let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
         project.return_buses = return_buses;
-        project.shared_contexts = owned_shared::OwnedShared::untracked(shared_contexts);
+        project.shared_contexts = shared_contexts;
         project.audible_end_frame = project
             .tracks
             .iter()
@@ -2055,7 +2056,9 @@ impl Project {
         Ok(project)
     }
 
-    pub(crate) fn shared_contexts(&self) -> &Arc<shared_analytic::SharedAnalyticContextTable> {
+    pub(crate) fn shared_contexts(
+        &self,
+    ) -> &owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
     }
     pub fn gain_automation_capacity(&self) -> GainAutomationCapacity {

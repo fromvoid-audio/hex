@@ -372,8 +372,8 @@ impl SharedAnalyticContextTable {
         Ok(())
     }
 
-    pub(crate) fn empty() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub(crate) fn empty() -> crate::owned_shared::OwnedShared<Self> {
+        crate::owned_shared::OwnedShared::new_owned(Self::default())
     }
 
     pub(crate) fn prepare(
@@ -381,7 +381,7 @@ impl SharedAnalyticContextTable {
         registry: &NativeInstrumentRegistry<'_>,
         previous: Option<&Self>,
         resource_preparation: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
-    ) -> Result<Arc<Self>, Invalid> {
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
         let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
         let tuning_identity = if tuning.is_neutral() {
             TuningIdentity::default()
@@ -550,7 +550,7 @@ impl SharedAnalyticContextTable {
             ));
         }
         ids.sort_unstable_by_key(|(id, _)| *id);
-        Ok(Arc::new(Self {
+        Ok(crate::owned_shared::OwnedShared::new_owned(Self {
             tuning,
             tuning_identity,
             owners,

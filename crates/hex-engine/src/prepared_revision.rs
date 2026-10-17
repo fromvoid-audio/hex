@@ -358,7 +358,7 @@ impl PreparedRevision {
                     Some(Arc::clone(&sine_table)),
                     effects,
                     instruments,
-                    Some(Arc::clone(&shared_contexts)),
+                    Some(shared_contexts.clone_on_control()),
                     Some(transforms),
                 )?;
             let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
@@ -467,7 +467,7 @@ impl PreparedRevision {
                 sources,
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
-                Some(Arc::clone(&shared_contexts)),
+                Some(shared_contexts.clone_on_control()),
                 None,
             )?;
         let session =

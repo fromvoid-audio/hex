@@ -371,6 +371,12 @@ impl<'a> AudioRootStorageLedger<'a> {
             )?
             .checked_add(std::mem::size_of::<Self>())
     }
+    /// Selected actual field identity, used when immutable source templates are
+    /// shared across revisions. This cannot declare an unseen allocation.
+    pub(crate) fn contains_root<T: 'static>(&self, value: &'a T) -> bool {
+        let owner = Owner::exclusive(value);
+        self.roots.iter().any(|row| row.owner.same(owner))
+    }
     pub(crate) fn root<T: 'static>(
         &mut self,
         value: &'a T,

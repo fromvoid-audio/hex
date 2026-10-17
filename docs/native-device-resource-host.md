@@ -470,3 +470,16 @@ processing still refuses, opaque provider contexts remain Unknown, and a complet
 resource-aware closed graph constructor plus publication/reaper proof is still
 required. No raw Arc, source identity or provider byte declaration upgrades that
 missing physical proof.
+
+Fresh context table preparation now carries its original `OwnedShared` constructor
+receipt through Arrangement, Session, compiled instruments and MIDI templates.
+The selected revision table inventory includes both physical root fields and all
+actual compiled/Session/routed MIDI template table fields, complete table backing
+capacities and nested supported resource owners. A template reused by two revisions
+has one physical table field; existing ledger rows deduplicate that actual field.
+Distinct aliases still require separate handles and headers. Cached templates
+retain their original receipt after the older revision retires, with no raw Arc
+upgrade or replacement allocation. Independent raw table origins and opaque
+provider contexts still refuse. MIDI bank/template containers, other prepared
+metadata, active runtime custody and full construction peak remain outside this
+selected view; the whole graph still needs its closed constructor admission.

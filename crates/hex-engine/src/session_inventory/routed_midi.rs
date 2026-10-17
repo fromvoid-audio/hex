@@ -98,7 +98,9 @@ pub(super) fn prepare_clip(
     clip: &SessionMidiClip,
     config: &PreparedTrackInstrumentConfig,
     source_timing: &SessionTimingView<'_>,
-    shared_contexts: &Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: &crate::owned_shared::OwnedShared<
+        crate::shared_analytic::SharedAnalyticContextTable,
+    >,
     cached: Option<&PreparedSessionMidiClip>,
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
@@ -161,7 +163,7 @@ pub(super) fn prepare_clip(
             PreparedMidiInstrumentTemplate::prepare_with_bank_and_contexts(
                 &source,
                 Arc::clone(bank),
-                Arc::clone(shared_contexts),
+                shared_contexts.clone_on_control(),
             )
             .map_err(template_error)?,
         )

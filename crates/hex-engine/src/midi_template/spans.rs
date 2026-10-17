@@ -78,7 +78,8 @@ pub struct PreparedMidiInstrumentTemplate {
     max_query_visits: usize,
     max_period_windows: usize,
     bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-    shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts:
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
     release_frames: u64,
     event_source: bool,
 }
@@ -609,6 +610,13 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn visit_context_table_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        crate::shared_analytic::resource_storage::visit_table(&self.shared_contexts, ledger, role)
+    }
     /// Prepare original sine voices and interval indexes from an already
     /// admitted ongoing source template. Authored notes are never rescanned.
     pub fn prepare(
@@ -664,7 +672,9 @@ impl PreparedMidiInstrumentTemplate {
     pub(crate) fn prepare_with_bank_and_contexts(
         source: &PreparedMidiSourceTemplate,
         bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, MidiTemplateError> {
         Self::prepare_with_bank_mode(source, bank, shared_contexts, None, false, None)
     }
@@ -694,7 +704,9 @@ impl PreparedMidiInstrumentTemplate {
     fn prepare_with_bank_mode(
         source: &PreparedMidiSourceTemplate,
         bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
         event_release_frames: Option<u64>,
         event_source: bool,
         mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,

@@ -319,6 +319,17 @@ impl std::fmt::Debug for PreparedSessionInventory {
 }
 
 impl PreparedSessionInventory {
+    pub(crate) fn visit_midi_context_tables_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            clip.instrument
+                .visit_context_table_on_control(ledger, role)?;
+        }
+        Ok(())
+    }
     pub fn prepare(
         project: &Project,
         sine_table: Arc<SineTable>,
@@ -370,7 +381,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver(
             project,
@@ -413,7 +426,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, crate::Invalid> {
         if expected_generation == 0 {
             return Err(crate::Invalid("stream source generation must be positive"));
@@ -435,7 +450,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+        shared_contexts: Option<
+            crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
         mut resolve_source: impl FnMut(
             &'a hex_project::Asset,
             u32,
@@ -1087,7 +1104,7 @@ impl PreparedSessionInventory {
             contains_streamed_sources,
             midi_note_bank_storage_bytes: midi_bank_bytes,
             midi_note_bank_reference_count: midi_bank_references,
-            shared_contexts: crate::owned_shared::OwnedShared::untracked(shared_contexts),
+            shared_contexts,
         })
     }
 
@@ -1113,7 +1130,7 @@ impl PreparedSessionInventory {
 
     pub(crate) fn shared_contexts(
         &self,
-    ) -> &Arc<crate::shared_analytic::SharedAnalyticContextTable> {
+    ) -> &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
     }
 

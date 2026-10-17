@@ -22,7 +22,7 @@ impl PreparedNativeInstrument for Instrument {
     }
 }
 pub struct InlineResourceHostFixture {
-    table: Arc<SharedAnalyticContextTable>,
+    table: crate::owned_shared::OwnedShared<SharedAnalyticContextTable>,
     retained: Vec<Option<crate::shared_analytic::SharedContextLease>>,
     current: ScopedMidiNote,
     carried: crate::midi_template::MidiReleaseVoice,
@@ -115,7 +115,7 @@ impl InlineResourceHostFixture {
         carried.detach(&[]);
         carried.set_context_ref(SharedContextRef::Retained(0));
         Ok(Self {
-            table: Arc::new(SharedAnalyticContextTable {
+            table: crate::owned_shared::OwnedShared::new_owned(SharedAnalyticContextTable {
                 owners: vec![current_owner],
                 ..Default::default()
             }),
