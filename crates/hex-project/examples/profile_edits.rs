@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

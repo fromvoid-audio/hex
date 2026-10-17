@@ -438,6 +438,10 @@ impl PreparedSessionInventory {
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
     ) -> Result<Self, crate::Invalid> {
+        if project.tuning().enabled() {
+            return Err(crate::Invalid("project tuning playback is not implemented"));
+        }
+
         crate::gain_envelope::validate_project(project)?;
         let routed_plan = RoutedMidiPlan::prepare(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;

@@ -4320,3 +4320,16 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+
+## native project tuning / freqs — pulse2739–2742, 17 october 2026
+
+Goal4 retains the complete user-requested native Freqs editor, project-saved scale,
+project-wide native playback and MTS-ESP integration. Reference source and the
+finite feature checklist are pinned in [project tuning](docs/project-tuning.md).
+The first focused prerequisite (#2739/PR350) adds safe validated scale/analysis,
+portable Freqs codec, canonical undoable project/audition data and strict schema30
+with neutral legacy defaults. Enabled tuned playback refuses at Arrangement and
+Session admission until #2740 replaces that guard with verified pitch integration.
+Editor/library/audition (#2741) and desktop MTS publication (#2742) remain open;
+this prerequisite provides no native tuning feature or user-test build by itself.
+Targeted and exact final local validation results are retained on the canonical PR.
