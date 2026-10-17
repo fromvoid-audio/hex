@@ -41,6 +41,7 @@ mod export;
 mod external_audio_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod external_audio_drop_ui_test;
+mod fade_handles;
 mod fades;
 mod gain_lane;
 mod gain_recording;
@@ -610,6 +611,8 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    fade_key_held: bool,
+    active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
@@ -789,7 +792,10 @@ impl EditorView {
             }
         });
         let focus = cx.focus_handle();
-        let scrub_focus_blur = cx.on_blur(&focus, window, |view, _, cx| {
+        let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
+            if !view.focus.is_focused(window) {
+                view.cancel_fade_gesture(cx);
+            }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
             if view.cancel_scrub() | view.cancel_clip_paint() {
@@ -812,6 +818,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_fade_gesture(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
                 view.audio_event_editor.gesture = None;
@@ -828,6 +835,7 @@ impl EditorView {
             }
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
+            view.cancel_fade_gesture(cx);
             view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
@@ -970,6 +978,8 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            fade_key_held: false,
+            active_fade_drag: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]

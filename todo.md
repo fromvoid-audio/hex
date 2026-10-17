@@ -9,6 +9,16 @@ preserved-history transfer remain refused. See [contract](docs/owned-effect-tran
 Full exact-source CI is recorded with the PR. This is the W04 bootstrap, not
 production long-history devices, native acceptance or goal completion.
 
+## portable sample catalog fixtures — #2723 / PR339, 17 october 2026
+
+The original Unix invalid-byte filename fixture reproduced macOS OS92 before
+scanner execution. Valid native UTF-8 paths now exercise real Unix scan/cache
+roundtrip and symlink cycle/alias exclusion. A filesystem-independent catalog
+roundtrip preserves original non-UTF8 bytes on all Unix targets; Linux retains
+the original real invalid-byte filename fixture. No production path handling
+changes. Focused red/green and full local-CI evidence are recorded with PR339.
+Linux execution remains separately reported rather than inferred from macOS.
+
 ## shared stereo/gain kernels — #2671 / PR288, 17 october 2026
 
 Real production stereo kernels move to dependency-free hex-dsp with Lattice API
@@ -115,6 +125,18 @@ passes. Architecture, GPUI/dependency/style/layout guards, formatting and affect
 strict Clippy pass at the source milestone. Final full local-CI evidence belongs
 to [PR314](https://github.com/PORTALSURFER/hex/pull/314); native macOS visual/input
 acceptance is pending. See [the finite checklist](docs/clip-drag.md).
+
+## clip fade handles — Pulse2693 / PR309, 17 october 2026
+
+Arrangement audio clips expose upper/lower fade endpoints and middle curve handles
+while holding f; non-default envelopes stay visible. Pointer previews submit one
+canonical history edit on release, with Escape/focus/stale-state cancellation.
+The coordinate-based rational curve keeps zero-bend legacy PCM and split/musical
+projection continuity. Schema29 retains shapes through strict ID-bound metadata;
+older schemas receive linear edge defaults. See [contract and native checklist](docs/clip-fades.md).
+
+Focused regression results and final source checks are recorded in PR309. Native macOS
+UI/listening and exact Ableton transfer-function matching remain unverified.
 
 ## clip selection and inline names — #2660 / PR276, 17 october 2026
 

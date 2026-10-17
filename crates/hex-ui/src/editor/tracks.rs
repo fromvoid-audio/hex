@@ -1335,17 +1335,15 @@ impl EditorView {
                 }
             }
         }
-        let fade = clip.retained_fade();
+        let fade_preview = self.fade_preview(clip.id());
+        let fade = fade_preview.unwrap_or(clip.retained_fade());
         let envelope_width = self
             .drag_lanes
             .get(&track)
             .map(|lane| (lane.width * width as f32).max(3.0))
             .unwrap_or(0.0);
-        if !active_trim_preview
-            && envelope_width >= 40.0
-            && (fade.fade_in() > 0 || fade.fade_out() > 0)
-        {
-            let samples = if clip.audio_edit().is_some() {
+        if !active_trim_preview && envelope_width > 0.0 && !fade.is_neutral() {
+            let samples = if clip.audio_edit().is_some() && fade_preview.is_none() {
                 super::waveform::projected_fade_envelope_samples(
                     clip,
                     state.project.tempo_map(),
@@ -1381,7 +1379,10 @@ impl EditorView {
                     },
                 )
                 .absolute()
-                .inset_0()]);
+                .top(px(super::clip_name::CLIP_NAME_HEIGHT))
+                .left_0()
+                .right_0()
+                .bottom_0()]);
             }
         }
         let clip_pixel_width = self
@@ -1444,10 +1445,20 @@ impl EditorView {
                 }));
             content = content.children([move_surface]).children(trim_handles);
         }
+        if !active_trim_preview {
+            content = content.children(self.fade_handles(
+                state,
+                track,
+                clip,
+                (visible_start, visible_end),
+                viewport,
+                cx,
+            ));
+        }
         content
     }
 
-    fn drag_available(&self) -> bool {
+    pub(super) fn drag_available(&self) -> bool {
         self.clip_name_edit.is_none()
             && !self.opening_project
             && !self.close_prompt_open
