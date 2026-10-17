@@ -15,6 +15,38 @@ pub struct ResampleLimits {
     pub max_output_frames: usize,
 }
 
+/// Prepare the required stereo clip derivative directly from a borrowed native
+/// mono original. No full stereo original-rate scratch or second source cache.
+pub fn resample_mono_original(
+    source: hex_engine::OwnedAudioSourceView<'_>,
+    target_rate: u32,
+    limits: ResampleLimits,
+) -> Result<Audio, ImportError> {
+    let samples = source
+        .resident_mono_samples()
+        .ok_or(ImportError::Invalid("mono original required"))?;
+    let plan = ResamplePlan::new(
+        source.sample_rate(),
+        target_rate,
+        u64::try_from(samples.len()).map_err(|_| ImportError::LimitExceeded("source frames"))?,
+        limits.max_source_frames as u64,
+        limits.max_output_frames as u64,
+        limits.max_output_frames,
+    )?;
+    let count = usize::try_from(plan.output_frames())
+        .map_err(|_| ImportError::LimitExceeded("converted frames"))?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(count)
+        .map_err(|_| ImportError::AllocationFailed)?;
+    output.resize(count, [0.0; 2]);
+    plan.render_original_window(source, 0, &mut output)?;
+    hex_engine::OwnedAudioSource::try_resident(target_rate, output)
+        .map_err(|_| ImportError::Invalid("native mono derivative refused"))?
+        .try_into_native_audio_on_control()
+        .map_err(|_| ImportError::Invalid("native mono derivative transfer refused"))
+}
+
 /// Convert validated stereo PCM into the target rate using the v1 windowed-sinc kernel.
 /// The input is only read and shared unchanged for identity-rate conversions.
 pub fn resample(

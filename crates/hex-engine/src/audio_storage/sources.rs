@@ -1,6 +1,19 @@
 use super::*;
 use crate::audio_only_inputs::{SourceStorage, SourceStorageKind};
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Visit an actual closed source field retained by a media/control owner.
+    /// This leaf inventory is not a declaration for its enclosing container.
+    pub fn borrow_native_source_on_control(
+        &mut self,
+        source: &'a crate::OwnedAudioSource,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            crate::audio_input_storage::parts(source)?;
+            ledger.root(source, role)?;
+            ledger.source(source)
+        })
+    }
     /// The actual native stereo Audio field joins the SAME resource union.
     /// Unknown origin remains unknown; IDs/counts do not mint declarations.
     pub fn borrow_native_audio_on_control(

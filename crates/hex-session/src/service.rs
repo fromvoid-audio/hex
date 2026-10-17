@@ -6,11 +6,11 @@ use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureS
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
 use crate::verified_import::VerifiedImportDestination;
-use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
+use crate::{DocumentAudioMode, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
-use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
+use hex_media::{Limits, ResampleLimits, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 #[cfg(test)]
 mod audio_batch_tests;
@@ -179,17 +179,21 @@ pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let audio = hex_media::resample(
-        decoded.audio(),
-        output_sample_rate,
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: IMPORT_FRAME_LIMIT,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &AtomicBool::new(false),
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = decoded
+        .project_audio(
+            output_sample_rate,
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: IMPORT_FRAME_LIMIT,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     Ok(audio)
 }
 
@@ -2515,17 +2519,21 @@ fn import(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     session
         .import_prepared_revision(prepared, previous)
         .map(|(_, revision)| revision)
@@ -2572,17 +2580,21 @@ fn import_to_track(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     let imported = if overwrite {
         session.import_prepared_audio_clip_with_overwrite_revision(prepared, track, start, previous)
     } else {
@@ -2641,17 +2653,21 @@ fn import_to_new_track(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     session
         .import_prepared_audio_track_at_revision(prepared, before_track, start, previous)
         .map(|(_, revision)| revision)
@@ -2693,17 +2709,21 @@ fn import_to_session(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     session
         .import_session_audio_clip_revision(prepared, track, scene, previous)
         .map(|(_, revision)| revision)

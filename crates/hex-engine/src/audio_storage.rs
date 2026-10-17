@@ -517,6 +517,12 @@ impl<'a> AudioRootStorageLedger<'a> {
     pub fn validate_selected_shared_handles_on_control(&self) -> Result<(), AudioStorageError> {
         self.validate_closed_shared_handles()
     }
+    /// Observed distinct shared allocations and selected physical handles.
+    /// Includes root/header owners as well as PCM; not allocator RSS, complete
+    /// host storage, retirement proof or permission to publish/process.
+    pub fn selected_shared_counts_on_control(&self) -> (usize, usize) {
+        self.shared_resource_counts()
+    }
     pub(crate) fn shared_resource_counts(&self) -> (usize, usize) {
         let allocations = self
             .data

@@ -103,6 +103,61 @@ impl SourceStorage for OwnedAudioSource {
     }
 }
 impl OwnedAudioSource {
+    /// Borrow an actual constructor-qualified Audio owner and reserve a closed
+    /// source header/identity BEFORE its control-side alias is created.
+    pub fn alias_native_audio_on_control(
+        audio: &Audio,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, AudioStorageError> {
+        if std::mem::size_of::<Self>() > max_metadata_bytes {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        audio
+            .pcm_arc_receipt
+            .and_then(|receipt| receipt.checked_allocations(audio))
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        if std::sync::Arc::weak_count(&audio.frames) != 0 {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let handle = handle()?;
+        Ok(Self {
+            kind: SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle))),
+            handle,
+        })
+    }
+    /// Quote the actual source header before creating a closed native control
+    /// alias. Both physical owners must join coexistence/retirement accounting.
+    /// This never adopts raw/derived Audio or grants graph publication.
+    pub fn alias_for_resource_plan_on_control(
+        &self,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, AudioStorageError> {
+        if std::mem::size_of::<Self>() > max_metadata_bytes {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        if matches!(self.kind, SourceKind::Streamed(_)) {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        crate::audio_input_storage::parts(self)?;
+        let handle = handle()?;
+        let kind = match &self.kind {
+            SourceKind::Resident(audio) => {
+                SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
+            SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
+            SourceKind::Streamed(_) => return Err(AudioStorageError::UnsupportedGraph),
+        };
+        Ok(Self { kind, handle })
+    }
+    /// Actual retained PCM capacity, in source frames. This is a control-side
+    /// observation, not a complete graph memory or lifetime declaration.
+    pub fn resident_pcm_capacity_frames(&self) -> Option<usize> {
+        match &self.kind {
+            SourceKind::Resident(audio) => Some(audio.pcm_capacity_frames()),
+            SourceKind::ResidentMono(source) => Some(source.samples.capacity()),
+            SourceKind::Streamed(_) => None,
+        }
+    }
     /// Borrow this actual unbound decoded owner before an AssetId/bank exists.
     pub fn view(&self) -> OwnedAudioSourceView<'_> {
         OwnedAudioSourceView { kind: &self.kind }

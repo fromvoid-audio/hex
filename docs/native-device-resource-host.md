@@ -252,7 +252,42 @@ identity, both project-rate cases, waveform custody, resident limits and Undo/
 Redo. A selected resource root cannot close its handle inventory while Session
 and cache owners are omitted; after their control-side retirement, its retained
 source remains readable and the actual selected inventory closes. This is a
-stereo ingress and retention proof, not complete graph admission. Mono Session
-original storage, processed-media budget ownership, all-role coexistence and
-publication/reaper qualification remain open. Resource-backed registry
-processing remains refused until those actual host proofs are complete.
+stereo ingress and retention proof, not complete graph admission. The remaining
+work at that checkpoint included native Mono Session storage and graph admission.
+
+## actual Session originals and source plans
+
+`DecodedOriginal` now retains native mono/stereo source custody on the worker
+before Session sharing. Native mono keeps its actual mono buffer and prepares
+only the required project-rate stereo clip derivative, using the same v1 kernel
+without an intermediate full stereo original. Single-file Arrangement/Session
+imports, ordered batches, reopen/recovery, browser preview and bounced-file
+preparation use this path. Portable normalized imports remain explicitly
+unqualified. Stereo identity conversion still aliases the original PCM.
+
+Session resident accounting observes actual capacities for both layouts. Each
+mono original capacity counts in source-frame units alongside its stereo project
+derivative; no ceiling changes. Tests cover original pointer/samples, three
+project rates, exact identity bits, actual rendered PCM, retained history,
+file/reopen, cancellation and exact-minus-one atomic refusal. Existing batch
+budget fixtures now account both actual mono/stereo buffers while preserving
+their ten-frame free headroom and second-member refusal condition.
+
+The Session resource-plan boundary creates bounded closed aliases from actual
+retained originals into the same input bank/catalog/root. It checks sorted
+requests, work, temporary metadata/capacities, cancellation and construction
+peak; failures release only unpublished control custody. Raw/derived Audio and
+mismatched native handles still refuse. The borrowed resident PCM inventory
+holds the existing waveform-cache borrow while visiting original, project and
+waveform PCM fields. It neither clones PCM nor declares enclosing maps, graph
+metadata or transform budgets known.
+
+Actual mixed Session tests check typed PCM and original buffer identity. Omitting
+live Session/cache owners or a candidate bank prevents selected handle closure.
+Selecting both current/candidate banks charges four actual original/derivative
+shared PCM owners once, plus each distinct retained root. Exact-minus-one union,
+work/metadata/alias/cancel refusal and control-retired snapshot survival are
+covered. These are actual media-plan/PCM union proofs, not a complete publication
+permit. Processed-media budget ownership, all-role metadata, inline/effect host
+wiring and atomic publication/reaper qualification remain open. Resource-backed
+registry processing stays refused until those actual host proofs are complete.

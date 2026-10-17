@@ -164,9 +164,10 @@ pub(super) fn open_source_with_mode(
         if asset.playback_frames() > remaining_frames {
             return Err("project media exceeds resident audio frame limit".into());
         }
-        let decoded = decode_wav_file(
+        let decoded = crate::DecodedOriginal::decode_file(
             media_path,
             Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+            &current.shutdown,
         )
         .map_err(|error| error.to_string().to_lowercase())?;
         if decoded.sample_rate() != asset.source_sample_rate()
@@ -177,16 +178,16 @@ pub(super) fn open_source_with_mode(
                 asset.path().display()
             ));
         }
-        let prepared = PreparedImport::at_rate(
-            decoded,
-            project.sample_rate(),
-            ResampleLimits {
-                max_source_frames: IMPORT_FRAME_LIMIT,
-                max_output_frames: usize::try_from(remaining_frames)
-                    .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
-            },
-        )
-        .map_err(|error| error.to_string().to_lowercase())?;
+        let prepared = decoded
+            .at_rate(
+                project.sample_rate(),
+                ResampleLimits {
+                    max_source_frames: IMPORT_FRAME_LIMIT,
+                    max_output_frames: usize::try_from(remaining_frames)
+                        .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
+                },
+            )
+            .map_err(|error| error.to_string().to_lowercase())?;
         remaining_frames = remaining_frames
             .checked_sub(
                 prepared

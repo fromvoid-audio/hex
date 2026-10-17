@@ -8,6 +8,15 @@ thin GPUI layer: validated project commands, prepared audio import,
 undo/redo, read-only media views, and playback compilation all pass through one
 session.
 
+Native original-file preparation retains mono/stereo through the existing closed
+source ownership family before conversion and waveform sharing. Resident-frame
+accounting includes each actual original/project buffer capacity. Bounded resource
+plans alias those retained originals into the existing bank/catalog/root, and a
+borrowed PCM inventory visits the actual media/waveform fields. This is not full
+graph metadata, coexistence, publication or retirement admission; referenced
+registry processing remains closed pending those host proofs. See
+`docs/native-device-resource-host.md` and Pulse2783/PR389.
+
 Transient controller activation validates project generation and exact instrument
 identity, retains the lease across parameter revisions, and cancels it on project
 replacement or instrument removal. It creates no project/history edit.

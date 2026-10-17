@@ -180,6 +180,45 @@ mod audio_lineage_tests {
         AudioStorageRole, OwnedAudioInputs, OwnedAudioSource,
     };
     #[test]
+    fn closed_media_alias_quotes_before_cloning_and_refuses_mismatched_native_handles() {
+        let raw = Audio::new(48_000, vec![[0.25; 2]; 4]).unwrap();
+        assert!(matches!(
+            OwnedAudioSource::alias_native_audio_on_control(&raw, 4096),
+            Err(AudioStorageError::UnknownStorage)
+        ));
+        let mut source = match OwnedAudioSource::try_resident(48_000, vec![[0.5, -0.25]; 4]) {
+            Ok(source) => source,
+            Err(refused) => {
+                assert_eq!(refused.reason, AudioStorageError::UnsupportedConstructor);
+                return;
+            }
+        };
+        let count = match &source.kind {
+            SourceKind::Resident(audio) => std::sync::Arc::strong_count(&audio.frames),
+            _ => unreachable!(),
+        };
+        assert!(matches!(
+            source.alias_for_resource_plan_on_control(std::mem::size_of::<OwnedAudioSource>() - 1),
+            Err(AudioStorageError::ReservationExceeded)
+        ));
+        assert_eq!(
+            match &source.kind {
+                SourceKind::Resident(audio) => std::sync::Arc::strong_count(&audio.frames),
+                _ => unreachable!(),
+            },
+            count
+        );
+        let alias = source.alias_for_resource_plan_on_control(4096).unwrap();
+        assert_ne!(source.handle, alias.handle);
+        assert!(crate::audio_input_storage::same(&source, &alias));
+        drop(alias);
+        source.handle = source.handle.checked_add(1).unwrap();
+        assert!(matches!(
+            source.alias_for_resource_plan_on_control(4096),
+            Err(AudioStorageError::SourceMismatch)
+        ));
+    }
+    #[test]
     fn actual_stereo_owner_moves_and_tracked_audio_clones_join_the_same_native_union() {
         let mut values = Vec::with_capacity(17);
         values.extend([[0.25, -0.75]; 4]);

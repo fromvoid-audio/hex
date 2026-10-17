@@ -30,7 +30,7 @@ mod resample_plan_tests;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 pub use device_source::{DeviceSourceDecodeLimits, DeviceSourceImportError, decode_device_source};
-pub use resample::{ResampleLimits, ResamplePlan, resample};
+pub use resample::{ResampleLimits, ResamplePlan, resample, resample_mono_original};
 pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
 pub use stream::{WavFrameReader, WavReaderLimits};
 pub use verified_stream::{
@@ -133,6 +133,54 @@ impl From<io::Error> for ImportError {
 
 /// Read and decode a WAV file, rejecting input above the caller's byte limit.
 /// At most one sentinel byte beyond the limit is read to detect an oversized file.
+pub fn decode_device_source_file(
+    path: impl AsRef<Path>,
+    limits: Limits,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<hex_engine::OwnedAudioSource, ImportError> {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ImportError::Cancelled);
+    }
+    let mut file = File::open(path)?;
+    let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    decode_original_bytes(&bytes, limits, cancel)
+}
+
+fn decode_original_bytes(
+    bytes: &[u8],
+    limits: Limits,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<hex_engine::OwnedAudioSource, ImportError> {
+    let working = limits
+        .max_file_bytes
+        .checked_add(
+            limits
+                .max_frames
+                .checked_mul(8)
+                .ok_or(ImportError::LimitExceeded("native decode working buffers"))?,
+        )
+        .and_then(|n| n.checked_add(usize::from(u16::MAX) * 8))
+        .ok_or(ImportError::LimitExceeded("native decode working buffers"))?;
+    decode_device_source(
+        bytes,
+        DeviceSourceDecodeLimits {
+            media: limits,
+            max_chunk_headers: bytes.len() / 8,
+            max_decode_work_frames: limits.max_frames.saturating_add(usize::from(u16::MAX)),
+            max_working_buffer_bytes: working,
+        },
+        cancel,
+    )
+    .map_err(|error| match error {
+        DeviceSourceImportError::Media(error) => error,
+        DeviceSourceImportError::Storage(_) | DeviceSourceImportError::Resource(_) => {
+            ImportError::Invalid("native original source construction refused")
+        }
+    })
+}
+
+/// Portable stereo-normalized import. Native Session originals use
+/// decode_device_source_file to preserve actual mono custody before conversion.
 pub fn decode_wav_file(
     path: impl AsRef<Path>,
     limits: Limits,
@@ -150,32 +198,8 @@ pub fn decode_wav_file(
     {
         // Enter the existing native family BEFORE identity-rate sharing in
         // Session/resample/waveform. No caller-created Arc is adopted.
-        let working = limits
-            .max_file_bytes
-            .checked_add(
-                limits
-                    .max_frames
-                    .checked_mul(8)
-                    .ok_or(ImportError::LimitExceeded("native decode working buffers"))?,
-            )
-            .and_then(|n| n.checked_add(usize::from(u16::MAX) * 8))
-            .ok_or(ImportError::LimitExceeded("native decode working buffers"))?;
-        let source = decode_device_source(
-            &bytes,
-            DeviceSourceDecodeLimits {
-                media: limits,
-                max_chunk_headers: bytes.len() / 8,
-                max_decode_work_frames: limits.max_frames.saturating_add(usize::from(u16::MAX)),
-                max_working_buffer_bytes: working,
-            },
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .map_err(|error| match error {
-            DeviceSourceImportError::Media(error) => error,
-            DeviceSourceImportError::Storage(_) | DeviceSourceImportError::Resource(_) => {
-                ImportError::Invalid("native stereo source construction refused")
-            }
-        })?;
+        let source =
+            decode_original_bytes(&bytes, limits, &std::sync::atomic::AtomicBool::new(false))?;
         let sample_rate = source.sample_rate();
         let frames = usize::try_from(source.frames())
             .map_err(|_| ImportError::LimitExceeded("decoded frames"))?;
@@ -184,9 +208,8 @@ pub fn decode_wav_file(
             .map_err(|_| ImportError::Invalid("native stereo source transfer refused"))?;
         (audio, sample_rate, frames)
     } else {
-        // Portable decoding and current mono Session workflow remain explicit.
-        // Typed native Mono still uses decode_device_source; its Session
-        // original-source storage adoption remains a separate required slice.
+        // This normalized API intentionally returns stereo. Native Session
+        // originals use decode_device_source_file and retain their mono layout.
         decode_wav_inner(&bytes, limits.max_frames)?
     };
     Ok(DecodedAudio {

@@ -90,6 +90,11 @@ fn cancellation(cancel: &AtomicBool) -> Result<(), ResourcePreparationError> {
     }
 }
 impl DeviceResourceCatalog {
+    /// Actual immutable catalog header/backing capacity, never allocator RSS or
+    /// complete host/coexistence accounting.
+    pub fn metadata_bytes_on_control(&self) -> Result<usize, ResourcePreparationError> {
+        quoted_bytes::<SourceFact>(self.sources.capacity(), std::mem::size_of::<Self>())
+    }
     /// No owner is cloned or removed. Source records must be sorted and unique.
     /// Hashes describe normalized original-rate stereo f32 PCM, not encoded files.
     pub fn prepare_on_control(

@@ -11,6 +11,12 @@ fn decoded(rate: u32, frames: u32) -> DecodedAudio {
     decoded_channels(rate, frames, 1)
 }
 fn decoded_channels(rate: u32, frames: u32, channels: u16) -> DecodedAudio {
+    let path = write_channels(rate, frames, channels);
+    let decoded = decode_wav_file(&path, Limits::new(8192, 1024)).unwrap();
+    fs::remove_file(path).unwrap();
+    decoded
+}
+fn write_channels(rate: u32, frames: u32, channels: u16) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "hex-original-pcm-{}-{}.wav",
         std::process::id(),
@@ -44,9 +50,7 @@ fn decoded_channels(rate: u32, frames: u32, channels: u16) -> DecodedAudio {
         .unwrap();
     file.write_all(&wav).unwrap();
     drop(file);
-    let decoded = decode_wav_file(&path, Limits::new(8192, 1024)).unwrap();
-    fs::remove_file(path).unwrap();
-    decoded
+    path
 }
 fn prepared(decoded: DecodedAudio) -> PreparedImport {
     PreparedImport::at_rate(
@@ -162,7 +166,7 @@ fn capacity_is_charged_and_failed_mixed_import_preserves_redo_and_resident_sourc
         source_sample_rate: 16_000,
         source_frames: 4,
         conversion_version: hex_project::IDENTITY_CONVERSION,
-        source_audio: audio.clone(),
+        source_audio: OriginalAudio::Stereo(audio.clone()),
         waveform: waveform::summarize(&audio, 1024).unwrap(),
         audio,
     };
@@ -279,10 +283,17 @@ fn actual_stereo_import_preserves_native_original_identity_derivative_and_snapsh
             },
         )
         .unwrap();
-        assert_eq!(prepared.source_audio.frames().as_ptr(), original_pointer);
-        assert_eq!(prepared.source_audio.frames(), expected);
         assert_eq!(
-            prepared.source_audio.shares_pcm_with(&prepared.audio),
+            prepared.source_audio.stereo().unwrap().frames().as_ptr(),
+            original_pointer
+        );
+        assert_eq!(prepared.source_audio.stereo().unwrap().frames(), expected);
+        assert_eq!(
+            prepared
+                .source_audio
+                .stereo()
+                .unwrap()
+                .shares_pcm_with(&prepared.audio),
             project_rate == 32_000
         );
         assert!(prepared.waveform.shares_audio_with(&prepared.audio));
@@ -401,4 +412,156 @@ fn actual_stereo_import_preserves_native_original_identity_derivative_and_snapsh
             .validate_selected_shared_handles_on_control()
             .unwrap();
     }
+}
+
+#[test]
+fn actual_native_mono_import_keeps_original_layout_capacity_and_history() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported native constructor; no mono Session ownership proof");
+        return;
+    }
+    let samples: Vec<f32> = (0..12).map(|n| (1000 + n * 113) as f32 / 32768.0).collect();
+    for rate in [32_000, 16_000, 48_000] {
+        let limits = ResampleLimits {
+            max_source_frames: 1024,
+            max_output_frames: 1024,
+        };
+        let mut values = Vec::with_capacity(17);
+        values.extend_from_slice(&samples);
+        let pointer = values.as_ptr();
+        let source = hex_engine::OwnedAudioSource::try_resident_mono(32_000, values)
+            .ok()
+            .unwrap();
+        let original_capacity = source.resident_pcm_capacity_frames().unwrap();
+        let member =
+            PreparedImport::from_native_source("mono.wav".into(), source, rate, limits).unwrap();
+        assert!(member.source_audio.stereo().is_none());
+        let OriginalAudio::Mono(original) = &member.source_audio else {
+            panic!("mono custody")
+        };
+        assert_eq!(
+            original.view().resident_mono_samples().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(original.view().resident_mono_samples().unwrap(), samples);
+        let expected = resample(
+            &Audio::new(32_000, samples.iter().map(|x| [*x; 2]).collect()).unwrap(),
+            rate,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(member.audio.frames(), expected.frames());
+        if rate == 32_000 {
+            for (actual, expected) in member.audio.frames().iter().zip(&samples) {
+                assert_eq!(actual[0].to_bits(), expected.to_bits());
+                assert_eq!(actual[1].to_bits(), expected.to_bits());
+            }
+        }
+        assert!(member.waveform.shares_audio_with(&member.audio));
+        let charged = original_capacity as u64 + member.audio.pcm_capacity_frames() as u64;
+        assert_eq!(member.retained_pcm_frames().unwrap(), charged);
+        let mut session = Session::new(rate, 16, charged).unwrap();
+        let (created, revision) = session.import_prepared_revision(member, None).unwrap();
+        let id = asset(created);
+        assert_eq!(session.resident_frames(), charged);
+        assert!(session.source_audio(id).is_none());
+        assert_eq!(
+            session
+                .source_mono(id)
+                .unwrap()
+                .resident_mono_samples()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+        assert_eq!(
+            session.project().asset(id).unwrap().source_sample_rate(),
+            32_000
+        );
+        assert_eq!(session.project().asset(id).unwrap().source_frames(), 12);
+        let mut rendered = vec![[0.0; 2]; expected.frames().len()];
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.play();
+        renderer.render(&mut rendered).unwrap();
+        assert_eq!(rendered, expected.frames());
+        let saved = session.project().clone();
+        assert!(session.undo());
+        assert!(session.redo());
+        assert_eq!(session.project(), &saved);
+        assert_eq!(
+            session
+                .source_mono(id)
+                .unwrap()
+                .resident_mono_samples()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+        assert_eq!(session.resident_frames(), charged);
+    }
+}
+
+#[test]
+fn native_mono_file_import_reopen_and_exact_budget_refusal_are_atomic() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let path = write_channels(32_000, 12, 1);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let prepare = || {
+        PreparedImport::decode_at_rate(
+            &path,
+            16_000,
+            Limits::new(8192, 1024),
+            ResampleLimits {
+                max_source_frames: 1024,
+                max_output_frames: 1024,
+            },
+            &cancel,
+        )
+    };
+    let member = prepare().unwrap();
+    assert!(matches!(&member.source_audio, OriginalAudio::Mono(_)));
+    let charge = member.retained_pcm_frames().unwrap();
+    assert_eq!(charge, 18);
+    let mut too_small = Session::new(16_000, 16, charge - 1).unwrap();
+    let before = too_small.project().clone();
+    assert!(too_small.import_prepared_revision(member, None).is_err());
+    assert_eq!(too_small.project(), &before);
+    assert_eq!(too_small.resident_frames(), 0);
+    assert!(!too_small.can_undo());
+    let mut session = Session::new(16_000, 16, charge).unwrap();
+    let id = asset(
+        session
+            .import_prepared_revision(prepare().unwrap(), None)
+            .unwrap()
+            .0,
+    );
+    let saved = session.project().clone();
+    let reopened =
+        Session::from_prepared(saved.clone(), 16, charge, vec![(id, prepare().unwrap())]).unwrap();
+    assert_eq!(reopened.project(), &saved);
+    assert_eq!(
+        reopened
+            .source_mono(id)
+            .unwrap()
+            .resident_mono_samples()
+            .unwrap(),
+        session
+            .source_mono(id)
+            .unwrap()
+            .resident_mono_samples()
+            .unwrap()
+    );
+    assert_eq!(
+        reopened.audio(id).unwrap().frames(),
+        session.audio(id).unwrap().frames()
+    );
+    cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        prepare(),
+        Err(SessionError::Media(MediaInvalid::Cancelled))
+    ));
+    assert_eq!(session.project(), &saved);
+    fs::remove_file(path).unwrap();
 }
