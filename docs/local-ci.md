@@ -26,6 +26,12 @@ nondefault audio feature), strict workspace and feature-specific Clippy, and a l
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
 
+An interactive terminal animates a short stage spinner while a child check writes
+to its numbered log. The spinner clears and its worker joins before status or
+error output resumes, including interruption. Redirected stdout or stderr uses
+only the existing plain stage lines. Build and test output remains in the same
+logs; the indicator does not change subprocess handling, exit codes or checks.
+
 Each run writes deterministic numbered step logs and `summary.json` under a unique
 `artifacts/local-ci/<run-id>/` directory. The summary records actual argument
 vectors, UTC start/end times, exit codes, the starting and ending Git commit and
