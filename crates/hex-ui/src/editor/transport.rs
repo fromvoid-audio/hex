@@ -302,7 +302,8 @@ impl EditorView {
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         div()
             .id("clip move snap grid")
-            .w(px(32.0))
+            .debug_selector(|| "arranger-snap-toggle".to_owned())
+            .w(px(68.0))
             .h(px(header::CONTROL_SIZE))
             .flex_shrink_0()
             .flex()
@@ -315,13 +316,12 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(|_, cx| {
                 cx.new(|_| MiniTooltip {
-                    description: "clip move snap · click to cycle off, quarter, eighth, sixteenth"
-                        .into(),
+                    description: "arranger snap · click to toggle adaptive snapping".into(),
                 })
                 .into()
             })
             .on_click(cx.listener(|view, _, _, cx| {
-                view.cycle_snap_grid();
+                view.toggle_snap_grid();
                 cx.notify();
             }))
             .child(theme::text(self.snap_grid.label()))
