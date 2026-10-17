@@ -4374,6 +4374,19 @@ activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
 
+## stable native signing identity — pulse2745 / PR355, 17 october 2026
+
+Optimized test delivery now requires the configured existing Developer ID
+certificate/team and signs the complete staged bundle as `org.portalsurfer.hex.dev`.
+Strict native seal, exact signer and stable designated-requirement checks cover
+the receipt and executable; bundled pre-sign provenance and adjacent final file
+hashes avoid a signature cycle. Legacy unsigned installed apps still verify on
+normal launch. Signing failures preserve the previous app with no ad-hoc fallback.
+Targeted real macOS fixtures verify equal requirements across changed executables,
+wrong-signer rejection, receipt/resource tamper rejection and legacy compatibility.
+No app installation, privacy-setting changes or native permission-persistence
+acceptance is established by these fixtures; full candidate CI and delivery remain
+with the PR coordinator.
 
 ## 17 October 2026 — W06 host binding extraction in progress
 
@@ -4442,3 +4455,18 @@ Developer full exact-candidate checks remain required before merging this change
 PR355 owns pending signing integration. One coordinator-controlled serial Mac
 thread will verify native behavior and the single combined delivery; cloud tests
 cannot establish keychain signing, installed launch or permission persistence.
+
+## signing and build-only launch integration — pulse2745 / PR355, 17 october 2026
+
+Reconciled signing with merged launcher PR364 at main `846078bc`, then
+integrated main `a240d7cf` with the alpha policy and W06 host bindings. Default
+build-only delivery keeps source-only evidence and `tests: not_run`; opt-in
+CI-backed delivery retains full-CI provenance. Both write that evidence before
+Developer ID signing and verify the complete seal and configured identity before
+publication. Source drift during signing and signing failures preserve the
+installed app. Production assembly covers both modes; the native fixture seals
+both CI and build-only source evidence. Standalone `c358550f` passed all 20 CI
+stages on Linux and Mac, including real signing; those reports do not certify
+this changed integration. Exact integrated checks remain with PR355. Persistent
+sample access, real WAV preview and identical-binary relaunch acceptance still
+require the coordinator's serial Mac phase and one launcher-owned delivery.
