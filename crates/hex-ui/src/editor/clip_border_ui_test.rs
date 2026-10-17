@@ -59,7 +59,13 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
         ));
     }
     let original = canonical.project().clone();
-    let (handle, editor) = editor_window(cx, original.clone(), Arc::default());
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48_000, vec![[0.0; 2]; 96_000]).unwrap(),
+    )]);
+    let (_, preview) = hex_engine::compile::project_with_midi_preview(&original, &media)
+        .expect("real prepared mixed-clip preview");
+    let (handle, editor) = editor_window(cx, original.clone(), Arc::new(preview));
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.viewport = Some(Viewport {
