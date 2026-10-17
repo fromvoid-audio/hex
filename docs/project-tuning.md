@@ -148,3 +148,12 @@ nonzero PCM without a selected track; the callback retarget test checked an
 independent waveform oracle with zero total/net callback allocations; GPUI tests
 covered root/numeric focus, modified key release and close cancellation. Native
 Mac listening, focus and physical deadline acceptance remain pending.
+
+The pitch line also projects admitted Arrangement and Session MIDI gates from the
+exact audio-applied prepared revision and route snapshot, including notes omitted
+from the 32-note drawing preview. It queries a reusable fixed buffer on the UI
+side at most about30 times per second, uses the applied source while edits are
+pending, and keeps a400ms recent marker. Stop, faults, unavailable source/route
+identity and project replacement clear held playback gates. These are MIDI gate
+observations at the reported transport cursor, not synth loudness/release-tail or
+physical hardware-input telemetry. Reference audition retains its actual held mask.

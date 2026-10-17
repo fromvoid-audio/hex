@@ -3058,6 +3058,7 @@ mod tests {
 pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
+mod midi_activity;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;

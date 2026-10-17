@@ -608,6 +608,7 @@ impl EditorView {
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
+        visible_change |= self.tick_tuning_midi_activity();
         visible_change |= self.tick_controller_input(cx);
         visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {

@@ -10,7 +10,9 @@ impl TuningState {
             let mapped = (key as i32 - i32::from(scale.root_key()) + scale.root_degree() as i32)
                 .rem_euclid(scale.count() as i32) as usize;
             if mapped == degree {
-                held |= self.held_keys[key / 64] & (1_u64 << (key % 64)) != 0;
+                held |= (self.held_keys[key / 64] | self.midi_keys[key / 64])
+                    & (1_u64 << (key % 64))
+                    != 0;
                 recent |= self.recent_keys[key].is_some();
             }
         }
@@ -37,6 +39,8 @@ impl EditorView {
         }
         self.tuning.audition_keyboard.release_all();
         self.tuning.held_keys = [0; 2];
+        self.tuning.midi_keys = [0; 2];
+        self.tuning.midi_last_query = None;
         self.tuning.recent_keys = [None; 128];
     }
     pub(in crate::editor) fn tuning_audition_down(
