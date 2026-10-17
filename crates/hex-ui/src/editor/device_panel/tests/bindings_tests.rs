@@ -208,3 +208,42 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
     }
     drop(retired);
 }
+
+#[gpui::test]
+fn synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector =
+        Box::leak(format!("device-{}-parameter-2-knob", device.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(selector).expect("utility balance dial");
+    let start = bounds.center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    // Horizontal motion crosses the drag threshold but leaves this vertical
+    // dial's value unchanged. Finish in the same App update, before Begin is
+    // delivered to its owner.
+    visual.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: point(start.x + px(12.0), start.y),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        editor.update(cx, |view, cx| {
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(finalize_controls(view, cx));
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.device_gesture.snapshot().is_none(),
+            "queued Begin reopened the finalized drag"
+        );
+        assert!(!view.device_gesture.has_pending_terminal());
+    });
+}
