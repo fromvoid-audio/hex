@@ -4618,3 +4618,13 @@ cover width bounds, focus, toggle/manual semantics, completion, cancellation,
 actual Client-to-callback silence and list-boundary retrigger prevention. Native
 layout/listening and broader historical scrub/playhead wishlist remain open;
 Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
+
+
+## browser waveform cache stability — pulse2778 / PR384
+
+Visible row composition no longer mutates the16-entry metadata cache. Selected
+waveform, in-flight and pending keys stay protected; failed hover previews do not
+retry automatically. Reproduced selected-cache loss before repair; real pointer
+hover/selection regression checks no repeated preparation/audition, stable metadata,
+unchanged project state and surrounding lane geometry/style. Native flicker
+acceptance remains coordinator-serial on the next combined launcher delivery.
