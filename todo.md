@@ -4348,3 +4348,10 @@ paths refuse references they cannot preserve or admit. Focused checks and source
 review are underway; final full CI remains required. No sampler registration,
 PCM leases, live assignment or complete asset-platform acceptance is claimed.
 See [contract and next slices](docs/device-assets.md). Sampler2679 remains first.
+
+Cloud continuation integrated W05 metadata validation while preserving asset
+bindings (`f3008e71`); 422 portable contract/lattice/project/storage tests pass.
+Host compilation exposed a missing asset-error mapping, repaired at `83e94448`;
+six asset-related device/engine/Session checks and affected strict Clippy pass.
+The failed compile log is retained. Full final-source CI, coordinated tuning/asset
+schema migration and resource leases remain open; no live sampler is admitted.

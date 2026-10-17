@@ -94,3 +94,31 @@ merge, preserving both strict migrations and all data. Do not publish two
 incompatible schema30 formats or discard tuning/references. W05/W06 integration
 and fresh exact-source checks also remain required. The cloud primary owns
 dispatch and ordering; this Mac remains paused until explicit user resume.
+
+## cloud integration — 17 october 2026
+
+Integrated current W05 `0acd77e6` into this canonical branch at `f3008e71`.
+Conflict resolution retains host asset metadata before semantic validation and
+after every private default batch patch. Both registry suites retain asset
+preservation, preparation refusal and read-only/invalid-semantic coverage.
+The semantic refusal fixture also carries asset bindings and checks unchanged
+authored state. Storage schemas were not changed by this integration.
+
+At `f3008e71`, the contract, lattice, project and storage suites pass 422 tests
+with no failures or ignored tests, explicitly enabling lattice's conformance
+feature. The host checks then exposed a missing exhaustive engine error-map arm
+for `AssetResourcesUnavailable` (E0004). Repair `83e94448` adds its explicit
+lowercase refusal message. The repaired device/engine/Session asset checks pass
+six cases, including direct/closed Utility and actual Session preparation with
+unchanged project/history after refusal. Strict all-target Clippy passes for
+the seven affected crates with the same conformance feature. Logs, including
+the initial compile failure, are retained in `artifacts/device-assets/cloud4/`.
+These checks do not constitute full final-source CI or callback lease proof.
+
+Schema integration remains held for coordinator agreement with tuning PR350:
+main is schema29, both unpublished branches still declare incompatible schema30.
+The proposed ordering is tuning30 followed by a combined asset+tuning31, with
+an explicit decision about reading historical asset-only30 documents. Neither
+format may be silently discarded. No schema renumbering or merge has occurred.
+Mac verification/implementation requests now go through the coordinator's
+serial local queue; this cloud task does not start local work itself.
