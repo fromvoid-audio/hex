@@ -24,8 +24,7 @@ state or undo step for adding a browser place.
 Acceptance: add folder, wait for acknowledged save, restart app, same place
 present and usable. Test serialization/defaults/duplicates/limits, missing folder
 retention, malformed/unwritable failures and background load/save coordination.
-User owns native restart/folder-picker checks. Deferred: folder removal/reorder,
-indexing, preview playback and unrelated preferences.
+User owns native restart/folder-picker checks. Deferred: folder removal/reorder and unrelated preferences. Recursive sample indexing is now specified in [sample library](sample-library.md); preview playback is implemented separately.
 
 
 Implementation: schema-1 browser JSON, at most 14 additional places alongside
@@ -59,8 +58,11 @@ See [browser composition](browser-layout.md) and Pulse #2672 for their persisten
 
 Command-F from the editor opens the browser, chooses the `all` library section,
 focuses its search field and selects the previous query. Typing filters immediately
-by case-insensitive name across supported entries in the current folder and the
-registered native device catalog. Samples, devices and projects remain available
+across the indexed WAV sample catalog, supported entries in the current bounded
+folder, and the registered native device catalog. Folder/device names match
+case-insensitively; indexed samples use the sample library's multi-term path match.
+All ignores the Samples source-folder filter and deduplicates original WAV paths
+across the catalog and folder, retaining folder WAVs outside indexed roots. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
 Escape clears it and restores text mode even if the query was already empty.
 Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
@@ -81,10 +83,14 @@ the first match; subsequent arrows move through results. Query/category changes
 reveal the first row. Accepted background scans preserve the selected file path
 or device identity when new files change row offsets.
 
-The existing library listing remains nonrecursive and capped at 2048 enumerated
-entries. This is not an index of every subfolder or saved place. Folder scans stay
-on the background worker; typing only filters cached results. This UI state is
-transient and does not dirty the project or write preferences.
+Project/folder listing remains nonrecursive, capped at 2048 retained entries and
+8192 inspected entries. The separate [sample library](sample-library.md) recursively
+indexes WAVs in Music and added places with its documented bounds. Filesystem work
+stays on background workers. Combined results reuse the cached snapshot until the
+query, source, catalog or accepted folder contents change; typing does not scan
+folders. Both folder and catalog publication preserve a selected file/device by
+identity. Search UI state is transient and does not dirty the project or write
+preferences; the derived sample database persists separately.
 
 Native user checklist: press Command-F from Arrangement, Session and a device
 control with the browser collapsed; type a sample/project/device name; confirm

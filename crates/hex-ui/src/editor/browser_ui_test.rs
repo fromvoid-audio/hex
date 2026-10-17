@@ -119,6 +119,7 @@ fn browser_drag_fixture_with_tracks(
                     document_path: None,
                 }));
                 view.browser.scans.generation = view.browser.scans.generation.saturating_add(1);
+                view.browser.places = vec![directory.0.clone()];
                 view.browser.directory = directory.0.clone();
                 view.browser.listing = Some(DirectoryListing {
                     directory: directory.0.clone(),
@@ -130,6 +131,9 @@ fn browser_drag_fixture_with_tracks(
                     enumerated_entries: 1,
                     truncated: false,
                 });
+                view.browser.samples.replace(
+                    hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
+                );
                 view.browser.section = BrowserSection::Samples;
                 cx.notify();
             });
@@ -283,26 +287,18 @@ fn command_f_replaces_entire_query_during_ime_composition(cx: &mut TestAppContex
 #[gpui::test]
 fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f");
     visual.simulate_input("sample");
-    editor.update(visual, |view, cx| {
-        let directory = view.browser.directory.clone();
-        view.browser.listing = Some(DirectoryListing {
-            directory: directory.clone(),
-            entries: (0..50)
-                .map(|index| LibraryEntry {
-                    name: format!("sample-{index}.wav"),
-                    path: directory.join(format!("sample-{index}.wav")),
-                    kind: EntryKind::WaveAudio,
-                })
-                .collect(),
-            enumerated_entries: 50,
-            truncated: false,
-        });
-        cx.notify();
-    });
+    for index in 0..50 {
+        std::fs::write(
+            directory.0.join(format!("sample-{index}.wav")),
+            mono_pcm_wav(16),
+        )
+        .unwrap();
+    }
+    editor.update(visual, |view, cx| view.refresh_sample_catalog(cx));
     visual.run_until_parked();
     editor.update(visual, |view, cx| {
         view.browser
@@ -507,34 +503,20 @@ fn command_f_device_click_retains_browser_keys_in_session(cx: &mut TestAppContex
 #[gpui::test]
 fn command_f_category_switch_scrolls_first_result_into_view(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f");
+    for index in 0..50 {
+        std::fs::write(
+            directory.0.join(format!("sample-{index}.wav")),
+            mono_pcm_wav(16),
+        )
+        .unwrap();
+        std::fs::write(directory.0.join(format!("project-{index}.hex")), []).unwrap();
+    }
     editor.update(visual, |view, cx| {
-        let directory = view.browser.directory.clone();
-        let entries = (0..50)
-            .flat_map(|index| {
-                [
-                    LibraryEntry {
-                        name: format!("sample-{index}.wav"),
-                        path: directory.join(format!("sample-{index}.wav")),
-                        kind: EntryKind::WaveAudio,
-                    },
-                    LibraryEntry {
-                        name: format!("project-{index}.hex"),
-                        path: directory.join(format!("project-{index}.hex")),
-                        kind: EntryKind::Project,
-                    },
-                ]
-            })
-            .collect();
-        view.browser.listing = Some(DirectoryListing {
-            directory,
-            entries,
-            enumerated_entries: 100,
-            truncated: false,
-        });
-        cx.notify();
+        view.refresh_sample_catalog(cx);
+        view.request_browser_scan(directory.0.clone(), cx);
     });
     visual.run_until_parked();
     let samples = visual.debug_bounds("browser-section-samples").unwrap();
@@ -2413,7 +2395,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     cx: &mut TestAppContext,
 ) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let (handle, editor, track, directory, path) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     let row = visual.debug_bounds("browser-entry-0").expect("sample row");
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
@@ -2455,20 +2437,13 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
         assert_eq!(view.browser.search.read(cx).content, "loo");
         assert_eq!(view.browser.playback_generation, 2);
     });
+    std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(visual, |view, cx| {
         view.browser.search.update(cx, |input, cx| input.clear(cx));
-        view.browser
-            .listing
-            .as_mut()
-            .unwrap()
-            .entries
-            .push(LibraryEntry {
-                name: "second.wav".into(),
-                path: "/second.wav".into(),
-                kind: EntryKind::WaveAudio,
-            });
+        view.refresh_sample_catalog(cx);
         cx.notify();
     });
+    visual.run_until_parked();
     visual.simulate_keystrokes("down right up right");
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.selected_index, 0);
@@ -2497,6 +2472,7 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
     std::fs::create_dir(&folder).unwrap();
     let visual = &mut VisualTestContext::from_window(handle, cx);
     editor.update(visual, |view, cx| {
+        view.browser.section = BrowserSection::Projects;
         view.browser.listing.as_mut().unwrap().entries = vec![LibraryEntry {
             name: "folder".into(),
             path: folder.clone(),
@@ -2553,7 +2529,10 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .debug_bounds("browser-tag-editor")
         .expect("tag editor");
     let row = visual.debug_bounds("browser-entry-0").expect("sample row");
-    assert!(row.right() <= tag_editor.left());
+    assert!(
+        row.right() <= tag_editor.left(),
+        "row {row:?}, tag editor {tag_editor:?}"
+    );
     assert_eq!(
         row, before_editor_row,
         "opening the editor preserves results geometry"
@@ -2611,6 +2590,62 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("compact preview");
     assert!(row.size.width > px(0.0));
     assert!(row.bottom() <= preview.top());
+}
+
+#[gpui::test]
+fn samples_catalog_combines_roots_filters_and_refreshes_without_folder_navigation(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, first, original) = browser_drag_fixture(cx);
+    let second = PreferencesTestDirectory::new();
+    let nested = second.0.join("drums");
+    std::fs::create_dir_all(&nested).unwrap();
+    let other = nested.join("loop.WAV");
+    std::fs::write(&other, mono_pcm_wav(16)).unwrap();
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.browser.places = vec![first.0.clone(), second.0.clone()];
+        view.refresh_sample_catalog(cx);
+        // Rapid refreshes must coalesce; the latest roots must win.
+        view.refresh_sample_catalog(cx);
+    });
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind == EntryKind::WaveAudio)
+        );
+        assert!(entries.iter().any(|entry| entry.path == original));
+        assert!(entries.iter().any(|entry| entry.path == other));
+        view.browser.samples.source = Some(second.0.clone());
+        view.browser.search.update(cx, |input, cx| {
+            input.content = "DRUMS loop".into();
+            cx.notify();
+        });
+        let filtered = view.browser_visible_entries(cx);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].path, other);
+        assert_eq!(view.browser.directory, first.0);
+    });
+    std::fs::remove_file(&other).unwrap();
+    editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert!(view.browser_visible_entries(cx).is_empty());
+        assert_eq!(view.browser.samples.catalog.entries().len(), 1);
+        let database = view
+            .browser
+            .preferences_path
+            .with_extension("samples-v1.db");
+        assert_eq!(
+            hex_library::catalog::SampleCatalog::load(&database).unwrap(),
+            view.browser.samples.catalog
+        );
+    });
 }
 
 #[gpui::test]
@@ -2678,4 +2713,109 @@ fn browser_picker_resizes_to_icons_and_back_without_changing_browser_width(
             .width,
         sidebar.size.width
     );
+}
+
+#[gpui::test]
+fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, indexed, _) = browser_drag_fixture(cx);
+    let nested = indexed.0.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let indexed_wav = nested.join("utility-index.wav");
+    std::fs::write(&indexed_wav, mono_pcm_wav(16)).unwrap();
+    let outside = PreferencesTestDirectory::new();
+    let outside_wav = outside.0.join("utility-outside.wav");
+    std::fs::write(&outside_wav, mono_pcm_wav(16)).unwrap();
+    let project = outside.0.join("utility.hex");
+    std::fs::write(&project, []).unwrap();
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.browser.directory = outside.0.clone();
+        view.browser.listing = Some(hex_library::scan_directory(&outside.0).unwrap());
+        view.browser.samples.invalidate_listing();
+        view.browser.samples.source = Some(indexed.0.join("unmatched-source"));
+        view.apply_sample_catalog(
+            hex_library::catalog::scan_samples(std::slice::from_ref(&indexed.0)).catalog,
+            cx,
+        );
+        cx.notify();
+    });
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "utility");
+    visual.run_until_parked();
+    let selected_device = editor.update(cx, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::All);
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries.len(), 3);
+        for path in [&indexed_wav, &outside_wav, &project] {
+            assert_eq!(
+                entries.iter().filter(|entry| &entry.path == path).count(),
+                1
+            );
+        }
+        assert!(Arc::ptr_eq(&entries, &view.browser_visible_entries(cx)));
+        let devices = view.browser_visible_devices(cx);
+        let device_index = devices
+            .iter()
+            .position(|(_, entry)| entry.name.to_lowercase() == "utility")
+            .unwrap();
+        let identity = (devices[device_index].0, devices[device_index].1.type_id);
+        view.browser.selected_index = entries.len() + device_index;
+        view.browser.results_focused = true;
+        cx.notify();
+        identity
+    });
+    std::fs::write(nested.join("utility-second.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser_visible_entries(cx).len(), 4);
+        assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility");
+    });
+    let unchanged = editor.read_with(cx, |view, cx| view.browser_visible_entries(cx));
+    editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert!(Arc::ptr_eq(&unchanged, &view.browser_visible_entries(cx)))
+    });
+    std::fs::write(outside.0.join("utility-third.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(cx, |view, cx| {
+        view.request_browser_scan(outside.0.clone(), cx)
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser_visible_entries(cx).len(), 5);
+        assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
+    });
+    cx.simulate_keystrokes(handle, "enter");
+    editor.read_with(cx, |view, _| {
+        assert!(view.status.contains("drag a browser device"));
+        assert!(view.last_enqueued_import_to_track.is_none());
+    });
+    editor.update(cx, |view, cx| view.request_browser_scan(nested.clone(), cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(
+            entries.len(),
+            2,
+            "overlapping folder and catalog WAV paths appear once"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind == EntryKind::WaveAudio)
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.path == indexed_wav)
+                .count(),
+            1
+        );
+    });
 }

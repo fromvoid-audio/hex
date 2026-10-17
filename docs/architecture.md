@@ -116,7 +116,7 @@ of these substitutes for the others.
 | hex-warp | Pure bounded control-side stereo transformation; no project/I/O/UI/thread ownership | std |
 | hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering and transform preparation/cache | hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, std |
 | hex-audio | Device stream lifetime, command delivery, callback boundary | hex-engine, CPAL, rtrb |
-| hex-library | Bounded nonrecursive folder/WAV/project listings with original paths | std |
+| hex-library | Bounded folder/WAV/project listings, recursive WAV catalog and atomic derived cache with original paths | std |
 | hex-widgets | Reusable native control rendering, focus and local edit gestures with caller-supplied style/text | GPUI, std |
 | hex-ui | GPUI views, interaction/display state, required typography and browser navigation | hex-engine, hex-audio, hex-session, hex-project, hex-library, hex-preferences, GPUI |
 | hex-desktop | Startup and composition; constructs backend and injects it | hex-ui, hex-audio, GPUI lifecycle |
