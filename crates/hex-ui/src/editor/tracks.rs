@@ -791,6 +791,7 @@ impl EditorView {
                 })),
             );
         let header = div()
+            .id(("arrangement-track-header", track_id.value()))
             .w(px(TRACK_HEADER_WIDTH))
             .h(px(TRACK_ROW_HEIGHT))
             .flex_shrink_0()
@@ -811,6 +812,7 @@ impl EditorView {
             } else {
                 theme::color(theme::PaletteRole::Surface)
             }))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .child(track_name_view)
             .child(track_controls);
         div()
