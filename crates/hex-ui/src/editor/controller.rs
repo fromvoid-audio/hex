@@ -625,53 +625,56 @@ impl EditorView {
         }
         visible_change |= self.poll_editor_audio_events();
         visible_change |= self.poll_export(cx);
-        while let Some(request) = self.pending_requests.pop_front() {
-            match self.service.submit(request) {
-                Ok(()) => {
-                    self.worker_requests_pending = self.worker_requests_pending.saturating_add(1)
-                }
-                Err(SubmitError::Full(request)) => {
-                    self.pending_requests.push_front(request);
-                    break;
-                }
-                Err(SubmitError::Busy(request)) => {
-                    if matches!(request, Request::Export(_)) {
-                        self.export_pending = false;
+        visible_change |= self.pump_tuning_gesture();
+        if !self.tuning.client.has_pending_requests() {
+            while let Some(request) = self.pending_requests.pop_front() {
+                match self.service.submit(request) {
+                    Ok(()) => {
+                        self.worker_requests_pending =
+                            self.worker_requests_pending.saturating_add(1)
                     }
-                    clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
-                    visible_change |=
-                        replace_error(&mut self.error, "an export is already pending");
-                }
-                Err(SubmitError::Closed(request)) => {
-                    if matches!(&request, Request::ImportAudioBatch { .. }) {
-                        if let Some(control) = self.audio_batch.take() {
-                            control.request_cancel();
+                    Err(SubmitError::Full(request)) => {
+                        self.pending_requests.push_front(request);
+                        break;
+                    }
+                    Err(SubmitError::Busy(request)) => {
+                        if matches!(request, Request::Export(_)) {
+                            self.export_pending = false;
                         }
-                        self.audio_batch_progress = None;
+                        clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
+                        visible_change |=
+                            replace_error(&mut self.error, "an export is already pending");
                     }
-                    if matches!(request, Request::Export(_)) {
-                        self.export_pending = false;
+                    Err(SubmitError::Closed(request)) => {
+                        if matches!(&request, Request::ImportAudioBatch { .. }) {
+                            if let Some(control) = self.audio_batch.take() {
+                                control.request_cancel();
+                            }
+                            self.audio_batch_progress = None;
+                        }
+                        if matches!(request, Request::Export(_)) {
+                            self.export_pending = false;
+                        }
+                        if matches!(request, Request::SaveNew(_) | Request::SaveCurrent) {
+                            self.saving_project = false;
+                        }
+                        visible_change |= replace_error(&mut self.error, "project worker stopped");
+                        if request.is_project_open() {
+                            self.opening_project = false;
+                        }
+                        clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
+                        if matches!(
+                            &request,
+                            Request::Edit(hex_project::Command::DuplicateClip(_))
+                        ) {
+                            self.duplicate_intent.reject();
+                        }
+                        break;
                     }
-                    if matches!(request, Request::SaveNew(_) | Request::SaveCurrent) {
-                        self.saving_project = false;
-                    }
-                    visible_change |= replace_error(&mut self.error, "project worker stopped");
-                    if request.is_project_open() {
-                        self.opening_project = false;
-                    }
-                    clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
-                    if matches!(
-                        &request,
-                        Request::Edit(hex_project::Command::DuplicateClip(_))
-                    ) {
-                        self.duplicate_intent.reject();
-                    }
-                    break;
                 }
             }
         }
         visible_change |= self.pump_device_gesture();
-        visible_change |= self.pump_tuning_gesture();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -1330,7 +1333,7 @@ impl EditorView {
         false
     }
 
-    fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+    pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
         if event.project_replaced {
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
@@ -1882,7 +1885,22 @@ impl EditorView {
         }
         if let Some(ack) = event.tuning_gesture_ack.as_ref() {
             let key = self.tuning.client.snapshot().map(|s| s.key);
-            self.tuning.client.acknowledge(ack);
+            let matched = self.tuning.client.acknowledge(ack);
+            let retired = !event.tuning_gesture_request
+                && event.active_tuning_gesture.is_none()
+                && key == Some(ack.key);
+            if !ack.accepted
+                && (matched || retired)
+                && (retired
+                    || matches!(
+                        ack.phase,
+                        hex_session::tuning_gesture::TuningGesturePhase::Begin
+                            | hex_session::tuning_gesture::TuningGesturePhase::Commit
+                            | hex_session::tuning_gesture::TuningGesturePhase::Cancel
+                    ))
+            {
+                self.refuse_tuning_barriers();
+            }
             if !event.tuning_gesture_request
                 && event.active_tuning_gesture.is_none()
                 && key == Some(ack.key)
@@ -2247,6 +2265,28 @@ impl EditorView {
         let Some(request) = request else {
             return false;
         };
+        if self.tuning.client.snapshot().is_some() && request.finalizes_parameter_gesture() {
+            if self.pending_requests.len() + self.device_gesture_barriers.len()
+                >= UI_REQUEST_CAPACITY
+            {
+                self.error = Some("request queue full · edit was not applied".into());
+                return false;
+            }
+            if let Err(reason) = self.finalize_tuning_gesture() {
+                self.tuning.error = Some(reason.into());
+                return false;
+            }
+        }
+        if self.tuning.client.has_pending_requests() {
+            if self.pending_requests.len() + self.device_gesture_barriers.len()
+                >= UI_REQUEST_CAPACITY
+            {
+                self.error = Some("request queue full · edit was not applied".into());
+                return false;
+            }
+            self.pending_requests.push_back(request);
+            return true;
+        }
         if !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 < UI_REQUEST_CAPACITY
@@ -2796,6 +2836,7 @@ impl EditorView {
                         })
                 })
             });
+        self.cancel_tuning_audition();
         self.cancel_computer_keyboard();
         self.computer_keyboard.suspended = true;
         self.cancel_scrub();

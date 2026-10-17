@@ -34,12 +34,14 @@ pub(super) fn retire_deferred(
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
-struct FailedBarrierEffects {
-    save_refused: bool,
-    export_refused: bool,
+pub(super) struct FailedBarrierEffects {
+    pub(super) save_refused: bool,
+    pub(super) export_refused: bool,
 }
 
-fn retire_failed_finalize_barriers(deferred: &mut VecDeque<Request>) -> FailedBarrierEffects {
+pub(super) fn retire_failed_finalize_barriers(
+    deferred: &mut VecDeque<Request>,
+) -> FailedBarrierEffects {
     let mut kept = VecDeque::with_capacity(deferred.len());
     let mut effects = FailedBarrierEffects::default();
     while let Some(request) = deferred.pop_front() {
