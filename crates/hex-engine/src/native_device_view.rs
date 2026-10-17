@@ -191,7 +191,14 @@ pub fn native_effect_frequency_response(
     let registry = hex_devices::native_registry()
         .map_err(|_| Invalid("invalid built-in native device registry"))?;
     let Some(processor) = registry
-        .prepare_processor(state, sample_rate)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .map_err(|_| Invalid("native device response is unavailable"))?
     else {
         return Ok(None);

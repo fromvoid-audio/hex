@@ -165,7 +165,14 @@ fn chain(
     let prepared = contract(
         definition,
         "effect preparation",
-        registry.prepare_runtime_device(state, rate),
+        registry.prepare_runtime_device(
+            state,
+            &crate::DevicePreparationContext {
+                sample_rate: rate,
+                tuning: &crate::TuningTable::default(),
+                resources: &crate::EMPTY_DEVICE_RESOURCES,
+            },
+        ),
     )?;
     contract(
         definition,
@@ -290,7 +297,14 @@ pub fn check_instrument(
     let prepared = contract(
         definition,
         "instrument preparation",
-        definition.prepare_instrument(state, sample_rate),
+        definition.prepare_instrument(
+            state,
+            &crate::DevicePreparationContext {
+                sample_rate,
+                tuning: &crate::TuningTable::default(),
+                resources: &crate::EMPTY_DEVICE_RESOURCES,
+            },
+        ),
     )?;
     if contract(
         definition,
@@ -339,11 +353,11 @@ pub fn check_instrument(
             context.prepare_note(60, 100),
         )?;
         let a: Vec<_> = (0..513)
-            .map(|age| context.sample(&note, age, 257))
+            .map(|age| context.sample(&note, age, 257, &crate::EMPTY_DEVICE_RESOURCES))
             .collect();
         let mut b: Vec<_> = (0..513)
             .rev()
-            .map(|age| context.sample(&note, age, 257))
+            .map(|age| context.sample(&note, age, 257, &crate::EMPTY_DEVICE_RESOURCES))
             .collect();
         b.reverse();
         if !same(&a, &b, 0.0) {
@@ -356,8 +370,13 @@ pub fn check_instrument(
         "analytic note preparation",
         prepared.prepare_note(60, 100),
     )?;
-    let a: Vec<_> = (0..513).map(|age| note.sample(age, 257)).collect();
-    let mut b: Vec<_> = (0..513).rev().map(|age| note.sample(age, 257)).collect();
+    let a: Vec<_> = (0..513)
+        .map(|age| note.sample(age, 257, &crate::EMPTY_DEVICE_RESOURCES))
+        .collect();
+    let mut b: Vec<_> = (0..513)
+        .rev()
+        .map(|age| note.sample(age, 257, &crate::EMPTY_DEVICE_RESOURCES))
+        .collect();
     b.reverse();
     if !same(&a, &b, 0.0) {
         return Err(fail(definition, "analytic finite determinism"));
@@ -391,8 +410,12 @@ fn render_instrument<D: NativeDeviceMetadata + ?Sized>(
             });
         }
         pair.begin_block();
-        pair.process_block(&events, &mut output[offset..end])
-            .map_err(|_| fail(definition, "instrument event processing"))?;
+        pair.process_block(
+            &events,
+            &mut output[offset..end],
+            &crate::EMPTY_DEVICE_RESOURCES,
+        )
+        .map_err(|_| fail(definition, "instrument event processing"))?;
         pair.commit_block();
         offset = end;
     }
@@ -404,3 +427,4 @@ mod tests;
 
 /// Registered original fixture for owned-effect host proofs, never a browser device.
 pub mod owned_delay;
+pub mod resource_pcm;

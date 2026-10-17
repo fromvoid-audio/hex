@@ -46,7 +46,7 @@ fn packed_analytic_note_matches_standalone_kernel_through_release() {
         ] {
             let expected = prepared.sample(&table, age, gate);
             assert_eq!(
-                analytic.sample(age, gate),
+                analytic.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES),
                 [expected, expected],
                 "age={age}, gate={gate}"
             );
@@ -159,8 +159,14 @@ fn assert_matches_previous_full_evaluation(
                     prepared.sample(&table, age, gate).to_bits(),
                     previous.to_bits()
                 );
-                assert_eq!(packed.sample(age, gate)[0].to_bits(), previous.to_bits());
-                assert_eq!(packed.sample(age, gate)[1].to_bits(), previous.to_bits());
+                assert_eq!(
+                    packed.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)[0].to_bits(),
+                    previous.to_bits()
+                );
+                assert_eq!(
+                    packed.sample(age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)[1].to_bits(),
+                    previous.to_bits()
+                );
             }
         }
     }
