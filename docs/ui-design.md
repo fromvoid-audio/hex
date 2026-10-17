@@ -415,6 +415,32 @@ their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
 context menus and renaming retain their existing behavior. Distinct controls,
 including fade handles and track names, retain their own descriptive tooltips.
 
+## selected clip borders — #2719 / PR335
+
+Each selected Arrangement audio or MIDI clip uses the theme's primary color for
+its existing one-pixel border around the visible clipped bounds. Every member
+of a multi-selection is highlighted, including retained scenes whose primary
+selection did not change. Deselecting restores the prior base border; selected
+audio hover keeps the highlight and unselected hover retains its text-color
+affordance. Selected audio/MIDI edge-trim previews keep the same border color.
+
+Border widths, clip bounds, fills, text, waveform/note drawing and hit areas are
+unchanged. A completed-scene regression fails with the former black selected
+border and passes after the color change. It covers five mixed audio/MIDI clips,
+both viewport crop boundaries, all four border widths, selected hover,
+membership-only deselection, unchanged fills/bounds, a held audio-edge preview
+and Escape cancellation without a model edit. The GPUI observer is test support
+only, with verified upstream baseline/cumulative patch provenance; it reads
+actual painted scene quads rather than claiming native GPU pixel evidence.
+
+Required exact-source checks are recorded in Pulse/PR. Native acceptance stays
+with the coordinator's serial Mac lane on a future approved optimized candidate:
+select/deselect one and several audio/MIDI clips, hover them, inspect both cropped
+viewport edges and drag/cancel their trim/fade affordances. Confirm text, clip
+colors, waveform/notes and edge hit areas remain usable. Record actual source/
+build and a bounded interaction capture. No current app replacement or save/quit
+is required by this visual check; native acceptance is still open.
+
 ## contiguous clip header selection — #2769 / PR377
 
 Clicking a clip header starts a clip-selection anchor. Shift-click selects the

@@ -395,3 +395,84 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
         assert!(view.device_gesture.snapshot().is_none());
     });
 }
+
+#[gpui::test]
+fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppContext) {
+    let (handle, editor) = window(cx);
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(hex_session::SourcePlanReservation {
+                reader: hex_media::VerifiedWavReaderLimits::new(
+                    hex_media::WavReaderLimits::new(64 * 1024 * 1024, 8_000_000, 32, 4096),
+                    1024 * 1024,
+                ),
+                max_retained_sources: 1,
+                max_path_bytes: 1024 * 1024,
+                max_manifest_bytes: 1024 * 1024,
+            }),
+        }));
+    });
+    let created = next(&editor, cx);
+    assert!(created.project_replaced);
+    assert!(created.error.is_none());
+    editor.update(cx, |view, cx| {
+        view.receive(created);
+        view.sync_tuning(cx);
+    });
+    let input = cx
+        .update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| {
+                view.tuning.open = true;
+                view.tuning.audition_keyboard.enabled = true;
+                view.tuning.focus.focus(window);
+                assert!(view.tuning_audition_down(
+                    &gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse("a").unwrap(),
+                        is_held: false,
+                    },
+                    window,
+                    cx,
+                ));
+                Arc::clone(
+                    view.tuning
+                        .audition_input
+                        .as_ref()
+                        .expect("owned preparation"),
+                )
+            })
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !input.is_cancelled() {
+        assert!(Instant::now() < deadline, "worker did not refuse audition");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // Do not take the completion out of the queue or call receive directly:
+    // exercise the helper/event ordering in the actual UI tick.
+    loop {
+        let done = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.worker_requests_pending == 0
+        });
+        if done {
+            break;
+        }
+        assert!(Instant::now() < deadline, "completion did not drain");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.tuning.error.as_deref(),
+            Some("tuning audition preparation is stale or unavailable"),
+        );
+        assert!(view.tuning.audition_input.is_none());
+        assert!(
+            view.tuning
+                .audition_keyboard
+                .desired_notes()
+                .iter()
+                .all(Option::is_none)
+        );
+    });
+}

@@ -2780,6 +2780,7 @@ dependencies = [
  "hex-engine",
  "hex-lattice-contract",
  "hex-library",
+ "hex-media",
  "hex-midi",
  "hex-mts",
  "hex-preferences",

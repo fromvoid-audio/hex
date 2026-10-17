@@ -359,7 +359,11 @@ impl EditorView {
                         .min_w(px(4.0))
                         .overflow_hidden()
                         .border_1()
-                        .border_color(rgb(0x000000))
+                        .border_color(rgb(if self.clip_is_selected(clip.id()) {
+                            theme::color(theme::PaletteRole::Primary)
+                        } else {
+                            0x000000
+                        }))
                         .bg(rgb(theme::clip_fill(track.color(), clip.flavor(), false)))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     let shapes = midi_trim_note_shapes(
@@ -415,7 +419,11 @@ impl EditorView {
                         .min_w(px(3.0))
                         .overflow_hidden()
                         .border_1()
-                        .border_color(rgb(0x000000))
+                        .border_color(rgb(if self.clip_is_selected(original_clip.id()) {
+                            theme::color(theme::PaletteRole::Primary)
+                        } else {
+                            0x000000
+                        }))
                         .bg(rgb(theme::clip_fill(
                             track.color(),
                             preview_clip.flavor(),
@@ -1124,7 +1132,11 @@ impl EditorView {
                     selected_clip,
                 )))
                 .border_1()
-                .border_color(rgb(0x000000))
+                .border_color(rgb(if selected_clip {
+                    theme::color(theme::PaletteRole::Primary)
+                } else {
+                    0x000000
+                }))
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1316,8 +1328,18 @@ impl EditorView {
                 clip.flavor(),
                 selected,
             )))
-            .hover(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))));
-        content = content.border_1().border_color(rgb(0x000000));
+            .hover(move |style| {
+                style.border_color(rgb(theme::color(if selected {
+                    theme::PaletteRole::Primary
+                } else {
+                    theme::PaletteRole::Text
+                })))
+            });
+        content = content.border_1().border_color(rgb(if selected {
+            theme::color(theme::PaletteRole::Primary)
+        } else {
+            0x000000
+        }));
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {

@@ -74,6 +74,29 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## selected clip borders — pulse2719 / PR335, 17 october 2026
+
+Existing audio/MIDI clip borders and selected live edge previews use the theme's
+primary color, including every multi-selected member. Deselection/hover restore
+their prior affordances; widths, geometry, fills and hit areas stay unchanged.
+Actual scene regression fails with a black selected border before repair and
+passes afterward across mixed clips, clipped bounds, membership-only repaint and
+held edge preview/Escape cancellation. GPUI's observer is test-only with exact
+patch provenance. Full source evidence and remaining native acceptance are in
+Pulse/PR; no app delivery or native GPU-pixel claim. See docs/ui-design.md.
+
+## whole-clip keyboard clipboard — pulse2770 / PR378, 17 october 2026
+
+Header selection supersedes an unrelated time rectangle; Command-C captures full
+selected clips, and a destination click/Command-V uses a retained worker payload.
+Whole source/loop/fade/note metadata, relative gaps, fresh IDs, one atomic Undo
+and repeated paste survive source deselection. Existing single-source-track
+targeting, multi-track stable owners, rectangle copy and normal/ripple overlap
+rules remain. Actual UI regression fails with a 12,000-frame crop before repair
+and passes with complete 48,000-frame clips afterward, including real worker
+Undo/Redo, text focus and save/reopen. Required exact checks and native acceptance
+remain recorded in Pulse/PR; see docs/time-selection.md. No app delivery claim.
+
 ## contiguous clip selection — pulse2769 / PR377, 17 october 2026
 
 A stable same-track clip-header anchor supports inclusive Shift ranges in either
@@ -4942,3 +4965,9 @@ target track failed before repair, and verifies no import/canonical mutation wit
 auto on/off while retaining manual Right/search focus and explicit Enter import.
 Existing deliberate drag/drop coverage remains required. Other file/device
 handlers unchanged. Native double-click behavior remains coordinator-serial.
+
+- 2026-10-17 tuning follow-up: preserve pending reference-audition preparation
+  ownership across UI ticks until its matching completion; verified-mode real
+  worker/key-handler regression fails before repair (9541ec14), passes afterward
+  (cdb30fde). Explicit cancellation/stale owners remain terminal. Final combined
+  full CI and native interaction acceptance remain separate and pending.

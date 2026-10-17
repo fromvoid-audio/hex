@@ -34,6 +34,7 @@ impl EditorView {
             && self.tuning.audition_keyboard.accepts_key(key)
     }
     pub(in crate::editor) fn cancel_tuning_audition(&mut self) {
+        self.tuning.audition_preparing = false;
         if let Some(input) = self.tuning.audition_input.take() {
             input.cancel();
         }
@@ -80,6 +81,7 @@ impl EditorView {
                 input: Arc::clone(&input),
             }) {
                 self.tuning.audition_input = Some(input);
+                self.tuning.audition_preparing = true;
             } else {
                 input.cancel();
                 self.tuning.error = Some("audition preparation queue is full".into());
@@ -119,6 +121,12 @@ impl EditorView {
             return false;
         };
         if input.is_cancelled() {
+            // Worker refusal cancels before sending its completion. Keep this
+            // owner until receive consumes that completion, even across ticks.
+            // Explicit Stop/focus/close cancellation takes the owner immediately.
+            if self.tuning.audition_preparing {
+                return false;
+            }
             self.cancel_tuning_audition();
             return true;
         }

@@ -277,3 +277,6 @@ Persistent native scalar controls and their injected panel policies live in
 edits. See [native panel host bindings](../../docs/native-device-bindings.md)
 for captured identity, exact gesture ownership and the remaining independent
 embedding boundary.
+
+The test-only `hex-media` dependency constructs bounded verified-source limits for
+real worker/key-handler audition-refusal fixtures; production UI does not decode media.

@@ -1457,6 +1457,7 @@ impl EditorView {
                 input.cancel();
                 return None;
             }
+            self.tuning.audition_preparing = false;
             if input.is_cancelled() {
                 self.cancel_tuning_audition();
                 if let Some(error) = event.error {
