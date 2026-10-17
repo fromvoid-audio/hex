@@ -972,7 +972,9 @@ pub fn channel_with_spectrum(
 
 struct SpectrumStage {
     frames: [[f32; 2]; 256],
+    input_frames: [[f32; 2]; 256],
     seen: [u64; 4],
+    input_seen: [u64; 4],
     expected: usize,
     observed: bool,
     valid: bool,
@@ -984,7 +986,9 @@ impl Default for SpectrumStage {
     fn default() -> Self {
         Self {
             frames: [[0.0; 2]; 256],
+            input_frames: [[0.0; 2]; 256],
             seen: [0; 4],
+            input_seen: [0; 4],
             expected: 0,
             observed: false,
             valid: false,
@@ -997,7 +1001,9 @@ impl Default for SpectrumStage {
 impl SpectrumStage {
     fn begin(&mut self, target: spectrum_target::SpectrumTarget, epoch: u64, expected: usize) {
         self.frames.fill([0.0; 2]);
+        self.input_frames.fill([0.0; 2]);
         self.seen.fill(0);
+        self.input_seen.fill(0);
         self.expected = expected;
         self.observed = false;
         self.valid = expected <= self.frames.len();
@@ -1005,7 +1011,24 @@ impl SpectrumStage {
         self.epoch = epoch;
     }
 
+    #[cfg(test)]
     fn observe(&mut self, identity: PostNodeIdentity, offset: usize, frames: &[[f32; 2]]) {
+        self.observe_signal(identity, hex_engine::NodeSignalPhase::Input, offset, frames);
+        self.observe_signal(
+            identity,
+            hex_engine::NodeSignalPhase::Output,
+            offset,
+            frames,
+        );
+    }
+
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: hex_engine::NodeSignalPhase,
+        offset: usize,
+        frames: &[[f32; 2]],
+    ) {
         let Some(target) = self.target else {
             return;
         };
@@ -1021,11 +1044,15 @@ impl SpectrumStage {
             self.valid = false;
             return;
         }
+        let (samples, seen) = match phase {
+            hex_engine::NodeSignalPhase::Input => (&mut self.input_frames, &mut self.input_seen),
+            hex_engine::NodeSignalPhase::Output => (&mut self.frames, &mut self.seen),
+        };
         for (relative, frame) in frames.iter().enumerate() {
             let index = offset + relative;
             let word = index / 64;
             let mask = 1_u64 << (index % 64);
-            let Some(bits) = self.seen.get_mut(word) else {
+            let Some(bits) = seen.get_mut(word) else {
                 self.valid = false;
                 return;
             };
@@ -1034,7 +1061,7 @@ impl SpectrumStage {
                 return;
             }
             *bits |= mask;
-            self.frames[index] = *frame;
+            samples[index] = *frame;
         }
     }
 
@@ -1042,7 +1069,10 @@ impl SpectrumStage {
         self.valid
             && self.observed
             && self.target.is_some()
-            && (0..self.expected).all(|index| self.seen[index / 64] & (1_u64 << (index % 64)) != 0)
+            && (0..self.expected).all(|index| {
+                let mask = 1_u64 << (index % 64);
+                self.seen[index / 64] & mask != 0 && self.input_seen[index / 64] & mask != 0
+            })
     }
 
     fn clear(&mut self) {
@@ -1051,6 +1081,7 @@ impl SpectrumStage {
         self.observed = false;
         self.valid = false;
         self.seen.fill(0);
+        self.input_seen.fill(0);
     }
 }
 
@@ -2287,8 +2318,9 @@ impl Callback {
             return Ok(());
         }
         let stage = &mut self.spectrum_stage;
-        let mut observe =
-            |identity, offset, frames: &[Frame]| stage.observe(identity, offset, frames);
+        let mut observe = |identity, phase, offset, frames: &[Frame]| {
+            stage.observe_signal(identity, phase, offset, frames)
+        };
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
@@ -2313,7 +2345,7 @@ impl Callback {
         {
             active
                 .playback
-                .render_with_post_node_observer(output, Some(&mut observe))?;
+                .render_with_node_signal_observer(output, Some(&mut observe))?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -2425,8 +2457,9 @@ impl Callback {
                         .and_then(ActivePublication::current)
                         .map_or(0, |active| active.revision),
                 };
-                Some(capture.submit_at(
+                Some(capture.submit_pair_at(
                     stamp,
+                    &self.spectrum_stage.input_frames[..self.spectrum_stage.expected],
                     &self.spectrum_stage.frames[..self.spectrum_stage.expected],
                     captured_start,
                 ))

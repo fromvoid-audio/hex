@@ -90,6 +90,8 @@ impl SpectrumCore {
             kernel_rate: _,
             rolling,
             ordered,
+            input_rolling,
+            input_ordered,
             write_index: _,
             filled: _,
             last_sequence: _,
@@ -101,6 +103,8 @@ impl SpectrumCore {
         std::mem::size_of_val(self)
             .checked_add(std::mem::size_of_val(rolling.as_ref()))?
             .checked_add(std::mem::size_of_val(ordered.as_ref()))?
+            .checked_add(std::mem::size_of_val(input_rolling.as_ref()))?
+            .checked_add(std::mem::size_of_val(input_ordered.as_ref()))?
             .checked_add(kernel.as_ref()?.heap_data_bytes()?)
     }
 }

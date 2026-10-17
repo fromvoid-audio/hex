@@ -167,7 +167,7 @@ pub(super) struct DevicePanelState {
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
-    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
+    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }

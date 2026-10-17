@@ -1179,11 +1179,33 @@ impl Playback {
         output: &mut [Frame],
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), Invalid> {
+        if let Some(observer) = observer {
+            self.render_with_node_signal_observer(
+                output,
+                Some(&mut |identity, phase, offset, frames| {
+                    if phase == crate::NodeSignalPhase::Output {
+                        observer(identity, offset, frames);
+                    }
+                }),
+            )
+        } else {
+            self.render_with_node_signal_observer(output, None)
+        }
+    }
+
+    /// Render with synchronous input/output taps around each whole native entry.
+    /// Input precedes host input trim; output follows effect and output trim.
+    /// Observations commit only after render and final caller validation succeed.
+    pub fn render_with_node_signal_observer(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
         let start = self.position();
         let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime
-                .render_with_post_node_observer(output, observer)
+                .render_with_node_signal_observer(output, observer)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
             return Ok(());
@@ -1283,11 +1305,35 @@ impl Playback {
         pages: &mut P,
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), Invalid> {
+        if let Some(observer) = observer {
+            self.render_with_pages_and_node_signal_observer(
+                output,
+                pages,
+                Some(&mut |identity, phase, offset, frames| {
+                    if phase == crate::NodeSignalPhase::Output {
+                        observer(identity, offset, frames);
+                    }
+                }),
+            )
+        } else {
+            self.render_with_pages_and_node_signal_observer(output, pages, None)
+        }
+    }
+
+    /// Render with synchronous input/output taps around each whole native entry.
+    /// Input precedes host input trim; output follows effect and output trim.
+    /// Observations commit only after render and final caller validation succeed.
+    pub fn render_with_pages_and_node_signal_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), Invalid> {
         let start = self.position();
         let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime
-                .render_with_pages_and_post_node_observer(output, pages, observer)
+                .render_with_pages_and_node_signal_observer(output, pages, observer)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
             return Ok(());
