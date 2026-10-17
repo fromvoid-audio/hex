@@ -60,8 +60,12 @@ storage and ordinary control retirement. On64-bit builds:
 - Release entry488 bytes;192-span buffer84,488 bytes. Paired release entries plus
   span buffer16,075,272 bytes; with context owner/lease slots16,599,560. Existing
  16/18/32 MiB scoped/preroll ceilings and overflow refusals remain unchanged.
-- The unchanged2 MiB retained harmonic-context ceiling admits353 complete
-  proposed contexts after adding the table, previously426; it is not increased.
+- Neutral shared contexts keep their existing compact configuration, so the
+  unchanged2 MiB retained harmonic-context ceiling still admits426 proposed
+  contexts. Only custom-tuned wide mutable owners retain a fixed inline table;
+  their actual factory/runtime size includes it. Legacy feedback/LFO twins keep
+  their existing8KiB bound. No configuration gains heap owners or callback clones
+  of a reference-counted/owned table.
 
 The keyboard reserves two64-voice inline override arrays in its one selected-track
 runtime, rather than per project track. The explicit release timing test reports

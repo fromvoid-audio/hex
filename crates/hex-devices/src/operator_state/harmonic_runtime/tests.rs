@@ -327,11 +327,15 @@ fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
 #[test]
 fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_feedback() {
     fn make(settings: OperatorSettings, hz: f64) -> Factory {
-        let configuration = settings
-            .prepare_configuration(48000)
-            .unwrap()
-            .with_project_tuning(hex_lattice::TuningTable::new([hz; 128]).unwrap());
-        Factory::new(settings, configuration, crate::shared_sine_table(), 48000).unwrap()
+        let configuration = settings.prepare_configuration(48000).unwrap();
+        Factory::new_with_tuning(
+            settings,
+            configuration,
+            crate::shared_sine_table(),
+            48000,
+            Some(hex_lattice::TuningTable::new([hz; 128]).unwrap()),
+        )
+        .unwrap()
     }
     for lfo in [false, true] {
         let mut settings = crate::operator_state::tests::legacy_settings();
