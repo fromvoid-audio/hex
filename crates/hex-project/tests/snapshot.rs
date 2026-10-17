@@ -31,6 +31,7 @@ fn valid_snapshot() -> Snapshot {
             hex_project::Meter::COMMON_TIME,
         )],
         tracks: vec![TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -47,6 +48,7 @@ fn valid_snapshot() -> Snapshot {
                 audio_clips: vec![
                     ClipSnapshot {
                         name: "clip".into(),
+                        flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
@@ -61,6 +63,7 @@ fn valid_snapshot() -> Snapshot {
                     },
                     ClipSnapshot {
                         name: "clip".into(),
+                        flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: 30,
@@ -176,6 +179,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut tracks = valid_snapshot();
     tracks.tracks = (0..=MAX_TRACKS)
         .map(|index| TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -215,6 +219,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     *track.audio_clips_mut().unwrap() = (0..=MAX_CLIPS)
         .map(|index| ClipSnapshot {
             name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id: 1_000 + index as u64,

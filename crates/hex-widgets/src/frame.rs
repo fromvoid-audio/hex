@@ -56,6 +56,17 @@ pub fn device_body(style: ControlStyle) -> Div {
         .bg(rgb(style.surface))
 }
 
+/// Scroll body whose content owns the inset, so row offsets and scroll extent
+/// include it exactly once while preserving the shared surface and corners.
+pub fn device_windowed_body(style: ControlStyle, content: impl IntoElement) -> Div {
+    device_body(style)
+        .flex_col()
+        .border_l_0()
+        .border_r_0()
+        .py_0()
+        .child(div().w_full().p(px(DEVICE_BODY_INSET)).child(content))
+}
+
 /// Semantic surfaces, independent of device identity and section dimensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceSectionSurface {

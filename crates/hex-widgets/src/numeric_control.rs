@@ -172,6 +172,9 @@ struct Press {
 
 /// One reusable knob/slider and its independently editable numeric value.
 pub struct NumericControl {
+    accessibility_binding: Option<gpui::AccessibilityBinding>,
+    accessibility_pending: bool,
+    accessibility_lifetime: gpui::AccessibilityLifetime,
     id: SharedString,
     label: SharedString,
     kind: NumericControlKind,
@@ -201,6 +204,38 @@ pub struct NumericControl {
 }
 
 impl NumericControl {
+    /// Format an acknowledged value using this control's actual canonical codec.
+    pub fn accessibility_value(
+        &self,
+        value: f64,
+    ) -> Result<gpui::AccessibilityValue, NumericError> {
+        Ok(gpui::AccessibilityValue::Number {
+            value: self.spec.validate(value)?,
+            min: self.spec.bounds().0,
+            max: self.spec.bounds().1,
+            text: self.spec.format(value)?.into(),
+        })
+    }
+
+    /// Bind real acknowledged owner state without altering pointer/keyboard behavior.
+    pub fn set_accessibility_binding(
+        &mut self,
+        binding: gpui::AccessibilityBinding,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.accessibility_binding.as_ref().is_none_or(|old| {
+            old.name != binding.name
+                || old.revision != binding.revision
+                || old.value != binding.value
+                || old.pending != binding.pending
+        }) || self.accessibility_pending;
+        self.accessibility_pending = false;
+        self.accessibility_binding = Some(binding);
+        if changed {
+            cx.notify();
+        }
+    }
+
     pub fn new(
         cx: &mut Context<Self>,
         id: impl Into<SharedString>,
@@ -229,6 +264,9 @@ impl NumericControl {
             dial_layout,
         } = config;
         Self {
+            accessibility_binding: None,
+            accessibility_pending: false,
+            accessibility_lifetime: Default::default(),
             id,
             label,
             kind,
@@ -613,9 +651,16 @@ impl NumericControl {
         if !self.enabled || self.editing {
             return;
         }
-        if let Ok(value) = self.spec.step(self.draft, direction, fine)
-            && value != self.draft
-        {
+        if let Ok(value) = self.spec.step(self.draft, direction, fine) {
+            self.emit_accessible_value(value, cx);
+        }
+    }
+
+    fn emit_accessible_value(&mut self, value: f64, cx: &mut Context<Self>) -> bool {
+        if !self.enabled || self.editing || self.spec.validate(value).is_err() {
+            return false;
+        }
+        if value != self.draft {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: self.draft,
@@ -633,6 +678,47 @@ impl NumericControl {
             });
             cx.notify();
         }
+        true
+    }
+
+    fn accessibility_action(
+        &mut self,
+        action: &gpui::AccessibilityAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use gpui::AccessibilityAction;
+        if !self.enabled {
+            return false;
+        }
+        if matches!(action, AccessibilityAction::Focus) {
+            self.focus.focus(window);
+            return true;
+        }
+        if self.is_interacting()
+            || self.accessibility_pending
+            || self
+                .accessibility_binding
+                .as_ref()
+                .is_some_and(|binding| binding.pending || !(binding.guard)(cx))
+        {
+            return false;
+        }
+        let value = match action {
+            AccessibilityAction::SetNumber(value) => Ok(*value),
+            AccessibilityAction::Increment => self.spec.step(self.draft, 1., false),
+            AccessibilityAction::Decrement => self.spec.step(self.draft, -1., false),
+            _ => return false,
+        };
+        value.is_ok_and(|value| {
+            let changed = value != self.draft;
+            let accepted = self.emit_accessible_value(value, cx);
+            if accepted && changed && self.accessibility_binding.is_some() {
+                self.accessibility_pending = true;
+                cx.notify();
+            }
+            accepted
+        })
     }
 
     fn enter(&mut self, _: &NumericEnter, _: &mut Window, cx: &mut Context<Self>) {
@@ -1363,6 +1449,63 @@ impl gpui::Render for NumericControl {
                 view.emit_step(-1.0, true, cx)
             }));
 
+        let owner = entity.downgrade();
+        let descriptor = gpui::AccessibilityDescriptor {
+            id: gpui::AccessibilityId(entity.entity_id().as_u64()),
+            revision: self
+                .accessibility_binding
+                .as_ref()
+                .map_or(0, |binding| binding.revision),
+            lifetime: self.accessibility_lifetime.weak(),
+            name: self
+                .accessibility_binding
+                .as_ref()
+                .map_or_else(|| self.label.clone(), |binding| binding.name.clone()),
+            value: self
+                .accessibility_binding
+                .as_ref()
+                .map(|binding| binding.value.clone())
+                .unwrap_or(gpui::AccessibilityValue::Number {
+                    value: self.value,
+                    min: self.spec.bounds().0,
+                    max: self.spec.bounds().1,
+                    text: self.spec.format(self.value).unwrap_or_default().into(),
+                }),
+            enabled: self.enabled
+                && !self.is_interacting()
+                && !self.accessibility_pending
+                && self
+                    .accessibility_binding
+                    .as_ref()
+                    .is_none_or(|binding| !binding.pending && (binding.guard)(cx)),
+            focused: self.focus.is_focused(window),
+            status: if self.is_interacting() {
+                Some("local draft or gesture active".into())
+            } else if self.accessibility_pending
+                || self
+                    .accessibility_binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.pending)
+            {
+                Some("pending project edit".into())
+            } else {
+                None
+            },
+        };
+        root = root.accessibility(descriptor, move |request, window, cx| {
+            owner
+                .update(cx, |control, cx| {
+                    if control
+                        .accessibility_binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.revision != request.revision)
+                    {
+                        return false;
+                    }
+                    control.accessibility_action(&request.action, window, cx)
+                })
+                .unwrap_or(false)
+        });
         if self.press.is_some() {
             root.child(GestureCaptureElement {
                 move_entity: entity.clone(),

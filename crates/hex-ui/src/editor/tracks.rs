@@ -24,6 +24,7 @@ struct ClipGhostGeometry {
 }
 
 struct ClipGhostDecor {
+    fill: u32,
     selector: &'static str,
     grid: Option<(Vec<super::musical_time::GridLine>, u64, u64)>,
     waveform_visual: Option<Div>,
@@ -37,6 +38,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         height,
     } = geometry;
     let ClipGhostDecor {
+        fill,
         selector,
         grid,
         waveform_visual,
@@ -51,7 +53,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         .overflow_hidden()
         .border_1()
         .border_color(rgb(0x000000))
-        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
+        .bg(rgb(fill))
         .opacity(0.88);
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children([clip_grid_layer(&lines, start, end)]);
@@ -358,7 +360,7 @@ impl EditorView {
                         .overflow_hidden()
                         .border_1()
                         .border_color(rgb(0x000000))
-                        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
+                        .bg(rgb(theme::clip_fill(track.color(), clip.flavor(), false)))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     let shapes = midi_trim_note_shapes(
                         &state.project,
@@ -377,7 +379,7 @@ impl EditorView {
                                 .top(relative(top))
                                 .w(relative(shape_width))
                                 .h(px(2.0))
-                                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                                .bg(rgb(0x000000)),
                         );
                     }
                     clip_area = clip_area.children([overlay]);
@@ -414,7 +416,11 @@ impl EditorView {
                         .overflow_hidden()
                         .border_1()
                         .border_color(rgb(0x000000))
-                        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
+                        .bg(rgb(theme::clip_fill(
+                            track.color(),
+                            preview_clip.flavor(),
+                            false,
+                        )))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
                     if let Some(waveform) = state.waveforms.get(&asset) {
                         preview = preview.child(super::waveform::waveform_view_cached(
@@ -458,7 +464,14 @@ impl EditorView {
                     .min_w(px(3.0))
                     .border_1()
                     .border_color(rgb(0x000000))
-                    .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
+                    .bg(rgb(theme::clip_fill(
+                        track.color(),
+                        self.active_clip_drag
+                            .as_ref()
+                            .and_then(|d| state.project.clip_flavor(d.clip))
+                            .unwrap_or_default(),
+                        false,
+                    )))
                     .opacity(0.88)
                     .children([clip_grid_layer(grid, visible_start, visible_end)]);
                 if let ClipPosition::Audio { .. } = preview.position
@@ -599,6 +612,7 @@ impl EditorView {
                     continue;
                 };
                 if let Some(fragment_view) = passive_audio_fragment(
+                    theme::clip_fill(track.color(), fragment.flavor(), false),
                     &fragment,
                     state.waveforms.get(&fragment.asset()),
                     viewport,
@@ -635,6 +649,7 @@ impl EditorView {
                     continue;
                 };
                 let (fragment, shown) = passive_midi_fragment(
+                    theme::clip_fill(track.color(), clip.flavor(), false),
                     clip.id(),
                     &preview.samples,
                     (selected_start, selected_end),
@@ -858,6 +873,7 @@ impl EditorView {
             );
         let header = div()
             .id(("arrangement-track-header", track_id.value()))
+            .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
             .w(px(TRACK_HEADER_WIDTH))
             .h(px(TRACK_ROW_HEIGHT))
             .flex_shrink_0()
@@ -880,7 +896,24 @@ impl EditorView {
             }))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .child(track_name_view)
-            .child(track_controls);
+            .child(track_controls)
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(2.0))
+                    .bg(rgb(theme::element_colors(track.color()).accent)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_track_color_context_menu(event.position, track_id, window, cx);
+                }),
+            );
         div()
             .w_full()
             .h(px(TRACK_ROW_HEIGHT))
@@ -931,6 +964,7 @@ impl EditorView {
                     .flatten()
                 {
                     if let Some(fragment_view) = passive_audio_fragment(
+                        theme::clip_fill(track.color(), fragment.flavor(), false),
                         &fragment,
                         state.waveforms.get(&fragment.asset()),
                         viewport,
@@ -986,6 +1020,7 @@ impl EditorView {
                         continue;
                     };
                     let (fragment, shown) = passive_midi_fragment(
+                        theme::clip_fill(track.color(), clip.flavor(), false),
                         clip.id(),
                         &preview.samples,
                         interval,
@@ -1070,20 +1105,27 @@ impl EditorView {
                 .min_w(px(4.0))
                 .overflow_hidden()
                 .cursor_pointer()
-                .opacity(if trim_preview.is_some() {
-                    0.0
-                } else if selected_clip {
-                    0.92
-                } else {
-                    0.68
-                })
-                .bg(rgb(if selected_clip {
-                    theme::color(theme::PaletteRole::ClipSelected)
-                } else {
-                    theme::color(theme::PaletteRole::ClipFill)
-                }))
+                .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
+                .bg(rgb(theme::clip_fill(
+                    track.color(),
+                    clip.flavor(),
+                    selected_clip,
+                )))
                 .border_1()
                 .border_color(rgb(0x000000))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.open_clip_context_menu(
+                            event.position,
+                            track_id,
+                            midi_clip_id,
+                            window,
+                            cx,
+                        );
+                    }),
+                )
                 .on_click(cx.listener(move |view, _, window, cx| {
                     view.set_selected_clip(track_id, midi_clip_id, window, cx);
                     cx.notify();
@@ -1106,7 +1148,7 @@ impl EditorView {
                         .top(relative(top))
                         .w(relative(w))
                         .h(px(2.0))
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                        .bg(rgb(0x000000)),
                 );
             }
             midi_shape_budget = midi_shape_budget.saturating_sub(shown);
@@ -1244,12 +1286,15 @@ impl EditorView {
             .overflow_hidden()
             .cursor_pointer()
             .opacity(if active_trim_preview { 0.0 } else { 1.0 })
-            .bg(rgb(if selected {
-                theme::color(theme::PaletteRole::ClipSelected)
-            } else {
-                theme::color(theme::PaletteRole::ClipFill)
-            }))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::ClipHover))));
+            .bg(rgb(theme::clip_fill(
+                state
+                    .project
+                    .track(track)
+                    .map_or(hex_project::ElementColor::default(), |t| t.color()),
+                clip.flavor(),
+                selected,
+            )))
+            .hover(|style| style.border_color(rgb(theme::color(theme::PaletteRole::Text))));
         content = content.border_1().border_color(rgb(0x000000));
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
@@ -1367,6 +1412,13 @@ impl EditorView {
                 })
                 .into()
             })
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_clip_context_menu(event.position, track, clip_id, window, cx);
+                }),
+            )
             .on_click(cx.listener(move |view, _, window, cx| {
                 view.set_selected_clip(track, clip_id, window, cx);
                 cx.notify();
@@ -1461,6 +1513,11 @@ impl EditorView {
                     height,
                 },
                 ClipGhostDecor {
+                    fill: theme::clip_fill(
+                        hex_project::ElementColor::default(),
+                        state.project.clip_flavor(payload.clip).unwrap_or_default(),
+                        false,
+                    ),
                     selector: "clip-drag-append-preview",
                     grid: Some((
                         super::musical_time::grid_lines(
@@ -1512,6 +1569,17 @@ impl EditorView {
                 height: 32.0,
             },
             ClipGhostDecor {
+                fill: theme::clip_fill(
+                    self.state
+                        .as_ref()
+                        .and_then(|s| s.project.track(payload.source_track))
+                        .map_or(hex_project::ElementColor::default(), |t| t.color()),
+                    self.state
+                        .as_ref()
+                        .and_then(|s| s.project.clip_flavor(payload.clip))
+                        .unwrap_or_default(),
+                    false,
+                ),
                 selector: "clip-drag-floating-preview",
                 grid: None,
                 waveform_visual: None,

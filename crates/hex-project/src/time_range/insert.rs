@@ -410,6 +410,7 @@ fn materialize_shifted_midi(
     }
     Ok(MidiClip {
         name: original.name.clone(),
+        flavor: original.flavor,
         id,
         start,
         length,

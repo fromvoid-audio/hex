@@ -1,4 +1,4 @@
-//! Schema27 adds a strict event-state overlay to the complete schema26 envelope.
+//! Schema28 combines event state with the complete schema27 appearance envelope.
 use crate::StorageError;
 use hex_project::{AudioEvent, AudioEvents, Project, TrackContentSnapshot};
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,7 @@ struct Event {
 #[derive(Serialize)]
 pub(crate) struct Document<'a> {
     #[serde(flatten)]
-    base: super::clip_names::DocumentV26,
+    base: super::appearance::DocumentV27,
     audio_event_state: Vec<EncodeState<'a>>,
 }
 #[derive(Serialize)]
@@ -78,8 +78,8 @@ fn serialize_events<S: serde::Serializer>(
     seq.end()
 }
 pub(crate) fn encode(project: &Project) -> Result<Document<'_>, StorageError> {
-    let mut base = super::clip_names::DocumentV26::from_project(project)?;
-    base.version = 27;
+    let mut base = super::appearance::DocumentV27::from_project(project)?;
+    base.version = 28;
     let audio_event_state = project
         .tracks()
         .iter()
@@ -101,12 +101,20 @@ pub(crate) fn encode(project: &Project) -> Result<Document<'_>, StorageError> {
     })
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 28)
+}
+// Preserve the pre-integration event-only schema27 lineage without accepting
+// mixed appearance/event metadata under an ambiguous old version.
+pub(crate) fn decode_legacy(bytes: &[u8]) -> Result<Project, StorageError> {
+    decode_version(bytes, 27)
+}
+fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     let _: UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid audio event envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(27) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(version) {
         return Err(StorageError::Invalid("invalid audio event version"));
     }
     let states: Vec<State> = serde_json::from_value(
@@ -121,8 +129,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid("audio event state limit reached"));
     }
-    object.insert("version".into(), 26.into());
-    let base = super::clip_names::DocumentV26::decode(&serde_json::to_vec(&value)?)?;
+    object.insert("version".into(), (version - 1).into());
+    let bytes = serde_json::to_vec(&value)?;
+    let base = if version == 28 {
+        super::appearance::DocumentV27::decode(&bytes)?
+    } else {
+        super::clip_names::DocumentV26::decode(&bytes)?
+    };
     let mut snapshot = base.snapshot();
     let mut by_clip = std::collections::BTreeMap::new();
     for state in states {
