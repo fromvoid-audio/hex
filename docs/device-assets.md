@@ -195,3 +195,10 @@ and changed-source refusal with the actual480+441 retained-frame reservation.
 This changes the test caller's declared workload, not a production ceiling.
 The targeted actual worker/Save/Open case passes. Failed full evidence remains
 `artifacts/local-ci/20261017T141627Z-89de27ca/summary.json`.
+
+The next full run found the same outdated caller reservation in the mixed-rate
+clip/history integration fixture. It now declares441+480 original/derivative
+frames and checks original-rate retention through Undo/Redo. The entire Session
+package passes182 tests, zero failures or ignored tests. Both failed full runs
+remain recorded; the second is
+`artifacts/local-ci/20261017T142427Z-f1c8bc8d/summary.json`.
