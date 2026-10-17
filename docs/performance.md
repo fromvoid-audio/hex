@@ -2197,8 +2197,9 @@ The benchmark's fixed Return accumulation scratch is
 `16 Returns × 256 frames × 2 f32 samples = 32,768 bytes`. Its paired Utility
 history is `16 Returns × 2 transactional runtime twins ×
 size_of::<UtilityFilterProcessor>()`, printed by the example. The admission
-policy bounds all stateful processor declarations to 256 × 4,096 = 1,048,576
-bytes per runtime twin, or 2,097,152 bytes for the primary/scratch pair. These
+policy allows 65,536 declared bytes per effect runtime twin, while the aggregate
+bank remains capped at 256 × 4,096 = 1,048,576 declared bytes, or 2,097,152
+bytes for the primary/scratch pair. These
 figures cover scratch and declared processor state; they exclude allocator/Arc
 headers and the rest of the compiled graph. The separate callback allocation
 probe verifies zero total and signed-net allocation changes for a stateful
