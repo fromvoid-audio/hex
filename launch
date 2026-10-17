@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open the installed optimized app; use --test to update, verify and rebuild it."""
+"""Update clean main, verify it, build/install the optimized app, and open it."""
 
 from __future__ import annotations
 
@@ -131,7 +131,7 @@ def open_installed(app: Path, expected_source: str | None = None) -> Path:
             raise ValueError("installed app has no valid source provenance")
     except (delivery.DeliveryError, OSError, ValueError, KeyError, TypeError,
             AttributeError, subprocess.CalledProcessError) as error:
-        raise LaunchError(f"installed optimized hex is unavailable: {error}; run ./launch --test to verify and build it") from error
+        raise LaunchError(f"installed optimized hex is unavailable: {error}; run ./launch to verify and build it") from error
     if expected_source is not None and (source != expected_source or receipt.get("candidate") != expected_source):
         raise LaunchError(f"installed app does not match fetched main {expected_source}; app was not opened")
     checked(["open", "-a", str(app)])
@@ -143,6 +143,17 @@ def launch_installed(root: Path = ROOT) -> Path:
     if sys.platform != "darwin":
         raise LaunchError("./launch opens the native desktop app on macOS only")
     return open_installed(configured_app(root))
+
+
+def assert_no_raw_desktop_process(root: Path) -> None:
+    processes = checked(["ps", "-ww", "-axo", "pid=,comm="], cwd=root)
+    for line in processes.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and Path(fields[1].rstrip("/")).name.casefold() == "hex-desktop":
+            raise LaunchError(
+                f"raw hex-desktop is running (pid {fields[0]}); save and quit hex, then retry; "
+                "no process was terminated"
+            )
 
 
 def checklist(source: str) -> str:
@@ -173,6 +184,7 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
     app = configured_app(root)
     try:
         delivery.assert_inactive(app)
+        assert_no_raw_desktop_process(root)
     except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
         raise LaunchError(f"configured app must be saved and quit before launch; no process was terminated: {error}") from error
 
@@ -200,15 +212,18 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--test", action="store_true",
-                        help="update clean main, run full local checks, build/install the optimized app, then open it")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--open", action="store_true",
+                       help="open the installed optimized app without updating source or building")
+    modes.add_argument("--test", action="store_true",
+                       help="update clean main, run full local checks, build/install the optimized app, then open it")
     arguments = list(sys.argv[1:] if argv is None else argv)
     options = parser.parse_args(arguments)
     try:
-        if options.test:
-            run_launch(argv=arguments)
-        else:
+        if options.open:
             launch_installed()
+        else:
+            run_launch(argv=arguments)
     except (LaunchError, ci.InterruptedRun, ci.TargetCacheError, OSError,
             ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print(f"launch stopped: {error}", file=sys.stderr)

@@ -7,18 +7,25 @@ plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
-## startup and explicit test mode
+## launch modes
 
-`./launch` starts the supported installed optimized app, with bundle integrity and
-release-profile verification. It does not invoke Git, run CI, build, replace the
-app or claim a Cargo target lock. Existing running apps are activated normally;
-startup neither quits them nor changes projects/settings. Missing or unsupported
-artifacts produce an actionable `./launch --test` instruction.
+`./launch` is the standard update-and-start path. It requires a clean local `main`,
+fetches `origin/main`, fast-forwards only when local main is an ancestor, runs full
+local CI on that exact source, and installs and opens the optimized build at the
+configured stable path. Dirty, non-main, ahead or divergent checkouts are refused.
+When source update changes `launch`, it re-executes the updated entrypoint while
+preserving the selected mode.
 
-`./launch --test` explicitly opts into updating clean main, full local CI and the
-optimized build/install workflow below, then opens the verified app. Save and quit
-before that mode. The flag survives source-update re-exec so requested tests
-cannot fall through to ordinary startup.
+`./launch --test` remains an explicit alias for the same update, check, build and
+start workflow. Save and quit hex before either mode. The launcher refuses to
+replace the installed app while it is running and also refuses when a raw
+`hex-desktop` executable is running, before CI or Cargo build work; it never kills
+a process. The `--test` spelling survives source-update re-exec.
+
+`./launch --open` verifies and opens the installed optimized app without Git, CI,
+Cargo or replacement. It can activate an already running installed app. Missing or
+unsupported installed artifacts direct the user to `./launch` to build the latest
+source. `--open` and `--test` cannot be combined.
 
 ## repository-owned build and install
 
