@@ -221,3 +221,35 @@ fn snap_nudge_worker_history_keeps_source_and_other_tracks(cx: &mut TestAppConte
         );
     }
 }
+
+#[gpui::test]
+fn arranger_toolbar_only_toggles_adaptive_grid(cx: &mut TestAppContext) {
+    use super::musical_time::SnapGrid;
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.snap_grid),
+        SnapGrid::Adaptive
+    );
+    for expected in [
+        SnapGrid::Off,
+        SnapGrid::Adaptive,
+        SnapGrid::Off,
+        SnapGrid::Adaptive,
+    ] {
+        let button = visual
+            .debug_bounds("arranger-snap-toggle")
+            .expect("snap toggle");
+        visual.simulate_click(button.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.snap_grid, expected);
+            assert_eq!(
+                view.snap_grid.with_platform_modifier(true),
+                expected.toggled()
+            );
+        });
+    }
+}
