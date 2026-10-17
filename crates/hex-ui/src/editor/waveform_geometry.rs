@@ -77,6 +77,15 @@ pub(super) struct WaveformGeometry {
 pub(super) struct WaveformChannelGeometry {
     pub(super) centerline: Path<Pixels>,
     pub(super) waveform: Path<Pixels>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    outline: Vec<gpui::Point<Pixels>>,
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) struct RenderedWaveformSample {
+    pub(super) source: Arc<CachedWaveform>,
+    pub(super) prepared: Option<(u64, u64)>,
+    pub(super) spans: [f32; 2],
 }
 
 impl WaveformGeometryCache {
@@ -125,6 +134,35 @@ impl WaveformGeometryCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.columns = 0;
+    }
+
+    /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn rendered_waveforms(&self) -> Vec<RenderedWaveformSample> {
+        self.entries
+            .iter()
+            .map(|entry| RenderedWaveformSample {
+                source: Arc::clone(&entry.source),
+                prepared: match entry.key.mapping {
+                    WaveformMappingKey::Prepared {
+                        timeline_origin,
+                        root_offset,
+                        ..
+                    } => Some((timeline_origin, root_offset)),
+                    _ => None,
+                },
+                spans: std::array::from_fn(|channel| {
+                    let (low, high) = entry.geometry.channels[channel]
+                        .outline
+                        .iter()
+                        .map(|point| f32::from(point.y))
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                            (low.min(y), high.max(y))
+                        });
+                    high - low
+                }),
+            })
+            .collect()
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -376,6 +414,8 @@ pub(super) fn prepare_waveform_geometry(
         channels.push(WaveformChannelGeometry {
             centerline,
             waveform,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            outline: maxima.into_iter().chain(minima).collect(),
         });
     }
     Some(WaveformGeometry {

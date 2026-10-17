@@ -13,6 +13,7 @@ pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod tuning;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,
@@ -1254,6 +1255,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1289,6 +1291,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1324,6 +1327,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1366,6 +1370,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1408,6 +1413,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1450,6 +1456,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1492,6 +1499,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1552,6 +1560,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -1984,6 +1993,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -2036,7 +2046,10 @@ impl DocumentV11 {
             ));
         }
         if header.version == 30 {
-            return device_assets::DocumentV30::decode(bytes);
+            return Err(StorageError::Invalid("unsupported alpha project format 30"));
+        }
+        if header.version == 31 {
+            return tuning::decode(bytes);
         }
         if header.version == 29 {
             return fade_shapes::DocumentV29::decode(bytes);
@@ -2316,6 +2329,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
@@ -2452,6 +2466,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),

@@ -94,6 +94,7 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
