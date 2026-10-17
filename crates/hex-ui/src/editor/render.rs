@@ -334,6 +334,7 @@ fn status_slot(
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reconcile_clip_name(window, cx);
+        self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
@@ -386,7 +387,9 @@ impl Render for EditorView {
             .font_family(theme::FONT_FAMILY)
             .child(self.fade_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if self.clip_name_edit.is_some() {
+            .key_context(if self.track_name.is_editing() {
+                "hex_track_name hex_text_editing"
+            } else if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
             } else if self.theme_settings.open {
                 "hex_theme_settings"
@@ -504,8 +507,19 @@ impl Render for EditorView {
             .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
                 view.search_browser(window, cx);
             }))
+            .on_action(cx.listener(|view, _: &super::RenameTrack, window, cx| {
+                view.begin_track_name(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CommitTrackName, window, cx| {
+                view.finish_track_name(true, window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CancelTrackName, window, cx| {
+                view.finish_track_name(false, window, cx);
+            }))
             .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
-                view.begin_clip_name(window, cx);
+                if !view.track_header_focused(window) {
+                    view.begin_clip_name(window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &super::CommitClipName, window, cx| {
                 view.finish_clip_name(true, window, cx);
