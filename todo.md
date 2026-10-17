@@ -1,27 +1,3 @@
-## eq analyzer readability — #2736 / PR347, 17 october 2026
-
-Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
-nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
-to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
-use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
-context reset; stale capture cannot be refreshed by decay. Both EQ panels share
-a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
-strict Clippy pass; UI/full exact-source validation and coordinator-arranged
-native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
-
-## aligned eq input/output capture — #2730 / PR343, 17 october 2026
-
-Actual whole-entry pre/post taps share one bounded packet, rolling-window
-position, cadence, reader and reaper. Both phases require independent exact
-coverage and final caller validation; legacy output APIs remain supported.
-The explicit spectrum control enables capture; input defaults visible and
-hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
-Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
-storage/allocation regressions. Portable tests and earlier integrated full runs
-pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
-coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
-See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
-
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
@@ -4360,7 +4336,6 @@ the next unchanged full candidate may supply merge evidence.
   tooltips, including the sampled-note preview popup over clip headers. Header
   selection/drag/rename and distinct control tooltips are unchanged. Native hover
   acceptance remains pending in the coordinated optimized candidate.
-## latest-main launch by default — pulse2749 / PR359, 17 october 2026
 
 Cloud continuation for Pulse2752 / PR362 verified the canonical checkpoint and
 integrated main `070cacc3`, retaining the narrow two-container tooltip removal.
@@ -4508,6 +4483,8 @@ tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-o
 drag stays finalized and a later real drag works. Final integration/review/full
 local CI and broader W06 deliverables remain pending; no native result claimed.
 
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
+
 The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
 non-divergent local `main`, runs full local CI, builds and installs the optimized
 stable app, and opens the verified candidate. `--test` remains an alias; `--open`
@@ -4554,3 +4531,27 @@ stages on Linux and Mac, including real signing; those reports do not certify
 this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
+coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
