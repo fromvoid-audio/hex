@@ -112,7 +112,7 @@ widgets = (
     # Fade pointer capture is a typed canvas listener with no rendered text.
     'self.fade_pointer_events(',
     # Tuning components normalize labels at their theme::text boundary.
-    'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(',
+    'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(', 'self.tuning_mts_controls(',
     'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
     'tuning_nodes)', 'tuning_slots)', 'tuning_reference)', 'settings)', 'right)',
 )

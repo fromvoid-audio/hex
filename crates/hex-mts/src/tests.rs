@@ -180,3 +180,73 @@ fn invalid_client_count_retires_only_owned_master_and_requires_retry() {
     worker.shutdown();
     assert_eq!(probe.releases.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn project_switch_during_native_acquisition_cannot_publish_old_receipt() {
+    use std::sync::mpsc;
+    struct Gated {
+        mock: Mock,
+        entered: mpsc::SyncSender<()>,
+        resume: Option<mpsc::Receiver<()>>,
+    }
+    impl Transport for Gated {
+        fn acquire(&mut self) -> Result<(), NativeError> {
+            if let Some(resume) = self.resume.take() {
+                self.entered.send(()).unwrap();
+                resume.recv().unwrap();
+            }
+            self.mock.acquire()
+        }
+        fn release(&mut self) {
+            self.mock.release();
+        }
+        fn publish(&mut self, publication: &TuningPublication) {
+            self.mock.publish(publication);
+        }
+        fn clients(&self) -> Result<u32, NativeError> {
+            self.mock.clients()
+        }
+    }
+    let probe = Arc::new(Probe::default());
+    let factory_probe = Arc::clone(&probe);
+    let (entered, receiving) = mpsc::sync_channel(1);
+    let (resume, gate) = mpsc::sync_channel(1);
+    let mut worker = Worker::start_with(move || Gated {
+        mock: Mock {
+            probe: factory_probe,
+            owned: false,
+        },
+        entered,
+        resume: Some(gate),
+    })
+    .unwrap();
+    let handle = worker.handle();
+    let old = Owner {
+        client: handle.new_client().unwrap(),
+        generation: 1,
+    };
+    handle.enable(publication(old, 1)).unwrap();
+    receiving.recv_timeout(Duration::from_secs(3)).unwrap();
+    handle.disable(old).unwrap();
+    let new = Owner {
+        generation: 2,
+        ..old
+    };
+    handle.enable(publication(new, 1)).unwrap();
+    assert_eq!(
+        handle.publish(publication(old, 2)),
+        Err(ControlError::Stale)
+    );
+    resume.send(()).unwrap();
+    let snapshot = wait(&handle, |snapshot| snapshot.state == State::Active);
+    assert_eq!(snapshot.published.unwrap().owner, new);
+    assert_eq!(
+        probe.publications.lock().unwrap().len(),
+        1,
+        "old acquisition must never publish"
+    );
+    assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 2);
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+    worker.shutdown();
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 2);
+}

@@ -13,6 +13,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+// The production loader is unavailable off macOS; ABI fixtures still exercise it.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 #[allow(unsafe_code)]
 mod abi;
 
@@ -238,6 +240,7 @@ impl Drop for Master {
 
 struct LocalGate;
 
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 impl LocalGate {
     fn acquire() -> Result<Self, Error> {
         LOCAL_MASTER_REGISTERED

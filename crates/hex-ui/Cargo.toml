@@ -9,6 +9,7 @@ publish.workspace = true
 ui-test-support = ["gpui/test-support"]
 
 [dependencies]
+hex-mts = { path = "../hex-mts" }
 hex-tuning = { path = "../hex-tuning" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }

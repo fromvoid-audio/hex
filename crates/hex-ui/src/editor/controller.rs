@@ -608,6 +608,7 @@ impl EditorView {
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
+        visible_change |= self.tuning.broadcast.tick(cx);
         visible_change |= self.tick_controller_input(cx);
         visible_change |= self.poll_audio_batch();
         for _ in 0..UI_EVENT_BUDGET {
@@ -1557,6 +1558,37 @@ impl EditorView {
             &event.state.project,
             event.project_replaced,
         );
+        // Reuse the native preview identity gate: an older worker preview must
+        // not retune external clients after a newer gesture or cancel won.
+        let mts_tuning = match event.tuning_preview.as_ref() {
+            Some(preview)
+                if tuning_preview_current(
+                    preview.identity,
+                    self.project_generation,
+                    revision,
+                    self.project_generation,
+                    Some(revision),
+                    self.tuning
+                        .client
+                        .snapshot()
+                        .map(|snapshot| (snapshot.key, snapshot.sequence)),
+                ) =>
+            {
+                Some(preview.state.project.tuning())
+            }
+            Some(_) => None,
+            None => Some(event.state.project.tuning()),
+        };
+        let mts_generation = if event.project_replaced {
+            self.project_generation.saturating_add(1)
+        } else {
+            self.project_generation
+        };
+        if let Some(tuning) = mts_tuning {
+            self.tuning
+                .broadcast
+                .observe(mts_generation, revision, tuning);
+        }
         self.state = Some(event.state);
         if event.project_replaced {
             self.loop_rail_gesture = None;

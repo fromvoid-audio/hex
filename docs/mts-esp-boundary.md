@@ -98,3 +98,20 @@ tests and five actual dynamically loaded C ABI fixture tests. The fixture uses
 `-shared` on Linux and `-dynamiclib` on macOS; this does not enable the production
 system-library loader on Linux. Installed macOS runtime, signing/library validation
 and compatible-client behavior remain native acceptance requirements.
+
+### App lifecycle and native controls
+
+Desktop creates one publisher worker, injects its safe handle into GPUI, and joins
+it after the app run loop. Each editor has its own client identity. Opening the
+tuning window or changing focus cannot claim a master. The explicit `broadcast
+mts` control enables/disables ownership; closing the tuning window keeps that
+explicit app setting, while project replacement and editor destruction release
+it. A blocked/unavailable backend exposes `retry mts`. There is no privileged
+installation or automatic foreign-master takeover.
+
+Accepted worker previews, commit, cancel, Undo and Redo feed the owned publisher;
+unsent numeric drafts do not. It publishes the effective project tuning, including
+neutral 12-TET while project tuning is disabled. The display distinguishes desired
+and published serials and reports the library's connected-client count. Native
+Hex audio retains its own pending/applied graph identity. These independent
+receipts do not promise sample-atomic switching in external clients.

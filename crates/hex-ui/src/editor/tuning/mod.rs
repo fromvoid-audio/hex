@@ -1,5 +1,6 @@
 //! Native project-scale editor. The worker owns tuning edits and grouped history.
 mod audition;
+mod broadcast;
 pub(super) mod library;
 mod plots;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -51,6 +52,7 @@ struct Drag {
 
 pub(super) struct TuningState {
     pub open: bool,
+    pub(super) broadcast: broadcast::Broadcast,
     audition_keyboard: super::computer_keyboard::ComputerKeyboard,
     pub(super) audition_input:
         Option<std::sync::Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
@@ -103,6 +105,7 @@ impl TuningState {
         let value = ProjectTuning::default();
         Self {
             open: false,
+            broadcast: broadcast::Broadcast::default(),
             audition_keyboard: super::computer_keyboard::ComputerKeyboard::default(),
             audition_input: None,
             held_keys: [0; 2],
@@ -1030,6 +1033,7 @@ impl EditorView {
             .flex()
             .flex_col()
             .gap_2()
+            .child(self.tuning_mts_controls(cx))
             .child(tuning_reference)
             .child(
                 tuning_section("slots & structure")
