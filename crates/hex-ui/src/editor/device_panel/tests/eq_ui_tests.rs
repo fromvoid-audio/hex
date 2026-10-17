@@ -73,6 +73,35 @@ fn plot(
     location
 }
 
+fn assert_action_label_fits(
+    visual: &mut VisualTestContext,
+    label: &str,
+    bounds: gpui::Bounds<gpui::Pixels>,
+) {
+    let width = visual.update(|window, _| {
+        window
+            .text_system()
+            .shape_line(
+                label.to_owned().into(),
+                px(8.0),
+                &[gpui::TextRun {
+                    len: label.len(),
+                    font: gpui::font(theme::FONT_FAMILY),
+                    color: gpui::rgb(0xffffff).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+    });
+    assert!(
+        width + px(6.0) <= bounds.size.width,
+        "full rendered {label:?} ({width:?}) plus padding must fit its action {bounds:?}"
+    );
+}
+
 #[gpui::test]
 fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);
@@ -147,7 +176,19 @@ fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut
                 let bounds = visual.debug_bounds(selector(prefix, device)).unwrap();
                 assert!(bounds.left() >= previous.unwrap() && bounds.right() <= footer.right());
                 assert!(bounds.top() >= footer.top() && bounds.bottom() <= footer.bottom());
+                let label = if prefix == "eq-remove" {
+                    "remove"
+                } else if automation {
+                    "response"
+                } else {
+                    "automate"
+                };
+                assert_action_label_fits(&mut visual, label, bounds);
                 previous = Some(bounds.right());
+            }
+            for (prefix, label) in [("eq-spectrum-input", "input"), ("eq-audition", "listen")] {
+                let bounds = visual.debug_bounds(selector(prefix, device)).unwrap();
+                assert_action_label_fits(&mut visual, label, bounds);
             }
             let mut right = toolbar.left();
             for name in [
