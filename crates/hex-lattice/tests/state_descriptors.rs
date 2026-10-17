@@ -273,6 +273,14 @@ fn device_asset_references_survive_codecs_but_refuse_before_any_preparation() {
     assert!(matches!(effects.prepare_device(&source, 48000), Err(e) if e == refused));
     assert!(matches!(effects.prepare_runtime_device(&source, 48000), Err(e) if e == refused));
     assert!(matches!(instruments.prepare_instrument(&source, 48000), Err(e) if e == refused));
+    for tuning in [
+        hex_lattice::TuningTable::default(),
+        hex_lattice::TuningTable::new([333.0; 128]).unwrap(),
+    ] {
+        assert!(
+            matches!(instruments.prepare_instrument_with_tuning(&source, 48000, &tuning), Err(e) if e == refused)
+        );
+    }
     assert_eq!(definition.migrations.load(Ordering::Relaxed), 0);
     assert_eq!(definition.preparations.load(Ordering::Relaxed), 0);
     // Calibrate that the fixture observes actual supported preparation calls.

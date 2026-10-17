@@ -1,3 +1,28 @@
+## project tuning runtime continuation — #2740 / PR351, 17 october 2026
+
+Cloud takeover repairs the invalid Operator event-preflight fixture and stale
+sampler/table footprint accounting without increasing scoped memory ceilings.
+Ordinary worker edits invalidate tuning-family inheritance while audible keyboard
+cancellation remains at publication; a prepared/refused candidate cannot silence
+the installed lease. Focused native DSP/engine/Session, non-octave mapping,
+Operator PCM16 export and actual callback total/net-zero allocation checks pass.
+The optional combined feature/all-target matrix still exposes existing2722/PR338;
+required scoped Clippy passes. Release copy-cost evidence and full exact-source
+local CI remain pending at this checkpoint. See
+[runtime contract](docs/project-tuning-runtime.md). Full native editor/audition,
+MTS, coordinated current combined schema and Mac/user acceptance remain required
+goal4 work; no complete tuning delivery or merge is claimed.
+
+Full workspace verification exposed a real neutral-path regression in the paused
+runtime: a table inside every Operator configuration grew legacy feedback/LFO
+twins beyond their8KiB contract. The repair keeps small configurations free of
+tables/heap owners and passes an optional borrowed table to note preparation;
+only the already-wide custom mutable factory/runtime retains that fixed data.
+Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
+are restored, without raising limits or adding callback table construction.
+All313 device tests, packing proof and volume/history proof pass; renewed full
+workspace/final CI remains required. Earlier failed runner evidence is retained.
+
 ## tuning review precision and cyclic gaps — #2739 / PR350, 17 october 2026
 
 Review found preset float rounding and a missing period-seam gap check. Four
@@ -10,6 +35,7 @@ Extended existing fractional-root and combined device-manifest fixtures also
 reproduced a one-ulp JSON parser error. The pinned serde_json dependency now
 enables float_roundtrip, preserving current-format authored root precision.
 Both owning storage fixtures pass after the repair, including all device owners.
+
 
 ## combined current project format — #2739 / PR350, 17 october 2026
 
@@ -35,6 +61,23 @@ project/audio/Undo state; variable rows retain logical scrolling and reset on a
 new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
+## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
+
+Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
+viewport sampling lattice instead of redistributing all peak columns across
+each changing clip width. Actual interior stereo outline geometry fails under
+the former sampling and passes with fixed lane/time density across fractional
+edges, zoom scales and the column cap; canonical loop/one-shot trims are covered.
+Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
+the existing model. Native reproduction/acceptance is pending; the running
+source labels were0f99bfbc and1879e018 in static captures, with no resize captured. See docs/waveform-display.md.
+Earlier exact-source checks passed on8a787a2b. Final integration now preserves
+merged PR388 accepted-root crops, PR387 changed-root stretch mapping and PR383
+free lower handles. Combined crop/stretch/grid regressions pass39 tests with
+one existing manual profile ignored, including the reproduced/repaired prepared
+edge-bin translation defect. Fresh required evidence is recorded in PR/Pulse. No native
+acceptance or app delivery is claimed.
 
 ## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
 

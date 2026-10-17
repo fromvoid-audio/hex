@@ -6,7 +6,9 @@
 pub mod analysis;
 pub mod preset;
 mod scale;
+mod table;
 pub use scale::{LatticePoint, MAX_DEGREES, MIN_GAP_CENTS, Scale, nearest_lattice};
+pub use table::TuningTable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Invalid(pub &'static str);
@@ -121,6 +123,10 @@ impl ProjectTuning {
     }
     pub fn audition(self) -> Audition {
         self.audition
+    }
+    /// Effective validated pitch table; audition controls do not affect its identity.
+    pub fn table(self) -> Result<TuningTable, Invalid> {
+        TuningTable::new(self.frequencies())
     }
     /// Complete single-channel MIDI table prepared on control, never a callback lookup.
     pub fn frequencies(self) -> [f64; 128] {

@@ -194,6 +194,7 @@ fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
             bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(200.0), px(100.0))),
             scale: 1.0,
             columns: 200,
+            grid: None,
         };
         let geometry = cached_waveform_geometry(&cache, &source, &request).unwrap();
         assert!(Arc::ptr_eq(
