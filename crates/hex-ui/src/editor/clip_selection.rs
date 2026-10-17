@@ -223,10 +223,47 @@ mod tests {
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, modifiers);
         visual.run_until_parked();
     }
-    fn selected(editor: &gpui::Entity<EditorView>, visual: &VisualTestContext) -> BTreeSet<ClipId> {
-        editor.read_with(visual, |view, _| {
-            view.selected_clip_ids().into_iter().collect()
-        })
+    fn selected(
+        editor: &gpui::Entity<EditorView>,
+        visual: &mut VisualTestContext,
+    ) -> BTreeSet<ClipId> {
+        let (members, paints) = editor.read_with(&*visual, |view, _| {
+            let members = view
+                .selected_clip_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            let mut paints = Vec::new();
+            for track in view.state.as_ref().unwrap().project.tracks() {
+                for (id, flavor, prefix) in track
+                    .clips()
+                    .iter()
+                    .map(|c| (c.id(), c.flavor(), "clip-visual"))
+                    .chain(
+                        track
+                            .midi_clips()
+                            .iter()
+                            .map(|c| (c.id(), c.flavor(), "midi-clip-visual")),
+                    )
+                {
+                    paints.push((
+                        id,
+                        prefix,
+                        crate::theme::clip_fill(track.color(), flavor, members.contains(&id)),
+                    ));
+                }
+            }
+            (members, paints)
+        });
+        for (id, prefix, fill) in paints {
+            let selector: &'static str =
+                Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
+            assert_eq!(
+                visual.rendered_background(selector),
+                Some(gpui::rgb(fill).into()),
+                "actual audio/MIDI selected paint for {id:?}"
+            );
+        }
+        members
     }
     #[gpui::test]
     fn shift_header_click_selects_five_mixed_clips_and_keeps_reverse_repeated_anchor(
@@ -244,18 +281,24 @@ mod tests {
         };
         click(&mut visual, clips[0], Modifiers::default());
         click(&mut visual, clips[4], shift);
-        assert_eq!(selected(&editor, &visual), clips.iter().copied().collect());
+        assert_eq!(
+            selected(&editor, &mut visual),
+            clips.iter().copied().collect()
+        );
         click(&mut visual, clips[2], shift);
         assert_eq!(
-            selected(&editor, &visual),
+            selected(&editor, &mut visual),
             clips[..=2].iter().copied().collect()
         );
         click(&mut visual, clips[4], Modifiers::default());
         click(&mut visual, clips[0], shift);
-        assert_eq!(selected(&editor, &visual), clips.iter().copied().collect());
+        assert_eq!(
+            selected(&editor, &mut visual),
+            clips.iter().copied().collect()
+        );
         click(&mut visual, clips[2], shift);
         assert_eq!(
-            selected(&editor, &visual),
+            selected(&editor, &mut visual),
             clips[2..].iter().copied().collect()
         );
         editor.read_with(&visual, |view, _| {
@@ -280,7 +323,7 @@ mod tests {
         click(&mut visual, clips[1], Modifiers::default());
         click(&mut visual, clips[4], command);
         assert_eq!(
-            selected(&editor, &visual),
+            selected(&editor, &mut visual),
             BTreeSet::from([clips[1], clips[4]])
         );
         click(
@@ -292,12 +335,12 @@ mod tests {
             },
         );
         assert_eq!(
-            selected(&editor, &visual),
+            selected(&editor, &mut visual),
             clips[1..].iter().copied().collect()
         );
         click(&mut visual, clips[2], command);
         assert_eq!(
-            selected(&editor, &visual),
+            selected(&editor, &mut visual),
             BTreeSet::from([clips[1], clips[3], clips[4]])
         );
         click(
@@ -308,8 +351,46 @@ mod tests {
                 ..Modifiers::default()
             },
         );
-        assert_eq!(selected(&editor, &visual), BTreeSet::from([other]));
+        assert_eq!(selected(&editor, &mut visual), BTreeSet::from([other]));
         click(&mut visual, other, command);
-        assert!(selected(&editor, &visual).is_empty());
+        assert!(selected(&editor, &mut visual).is_empty());
+    }
+    #[gpui::test]
+    fn same_primary_membership_change_repaints_retained_audio_and_midi(cx: &mut TestAppContext) {
+        let (project, clips, _) = fixture();
+        let (handle, editor) =
+            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, clips[0], Modifiers::default());
+        click(
+            &mut visual,
+            clips[4],
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(
+            selected(&editor, &mut visual),
+            clips.iter().copied().collect()
+        );
+        let primary = editor.read_with(&visual, |view, _| view.selected_clip);
+        click(
+            &mut visual,
+            clips[2],
+            Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(
+            editor.read_with(&visual, |view, _| view.selected_clip),
+            primary
+        );
+        assert_eq!(
+            selected(&editor, &mut visual),
+            BTreeSet::from([clips[0], clips[1], clips[3], clips[4]])
+        );
     }
 }
