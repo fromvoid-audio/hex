@@ -663,6 +663,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn prepared_crop_sampling_is_invariant_across_grid_bins_before_clip_origin() {
+        let source = waveform();
+        let grid = WaveformGrid {
+            start: 0,
+            end: 96_000,
+            left: 125.25,
+            width: 783.25,
+            columns: 784,
+        };
+        let extent = Bounds::new(
+            point(px(125.25 + 5_001.0 / 96_000.0 * 783.25), px(34.0)),
+            size(px(700.0), px(44.0)),
+        );
+        let draw = |origin, offset| {
+            prepare_waveform_geometry(
+                &source,
+                &WaveformMapping::Prepared {
+                    timeline_origin: origin,
+                    root_offset: offset,
+                    gain: hex_project::ClipGain::UNITY,
+                },
+                5_001,
+                91_100,
+                extent,
+                700,
+                Some(grid),
+            )
+            .unwrap()
+        };
+        let full_root = draw(0, 0);
+        let retained_crop = draw(5_001, 5_001);
+        for channel in 0..2 {
+            assert_eq!(
+                retained_crop.channels[channel].outline, full_root.channels[channel].outline,
+                "same accepted root/time positions retain edge-bin peaks after a crop"
+            );
+        }
+    }
+
     #[cfg(feature = "ui-test-support")]
     #[test]
     fn canonical_trim_and_lower_fade_resize_keep_loop_and_one_shot_outline_still() {

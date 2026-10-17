@@ -1,16 +1,3 @@
-## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
-
-Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
-viewport sampling lattice instead of redistributing all peak columns across
-each changing clip width. Actual interior stereo outline geometry fails under
-the former sampling and passes with fixed lane/time density across fractional
-edges, zoom scales and the column cap; canonical loop/one-shot trims are covered.
-Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
-the existing model. Native reproduction/acceptance is pending; the running
-source label is0f99bfbc, with no captured resize. See docs/waveform-display.md.
-All20 full cloud checks passed on8a787a2b; final main integration is revalidated
-and recorded in the PR/Pulse. Launcher368 is merged; no app delivery performed.
-
 ## tuning review precision and cyclic gaps — #2739 / PR350, 17 october 2026
 
 Review found preset float rounding and a missing period-seam gap check. Four
@@ -48,6 +35,22 @@ project/audio/Undo state; variable rows retain logical scrolling and reset on a
 new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
+## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
+
+Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
+viewport sampling lattice instead of redistributing all peak columns across
+each changing clip width. Actual interior stereo outline geometry fails under
+the former sampling and passes with fixed lane/time density across fractional
+edges, zoom scales and the column cap; canonical loop/one-shot trims are covered.
+Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
+the existing model. Native reproduction/acceptance is pending; the running
+source labels were0f99bfbc and1879e018 in static captures, with no resize captured. See docs/waveform-display.md.
+Earlier exact-source checks passed on8a787a2b. Final integration now preserves
+merged PR388 accepted-root crops, PR387 changed-root stretch mapping and PR383
+free lower handles; fresh required evidence is recorded in PR/Pulse. No native
+acceptance or app delivery is claimed.
+
 
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 

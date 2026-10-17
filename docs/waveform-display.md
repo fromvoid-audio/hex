@@ -22,7 +22,8 @@ These compare the actual points supplied to GPUI's path builder, not screenshots
 or display timing. Existing rendered trim and fade gesture tests cover input,
 preview and release/Undo behavior.
 
-The user-running source label is `0f99bfbc`; no resize was captured. Native
+Static user captures showed source labels `0f99bfbc` and later `1879e018`;
+no resize interaction was captured. Native
 visual reproduction and acceptance remain pending in the coordinator's one Mac
 lane. Without stopping/replacing the running app, record its build and zoom,
 then check both trim edges and both lower fade handles at fixed zoom, with

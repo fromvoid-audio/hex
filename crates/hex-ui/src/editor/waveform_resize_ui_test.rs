@@ -50,8 +50,9 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         asset: Some(&peaks),
         prepared: Some(&prepared),
     };
-    let check =
-        |request| super::preview_waveform_view_cached(request, 4_103, 96_000, Default::default(), None);
+    let check = |request| {
+        super::preview_waveform_view_cached(request, 4_103, 96_000, Default::default(), None)
+    };
     assert!(
         check(request).is_some(),
         "reuse accepted full-root peaks for a valid crop"
