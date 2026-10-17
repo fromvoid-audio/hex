@@ -121,10 +121,13 @@ impl Runtime {
         let mut scratch = self.synth;
         scratch
             .retarget_from(&old.synth, self.prepared)
-            .map_err(|_| Invalid("held audition pitch cannot be retuned"))?;
+            .map_err(|_| Invalid("audition sample rate cannot be continued"))?;
         Ok(scratch)
     }
     pub(crate) fn preserve_from(&mut self, old: &mut Self, continued: Synth) {
+        if continued.active_voices() < old.synth.active_voices() {
+            self.input.rejected.store(true, Release);
+        }
         self.synth = continued;
         self.desired = old.desired;
         // A refused physical input has no voice to carry. Retry it once under
@@ -193,6 +196,37 @@ mod tests {
         snapshot.tuning =
             hex_tuning::ProjectTuning::new(false, scale, hex_tuning::Audition::default()).unwrap();
         hex_project::Project::from_snapshot(snapshot).unwrap()
+    }
+
+    #[test]
+    fn review_final_unsupported_reference_voices_retire_without_rejecting_retuning() {
+        for releasing in [false, true] {
+            let input = Arc::new(TuningAuditionInput::new(0));
+            let mut source = Runtime::prepare(&project(60, 220.0), Arc::clone(&input)).unwrap();
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            input.set_key(1, Some((0, 100, 2))).unwrap();
+            source.mix(&mut [[0.0; 2]; 128]);
+            if releasing {
+                input.set_key(0, None).unwrap();
+                source.mix(&mut [[0.0; 2]; 128]);
+            }
+            let mut target = Runtime::prepare(&project(0, 20_000.0), Arc::clone(&input)).unwrap();
+            let continued = target.continued_synth(&source).unwrap();
+            target.preserve_from(&mut source, continued);
+            let mut pcm = [[0.0; 2]; 128];
+            target.mix(&mut pcm);
+            assert_eq!(input.held_keys(), [1, 0]);
+            assert!(pcm.iter().any(|frame| frame[0] != 0.0));
+            assert!(input.take_rejection());
+            assert!(!input.is_cancelled());
+            if !releasing {
+                let mut valid = Runtime::prepare(&project(60, 220.0), Arc::clone(&input)).unwrap();
+                let continued = valid.continued_synth(&target).unwrap();
+                valid.preserve_from(&mut target, continued);
+                valid.mix(&mut [[0.0; 2]; 128]);
+                assert_eq!(input.held_keys(), [(1 << 60) | 1, 0]);
+            }
+        }
     }
 
     #[test]

@@ -223,3 +223,41 @@ fn review_followup_dice_changes_the_actual_palette_without_editing_the_project(
         });
     }
 }
+
+#[gpui::test]
+fn review_final_right_click_actions_target_the_node_under_the_pointer(cx: &mut TestAppContext) {
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    cx.update_window(handle, |_, _, cx| {
+        editor.update(cx, |view, cx| {
+            view.tuning.open = true;
+            view.sync_tuning(cx);
+            cx.notify();
+        })
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = editor.read_with(&visual, |view, _| view.tuning.pitch_bounds.unwrap());
+    let point = gpui::point(bounds.left() + bounds.size.width * 0.25, bounds.center().y);
+    visual.simulate_mouse_down(point, MouseButton::Right, gpui::Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(view.tuning.context, Some(3));
+        assert_eq!(view.tuning.selected, 3);
+        view.tuning_scale_action(4, cx);
+        assert_eq!(view.tuning.value.scale().count(), 11);
+        assert!(!view.tuning.value.scale().cents()[..11].contains(&300.0));
+        assert_eq!(view.tuning.value.scale().cents()[0], 0.0);
+    });
+}
+#[test]
+fn review_final_audition_level_keyboard_steps_are_fractional_and_reversible() {
+    let (spec, _, _) = Field::Level.spec(ProjectTuning::default(), 80.0).unwrap();
+    assert!((spec.step(0.5, 1.0, false).unwrap() - 0.51).abs() < 1e-12);
+    assert!((spec.step(0.5, -1.0, false).unwrap() - 0.49).abs() < 1e-12);
+    assert!((spec.step(0.5, 1.0, true).unwrap() - 0.501).abs() < 1e-12);
+    assert_eq!(spec.step(1.0, 1.0, false).unwrap(), 1.0);
+}

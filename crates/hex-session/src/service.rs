@@ -2859,10 +2859,10 @@ fn run_worker(
         let playback_uses_preview = preview_prepared.is_some();
         let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
-        } else if computer_keyboard_playback.is_some() {
-            computer_keyboard_playback
         } else if let Some(prepared) = preview_prepared {
             Some(native_playback(prepared))
+        } else if computer_keyboard_playback.is_some() {
+            computer_keyboard_playback
         } else if let Some(prepared) = canonical_prepared {
             Some(native_playback(prepared))
         } else {

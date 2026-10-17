@@ -130,9 +130,16 @@ Project barriers wait for locally coalesced tuning changes and their terminal
 acknowledgement, so Save/reopen observes the latest complete gesture. A failed
 terminal refuses dependent Save/Export writes rather than writing an older scale.
 Close and Quit include acknowledged, uncommitted tuning previews in confirmation.
+Open/New also requires replacement confirmation for an otherwise empty project
+with an active tuning draft. Device gestures use the same worker-owned barrier
+classification, including tuning-library requests, so their latest change cannot
+be overtaken.
 Stop cancels the reference input lease even while preparation is queued. Canonical
 edits rebasing an active gesture publish the actual preview graph alongside its
-preview identity; canonical history remains separate.
+preview identity, including while reference audition is active; canonical history
+remains separate. Right-click actions target the hit node. Rejected period
+compression reports invalid spacing, and audition-level coarse/fine steps are
+0.01/0.001 rather than whole-scale jumps.
 
 Dice advances an ephemeral worker seed so repeated regeneration changes choices
 without editing the project. Gate highlights resolve the applied graph's effective
@@ -140,7 +147,10 @@ MIDI source owner, including routed Session clips. The 16-voice reference monito
 explicitly refuses excess held physical notes without stealing an existing held
 owner; releasing/repressing after capacity is available recovers. Preset reads
 reject symlinks and nonregular files before opening, with nonblocking/no-follow
-Unix opens and a post-open regular-file check.
+Unix opens and a post-open regular-file check. Duplicate treats a dangling
+symlink as occupied and continues to a truly empty slot without replacing it.
+A retune retires only unsupported reference voices and reports their refusal;
+supported voices preserve phase/envelope, and the valid project graph can install.
 
 Slot replacement retains staged same-directory rename. Create-new exports and
 duplicates never replace a destination: where hard links are unavailable, an

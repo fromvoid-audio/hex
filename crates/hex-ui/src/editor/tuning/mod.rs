@@ -261,6 +261,8 @@ impl Field {
         };
         let steps = if matches!(self, Self::Count | Self::RootKey | Self::RootDegree) {
             (1.0, 1.0)
+        } else if self == Self::Level {
+            (0.01, 0.001)
         } else {
             (1.0, 0.01)
         };
@@ -616,7 +618,13 @@ impl EditorView {
                     event.value as f32
                 };
                 scale.set_period(cents);
-                Ok(())
+                if scale.period_cents() == cents {
+                    Ok(())
+                } else {
+                    Err(hex_tuning::Invalid(
+                        "repeat period cannot preserve valid node spacing",
+                    ))
+                }
             }
             Field::Hz(i) => {
                 if i == scale.root_degree() && !(10.0..=20_000.0).contains(&event.value) {
@@ -782,6 +790,9 @@ impl EditorView {
         let hit =
             closest.filter(|i| (s.cents()[*i] - cents).abs() / s.period_cents() * width < 10.0);
         if event.button == MouseButton::Right {
+            if let Some(index) = hit {
+                self.tuning.selected = index;
+            }
             self.tuning.context = hit;
             cx.notify();
             return;

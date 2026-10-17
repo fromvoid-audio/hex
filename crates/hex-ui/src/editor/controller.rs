@@ -2241,21 +2241,7 @@ impl EditorView {
         ) {
             self.invalidate_prepared_seek();
         }
-        if matches!(
-            &request,
-            Request::Open(_)
-                | Request::OpenWith { .. }
-                | Request::NewWithAudioMode { .. }
-                | Request::OpenWithAudioMode { .. }
-                | Request::Undo
-                | Request::Redo
-                | Request::SaveNew(_)
-                | Request::SaveCurrent
-                | Request::SaveDevicePreset { .. }
-                | Request::LoadDevicePreset { .. }
-                | Request::Export(_)
-        ) && self.device_gesture.snapshot().is_some()
-        {
+        if request.finalizes_parameter_gesture() && self.device_gesture.snapshot().is_some() {
             return self.enqueue_device_barrier(request);
         }
         let mut request = Some(request);

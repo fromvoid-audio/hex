@@ -116,10 +116,8 @@ pub fn duplicate(directory: &Path, slot: usize) -> Result<usize, String> {
     let old = load(directory, slot)?;
     let target = (1..=SLOT_COUNT)
         .find(|number| {
-            !directory
-                .join(format!("slot-{number}.freqs"))
-                .try_exists()
-                .unwrap_or(true)
+            matches!(fs::symlink_metadata(directory.join(format!("slot-{number}.freqs"))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound)
         })
         .ok_or("all tuning slots are full")?;
     let suffix = " copy";
@@ -317,6 +315,19 @@ mod tests {
     #[test]
     fn review_followup_symlink_preset_preserves_the_target() {
         check_nonregular_preset("symlink");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn review_final_duplicate_skips_preserved_dangling_symlink_slots() {
+        let d = directory();
+        save(&d.0, 1, "source", Scale::equal(19)).unwrap();
+        let link = d.0.join("slot-2.freqs");
+        let target = d.0.join("missing-original");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(duplicate(&d.0, 1).unwrap(), 3);
+        assert_eq!(load(&d.0, 3).unwrap().scale, Scale::equal(19));
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        assert!(!target.exists());
     }
     #[test]
     fn review_create_new_export_does_not_require_hardlinks_or_replace_existing_files() {
