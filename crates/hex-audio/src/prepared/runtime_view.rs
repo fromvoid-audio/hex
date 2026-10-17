@@ -183,14 +183,14 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.render(output),
         }
     }
-    pub(super) fn render_with_post_node_observer(
+    pub(super) fn render_with_node_signal_observer(
         &mut self,
         output: &mut [Frame],
-        observer: Option<&mut hex_engine::PostNodeObserver<'_>>,
+        observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
         match self {
-            Self::Legacy(p) => p.render_with_post_node_observer(output, observer),
-            Self::Eligible(p) => p.render_with_post_node_observer(output, observer),
+            Self::Legacy(p) => p.render_with_node_signal_observer(output, observer),
+            Self::Eligible(p) => p.render_with_node_signal_observer(output, observer),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {
