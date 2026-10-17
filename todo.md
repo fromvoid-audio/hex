@@ -4311,6 +4311,30 @@ new-node controls pass in the rendered fixture, alongside strict UI Clippy and
 page-boundary checks. The prior full run was interrupted for this repair; only
 the next unchanged full candidate may supply merge evidence.
 
+## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+
+- Lower fade handles use one model-owned trim-and-envelope command, including
+  neutral `f` handles, source/retained-root limits, loop phase and musical crop
+  anchoring. Upper/curve edits keep their existing behavior.
+- Metadata-only previews resize the actual clip/header/waveform crop; release
+  recomputes grid/Command snapping and makes one undoable edit. Existing inward
+  endpoint offsets are absorbed only by a meaningful drag.
+- Focused source coverage checks source/loop laws, transformed warp/events,
+  preview/command identity, history, roundtrip, saved export/playback PCM and
+  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
+  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
+
+Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
+integrated main `070cacc3` without changing the separate tooltip PR362 scope.
+A rendered regression reproduces the missing stationary Command refresh before
+the repair; the production modifier event now recomputes at the current pointer,
+while mouse-up still uses its own current modifiers. Both lower edges, Command
+press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
+pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
+CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
+native physical input/listening and optimized coordinated Mac delivery remain
+pending with the coordinator's serial follow-up workflow.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
