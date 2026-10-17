@@ -220,7 +220,9 @@ pub struct PublishedProjectSpectrum {
     pub applied_revision: u64,
     pub captured_at: Instant,
     pub processed_at: Instant,
-    pub frames: [SpectrumFrame; MAX_PROJECT_LAYERS],
+    // Keep the fixed maximum payload out of factory, reader and UI stack values.
+    // Construct it through Vec, never Box::new([large inline array]).
+    pub frames: Box<[SpectrumFrame; MAX_PROJECT_LAYERS]>,
 }
 impl PublishedProjectSpectrum {
     /// Master first, followed by one independent layer per sorted selected ID.
@@ -533,7 +535,10 @@ impl ProjectWorker {
                 data_bytes: std::mem::size_of_val(self)
                     .checked_add(*pool_bytes)?
                     .checked_add(core.heap_bytes()?)?
-                    .checked_add(std::mem::size_of::<PublishedProjectSpectrum>())?,
+                    .checked_add(std::mem::size_of::<PublishedProjectSpectrum>())?
+                    // One queued publication and one retained reader result. The
+                    // latter used to be included inline in the client owner.
+                    .checked_add(2 * std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?,
                 shared_groups: 1,
                 shared_handles: 2,
             })?;
@@ -546,7 +551,7 @@ struct ProjectCore {
     kernel: SpectrumKernel,
     rolling: Box<[Frame]>,
     ordered: Box<[Frame]>,
-    envelopes: [Option<SpectrumFrame>; MAX_PROJECT_LAYERS],
+    envelopes: Box<[Option<SpectrumFrame>]>,
     selection: Option<ProjectSelection>,
     write: usize,
     filled: usize,
@@ -627,10 +632,7 @@ impl ProjectCore {
             {
                 return None;
             }
-            let frames = std::array::from_fn(|_| SpectrumFrame {
-                sample_rate_hz: self.rate,
-                bins_dbfs: [crate::spectrum::FLOOR_DBFS; crate::spectrum::SPECTRUM_BANDS],
-            });
+            let frames = project_frames(self.rate).ok()?;
             self.pending = Some(PendingAnalysis {
                 result: PublishedProjectSpectrum {
                     selection,
@@ -679,7 +681,7 @@ impl ProjectCore {
             kernel,
             rolling,
             ordered,
-            envelopes: _,
+            envelopes,
             selection: _,
             write: _,
             filled: _,
@@ -693,8 +695,30 @@ impl ProjectCore {
         } = self;
         std::mem::size_of_val(rolling.as_ref())
             .checked_add(std::mem::size_of_val(ordered.as_ref()))?
-            .checked_add(kernel.heap_data_bytes()?)
+            .checked_add(kernel.heap_data_bytes()?)?
+            .checked_add(std::mem::size_of_val(envelopes.as_ref()))?
+            // Reserve the pending result payload even before analysis starts.
+            .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())
     }
+}
+fn project_frames(
+    rate: u32,
+) -> Result<Box<[SpectrumFrame; MAX_PROJECT_LAYERS]>, SpectrumWorkerError> {
+    let mut frames = Vec::new();
+    frames
+        .try_reserve_exact(MAX_PROJECT_LAYERS)
+        .map_err(|_| SpectrumWorkerError::Allocation)?;
+    frames.resize(
+        MAX_PROJECT_LAYERS,
+        SpectrumFrame {
+            sample_rate_hz: rate,
+            bins_dbfs: [crate::spectrum::FLOOR_DBFS; crate::spectrum::SPECTRUM_BANDS],
+        },
+    );
+    frames
+        .into_boxed_slice()
+        .try_into()
+        .map_err(|_| SpectrumWorkerError::StorageOverflow)
 }
 fn zeroed_frames(count: usize) -> Result<Box<[Frame]>, SpectrumWorkerError> {
     let mut frames = Vec::new();
@@ -749,7 +773,14 @@ fn channel_with_return_capacity(
             .map_err(|_| SpectrumWorkerError::InvalidSampleRate(rate))?,
         rolling: zeroed_frames(MAX_PROJECT_LAYERS * FFT_SIZE)?,
         ordered: zeroed_frames(FFT_SIZE)?,
-        envelopes: std::array::from_fn(|_| None),
+        envelopes: {
+            let mut envelopes = Vec::new();
+            envelopes
+                .try_reserve_exact(MAX_PROJECT_LAYERS)
+                .map_err(|_| SpectrumWorkerError::Allocation)?;
+            envelopes.resize(MAX_PROJECT_LAYERS, None);
+            envelopes.into_boxed_slice()
+        },
         selection: None,
         write: 0,
         filled: 0,
@@ -1226,6 +1257,12 @@ mod tests {
             );
         }
         let bytes = worker.storage(&capture).unwrap().data_bytes;
+        eprintln!(
+            "project spectrum bounded payload={bytes} bytes; published={} reader={} worker={} bytes",
+            std::mem::size_of::<PublishedProjectSpectrum>(),
+            std::mem::size_of::<ProjectReader>(),
+            std::mem::size_of::<ProjectWorker>()
+        );
         assert!(worker.storage_with_limit(&capture, bytes).is_some());
         assert!(worker.storage_with_limit(&capture, bytes - 1).is_none());
         assert!(bytes < MAX_PROJECT_PAYLOAD_BYTES);
