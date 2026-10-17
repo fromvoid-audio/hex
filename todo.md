@@ -62,6 +62,23 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
+
+Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
+viewport sampling lattice instead of redistributing all peak columns across
+each changing clip width. Actual interior stereo outline geometry fails under
+the former sampling and passes with fixed lane/time density across fractional
+edges, zoom scales and the column cap; canonical loop/one-shot trims are covered.
+Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
+the existing model. Native reproduction/acceptance is pending; the running
+source labels were0f99bfbc and1879e018 in static captures, with no resize captured. See docs/waveform-display.md.
+Earlier exact-source checks passed on8a787a2b. Final integration now preserves
+merged PR388 accepted-root crops, PR387 changed-root stretch mapping and PR383
+free lower handles. Combined crop/stretch/grid regressions pass39 tests with
+one existing manual profile ignored, including the reproduced/repaired prepared
+edge-bin translation defect. Fresh required evidence is recorded in PR/Pulse. No native
+acceptance or app delivery is claimed.
+
 ## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
 
 Command-T binds the existing AddTrack action under editor/non-text focus.

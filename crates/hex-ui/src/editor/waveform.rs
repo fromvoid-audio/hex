@@ -9,6 +9,8 @@ use super::waveform_geometry::{
     prepare_waveform_geometry,
 };
 
+pub(super) use super::waveform_geometry::WaveformGrid;
+
 const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
@@ -29,6 +31,7 @@ pub(super) fn preview_waveform_view_cached(
     visible_start: u64,
     visible_end: u64,
     cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
 ) -> Option<Div> {
     let WaveformPreview {
         original,
@@ -50,6 +53,7 @@ pub(super) fn preview_waveform_view_cached(
                 visible_start,
                 visible_end,
                 cache,
+                grid,
             );
         }
         let old = original.audio_edit()?;
@@ -72,28 +76,32 @@ pub(super) fn preview_waveform_view_cached(
         {
             return None;
         }
-        let cropped = hex_session::service::AudioClipWaveform {
-            waveform: Arc::clone(&prepared.waveform),
-            offset,
-            length: preview.duration(),
-        };
-        Some(prepared_waveform_view_cached(
-            &cropped,
-            preview,
+        Some(timeline_waveform_view_cached(
+            Arc::clone(&prepared.waveform),
+            WaveformMapping::Prepared {
+                timeline_origin: preview.start(),
+                root_offset: offset,
+                gain: preview.gain(),
+            },
             visible_start,
             visible_end,
             cache,
+            grid,
         ))
     } else {
         if original.audio_edit().is_some() {
             return None;
         }
-        Some(waveform_view_cached(
-            asset?,
-            preview,
+        Some(timeline_waveform_view_cached(
+            Arc::clone(asset?),
+            WaveformMapping::Clip {
+                clip: preview.clone(),
+                timeline_origin: preview.start(),
+            },
             visible_start,
             visible_end,
             cache,
+            grid,
         ))
     }
 }
@@ -115,6 +123,27 @@ pub(super) fn prepared_waveform_view_cached(
         visible_start,
         visible_end,
         Some(cache),
+        None,
+    )
+}
+
+/// Arrangement clips and both resize previews use the lane's stable lattice.
+/// Other waveform consumers keep their own fitted source view.
+pub(super) fn timeline_waveform_view_cached(
+    waveform: Arc<CachedWaveform>,
+    mapping: WaveformMapping,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
+) -> Div {
+    waveform_canvas(
+        waveform,
+        mapping,
+        visible_start,
+        visible_end,
+        Some(cache),
+        grid,
     )
 }
 
@@ -133,6 +162,7 @@ pub(super) fn waveform_view_at(
         },
         visible_start,
         visible_end,
+        None,
         None,
     )
 }
@@ -153,6 +183,7 @@ pub(super) fn waveform_view_cached(
         visible_start,
         visible_end,
         Some(cache),
+        None,
     )
 }
 
@@ -167,6 +198,7 @@ pub(super) fn waveform_source_segment_view(
         WaveformMapping::Source { timeline_origin },
         visible_start,
         visible_end,
+        None,
         None,
     )
 }
@@ -188,6 +220,7 @@ pub(super) fn waveform_source_segment_gain_view_cached(
         visible_start,
         visible_end,
         Some(cache),
+        None,
     )
 }
 
@@ -202,6 +235,7 @@ pub(super) fn waveform_canvas(
     visible_start: u64,
     visible_end: u64,
     cache: Option<Rc<std::cell::RefCell<WaveformGeometryCache>>>,
+    grid: Option<WaveformGrid>,
 ) -> Div {
     let mapping = mapping.clone();
     waveform_surface(canvas(
@@ -221,6 +255,7 @@ pub(super) fn waveform_canvas(
                     bounds,
                     scale: window.scale_factor(),
                     columns,
+                    grid,
                 };
                 cached_waveform_geometry(cache, &waveform, &request)
             });
@@ -232,6 +267,7 @@ pub(super) fn waveform_canvas(
                     visible_end,
                     bounds,
                     columns,
+                    grid,
                 )
                 .map(Arc::new)
             });

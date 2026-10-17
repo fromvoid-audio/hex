@@ -1,6 +1,8 @@
 //! Preview the accepted immutable peaks through the prospective musical map.
 //! This is a bounded visual projection, never audio preparation on pointer motion.
-use super::waveform::{SourceRanges, WaveformPreview, push_source_range, waveform_canvas};
+use super::waveform::{
+    SourceRanges, WaveformGrid, WaveformPreview, push_source_range, waveform_canvas,
+};
 use super::waveform_geometry::{WaveformGeometryCache, WaveformMapping};
 use gpui::Div;
 use hex_project::{Clip, ClipGain, TempoMap, TrimEdge, preview_audio_clip_stretch};
@@ -21,6 +23,7 @@ pub(super) fn stretch_waveform_view(
     visible_start: u64,
     visible_end: u64,
     cache: Rc<RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
 ) -> Option<Div> {
     let WaveformPreview {
         original,
@@ -76,6 +79,7 @@ pub(super) fn stretch_waveform_view(
         visible_start,
         visible_end,
         Some(cache),
+        grid,
     ))
 }
 
