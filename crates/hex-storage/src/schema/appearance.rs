@@ -11,7 +11,7 @@ pub(crate) struct DocumentV27 {
     #[serde(deserialize_with = "super::clip_names::bounded_names")]
     clip_names: Vec<super::clip_names::ClipName>,
     format: String,
-    version: u32,
+    pub(super) version: u32,
     sample_rate: u32,
     next_id: u64,
     assets: Vec<AssetV2>,
