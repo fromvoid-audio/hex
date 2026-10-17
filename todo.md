@@ -20,6 +20,19 @@ for scope and the finite native checklist.
 
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
 
+## Clip conversion — #2658 / PR274, 17 october 2026
+
+- User request: MIDI → audio bounces in place; audio → MIDI removes audio and
+  yields an empty editable source. Note detection is explicitly out of scope.
+- Source implements Arrangement/Session identity-preserving atomic replacement,
+  float32 generated WAV publication, worker preparation, undo/redo and Clip View
+  conversion controls. Effects/mixer stay live; source loops/tempo and bounded
+  mutable preroll use the canonical renderer. See docs/clip-conversion.md for
+  finite duration semantics, media ownership, refusals and native checklist.
+- Focused controller/PCM/history/save-reopen/refusal tests pass at the source
+  milestone. Exact full local-CI evidence is retained with PR274; native macOS
+  interaction/listening remains pending. No macOS bundle was built in Linux.
+
 Native effect/instrument registries validate owned descriptors for each current
 state; patches, availability and engine read-only views resolve dynamic IDs.
 Static device/catalog APIs and EQ8's 3,792-byte runtime stay unchanged. Effect
