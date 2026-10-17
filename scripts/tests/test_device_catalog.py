@@ -4,6 +4,9 @@ import json
 import plistlib
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
+from contextlib import nullcontext
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
@@ -42,6 +45,19 @@ class DeviceInventoryTests(unittest.TestCase):
                              'Audio Effects/Legacy/Chorus')
             self.assertEqual(result['packs'][0]['metadata']['values']['PackRevision'], 7)
             json.dumps(result)
+
+    def test_directory_budget_stops_lazy_enumeration_before_sorting(self):
+        consumed = []
+
+        def entries():
+            for number in range(100):
+                consumed.append(number)
+                yield SimpleNamespace(path='/fixture/' + str(number))
+
+        with patch.object(CATALOG.os, 'scandir', return_value=nullcontext(entries())):
+            with self.assertRaisesRegex(ValueError, 'entry limit'):
+                CATALOG.bounded_children(Path('/fixture'), 3)
+        self.assertEqual(consumed, [0, 1, 2, 3])
 
     def test_symlink_and_oversized_metadata_refuse_instead_of_silent_omission(self):
         with tempfile.TemporaryDirectory() as directory:

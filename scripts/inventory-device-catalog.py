@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import plistlib
 import re
 from pathlib import Path
@@ -19,18 +20,38 @@ def digest(path):
     return value.hexdigest()
 
 
+def bounded_children(parent, remaining):
+    # scandir is lazy; Path.iterdir/listdir can materialize before our cap.
+    children = []
+    with os.scandir(parent) as entries:
+        for entry in entries:
+            if len(children) >= remaining:
+                raise ValueError('inventory entry limit exceeded: ' + str(parent))
+            children.append(Path(entry.path))
+    return sorted(children)
+
+
+def bounded_metadata(path):
+    if path.is_symlink():
+        raise ValueError('unsafe metadata symlink: ' + str(path))
+    with path.open('rb') as stream:
+        content = stream.read(MAX_METADATA_BYTES + 1)
+    if len(content) > MAX_METADATA_BYTES:
+        raise ValueError('oversized metadata: ' + str(path))
+    return content
+
+
 def metadata(path):
     if not path.exists():
         return {'availability': 'missing'}
-    if path.is_symlink() or path.stat().st_size > MAX_METADATA_BYTES:
-        raise ValueError('unsafe or oversized metadata: ' + str(path))
-    text = path.read_text(encoding='utf-8')
+    content = bounded_metadata(path)
+    text = content.decode('utf-8')
     values = {}
     for key, quoted, integer in re.findall(
         r'(?:String|Int)\s+(Pack\w+|DeviceId|DeviceClassName)\s*=\s*(?:"([^"]*)"|(-?\d+))\s*;', text
     ):
         values[key] = quoted if quoted else int(integer) if integer else ''
-    return {'availability': 'present', 'sha256': digest(path), 'values': values}
+    return {'availability': 'present', 'sha256': hashlib.sha256(content).hexdigest(), 'values': values}
 
 
 def files(root):
@@ -40,7 +61,7 @@ def files(root):
     count = 0
     while pending:
         parent = pending.pop()
-        for child in sorted(parent.iterdir()):
+        for child in bounded_children(parent, MAX_ENTRIES - count):
             count += 1
             if count > MAX_ENTRIES:
                 raise ValueError('inventory entry limit exceeded: ' + str(root))
@@ -54,10 +75,7 @@ def files(root):
 
 def inventory(app, packs):
     plist_path = app / 'Contents/Info.plist'
-    if plist_path.stat().st_size > MAX_METADATA_BYTES:
-        raise ValueError('oversized app metadata')
-    with plist_path.open('rb') as stream:
-        plist = plistlib.load(stream)
+    plist = plistlib.loads(bounded_metadata(plist_path))
     executable = plist['CFBundleExecutable']
     if Path(executable).name != executable:
         raise ValueError('invalid executable name')
@@ -88,7 +106,7 @@ def inventory(app, packs):
         all_files = list(files(root))
         result['roots'][label] = {'availability': 'present', 'file_count': len(all_files)}
         if label == 'packs':
-            for pack in sorted(root.iterdir()):
+            for pack in bounded_children(root, MAX_ENTRIES):
                 if pack.is_dir():
                     result['packs'].append({'directory': pack.name,
                         'metadata': metadata(pack / 'Ableton Folder Info/Properties.cfg')})
