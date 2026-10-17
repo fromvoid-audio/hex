@@ -552,12 +552,9 @@ pub trait NativeDeviceMetadata: Sync {
         snapshot: &DeviceParameterSnapshot,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut candidate = self.migrate_state(state)?;
-        snapshot.validate(&validated_state_descriptors(self, &candidate)?)?;
-        for &(parameter, _) in snapshot.entries() {
-            require_parameter_writable(self, &candidate, parameter)?;
-        }
+        validate_parameter_snapshot_for_write(self, &candidate, snapshot)?;
         for &(parameter, value) in snapshot.entries() {
-            require_parameter_writable(self, &candidate, parameter)?;
+            validate_parameter_write(self, &candidate, parameter, value)?;
             candidate = self.patch_parameter(&candidate, parameter, value)?;
         }
         Ok(candidate)

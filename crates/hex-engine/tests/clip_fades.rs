@@ -237,3 +237,98 @@ fn fade_rendering_is_partition_invariant_with_global_loop_and_seek() {
     let repeated = [0.5 * fade.gain_at(4); 2];
     assert_eq!(&expected[4..], &[repeated; 13]);
 }
+
+#[test]
+fn shaped_fades_render_the_authored_curve_silence_and_seek_in_both_players() {
+    for fade in [
+        ClipFade::new(101, 0, 41, 31)
+            .unwrap()
+            .with_shape(10, 10, 500, -500)
+            .unwrap(),
+        ClipFade::new(101, 0, 0, 0)
+            .unwrap()
+            .with_shape(10, 10, 0, 0)
+            .unwrap(),
+    ] {
+        let audio = Audio::new(48_000, vec![[0.5, -0.5]; 101]).unwrap();
+        let clip = hex_engine::Clip::region_with_fade(audio, 0, 101, 0, 101, false, fade).unwrap();
+        let project = hex_engine::Project::new(
+            48_000,
+            vec![hex_engine::Track::new(vec![clip], 1.0, false).unwrap()],
+        )
+        .unwrap();
+        let mut renderer = Renderer::new(&project);
+        renderer.play();
+        let mut actual = [[0.0; 2]; 101];
+        renderer.render(&mut actual).unwrap();
+        for (frame, sample) in actual.iter().enumerate() {
+            let gain = fade.gain_at(frame as u64);
+            assert_eq!(*sample, [0.5 * gain, -0.5 * gain]);
+        }
+        let mut playback = Playback::new(project);
+        playback.apply(PlaybackCommand::Seek(20));
+        playback.apply(PlaybackCommand::Play);
+        let mut seeked = [[0.0; 2]; 70];
+        for block in seeked.chunks_mut(3) {
+            playback.render(block).unwrap();
+        }
+        assert_eq!(seeked, actual[20..90]);
+    }
+}
+
+#[test]
+fn transformed_musical_shaped_fades_keep_pcm_through_splits_and_tempo_changes() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "fade".into(),
+            path: "sound.wav".into(),
+            sample_rate: 48_000,
+            frames: 4800,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 100 })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+    let fade = ClipFade::new(4800, 0, 1800, 1600)
+        .unwrap()
+        .with_shape(200, 300, 700, -800)
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: hex_project::BeatTime::ZERO,
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.5; 2]; 4800]).unwrap())]);
+    let whole = compile::project(editor.project(), &media).unwrap();
+    editor
+        .execute(Command::SplitClip { clip, frame: 2400 })
+        .unwrap();
+    let split = compile::project(editor.project(), &media).unwrap();
+    let mut expected = vec![[0.0; 2]; 6400];
+    let mut actual = expected.clone();
+    let mut whole = Renderer::new(&whole);
+    let mut split = Renderer::new(&split);
+    whole.play();
+    split.play();
+    whole.render(&mut expected).unwrap();
+    for chunk in actual.chunks_mut(127) {
+        split.render(chunk).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(actual[0..100].iter().all(|frame| *frame == [0.0; 2]));
+    assert!(actual[2000][0] > 0.1);
+}

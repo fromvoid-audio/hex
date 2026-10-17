@@ -21,7 +21,9 @@ factory declares runtime version, owned bytes per twin, algorithmic latency and
 residual tail. Runtime methods process/reset/copy history without allocation,
 blocking, I/O or final ownership destruction. Compatibility covers the complete
 law, sample rate, layout and storage. History/parameter retargeting is explicit;
-long buffers need W04's transaction work before admission. Do not inflate caps
+owned-history providers use the additive W04 capability described in
+[owned effect transactions](owned-effect-transactions.md); large native admission
+remains unfinished. Do not inflate caps
 to make an example compile. Musical delay differs from algorithmic latency.
 
 An instrument implements `NativeInstrumentDefinition` and prepares an explicit

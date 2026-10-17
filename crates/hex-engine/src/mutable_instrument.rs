@@ -964,8 +964,7 @@ pub(crate) fn validate_prepared_graph_budget(
             effect_bytes = effect_bytes
                 .checked_add(
                     definition
-                        .declared_runtime_bytes()
-                        .checked_mul(2)
+                        .declared_pair_bytes()
                         .ok_or(MutableInstrumentRuntimeError::Budget)?,
                 )
                 .ok_or(MutableInstrumentRuntimeError::Budget)?;

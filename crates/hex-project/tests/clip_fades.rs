@@ -227,3 +227,69 @@ fn recursive_split_preserves_every_sample_of_original_envelope() {
     assert!(editor.redo());
     assert!(editor.redo());
 }
+
+#[test]
+fn shaped_fades_have_independent_silent_endpoints_curves_and_split_continuity() {
+    let fade = ClipFade::new(101, 0, 41, 31)
+        .unwrap()
+        .with_shape(10, 10, 500, -500)
+        .unwrap();
+    assert_eq!(fade.gain_at(9), 0.0);
+    assert_eq!(fade.gain_at(10), 0.0);
+    assert_eq!(fade.gain_at(50), 1.0);
+    assert!((fade.gain_at(30) - 501.0 / 2002.0).abs() < 1e-7);
+    assert!((fade.gain_at(75) - 1501.0 / 2002.0).abs() < 1e-7);
+    assert_eq!(fade.gain_at(90), 0.0);
+    assert_eq!(fade.gain_at(91), 0.0);
+    for curve in [-1000, -500, 0, 500, 1000] {
+        let ramp = ClipFade::new(101, 0, 101, 0)
+            .unwrap()
+            .with_shape(0, 0, curve, 0)
+            .unwrap();
+        let gains: Vec<_> = (0..101).map(|frame| ramp.gain_at(frame)).collect();
+        assert!(gains.windows(2).all(|g| g[0] <= g[1]));
+        assert_eq!((gains[0], gains[100]), (0.0, 1.0));
+    }
+    assert!(fade.with_shape(70, 0, 0, 0).is_err());
+    assert!(fade.with_shape(0, u64::MAX, 0, 0).is_err());
+    assert!(fade.with_shape(0, 0, 1001, 0).is_err());
+    let (mut editor, clip) = editor_with_clip(101);
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    assert!(editor.undo());
+    assert!(editor.project().clip(clip).unwrap().fade().is_neutral());
+    assert!(editor.redo());
+    let before = editor.project().clone();
+    assert!(
+        editor
+            .execute(Command::SetClipFadeEnvelope {
+                clip,
+                fade: fade.with_offset(1, 100).unwrap()
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    editor
+        .execute(Command::SplitClip { clip, frame: 35 })
+        .unwrap();
+    for part in editor.project().tracks()[0].clips() {
+        for frame in 0..part.duration() {
+            assert_eq!(
+                part.fade().gain_at(frame),
+                fade.gain_at(part.start() + frame)
+            );
+        }
+    }
+    let trimmed = fade.reanchor(20).unwrap();
+    assert_eq!(
+        (
+            trimmed.in_start(),
+            trimmed.out_end_offset(),
+            trimmed.fade_in(),
+            trimmed.fade_out()
+        ),
+        (10, 10, 10, 10)
+    );
+    assert_eq!((trimmed.in_curve(), trimmed.out_curve()), (500, -500));
+}

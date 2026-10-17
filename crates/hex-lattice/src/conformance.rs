@@ -4,7 +4,7 @@
 //! parity, native interaction, physical deadlines or complete feature coverage.
 use crate::{
     DeviceMeter, NativeDeviceDefinition, NativeDeviceRegistry, NativeRuntimeChain,
-    PreparedProcessorInstance, ProcessorChainOwner, StereoFrame,
+    PreparedRuntimeInstance, ProcessorChainOwner, StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterKind,
@@ -165,12 +165,12 @@ fn chain(
     let prepared = contract(
         definition,
         "effect preparation",
-        registry.prepare_device(state, rate),
+        registry.prepare_runtime_device(state, rate),
     )?;
     contract(
         definition,
         "runtime admission",
-        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
             meter: Arc::new(DeviceMeter::default()),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,
@@ -179,7 +179,7 @@ fn chain(
             bypassed,
             sample_rate: rate,
             configuration: Some(Arc::new(state.clone())),
-            definition: prepared.processor.map(Arc::from),
+            definition: prepared.processor,
         }]),
     )
 }
@@ -401,3 +401,6 @@ fn render_instrument<D: NativeDeviceMetadata + ?Sized>(
 
 #[cfg(test)]
 mod tests;
+
+/// Registered original fixture for owned-effect host proofs, never a browser device.
+pub mod owned_delay;
