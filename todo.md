@@ -4345,3 +4345,10 @@ target ownership after the Python suite, guards and formatting passed. No comple
 macOS CI, signing, installation or native acceptance is established. Mac execution
 remains paused until the user explicitly resumes it; PR355 owns signing and sample
 permissions, and the eventual combined app uses one exact verified source.
+
+Cloud continuation for Pulse2752 / PR362 verified the canonical checkpoint and
+integrated main `070cacc3`, retaining the narrow two-container tooltip removal.
+All six quick source/format checks pass; full exact-candidate runner evidence is
+recorded on the PR independently. Native audio/MIDI hover, selection, drag,
+rename, context-menu and distinct-control tooltip checks remain for the
+coordinator's serial Mac follow-up and launcher's combined optimized delivery.
