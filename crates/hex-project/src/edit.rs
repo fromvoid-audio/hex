@@ -15,6 +15,11 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Event IDs come from the clip/revision-scoped editable_audio_events view.
+    EditAudioEvents {
+        clip: ClipId,
+        operation: crate::AudioEventEdit,
+    },
     /// Rename any Arrangement or Session clip by stable ID.
     RenameClip {
         clip: ClipId,
@@ -1180,6 +1185,10 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::EditAudioEvents { clip, operation } => {
+                crate::audio_events::apply(self, clip, operation)?;
+                Ok(Created::None)
+            }
             Command::ConvertAudioClipToMidi(clip) => {
                 crate::clip_conversion::audio_to_midi(self, clip)
             }

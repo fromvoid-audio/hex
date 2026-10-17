@@ -430,6 +430,9 @@ impl Render for EditorView {
                     ) {
                         cx.notify();
                     }
+                    if view.refresh_audio_event_modifiers(event.modifiers.platform) {
+                        cx.notify();
+                    }
                     view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
                     view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
                 });
@@ -776,6 +779,14 @@ impl Render for EditorView {
                         frames: view.step_frames() as i64,
                     }));
                 }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::ToggleSnapGrid, _, cx| {
+                view.snap_grid = if view.snap_grid == super::musical_time::SnapGrid::Off {
+                    super::musical_time::SnapGrid::Adaptive
+                } else {
+                    super::musical_time::SnapGrid::Off
+                };
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopyTimeSelection, window, cx| {

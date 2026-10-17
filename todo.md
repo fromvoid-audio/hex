@@ -1,3 +1,27 @@
+## nested audio events — pulse2692 / PR308, 17 october 2026
+
+Arrangement audio clips retain their outer editing behavior while a lower event
+editor cuts/reorders non-destructive root intervals. Independent adaptive BPM grid,
+time selection/range movement, trim, cursor/range split, clipboard, duplicate,
+insert-paste, zoom/pan and focused hotkeys use canonical one-step commands.
+Later events overwrite covered audio; gaps are silence. Schema28 preserves event
+state and strict legacy migration; resident worker composition precedes outer
+fades/gain and charges temporary storage. See [contract](docs/audio-events.md).
+
+Focused model, storage, PCM and real-input GPUI tests accompany this change.
+Native macOS interaction/listening, streamed event composition, cross-root paste
+and conversion of event-bearing clocks remain explicitly open. Final validation
+results and source identity are recorded in PR308 and Pulse2692.
+## native device installed inventory — #2668 / PR284, 17 october 2026
+
+Read-only bounded metadata inventory and machine-readable coverage ledger retain
+85 manual seeds, all 67 discovered Max files and eight legacy preset families
+as 142 accountable identities. Reference executable matches the pinned hash.
+Seven current effects, Vector v15 and the unregistered sampler kernel are
+reconciled against source. See [catalog](docs/native-device-catalog.md).
+Inventory fixture tests pass. Full per-feature/browser/native/reference acceptance
+remains open; this is the W02 bootstrap, not W01 or goal completion.
+
 ## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
 
 Ten shared theme colors replace custom per-clip colors. Track-header menus choose
@@ -72,6 +96,21 @@ undo/redo; they pass after reproducing the prior leftward limitation. The user
 confirmed rightward painting works. Native leftward/reversal acceptance remains
 pending. See [clip painting](docs/clip-paint.md)
 for scope and the finite native checklist.
+
+## clip grab headers and editable bodies — pulse2695, 17 october 2026
+
+- Arrangement audio/MIDI clips use a shaded upper-third grab header and open-hand
+  cursor; clicking the header selects the clip and dragging moves/copies it.
+- Lower bodies share empty-lane point/range selection and double-click-hold MIDI
+  clip painting. Visible edge trims and existing time-area move priority remain.
+- Focused rendered input regression covers both clip kinds, body selection,
+  paint preview/release, canonical placement and Undo. Native macOS acceptance
+  remains user-owned: header hover/move/copy, body selection/paint and edge trim.
+  Validation results and the focused PR are retained with Pulse2695.
+- PR review regressions cover one-click header selection during pending work or
+  another clip's rename, and visible body input across obscured audio/MIDI edges.
+  Header selection stays independent of drag admission; hit routing follows
+  reverse paint order. Both reproducers fail before the repair and pass after.
 
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
 
@@ -4185,3 +4224,24 @@ the next unchanged full candidate may supply merge evidence.
 - Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
   fetch/CI/package failures, and successful operation order. Native UI and
   listening acceptance remain user checks after launch.
+
+## launcher Finder metadata refusal — pulse2703 / PR319, 17 october 2026
+
+The GPUI provenance guard distinguishes regular `.DS_Store` Finder metadata
+from dependency source. Reproduced the actual primary checkout failure without
+removing metadata or changing source. Fixture regressions cover root/nested
+metadata and continued rejection of changed/missing/added source, lookalikes
+and symlinks. Full optimized-delivery verification remains required by launch.
+Exact final CI, merged-source launcher delivery and native launch evidence are
+recorded with PR319 and Pulse2703; not inferred from these source fixtures.
+
+## additive release-cache handoff — pulse2704 / PR320, 17 october 2026
+
+Actual primary launch passed all20 checks at0a9a4de6, then release preparation
+falsely classified four new workspace crates as removed/renamed packages.
+The release guard now permits additions only while every recorded member retains
+its name/version; it cleans the complete current workspace with the existing
+lock, scope, source and artifact checks. Real-Cargo regression fails before the
+fix and verifies added dependency output plus removal/rename/version-change
+refusals and preserved external/dev artifacts. Final exact checks and actual
+merged-source launch evidence remain recorded on PR320/Pulse2704.

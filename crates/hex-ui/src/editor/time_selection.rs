@@ -7,7 +7,7 @@ use hex_project::{Command, TrackId};
 use hex_session::service::Request;
 use std::time::Instant;
 
-const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
+pub(super) const SELECTION_HANDLE_FRACTION: f32 = 1.0 / 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimeSelection {
@@ -107,6 +107,7 @@ impl EditorView {
     pub(super) fn begin_main_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -183,6 +184,7 @@ impl EditorView {
         if !self.time_selection_project_scope
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -239,6 +241,7 @@ impl EditorView {
     pub(super) fn begin_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -273,7 +276,7 @@ impl EditorView {
         ) else {
             return false;
         };
-        if !inside_selection && self.track_has_clip_at_frame(track, frame, viewport) {
+        if !inside_selection && self.clip_handle_at_pointer(track, x, y, viewport) {
             return false;
         }
         let generation = self.project_generation;
@@ -313,6 +316,7 @@ impl EditorView {
     pub(super) fn begin_time_range_move_gesture(&mut self, x: f32, y: f32) -> bool {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -381,6 +385,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project
@@ -464,6 +469,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|state| state.revision != gesture.revision)
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -694,6 +700,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
+            || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project
@@ -816,10 +823,12 @@ impl EditorView {
         Some((*track, *lane))
     }
 
-    pub(super) fn track_has_clip_at_frame(
+    /// Reserve clip headers and visible edge trims; bodies share empty-lane input.
+    pub(super) fn clip_handle_at_pointer(
         &self,
         track: TrackId,
-        frame: u64,
+        x: f32,
+        y: f32,
         viewport: super::viewport::Viewport,
     ) -> bool {
         let Some(state) = self.state.as_ref() else {
@@ -831,31 +840,47 @@ impl EditorView {
         let Some(lane) = self.drag_lanes.get(&track.id()) else {
             return true;
         };
-        let frame_tolerance = if lane.width > 0.0 {
-            ((viewport.length as f64 * 2.0 / f64::from(lane.width)).ceil() as u64).max(1)
-        } else {
-            0
-        };
-        if track.clips().iter().any(|clip| {
-            clip.start().saturating_sub(frame_tolerance) <= frame
-                && clip
-                    .start()
-                    .checked_add(clip.duration())
-                    .is_some_and(|end| frame <= end.saturating_add(frame_tolerance))
-        }) {
+        let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
             return true;
-        }
-        track.midi_clips().iter().any(|clip| {
-            let start = state.project.tempo_map().beat_to_frame(clip.start()).ok();
-            let end = clip
-                .start()
-                .raw()
-                .checked_add(clip.length().raw())
-                .map(hex_project::BeatTime::from_raw)
-                .and_then(|end| state.project.tempo_map().beat_to_frame(end).ok());
-            start.is_some_and(|start| start <= frame.saturating_add(frame_tolerance))
-                && end.is_some_and(|end| frame <= end.saturating_add(frame_tolerance))
-        })
+        };
+        let handle_hit = |start: u64, end: u64, minimum: f32| {
+            let visible_start = start.max(viewport.start);
+            let visible_end = end.min(viewport_end);
+            if visible_start >= visible_end {
+                return None;
+            }
+            let left = lane.left
+                + lane.width
+                    * ((visible_start - viewport.start) as f64 / viewport.length as f64) as f32;
+            let fraction = (visible_end - visible_start) as f64 / viewport.length as f64;
+            let width = super::trim::rendered_clip_width(lane.width, fraction, minimum);
+            if x < left || x >= left + width {
+                return None;
+            }
+            let edge = super::trim::handle_width(width);
+            Some(
+                y < lane.top + lane.height * SELECTION_HANDLE_FRACTION
+                    || (visible_start == start && x < left + edge)
+                    || (visible_end == end && x >= left + width - edge),
+            )
+        };
+        // MIDI is drawn after audio; later clips cover earlier clips of each kind.
+        // A visible body must win over any obscured header or resize edge.
+        track
+            .midi_clips()
+            .iter()
+            .rev()
+            .find_map(|clip| {
+                let preview = state.midi_preview.get(clip.id())?;
+                handle_hit(preview.frame_start, preview.frame_end, 4.0)
+            })
+            .or_else(|| {
+                track.clips().iter().rev().find_map(|clip| {
+                    let end = clip.start().checked_add(clip.duration())?;
+                    handle_hit(clip.start(), end, 3.0)
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub(super) fn time_selection_overlay(

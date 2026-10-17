@@ -2681,3 +2681,97 @@ fn browser_picker_resizes_to_icons_and_back_without_changing_browser_width(
         sidebar.size.width
     );
 }
+
+#[gpui::test]
+fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refresh(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, indexed, _) = browser_drag_fixture(cx);
+    let nested = indexed.0.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let indexed_wav = nested.join("utility-index.wav");
+    std::fs::write(&indexed_wav, mono_pcm_wav(16)).unwrap();
+    let outside = PreferencesTestDirectory::new();
+    let outside_wav = outside.0.join("utility-outside.wav");
+    std::fs::write(&outside_wav, mono_pcm_wav(16)).unwrap();
+    let project = outside.0.join("utility.hex");
+    std::fs::write(&project, []).unwrap();
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(cx, |view, cx| {
+        view.browser.directory = outside.0.clone();
+        view.browser.listing = Some(hex_library::scan_directory(&outside.0).unwrap());
+        view.browser.samples.invalidate_listing();
+        view.browser.samples.source = Some(indexed.0.join("unmatched-source"));
+        view.apply_sample_catalog(
+            hex_library::catalog::scan_samples(std::slice::from_ref(&indexed.0)).catalog,
+            cx,
+        );
+        cx.notify();
+    });
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "utility");
+    visual.run_until_parked();
+    let selected_device = editor.update(cx, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::All);
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(entries.len(), 3);
+        for path in [&indexed_wav, &outside_wav, &project] {
+            assert_eq!(
+                entries.iter().filter(|entry| &entry.path == path).count(),
+                1
+            );
+        }
+        assert!(Arc::ptr_eq(&entries, &view.browser_visible_entries(cx)));
+        let devices = view.browser_visible_devices(cx);
+        let device_index = devices
+            .iter()
+            .position(|(_, entry)| entry.name.to_lowercase() == "utility")
+            .unwrap();
+        let identity = (devices[device_index].0, devices[device_index].1.type_id);
+        view.browser.selected_index = entries.len() + device_index;
+        view.browser.results_focused = true;
+        cx.notify();
+        identity
+    });
+    std::fs::write(nested.join("utility-second.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser_visible_entries(cx).len(), 4);
+        assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility");
+    });
+    std::fs::write(outside.0.join("utility-third.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(cx, |view, cx| {
+        view.request_browser_scan(outside.0.clone(), cx)
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser_visible_entries(cx).len(), 5);
+        assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
+    });
+    editor.update(cx, |view, cx| view.request_browser_scan(nested.clone(), cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        let entries = view.browser_visible_entries(cx);
+        assert_eq!(
+            entries.len(),
+            2,
+            "overlapping folder and catalog WAV paths appear once"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.kind == EntryKind::WaveAudio)
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.path == indexed_wav)
+                .count(),
+            1
+        );
+    });
+}
