@@ -1894,7 +1894,7 @@ pub(crate) struct InstrumentTrack {
     pub(crate) nodes: Vec<midi_compile::SpanNode>,
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
-    pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
+    pub(crate) bank: owned_shared::OwnedShared<midi_note_bank::PreparedMidiNoteBank>,
     pub(crate) shared_contexts:
         owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,

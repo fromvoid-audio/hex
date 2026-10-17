@@ -483,3 +483,17 @@ upgrade or replacement allocation. Independent raw table origins and opaque
 provider contexts still refuse. MIDI bank/template containers, other prepared
 metadata, active runtime custody and full construction peak remain outside this
 selected view; the whole graph still needs its closed constructor admission.
+
+Note-bank preparation and reuse now retain their original constructor receipts
+through actual Arrangement and Session/routed instrument templates. A selected
+inventory visits real bank headers, the shared owner allocation and complete
+entry-buffer capacity. Entries use the existing by-value Copy coefficient ABI;
+context IDs remain nonowning and cannot replace actual source/context leases.
+Cached templates retain their original bank after older-revision control
+retirement. Actual current/predecessor union tests pin the three distinct banks
+and their entry backings, so omitting an entire Session bank cannot pass merely
+because the remaining selected handles close. Empty/raw bank Arcs still refuse.
+Actual receipt headers consume the existing policy allowance; the complete-bank
+byte ceiling remains 47,747,072 on the qualified 64-bit layout. These selected
+rows do not declare enclosing template storage, full graph construction peak,
+active runtime custody or native publication/retirement complete.

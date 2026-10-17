@@ -3,6 +3,9 @@ use crate::Invalid;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument, PreparedSharedAnalyticNote};
 use std::sync::Arc;
 mod scoped;
+pub(crate) mod storage;
+#[cfg(test)]
+mod storage_tests;
 pub(crate) use scoped::ScopedMidiNote;
 
 use crate::{
@@ -252,8 +255,8 @@ pub(crate) type NoteKeys = Vec<u16>;
 
 pub(crate) fn prepare_silent(
     keys: &mut NoteKeys,
-    previous: Option<&Arc<PreparedMidiNoteBank>>,
-) -> Result<Arc<PreparedMidiNoteBank>, Invalid> {
+    previous: Option<&crate::owned_shared::OwnedShared<PreparedMidiNoteBank>>,
+) -> Result<crate::owned_shared::OwnedShared<PreparedMidiNoteBank>, Invalid> {
     PreparedMidiNoteBank::prepare(keys, &SilentInstrument, previous, None)
 }
 
@@ -284,8 +287,8 @@ fn silent_sample(
 }
 
 impl PreparedMidiNoteBank {
-    pub(crate) fn empty() -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn empty() -> crate::owned_shared::OwnedShared<Self> {
+        crate::owned_shared::OwnedShared::new_owned(Self {
             entries: Vec::new(),
             context_id: None,
             context_index: None,
@@ -313,9 +316,9 @@ impl PreparedMidiNoteBank {
     pub(crate) fn prepare(
         keys: &mut NoteKeys,
         instrument: &dyn PreparedNativeInstrument,
-        previous: Option<&Arc<Self>>,
+        previous: Option<&crate::owned_shared::OwnedShared<Self>>,
         shared_context: Option<(u16, &SharedContextOwner)>,
-    ) -> Result<Arc<Self>, Invalid> {
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
         keys.sort_unstable();
         keys.dedup();
         let count = keys.len();
@@ -346,7 +349,7 @@ impl PreparedMidiNoteBank {
         if let Some(previous) =
             previous.filter(|bank| bank.matches(keys, count, context_id, context_index))
         {
-            return Ok(Arc::clone(previous));
+            return Ok(previous.clone_on_control());
         }
         let mut entries = Vec::new();
         entries
@@ -387,7 +390,7 @@ impl PreparedMidiNoteBank {
                 "midi note bank admission changed during preparation",
             ));
         }
-        Ok(Arc::new(Self {
+        Ok(crate::owned_shared::OwnedShared::new_owned(Self {
             entries,
             context_id,
             context_index,
@@ -460,12 +463,17 @@ impl PreparedMidiNoteBank {
                 bytes.checked_add(
                     std::mem::size_of::<PreparedMidiNoteBank>()
                         .checked_add(2 * std::mem::size_of::<usize>())?
-                        .checked_add(std::mem::size_of::<Arc<PreparedMidiNoteBank>>())?,
+                        .checked_add(std::mem::size_of::<
+                            crate::owned_shared::OwnedShared<PreparedMidiNoteBank>,
+                        >())?,
                 )
             })
             .ok_or(Invalid("midi note bank byte count overflow"))
     }
 
+    // Keep the existing policy byte ceilings below unchanged. The additional
+    // actual receipt-header bytes consume that existing allowance; they do not
+    // increase the project or complete-revision caps.
     pub(crate) fn validate_project_budget(
         bank_bytes: usize,
         index_count: usize,

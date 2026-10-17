@@ -162,7 +162,7 @@ pub(super) fn prepare_clip(
         Arc::new(
             PreparedMidiInstrumentTemplate::prepare_with_bank_and_contexts(
                 &source,
-                Arc::clone(bank),
+                bank.clone_on_control(),
                 shared_contexts.clone_on_control(),
             )
             .map_err(template_error)?,
@@ -206,7 +206,7 @@ pub(super) fn account_template(
         ))?;
     *bytes = bytes
         .checked_add(std::mem::size_of::<
-            Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+            crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
         >())
         .ok_or(crate::Invalid(
             "Session MIDI bank handle byte count overflow",

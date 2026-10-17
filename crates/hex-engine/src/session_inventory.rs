@@ -27,7 +27,8 @@ struct PreparedTrackInstrumentConfig {
     tuning_identity: crate::shared_analytic::TuningIdentity,
     state: Option<hex_lattice_contract::NativeDeviceState>,
     bypassed: bool,
-    note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
+    note_bank:
+        Option<crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>>,
     mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
@@ -319,6 +320,16 @@ impl std::fmt::Debug for PreparedSessionInventory {
 }
 
 impl PreparedSessionInventory {
+    pub(crate) fn visit_midi_note_banks_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            clip.instrument.visit_note_bank_on_control(ledger, role)?;
+        }
+        Ok(())
+    }
     pub(crate) fn visit_midi_context_tables_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
@@ -753,7 +764,7 @@ impl PreparedSessionInventory {
                                     && clip.instrument_enabled == enabled
                             })
                     })
-                    .map(|clip| Arc::clone(clip.instrument.note_bank()));
+                    .map(|clip| clip.instrument.note_bank().clone_on_control());
                 config.note_bank = Some(
                     previous_bank
                         .unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
@@ -777,7 +788,7 @@ impl PreparedSessionInventory {
                                     && clip.tuning_identity == config.tuning_identity
                                     && clip.instrument_enabled == enabled
                             })
-                            .map(|clip| Arc::clone(clip.instrument.note_bank()))
+                            .map(|clip| clip.instrument.note_bank().clone_on_control())
                     })
                 })
                 .flatten();
