@@ -7,24 +7,10 @@ pub(crate) fn audio_to(
     track: TrackId,
     start: u64,
 ) -> Result<Created, Invalid> {
-    let copied = project
+    let mut copied = project
         .clip(clip_id)
         .cloned()
         .ok_or(Invalid("clip no longer exists"))?;
-    if original_audio_at(project, track, clip_id, start) {
-        return Ok(Created::None);
-    }
-    let id = audio_owned_to(project, copied, track, start)?;
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(id))
-}
-
-pub(crate) fn audio_owned_to(
-    project: &mut Project,
-    mut copied: crate::Clip,
-    track: TrackId,
-    start: u64,
-) -> Result<ClipId, Invalid> {
     crate::audio_edit::move_clip(&mut copied, start, project.tempo_map())?;
     let end = start
         .checked_add(copied.duration)
@@ -32,10 +18,15 @@ pub(crate) fn audio_owned_to(
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
+    if original_audio_at(project, track, clip_id, start) {
+        return Ok(Created::None);
+    }
 
     crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
-    append_audio(project, copied, track)
+    let id = append_audio(project, copied, track)?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::Clip(id))
 }
 
 /// Append an already projected whole clip after the batch cleared old content.
@@ -69,24 +60,10 @@ pub(crate) fn midi_to(
         .find(|candidate| candidate.midi_clips().iter().any(|item| item.id == clip_id))
         .map(|candidate| candidate.id)
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let copied = project
+    let mut copied = project
         .midi_clip(clip_id)
         .cloned()
         .ok_or(Invalid("midi clip no longer exists"))?;
-    if source_track == track && copied.start == start {
-        return Ok(Created::None);
-    }
-    let id = midi_owned_to(project, copied, track, start)?;
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(id))
-}
-
-pub(crate) fn midi_owned_to(
-    project: &mut Project,
-    copied: crate::MidiClip,
-    track: TrackId,
-    start: crate::BeatTime,
-) -> Result<ClipId, Invalid> {
     let end_raw = start
         .raw()
         .checked_add(copied.length.raw())
@@ -95,9 +72,14 @@ pub(crate) fn midi_owned_to(
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
+    if source_track == track && copied.start == start {
+        return Ok(Created::None);
+    }
     crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_interval(project, track, start, end, ClipId(0))?;
-    append_midi(project, copied, track, start)
+    let id = append_midi(project, copied, track, start)?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::Clip(id))
 }
 
 /// Keep batch members intact, including overlaps already present in the source.
