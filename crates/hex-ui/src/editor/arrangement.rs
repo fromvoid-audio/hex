@@ -674,6 +674,7 @@ impl EditorView {
                     .border_l_1()
                     .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                     .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
                     .text_xs()
                     .child(theme::text("main"))
                     .child(div().flex_1())

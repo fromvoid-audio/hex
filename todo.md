@@ -3849,3 +3849,15 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   and empty-source seals, alias refusal, cancellation/pool conservation, changed
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
+
+
+## 17 october 2026 — track header hover
+
+Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
+headers and demo Arrangement headers. Existing selection and control behavior is
+preserved. UI style and GPUI patch guards pass; architecture/build/format checks
+are blocked because this cloud environment has no Rust toolchain. Native visual
+acceptance remains open: hover selected/unselected headers and nested controls,
+then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
+The connected GitHub app provides repository access. The user explicitly requested
+merge after the missing Rust/native validation was disclosed.
