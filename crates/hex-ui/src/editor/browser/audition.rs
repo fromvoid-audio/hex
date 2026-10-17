@@ -157,11 +157,16 @@ impl EditorView {
                 window.prevent_default();
                 cx.stop_propagation();
             });
+        self.browser.preview_selected = None;
         if let Some(entry) = sample {
             let rate = self
                 .state
                 .as_ref()
                 .map_or(48_000, |state| state.project.sample_rate());
+            self.browser.preview_selected = Some(PreviewKey {
+                path: entry.path.clone(),
+                sample_rate: rate,
+            });
             let slot = self.browser_preview_cell(entry.path.clone(), rate);
             if slot.metadata.borrow().is_none() && slot.error.borrow().is_none() {
                 self.queue_browser_audio_preview(
