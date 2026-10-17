@@ -81,6 +81,7 @@ fn fixture() -> (
         source_sample_rate: 16_000,
         source_frames: 8_000,
         conversion_version: hex_project::IDENTITY_CONVERSION,
+        source_audio: audio.clone(),
         audio,
         waveform,
     };
