@@ -48,10 +48,39 @@ struct Event {
     source_start: u64,
 }
 
-pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
-    let base = super::clip_names::DocumentV26::from_project(project)?;
-    let mut document = serde_json::to_value(base)?;
-    let states: Vec<_> = project
+#[derive(Serialize)]
+pub(crate) struct Document<'a> {
+    #[serde(flatten)]
+    base: super::clip_names::DocumentV26,
+    audio_event_state: Vec<EncodeState<'a>>,
+}
+#[derive(Serialize)]
+struct EncodeState<'a> {
+    clip: u64,
+    next_id: Option<u64>,
+    #[serde(serialize_with = "serialize_events")]
+    events: &'a [AudioEvent],
+}
+fn serialize_events<S: serde::Serializer>(
+    events: &&[AudioEvent],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut seq = serializer.serialize_seq(Some(events.len()))?;
+    for e in *events {
+        seq.serialize_element(&Event {
+            id: e.id,
+            start: e.start,
+            end: e.end,
+            source_start: e.source_start,
+        })?;
+    }
+    seq.end()
+}
+pub(crate) fn encode(project: &Project) -> Result<Document<'_>, StorageError> {
+    let mut base = super::clip_names::DocumentV26::from_project(project)?;
+    base.version = 27;
+    let audio_event_state = project
         .tracks()
         .iter()
         .flat_map(|track| track.clips())
@@ -59,29 +88,17 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
             let events = clip
                 .audio_edit()
                 .and_then(|edit| edit.domain.events.as_ref());
-            State {
+            EncodeState {
                 clip: clip.id().value(),
                 next_id: events.map(|e| e.next_id),
-                events: events.map_or_else(Vec::new, |e| {
-                    e.events
-                        .iter()
-                        .map(|e| Event {
-                            id: e.id,
-                            start: e.start,
-                            end: e.end,
-                            source_start: e.source_start,
-                        })
-                        .collect()
-                }),
+                events: events.map_or(&[], |e| e.events.as_slice()),
             }
         })
         .collect();
-    let object = document
-        .as_object_mut()
-        .ok_or(StorageError::Invalid("invalid audio event envelope"))?;
-    object.insert("version".into(), 27.into());
-    object.insert("audio_event_state".into(), serde_json::to_value(states)?);
-    Ok(document)
+    Ok(Document {
+        base,
+        audio_event_state,
+    })
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let _: UniqueKeys = serde_json::from_slice(bytes)?;

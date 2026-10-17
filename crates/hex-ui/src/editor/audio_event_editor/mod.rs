@@ -31,6 +31,8 @@ struct Clipboard {
 pub(super) struct Gesture {
     anchor: u64,
     pointer_x: f32,
+    origin_x: f32,
+    moved: bool,
     kind: Kind,
     operation: Option<AudioEventEdit>,
 }
@@ -241,6 +243,15 @@ impl EditorView {
         let Some(mut gesture) = self.audio_event_editor.gesture.clone() else {
             return;
         };
+        gesture.pointer_x = x;
+        if !matches!(gesture.kind, Kind::Select) && !gesture.moved {
+            if (x - gesture.origin_x).abs() < 3.0 {
+                self.audio_event_editor.gesture = Some(gesture);
+                return;
+            }
+            gesture.moved = true;
+        }
+
         let Some((_, root, _)) = self.event_context() else {
             return;
         };

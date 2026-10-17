@@ -136,3 +136,55 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     editor.read_with(cx,|view,_|assert!(matches!(view.last_enqueued_edit,Some(Command::EditAudioEvents{clip:id,operation:AudioEventEdit::Move{event:1,start}}) if id==clip && start==36000)));
 }
+
+#[gpui::test]
+fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestAppContext) {
+    let (handle, editor, track, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let mut canonical = hex_project::Editor::new((*state.project).clone(), 8).unwrap();
+        canonical
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 24000 },
+            })
+            .unwrap();
+        canonical
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 17000,
+            })
+            .unwrap();
+        view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+            canonical_audio_source: None,
+            project: std::sync::Arc::new(canonical.project().clone()),
+            waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: state.midi_preview.clone(),
+            gain_preview: state.gain_preview.clone(),
+            timeline_frames: state.timeline_frames,
+            can_undo: true,
+            can_redo: false,
+            revision: 2,
+            unsaved: true,
+            document_path: None,
+        }));
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    let click = point(
+        bounds.origin.x + bounds.size.width * 0.125,
+        bounds.center().y + px(12.0),
+    );
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "selection alone must not snap the event's off-grid start"
+        )
+    });
+}

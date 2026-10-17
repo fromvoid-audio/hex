@@ -133,7 +133,8 @@ pub(in crate::editor) fn view(
             } else {
                 theme::PaletteRole::Border
             })))
-            .bg(rgb(theme::color(theme::PaletteRole::Clip)));
+            .bg(rgb(theme::color(theme::PaletteRole::Clip)))
+            .cursor(gpui::CursorStyle::OpenHand);
         if let Some(original) = events.events.iter().find(|e| e.id == event.id).or_else(|| {
             events.events.iter().find(|e| {
                 e.source_start <= event.source_start
@@ -178,6 +179,28 @@ pub(in crate::editor) fn view(
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                 .child(theme::text(format!("event {}", event.id))),
         );
+        if event.start >= root.view_start && start >= first + local.start {
+            element = element.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(6.0))
+                    .cursor(gpui::CursorStyle::ResizeLeftBracket),
+            );
+        }
+        if event.end <= root.view_end && end <= first + local.start + local.length {
+            element = element.child(
+                div()
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(6.0))
+                    .cursor(gpui::CursorStyle::ResizeRightBracket),
+            );
+        }
         body = body.child(element);
     }
     let selected_range = match view
@@ -314,9 +337,19 @@ pub(in crate::editor) fn view(
                             / local.length.max(1) as f32
                             * width
                     };
-                    if hit.start >= root.view_start && (offset - x(hit.start)).abs() <= 6.0 {
+                    if hit.start >= root.view_start
+                        && root
+                            .root_frame_at(hit.start, state.project.tempo_map())
+                            .is_ok_and(|frame| frame >= first + local.start)
+                        && (offset - x(hit.start)).abs() <= 6.0
+                    {
                         Kind::Leading(hit)
-                    } else if hit.end <= root.view_end && (offset - x(hit.end)).abs() <= 6.0 {
+                    } else if hit.end <= root.view_end
+                        && root
+                            .root_frame_at(hit.end, state.project.tempo_map())
+                            .is_ok_and(|frame| frame <= first + local.start + local.length)
+                        && (offset - x(hit.end)).abs() <= 6.0
+                    {
                         Kind::Trailing(hit)
                     } else {
                         Kind::Move(hit)
@@ -327,6 +360,8 @@ pub(in crate::editor) fn view(
                 view.audio_event_editor.cursor = position;
                 view.audio_event_editor.gesture = Some(Gesture {
                     pointer_x: f32::from(event.position.x),
+                    origin_x: f32::from(event.position.x),
+                    moved: false,
                     anchor: if matches!(kind, Kind::Select) {
                         position
                     } else {
