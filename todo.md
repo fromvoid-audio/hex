@@ -4146,3 +4146,13 @@ the next unchanged full candidate may supply merge evidence.
 - Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
   fetch/CI/package failures, and successful operation order. Native UI and
   listening acceptance remain user checks after launch.
+
+## launcher Finder metadata refusal — pulse2703 / PR319, 17 october 2026
+
+The GPUI provenance guard distinguishes regular `.DS_Store` Finder metadata
+from dependency source. Reproduced the actual primary checkout failure without
+removing metadata or changing source. Fixture regressions cover root/nested
+metadata and continued rejection of changed/missing/added source, lookalikes
+and symlinks. Full optimized-delivery verification remains required by launch.
+Exact final CI, merged-source launcher delivery and native launch evidence are
+recorded with PR319 and Pulse2703; not inferred from these source fixtures.
