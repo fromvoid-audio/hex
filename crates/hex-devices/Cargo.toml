@@ -11,3 +11,6 @@ workspace = true
 [dependencies]
 hex-lattice = { path = "../hex-lattice" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+
+[dev-dependencies]
+hex-lattice = { path = "../hex-lattice", features = ["conformance"] }
