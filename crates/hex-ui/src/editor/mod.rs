@@ -104,6 +104,7 @@ mod trim;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
+mod waveform_stretch;
 
 use crate::theme;
 use audio_admission::AudioAdmissionStatus;

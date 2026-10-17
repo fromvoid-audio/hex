@@ -18,8 +18,8 @@ stretching. Original PCM, source region, pitch and loop phase remain separate.
 Hold Shift while dragging an ordinary Arrangement audio clip edge to stretch
 instead of trimming. The opposite visible edge stays fixed. The retained root,
 view and warp markers scale together, so existing trims and source loops keep
-their mapping. An unwarped clip enables transient Beats for that edit. Existing
-algorithm settings remain when present. Shift press/release at a stationary
+their mapping. A clip without saved warp settings enables transient Beats.
+Existing algorithm settings remain when present. Shift press/release at a stationary
 pointer recomputes the candidate; release modifiers are authoritative. Header
 Shift selection, MIDI edges and lower fade handles keep their separate bindings.
 
@@ -41,17 +41,31 @@ checks pass. A before-fix actual-input test reproduced Escape leaving the trim
 metadata preview active. The fix permanently cancels its shared payload on
 Escape, focus transfer, window deactivation or cancellation; re-entry cannot
 revive it. Active-window cancellation and ordinary trim regressions pass.
-Final full exact-source checks remain pending.
-Cloud6 owns the waveform/cache disappearance fix in2764/PR372. The existing
-transformed trim overlay calls an original-source mapper which returns no ranges
-for an audio-edit domain. The coordinated preview mapping must land before this
-follow-up is considered complete. No substitute waveform or audio-preparation
-work on pointer motion is acceptable. No native acceptance is claimed.
+The held-drag waveform regression fails with PR388's changed-root refusal (zero
+painted waveforms) and passes after projection: 48 motion checkpoints across
+sample rates, raw/pitched/Beats, both edges, partial crops and loops retain the
+accepted immutable peak source and nonzero stereo paths, with no queued edit.
+Four independent projection/cache checks cover tempo-point peak location,
+prepared crop clocks, loop phase/wrap and one-snapshot retention. All36 focused
+waveform tests pass (one existing manual profile ignored). Final full exact-source
+checks remain pending.
+Merged PR388 supplies the ordinary trim fix and same-revision accepted-root
+helper. PR387 extends only its changed-root branch: raw clips project the
+prospective warp/source/phase map into resident asset peaks; already warped clips
+inverse-project the prospective beat clock into accepted prepared-root peaks.
+Warp-off processed clips retain their accepted processed peaks, mapped by source
+progress rather than substituting raw audio. The preview is a geometric projection
+of accepted peaks; final worker audio preparation remains authoritative for the
+new stretch algorithm's precise waveform. No substitute/generated peaks, decode
+or audio preparation occurs during drag. Cache keys retain both metadata maps and
+tempo by value; only one transient stretch snapshot is retained alongside the
+existing bounded ordinary cache. PR372's sampling-grid work remains separate.
+No native acceptance is claimed.
 
 ## finite coordinator-owned native check
 
 Use one launcher-delivered optimized build containing the final merged PR387 and
-waveform fix372. Verify their merge ancestry in the build's source checkout;
+waveform fix388 (and stability372 when delivered). Verify their merge ancestry in the build's source checkout;
 record build/source provenance. No separate cloud-triggered Mac build/install.
 Use disposable projects and original copies of both a sample that previously
 lost its waveform and an unaffected sample, including stereo percussion.

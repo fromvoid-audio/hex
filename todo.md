@@ -58,9 +58,10 @@ fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
 both-edge stationary Shift gesture checks pass; excessive stretch refuses project/history
 commit. Escape preview persistence was reproduced and repaired; active-window
 Escape/focus/deactivation and canceled re-entry checks pass. Final exact-source
-CI remains pending. Cloud6 owns waveform disappearance
-and the coordinated live preview renderer in2764/PR372; this follow-up is draft
-until that mapping integrates. See docs/sample-bpm-stretch.md for behavior and
+CI remains pending on the final projection candidate. Merged388 supplies
+ordinary trim visibility;387 adds accepted-peak changed-root projection for live
+Shift stretch. Stability2764/PR372 stays separate; final projection checks and
+coordinator-owned native acceptance remain pending. See docs/sample-bpm-stretch.md for behavior and
 finite coordinator-only native checklist. No Mac execution or app replacement.
 
 ## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
