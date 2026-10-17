@@ -9,6 +9,110 @@ use hex_session::{
 use std::{collections::BTreeMap, sync::Arc};
 
 #[gpui::test]
+fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppContext) {
+    let (project, _, _, clip) = crate::editor::clip_drag_ui_test::audio_project();
+    let mut canonical = Editor::new(project, 8).unwrap();
+    canonical
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let original = canonical.project().clip(clip).unwrap().clone();
+    let preview = original
+        .preview_edge_trim_with_tempo(
+            TrimEdge::Left,
+            4_103,
+            96_000,
+            canonical.project().tempo_map(),
+        )
+        .unwrap();
+    let peaks = Arc::new(
+        CachedWaveform::from_peaks(
+            96_000,
+            vec![
+                [CachedPeak {
+                    min: -0.5,
+                    max: 0.5
+                }; 2];
+                64
+            ],
+        )
+        .unwrap(),
+    );
+    let prepared = AudioClipWaveform {
+        waveform: Arc::clone(&peaks),
+        offset: 0,
+        length: 96_000,
+    };
+    let tempo = canonical.project().tempo_map().clone();
+    let request = super::WaveformPreview {
+        original: &original,
+        preview: &preview,
+        tempo: &tempo,
+        asset: Some(&peaks),
+        prepared: Some(&prepared),
+    };
+    let check =
+        |request| super::preview_waveform_view_cached(request, 4_103, 96_000, Default::default());
+    assert!(
+        check(request).is_some(),
+        "reuse accepted full-root peaks for a valid crop"
+    );
+    assert!(
+        check(super::WaveformPreview {
+            prepared: None,
+            ..request
+        })
+        .is_none(),
+        "missing prepared peaks cannot fall back to unrelated raw peaks"
+    );
+    let stale = AudioClipWaveform {
+        offset: 1,
+        ..prepared.clone()
+    };
+    assert!(
+        check(super::WaveformPreview {
+            prepared: Some(&stale),
+            ..request
+        })
+        .is_none()
+    );
+    let short_root = AudioClipWaveform {
+        waveform: Arc::new(
+            CachedWaveform::from_peaks(
+                95_999,
+                vec![
+                    [CachedPeak {
+                        min: -0.5,
+                        max: 0.5
+                    }; 2];
+                    64
+                ],
+            )
+            .unwrap(),
+        ),
+        ..prepared.clone()
+    };
+    assert!(
+        check(super::WaveformPreview {
+            prepared: Some(&short_root),
+            ..request
+        })
+        .is_none()
+    );
+    canonical
+        .execute(Command::SetAudioClipPitch { clip, cents: 200 })
+        .unwrap();
+    let changed = canonical.project().clip(clip).unwrap();
+    assert!(
+        check(super::WaveformPreview {
+            preview: changed,
+            ..request
+        })
+        .is_none(),
+        "another processing root cannot reuse accepted crop peaks"
+    );
+}
+
+#[gpui::test]
 fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut TestAppContext) {
     cx.update(crate::editor::bind_editor_keys);
     let mut failures = Vec::new();
