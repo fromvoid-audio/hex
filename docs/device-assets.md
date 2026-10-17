@@ -118,12 +118,13 @@ These checks do not constitute full final-source CI or callback lease proof.
 Cloud4 and cloud5 agree on the integration order recorded in Pulse2739 notes:
 W10 retains asset schema30, then tuning PR350 owns combined schema31, requiring
 both tuning and the complete device asset manifest. Cloud5 is the single writer
-for the combined storage migration. Historical schema30 decoding must strictly
-distinguish exactly one recognized family key: assets-only receives disabled
-12TET tuning; tuning-only receives empty bindings. Ambiguous, missing, duplicate,
-unknown and malformed envelopes refuse. Historical test serialization exists;
-user-project persistence is unknown because those projects are inaccessible.
-Neither family may be silently discarded. Main remains schema29; no conflicting
-schema renumbering or merge has occurred. Exact final-source checks remain required.
+for the combined storage integration. The user's subsequent active-alpha policy
+supersedes the proposed historical schema30 compatibility readers: no conversion
+or migration between these unpublished formats is required. Both active data
+families must survive in one coherent current format, with strict validation,
+save/reopen and Undo integrity and explicit unsupported-format errors. Existing
+user files must not be automatically rewritten or deleted. This does not remove
+existing migration code as unrelated cleanup. The separate AGENTS policy change
+is Pulse2758/PR366. Exact final-source checks remain required.
 Mac verification/implementation requests now go through the coordinator's
 serial local queue; this cloud task does not start local work itself.
