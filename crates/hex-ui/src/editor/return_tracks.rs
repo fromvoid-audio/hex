@@ -8,6 +8,11 @@ const RETURN_ROW_HEIGHT: f32 = 23.0;
 const RETURN_SECTION_HEADER_HEIGHT: f32 = 20.0;
 const RETURN_SECTION_MAX_HEIGHT: f32 = 67.0;
 
+pub(super) fn section_height(count: usize) -> f32 {
+    (RETURN_SECTION_HEADER_HEIGHT + count as f32 * RETURN_ROW_HEIGHT + 1.0)
+        .min(RETURN_SECTION_MAX_HEIGHT)
+}
+
 impl EditorView {
     pub(super) fn return_send_menu_overlay(
         &mut self,
@@ -106,8 +111,7 @@ impl EditorView {
                 .flex_shrink_0();
         };
         let returns = state.project.return_tracks();
-        let desired = RETURN_SECTION_HEADER_HEIGHT + returns.len() as f32 * RETURN_ROW_HEIGHT + 1.0;
-        let height = desired.min(RETURN_SECTION_MAX_HEIGHT);
+        let height = section_height(returns.len());
         let mut rows = div()
             .id("pinned-return-tracks")
             .debug_selector(|| "pinned-return-tracks".to_owned())
