@@ -15,7 +15,7 @@ W06/PR291 as well. It has no resident instrument PCM lease or callback borrowing
 contract and does not admit sampler.
 
 Canonical tuning runtime PR351 at
-`06d413f36b3f12b6a4f46098ddfa79cacdaf09d4` exposes
+`ffb42158c6cdb5509871d8fbaa84321614ac8d59` exposes
 `NativeInstrumentRegistry::prepare_instrument_with_tuning(state, sample_rate,
 &hex_lattice::TuningTable)`. The validated table contains 128 effective Hz values;
 disabled tuning uses the exact existing equal-temperament law. Providers prepare
@@ -29,8 +29,8 @@ small context. W10's unchanged 4KiB context and 2MiB shared-context ceilings app
 The tuning head above includes the Operator exact-copy/retarget fix: exact mutable
 source matching includes the existing shared tuning identity. An unchanged
 opaque instrument payload alone is insufficient authority for history copy.
-The current integration must also retain W10's asset refusal in the table-aware
-registry entrypoint, before provider migration or preparation. Asset-free tuning
+This integrated source retains W10's asset refusal in the table-aware registry
+entrypoint before provider migration or preparation, with a provider-spy regression. Asset-free tuning
 preparation must remain independent of the optional MTS broadcaster.
 
 PR350 owns the combined current schema31 after asset30's landing. It requires

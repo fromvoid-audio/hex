@@ -266,3 +266,37 @@ fn operator_custom_table_keyboard_retargets_mutable_history() {
     next.render(&mut output).unwrap();
     assert!(output.iter().flatten().any(|sample| sample.abs() > 0.00001));
 }
+
+#[test]
+fn cancellation_between_handoff_preflight_and_commit_does_not_refuse_moved_history() {
+    let (p0, track) = super::tests::fixture();
+    let p1 = tuned(&p0, 333.0);
+    let r0 = revision(&p0);
+    let r1 = next_revision(&p1, &p0, &r0);
+    let input = Arc::new(ComputerKeyboardInput::default());
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut old = ComputerKeyboardRuntime::prepare(&p0, track, Arc::clone(&input)).unwrap();
+    old.set_tuning_family(r0.tuning_family());
+    old.begin_block();
+    old.render(&mut [[0.0; 2]; 137], None).unwrap();
+    old.commit();
+    let mut next = ComputerKeyboardRuntime::prepare_for_tuning(
+        &p1,
+        track,
+        Arc::clone(&input),
+        r1.tuning_family(),
+        &old.tuning_hint().unwrap(),
+    )
+    .unwrap();
+    assert!(next.can_preserve_from(&old));
+    // Simulates UI close/focus cancellation after graph preflight has won.
+    input.cancel();
+    next.preserve_from(&mut old).unwrap();
+    assert!(old.lease_detached);
+    assert!(input.is_cancelled());
+    let mut output = [[0.0; 2]; 137];
+    next.begin_block();
+    next.render(&mut output, None).unwrap();
+    next.commit();
+    assert_eq!(output, [[0.0; 2]; 137]);
+}
