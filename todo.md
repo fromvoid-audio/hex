@@ -3962,3 +3962,13 @@ merge after the missing Rust/native validation was disclosed.
 - Future context-menu size selection: Pulse #2694, Hex 0.1.
 - Native zoom/snap/toggle acceptance remains pending; automated evidence is
   recorded with the focused PR.
+
+## 17 october 2026 — pulse2698 / PR316: fetch, verify and launch desktop
+
+- Root `./launch` requires a clean main checkout, fetches and fast-forwards only
+  to `origin/main`, records the current main commit's associated PR revision,
+  runs full local CI, installs the optimized app through the supported stable
+  path, verifies its source receipt, and opens that exact app.
+- Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
+  fetch/CI/package failures, and successful operation order. Native UI and
+  listening acceptance remain user checks after launch.
