@@ -249,7 +249,7 @@ impl PreparedOperatorConfiguration {
                     "velocity-modulated operator frequency must be below nyquist",
                 ));
             }
-            *step = (frequency / f64::from(self.sample_rate) * crate::PHASE_SCALE).round() as u64;
+            *step = crate::quantized_phase_step(self.sample_rate, frequency)?;
         }
         Ok(steps)
     }

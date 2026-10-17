@@ -241,6 +241,15 @@ const TABLE_BITS: u32 = 11;
 const TABLE_SIZE: usize = 1 << TABLE_BITS;
 const TABLE_MASK: u64 = TABLE_SIZE as u64 - 1;
 const PHASE_SCALE: f64 = 18_446_744_073_709_551_616.0;
+
+/// Control-side quantization must preserve a moving, sub-Nyquist oscillator.
+fn quantized_phase_step(sample_rate: u32, frequency: f64) -> Result<u64, Invalid> {
+    let step = (frequency / f64::from(sample_rate) * PHASE_SCALE).round();
+    if !step.is_finite() || !(1.0..(1_u64 << 63) as f64).contains(&step) {
+        return Err(Invalid("oscillator phase step is not representable"));
+    }
+    Ok(step as u64)
+}
 const BASE_GAIN: f32 = 0.1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,15 +313,11 @@ impl SineTable {
         if !frequency.is_finite() || frequency <= 0.0 || frequency >= f64::from(sample_rate) * 0.5 {
             return Err(Invalid("instrument pitch must be below nyquist"));
         }
-        let phase_per_frame = frequency / f64::from(sample_rate);
-        let phase_step = (phase_per_frame * PHASE_SCALE).round();
-        if !phase_per_frame.is_finite() || !phase_step.is_finite() || phase_step < 1.0 {
-            return Err(Invalid("instrument phase step is invalid"));
-        }
+        let phase_step = quantized_phase_step(sample_rate, frequency)?;
         let attack_frames = (u64::from(sample_rate) * 5 / 1000).max(1);
         let release_frames = (u64::from(sample_rate) * 50 / 1000).max(1);
         Ok(PreparedVoice {
-            phase_step: phase_step as u64,
+            phase_step,
             amplitude: f32::from(velocity) / 127.0 * BASE_GAIN,
             attack_frames,
             release_frames,
