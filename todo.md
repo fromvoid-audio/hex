@@ -1,3 +1,12 @@
+## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+
+The selected Arrangement audio clip now exposes Warp and a direct implemented
+algorithm picker above source controls. Beats defaults to transient preservation;
+existing modes, parameters, canonical maps/history and worker preparation remain.
+Independent PCM and persistence tests pass; integration/UI/full checks remain.
+See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
+No Mac execution or app installation; full sampler/resource work stays open.
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
