@@ -48,7 +48,7 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
     let original = content();
     let original_epoch = original.read_with(cx, |content, _| content.epoch);
     let mut palette = theme::preferences();
-    palette.primary = hex_preferences::RgbColor::new(23, 91, 197);
+    palette.background = hex_preferences::RgbColor::new(23, 31, 47);
     theme::apply_preferences(palette);
     visual.update(|window, cx| {
         editor.update(cx, |_, cx| cx.notify());
@@ -72,7 +72,14 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
     let selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
     assert_eq!(
         visual.rendered_background(selector),
-        Some(gpui::rgb(theme::color(theme::PaletteRole::ClipFill)).into())
+        Some(
+            gpui::rgb(theme::clip_fill(
+                hex_project::ElementColor::Gray,
+                hex_project::ClipFlavor::Muted,
+                false
+            ))
+            .into()
+        )
     );
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
@@ -544,7 +551,14 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
     });
     assert_eq!(
         visual.rendered_background(selector),
-        Some(gpui::rgb(theme::color(theme::PaletteRole::ClipSelected)).into()),
+        Some(
+            gpui::rgb(theme::clip_fill(
+                hex_project::ElementColor::Gray,
+                hex_project::ClipFlavor::Muted,
+                true
+            ))
+            .into()
+        ),
         "the first changed-key draw must paint selected content, without an extra frame"
     );
     let original_bounds = visual.debug_bounds(selector).expect("selected clip bounds");
@@ -733,4 +747,50 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
         assert_eq!(drag.source_track, source);
         assert!(view.trim_drag_current(drag));
     });
+}
+
+#[gpui::test]
+fn track_color_repaints_inherited_clips_while_flavor_stays_independent(cx: &mut TestAppContext) {
+    use hex_project::{ClipFlavor, Command, Editor, ElementColor};
+    let (project, track, _, first) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = Editor::new(project, 8).unwrap();
+    model.execute(Command::DuplicateClip(first)).unwrap();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for (index, command) in [
+        Command::SetTrackColor {
+            track,
+            color: ElementColor::Cyan,
+        },
+        Command::SetClipFlavor {
+            clip: first,
+            flavor: ClipFlavor::Accent,
+        },
+        Command::SetTrackColor {
+            track,
+            color: ElementColor::Orange,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.execute(command).unwrap();
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                publish_snapshot(view, Arc::new(model.project().clone()), index as u64 + 2);
+                cx.notify();
+            });
+            window.draw(cx).clear();
+        });
+        let owner = model.project().track(track).unwrap();
+        for clip in owner.clips() {
+            let selector = Box::leak(format!("clip-visual-{}", clip.id().value()).into_boxed_str());
+            assert_eq!(
+                visual.rendered_background(selector),
+                Some(gpui::rgb(theme::clip_fill(owner.color(), clip.flavor(), false)).into())
+            );
+        }
+    }
 }

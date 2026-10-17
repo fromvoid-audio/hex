@@ -1,10 +1,19 @@
 //! Validated stereo DSP primitives and the registered native processor seam.
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 mod meter;
+mod owned_processor;
+mod runtime_ownership;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
     NativeDeviceState,
 };
 pub use meter::DeviceMeter;
+pub use owned_processor::{
+    OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
+    PreparedRuntimeDevice, PreparedRuntimeInstance,
+};
+use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
 use std::fmt;
 
@@ -31,6 +40,20 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
         self.prepare_matrix(state)
+    }
+
+    /// General factory selection. Existing definitions retain the legacy path.
+    /// Owned-only definitions override this and explicitly refuse their legacy
+    /// prepare_processor interface rather than silently omit required DSP.
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        self.prepare_processor(state, sample_rate).map(|processor| {
+            processor
+                .map(|processor| PreparedProcessorFactory::Legacy(std::sync::Arc::from(processor)))
+        })
     }
 
     /// Prepare an optional stateful processor using the active sample rate.
@@ -198,7 +221,7 @@ pub trait NativeProcessorRuntime: StdAny + Send {
 /// Device-neutral selector for a transient processor audition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessorAuditionSelection {
-    pub index: u8,
+    pub index: u32,
     pub lane: u8,
 }
 
@@ -312,8 +335,7 @@ struct RuntimeEntry {
     configuration: Option<std::sync::Arc<NativeDeviceState>>,
     output_tail: OutputTail,
     algorithmic_latency_frames: Option<u32>,
-    primary: Option<Box<dyn NativeProcessorRuntime>>,
-    scratch: Option<Box<dyn NativeProcessorRuntime>>,
+    runtime: RuntimeOwnership,
 }
 
 struct OffsetClock<'a> {
@@ -322,6 +344,10 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .arrangement_beat_at_offset(self.offset.checked_add(offset)?)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock.beat_at_offset(self.offset.checked_add(offset)?)
     }
@@ -352,7 +378,7 @@ impl NativeInstrumentClock for OffsetClock<'_> {
 pub struct NativeRuntimeChain {
     entries: Vec<RuntimeEntry>,
     stateful_count: usize,
-    declared_runtime_bytes: usize,
+    declared_pair_bytes: usize,
 }
 
 /// Borrowed physical storage observations, never a provider declaration or
@@ -394,41 +420,57 @@ impl NativeRuntimeEntryStorage<'_> {
             configuration: _,
             output_tail: _,
             algorithmic_latency_frames: _,
-            primary: _,
-            scratch: _,
+            runtime: _,
         } = entry;
         NativeRuntimeEntryStorage { entry }
     }
     /// Only scalar addresses leave this view. They are observations, not origin
     /// receipts; equal bytes or addresses alone never establish provenance.
     pub fn runtime_box_identities(&self) -> (Option<usize>, Option<usize>) {
-        (
-            self.entry
-                .primary
-                .as_deref()
-                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
-            self.entry
-                .scratch
-                .as_deref()
-                .map(|v| v as *const dyn NativeProcessorRuntime as *const () as usize),
-        )
+        self.entry
+            .runtime
+            .legacy()
+            .map_or((None, None), |(primary, scratch)| {
+                (
+                    Some(primary as *const dyn NativeProcessorRuntime as *const () as usize),
+                    Some(scratch as *const dyn NativeProcessorRuntime as *const () as usize),
+                )
+            })
+    }
+    /// Owned transactions have a different physical proof and never masquerade
+    /// as a pair of legacy boxes. A declaration is not a native custody proof.
+    pub fn is_owned_transaction(&self) -> bool {
+        matches!(self.entry.runtime, RuntimeOwnership::Owned(_))
     }
     pub fn primary_payload_bytes(&self) -> Option<usize> {
-        self.entry.primary.as_deref().map(std::mem::size_of_val)
+        self.entry
+            .runtime
+            .legacy()
+            .map(|(v, _)| std::mem::size_of_val(v))
     }
     pub fn scratch_payload_bytes(&self) -> Option<usize> {
-        self.entry.scratch.as_deref().map(std::mem::size_of_val)
+        self.entry
+            .runtime
+            .legacy()
+            .map(|(_, v)| std::mem::size_of_val(v))
     }
     pub fn runtime_types_are<T: NativeProcessorRuntime>(&self) -> bool {
         self.entry
-            .primary
-            .as_ref()
-            .is_some_and(|v| v.as_any().is::<T>())
-            && self
-                .entry
-                .scratch
-                .as_ref()
-                .is_some_and(|v| v.as_any().is::<T>())
+            .runtime
+            .legacy()
+            .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
+    }
+    pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
+        self.entry.owner == prepared.owner
+            && self.entry.device_id == prepared.device_id
+            && self.entry.device_type == prepared.device_type
+            && self.entry.sample_rate == prepared.sample_rate
+            && std::sync::Arc::ptr_eq(&self.entry.meter, &prepared.meter)
+            && match (&self.entry.configuration, &prepared.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
     /// Compare against an already borrowed prepared owner. The view never
     /// returns or clones either shared owning field.
@@ -453,7 +495,7 @@ impl NativeRuntimeChain {
         let Self {
             entries: _,
             stateful_count: _,
-            declared_runtime_bytes: _,
+            declared_pair_bytes: _,
         } = self;
         NativeRuntimeStorage { chain: self }
     }
@@ -461,52 +503,65 @@ impl NativeRuntimeChain {
         Self {
             entries: Vec::new(),
             stateful_count: 0,
-            declared_runtime_bytes: 0,
+            declared_pair_bytes: 0,
         }
     }
 
     pub fn new(instances: Vec<PreparedProcessorInstance>) -> Result<Self, DeviceContractError> {
+        Self::from_prepared(instances.into_iter().map(PreparedRuntimeInstance::from))
+    }
+
+    pub fn new_prepared(
+        instances: Vec<PreparedRuntimeInstance>,
+    ) -> Result<Self, DeviceContractError> {
+        Self::from_prepared(instances.into_iter())
+    }
+
+    fn from_prepared(
+        instances: impl ExactSizeIterator<Item = PreparedRuntimeInstance>,
+    ) -> Result<Self, DeviceContractError> {
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(instances.len())
             .map_err(|_| DeviceContractError::RuntimeAllocation)?;
-        let mut declared_bytes = 0_usize;
+        let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
         for instance in instances {
+            if let Some(configuration) = &instance.configuration {
+                configuration.require_asset_free_processing()?;
+            }
             if !instance.owner.is_valid() || instance.device_id == 0 || instance.sample_rate == 0 {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
             instance.device_type.validate()?;
-            let algorithmic_latency_frames =
-                instance.definition.as_ref().map_or(Some(0), |definition| {
-                    definition.algorithmic_latency_frames()
-                });
-            let (runtime_version, output_tail, primary, scratch) =
-                if let Some(definition) = &instance.definition {
-                    let bytes = definition.declared_runtime_bytes();
-                    if definition.runtime_version() == 0 || bytes > MAX_PROCESSOR_RUNTIME_BYTES {
+            let (runtime_version, output_tail, latency) =
+                if let Some(factory) = &instance.definition {
+                    let pair = factory
+                        .declared_pair_bytes()
+                        .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
+                    if factory.runtime_version() == 0 || pair > MAX_PROCESSOR_RUNTIME_BYTES * 2 {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
                     stateful_count = stateful_count
                         .checked_add(1)
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
-                    declared_bytes = declared_bytes
-                        .checked_add(bytes)
+                    declared_pair_bytes = declared_pair_bytes
+                        .checked_add(pair)
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
                     if stateful_count > MAX_STATEFUL_PROCESSORS
-                        || declared_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES
+                        || declared_pair_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES * 2
                     {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
                     (
-                        definition.runtime_version(),
-                        definition.output_tail(),
-                        Some(definition.create_runtime()),
-                        Some(definition.create_runtime()),
+                        factory.runtime_version(),
+                        factory.output_tail(),
+                        factory.algorithmic_latency_frames(),
                     )
                 } else {
-                    (0, OutputTail::Finite { max_tail_frames: 0 }, None, None)
+                    (0, OutputTail::Finite { max_tail_frames: 0 }, Some(0))
                 };
+            let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             entries.push(RuntimeEntry {
                 meter: instance.meter,
                 metering: false,
@@ -527,15 +582,14 @@ impl NativeRuntimeChain {
                 sample_rate: instance.sample_rate,
                 configuration: instance.configuration,
                 output_tail,
-                algorithmic_latency_frames,
-                primary,
-                scratch,
+                algorithmic_latency_frames: latency,
+                runtime,
             });
         }
         Ok(Self {
             entries,
             stateful_count,
-            declared_runtime_bytes: declared_bytes,
+            declared_pair_bytes,
         })
     }
 
@@ -578,7 +632,7 @@ impl NativeRuntimeChain {
                     .capacity()
                     .checked_mul(std::mem::size_of::<RuntimeEntry>())?,
             )?
-            .checked_add(self.declared_runtime_bytes.checked_mul(2)?)
+            .checked_add(self.declared_pair_bytes)
     }
 
     /// Declared payload preflight estimate for building a chain from instances.
@@ -589,19 +643,33 @@ impl NativeRuntimeChain {
     pub fn declared_storage_preflight_bytes_for_instances(
         instances: &[PreparedProcessorInstance],
     ) -> Option<usize> {
-        let entries = instances
-            .len()
-            .checked_mul(std::mem::size_of::<RuntimeEntry>())?;
-        let twin_payloads = instances.iter().try_fold(0_usize, |total, instance| {
-            let bytes = instance
-                .definition
-                .as_ref()
-                .map_or(0, |definition| definition.declared_runtime_bytes());
-            total.checked_add(bytes.checked_mul(2)?)
+        let payloads = instances.iter().try_fold(0_usize, |total, instance| {
+            total.checked_add(
+                instance
+                    .definition
+                    .as_ref()
+                    .map_or(Some(0), |v| v.declared_runtime_bytes().checked_mul(2))?,
+            )
         })?;
+        Self::preflight_bytes(instances.len(), payloads)
+    }
+    pub fn declared_storage_preflight_bytes_for_prepared(
+        instances: &[PreparedRuntimeInstance],
+    ) -> Option<usize> {
+        let payloads = instances.iter().try_fold(0_usize, |total, instance| {
+            total.checked_add(
+                instance
+                    .definition
+                    .as_ref()
+                    .map_or(Some(0), PreparedProcessorFactory::declared_pair_bytes)?,
+            )
+        })?;
+        Self::preflight_bytes(instances.len(), payloads)
+    }
+    fn preflight_bytes(count: usize, payloads: usize) -> Option<usize> {
         std::mem::size_of::<Self>()
-            .checked_add(entries)?
-            .checked_add(twin_payloads)
+            .checked_add(count.checked_mul(std::mem::size_of::<RuntimeEntry>())?)?
+            .checked_add(payloads)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -609,7 +677,7 @@ impl NativeRuntimeChain {
     }
 
     pub fn has_stateful_processors(&self) -> bool {
-        self.entries.iter().any(|entry| entry.primary.is_some())
+        self.entries.iter().any(|entry| entry.runtime.is_stateful())
     }
 
     /// Preflight and apply a transient audition to the exact current processor
@@ -622,33 +690,14 @@ impl NativeRuntimeChain {
         device_type: DeviceTypeId,
         selection: Option<ProcessorAuditionSelection>,
     ) -> bool {
-        let Some(entry) = self.entries.iter_mut().find(|entry| {
-            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
-        }) else {
-            return false;
-        };
-        let (Some(primary), Some(scratch)) =
-            (entry.primary.as_deref_mut(), entry.scratch.as_deref_mut())
-        else {
-            return false;
-        };
-        let (Some(primary_audition), Some(scratch_audition)) =
-            (primary.transient_audition(), scratch.transient_audition())
-        else {
-            return false;
-        };
-        if selection.is_some_and(|selection| {
-            entry.bypassed
-                || !primary_audition.can_select(selection)
-                || !scratch_audition.can_select(selection)
-        }) {
-            return false;
-        }
-        // A release is deliberately valid for a bypassed or now-disabled
-        // device so an existing fade cannot get stuck.
-        primary_audition.select(selection);
-        scratch_audition.select(selection);
-        true
+        self.entries
+            .iter_mut()
+            .find(|entry| {
+                entry.owner == owner
+                    && entry.device_id == device_id
+                    && entry.device_type == device_type
+            })
+            .is_some_and(|entry| entry.runtime.select_audition(selection, entry.bypassed))
     }
 
     /// Copy only a held transient audition selector from a matching old chain
@@ -671,19 +720,11 @@ impl NativeRuntimeChain {
         }) else {
             return false;
         };
-        if index < minimum_entry {
-            return false;
-        }
         let Some(old) = previous.entries.get(index) else {
             return false;
         };
-        let (Some(old_primary), Some(old_scratch)) =
-            (old.primary.as_deref(), old.scratch.as_deref())
-        else {
-            return false;
-        };
-        if old_primary.transient_audition_requested_selection() != Some(expected_selection)
-            || old_scratch.transient_audition_requested_selection() != Some(expected_selection)
+        if index < minimum_entry
+            || old.runtime.requested_audition() != Some(expected_selection)
             || index
                 .checked_add(1)
                 .is_none_or(|end| !self.can_retarget_parameters_from_range(previous, index..end))
@@ -701,24 +742,14 @@ impl NativeRuntimeChain {
         device_id: u64,
         device_type: DeviceTypeId,
     ) -> bool {
-        let Some(entry) = self.entries.iter_mut().find(|entry| {
-            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
-        }) else {
-            return false;
-        };
-        let (Some(primary), Some(scratch)) =
-            (entry.primary.as_deref_mut(), entry.scratch.as_deref_mut())
-        else {
-            return false;
-        };
-        let (Some(primary_audition), Some(scratch_audition)) =
-            (primary.transient_audition(), scratch.transient_audition())
-        else {
-            return false;
-        };
-        primary_audition.cancel_immediately();
-        scratch_audition.cancel_immediately();
-        true
+        self.entries
+            .iter_mut()
+            .find(|entry| {
+                entry.owner == owner
+                    && entry.device_id == device_id
+                    && entry.device_type == device_type
+            })
+            .is_some_and(|entry| entry.runtime.cancel_audition())
     }
 
     /// Immediately clear one exact current processor's transient state.
@@ -735,16 +766,7 @@ impl NativeRuntimeChain {
     /// graph becomes a residual tail, which no longer has a control target.
     pub fn cancel_all_processor_auditions(&mut self) {
         for entry in &mut self.entries {
-            if let Some(runtime) = entry.primary.as_deref_mut()
-                && let Some(audition) = runtime.transient_audition()
-            {
-                audition.cancel_immediately();
-            }
-            if let Some(runtime) = entry.scratch.as_deref_mut()
-                && let Some(audition) = runtime.transient_audition()
-            {
-                audition.cancel_immediately();
-            }
+            entry.runtime.cancel_all_auditions();
         }
     }
 
@@ -757,35 +779,23 @@ impl NativeRuntimeChain {
         device_type: DeviceTypeId,
         selection: ProcessorAuditionSelection,
     ) -> bool {
-        let Some(entry) = self.entries.iter_mut().find(|entry| {
-            entry.owner == owner && entry.device_id == device_id && entry.device_type == device_type
-        }) else {
-            return false;
-        };
-        if entry.bypassed {
-            return false;
-        }
-        let (Some(primary), Some(scratch)) =
-            (entry.primary.as_deref_mut(), entry.scratch.as_deref_mut())
-        else {
-            return false;
-        };
-        matches!(
-            (primary.transient_audition(), scratch.transient_audition()),
-            (Some(primary), Some(scratch))
-                if primary.requested_selection() == Some(selection)
-                    && scratch.requested_selection() == Some(selection)
-                    && primary.can_select(selection)
-                    && scratch.can_select(selection)
-        )
+        self.entries
+            .iter_mut()
+            .find(|entry| {
+                entry.owner == owner
+                    && entry.device_id == device_id
+                    && entry.device_type == device_type
+            })
+            .is_some_and(|entry| !entry.bypassed && entry.runtime.audition_is_active(selection))
     }
 
     pub const fn stateful_count(&self) -> usize {
         self.stateful_count
     }
 
-    pub const fn declared_runtime_bytes(&self) -> usize {
-        self.declared_runtime_bytes
+    /// Total owned runtime payload, counting legacy twins exactly once each.
+    pub const fn declared_pair_bytes(&self) -> usize {
+        self.declared_pair_bytes
     }
 
     /// Whether a same-position range has exact immutable processor
@@ -860,15 +870,7 @@ impl NativeRuntimeChain {
                 if configuration_matches {
                     return true;
                 }
-                let (Some(candidate_primary), Some(candidate_scratch), Some(old_primary)) = (
-                    candidate.primary.as_deref(),
-                    candidate.scratch.as_deref(),
-                    old.primary.as_deref(),
-                ) else {
-                    return false;
-                };
-                candidate_primary.can_retarget_parameters_from(old_primary)
-                    && candidate_scratch.can_retarget_parameters_from(old_primary)
+                candidate.runtime.can_retarget_from(&old.runtime)
             })
     }
 
@@ -928,27 +930,21 @@ impl NativeRuntimeChain {
     /// future output under zero input. Invalid ranges conservatively return
     /// false. Stateless matrix entries are immediately quiescent.
     pub fn committed_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
-        range.start <= range.end
-            && range.end <= self.entries.len()
-            && self.entries[range].iter().all(|entry| {
-                entry
-                    .primary
-                    .as_deref()
-                    .is_none_or(|runtime| runtime.is_quiescent())
-            })
+        self.entries.get(range).is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|entry| entry.runtime.committed_is_quiescent())
+        })
     }
 
     /// Speculative counterpart used only after processing scratch state in the
     /// current uncommitted render block.
     pub fn speculative_range_is_quiescent(&self, range: std::ops::Range<usize>) -> bool {
-        range.start <= range.end
-            && range.end <= self.entries.len()
-            && self.entries[range].iter().all(|entry| {
-                entry
-                    .scratch
-                    .as_deref()
-                    .is_none_or(|runtime| runtime.is_quiescent())
-            })
+        self.entries.get(range).is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|entry| entry.runtime.speculative_is_quiescent())
+        })
     }
 
     /// Preflight every twin before copying any state. Matching identities whose
@@ -972,31 +968,23 @@ impl NativeRuntimeChain {
             return false;
         }
         self.entries.iter().all(|entry| {
-            let Some(new_runtime) = entry.primary.as_ref() else {
+            if !entry.runtime.is_stateful() {
                 return true;
-            };
-            let Some((old_index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
-                old.owner == entry.owner
-                    && old.device_id == entry.device_id
-                    && old.device_type == entry.device_type
-                    && old.runtime_version == entry.runtime_version
-                    && old.sample_rate == entry.sample_rate
-                    && old.primary.is_some()
+            }
+            let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
+                Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
             }) else {
                 return true;
             };
-            if excluded_old_range.contains(&old_index) {
-                return true;
-            }
-            let Some(old_runtime) = old.primary.as_deref() else {
-                return true;
-            };
-            new_runtime.can_copy_history_from(old_runtime)
-                && entry
-                    .scratch
-                    .as_ref()
-                    .is_some_and(|scratch| scratch.can_copy_history_from(old_runtime))
+            excluded_old_range.contains(&index) || entry.runtime.can_inherit_from(&old.runtime)
         })
+    }
+    fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {
+        a.owner == b.owner
+            && a.device_id == b.device_id
+            && a.device_type == b.device_type
+            && a.runtime_version == b.runtime_version
+            && a.sample_rate == b.sample_rate
     }
 
     /// Copy compatible histories to both twins after a successful preflight.
@@ -1028,23 +1016,11 @@ impl NativeRuntimeChain {
         excluded_old_range: std::ops::Range<usize>,
     ) {
         for entry in &mut self.entries {
-            if let Some((old_index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
-                old.owner == entry.owner
-                    && old.device_id == entry.device_id
-                    && old.device_type == entry.device_type
-                    && old.runtime_version == entry.runtime_version
-                    && old.sample_rate == entry.sample_rate
-                    && old.primary.is_some()
-            }) && !excluded_old_range.contains(&old_index)
-                && let (Some(primary), Some(scratch), Some(old_primary)) = (
-                    entry.primary.as_mut(),
-                    entry.scratch.as_mut(),
-                    old.primary.as_deref(),
-                )
-                && primary.can_copy_history_from(old_primary)
+            if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
+                Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+            }) && !excluded_old_range.contains(&index)
             {
-                primary.copy_history_from(old_primary);
-                scratch.copy_history_from(old_primary);
+                entry.runtime.inherit_from(&old.runtime);
             }
         }
     }
@@ -1052,15 +1028,7 @@ impl NativeRuntimeChain {
     /// Start a transactional block by copying committed histories into twins.
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
-            if let (Some(primary), Some(scratch)) =
-                (entry.primary.as_deref(), entry.scratch.as_mut())
-            {
-                if scratch.can_copy_history_from(primary) {
-                    scratch.copy_history_from(primary);
-                } else {
-                    scratch.reset();
-                }
-            }
+            entry.runtime.begin();
         }
     }
 
@@ -1185,9 +1153,9 @@ impl NativeRuntimeChain {
             entry.meter.observe_input(frames);
         }
         if entry.bypassed {
-            if let Some(runtime) = entry.scratch.as_mut() {
+            if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
-                    runtime.process_bypassed_block_with_clock(frames, clock);
+                    entry.runtime.process_bypassed_with_clock(frames, clock);
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -1198,7 +1166,7 @@ impl NativeRuntimeChain {
                             clock,
                             offset: frame_index,
                         });
-                        runtime.process_bypassed_block_with_clock(
+                        entry.runtime.process_bypassed_with_clock(
                             std::slice::from_mut(&mut internal),
                             shifted
                                 .as_ref()
@@ -1210,9 +1178,7 @@ impl NativeRuntimeChain {
             }
         } else {
             entry.matrix.apply_block(frames);
-            if let Some(runtime) = entry.scratch.as_mut() {
-                runtime.process_block_with_clock(frames, clock);
-            }
+            entry.runtime.process_with_clock(frames, clock);
         }
         if !entry.bypassed && entry.output_gain != 1.0 {
             for frame in frames.iter_mut() {
@@ -1228,19 +1194,20 @@ impl NativeRuntimeChain {
     /// Commit histories after all render chunks and source reads succeeded.
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
-            std::mem::swap(&mut entry.primary, &mut entry.scratch);
+            entry.runtime.commit();
+        }
+    }
+    /// Restore every speculative effect after a later host render stage refuses.
+    pub fn rollback_block(&mut self) {
+        for entry in &mut self.entries {
+            entry.runtime.rollback();
         }
     }
 
     /// Reset both committed and speculative state at a hard discontinuity.
     pub fn reset(&mut self) {
         for entry in &mut self.entries {
-            if let Some(primary) = entry.primary.as_mut() {
-                primary.reset();
-            }
-            if let Some(scratch) = entry.scratch.as_mut() {
-                scratch.reset();
-            }
+            entry.runtime.reset();
         }
     }
 }
@@ -1298,7 +1265,12 @@ impl<'a> NativeDeviceRegistry<'a> {
             .definition(type_id)
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let state = definition.default_state()?;
-        self.validate_current(definition, definition.migrate_state(&state)?)
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&state)?
+                .with_host_metadata_from(&state)?,
+        )
     }
     pub fn migrate_state(
         &self,
@@ -1307,9 +1279,12 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        self.validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )
     }
     pub fn patch_parameters(
         &self,
@@ -1319,17 +1294,22 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
-        snapshot.validate(&hex_lattice_contract::validated_state_descriptors(
-            definition, &current,
-        )?)?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        hex_lattice_contract::validate_parameter_snapshot_for_write(
+            definition, &current, snapshot,
+        )?;
         let patched = definition.patch_parameters(&current, snapshot)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
 
     pub fn patch_parameter(
@@ -1341,32 +1321,35 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
-        let descriptors = hex_lattice_contract::validated_state_descriptors(definition, &current)?;
-        let descriptor = descriptors
-            .iter()
-            .find(|descriptor| descriptor.id == parameter)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        hex_lattice_contract::validate_parameter_write(definition, &current, parameter, value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
     pub fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         definition.prepare_matrix(&current)
     }
     pub fn prepare_processor(
@@ -1374,13 +1357,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         definition.prepare_processor(&current, sample_rate)
     }
     pub fn prepare_device(
@@ -1388,16 +1374,39 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<PreparedNativeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
             processor: definition.prepare_processor(&current, sample_rate)?,
+        })
+    }
+    pub fn prepare_runtime_device(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
+        let definition = self
+            .definition(state.type_id())
+            .ok_or(DeviceContractError::WrongDeviceType)?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
+        Ok(PreparedRuntimeDevice {
+            matrix: definition.prepare_effect_matrix(&current)?,
+            processor: definition.prepare_runtime_factory(&current, sample_rate)?,
         })
     }
     fn validate_current(
@@ -1421,111 +1430,7 @@ impl<'a> NativeDeviceRegistry<'a> {
     }
 }
 
-/// One interleaved stereo frame represented as left and right samples.
-pub type StereoFrame = [f32; 2];
-
-/// A coefficient or composition failed finite single-precision validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidMatrix(pub &'static str);
-
-impl fmt::Display for InvalidMatrix {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
-}
-
-impl std::error::Error for InvalidMatrix {}
-
-/// An immutable 2×2 transform whose coefficients are finite `f32` values.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StereoMatrix {
-    coefficients: [[f32; 2]; 2],
-}
-
-impl StereoMatrix {
-    /// Identity preserves each input sample bit-for-bit in [`Self::apply`].
-    pub const fn identity() -> Self {
-        Self {
-            coefficients: [[1.0, 0.0], [0.0, 1.0]],
-        }
-    }
-
-    /// Construct from output-row/input-column coefficients after finite checks.
-    pub fn new(coefficients: [[f32; 2]; 2]) -> Result<Self, InvalidMatrix> {
-        if coefficients
-            .iter()
-            .flatten()
-            .any(|value| !value.is_finite())
-        {
-            return Err(InvalidMatrix("stereo matrix coefficients must be finite"));
-        }
-        Ok(Self { coefficients })
-    }
-
-    /// Return the immutable output-row/input-column coefficient array.
-    pub const fn coefficients(self) -> [[f32; 2]; 2] {
-        self.coefficients
-    }
-
-    /// Report the fixed delay of this memoryless matrix transform.
-    pub const fn latency_frames(self) -> u32 {
-        0
-    }
-
-    /// Apply this matrix to one stereo frame.
-    pub fn apply(self, input: StereoFrame) -> StereoFrame {
-        if self.is_identity() {
-            return input;
-        }
-        let matrix = self.coefficients;
-        [
-            matrix[0][0] * input[0] + matrix[0][1] * input[1],
-            matrix[1][0] * input[0] + matrix[1][1] * input[1],
-        ]
-    }
-
-    /// Apply this matrix in place to a caller-owned block, without allocation.
-    pub fn apply_block(self, frames: &mut [StereoFrame]) {
-        if self.is_identity() {
-            return;
-        }
-        for frame in frames {
-            *frame = self.apply(*frame);
-        }
-    }
-
-    /// Compose in signal order: `first.then(next)` applies `first`, then `next`.
-    /// The result is refused if any composed `f32` coefficient is non-finite.
-    pub fn then(self, next: Self) -> Result<Self, InvalidMatrix> {
-        if self.is_identity() {
-            return Ok(next);
-        }
-        if next.is_identity() {
-            return Ok(self);
-        }
-        let a = self.coefficients;
-        let b = next.coefficients;
-        let mut result = [[0.0; 2]; 2];
-        for (row, output) in result.iter_mut().enumerate() {
-            for (column, coefficient) in output.iter_mut().enumerate() {
-                let value = f64::from(b[row][0]) * f64::from(a[0][column])
-                    + f64::from(b[row][1]) * f64::from(a[1][column]);
-                if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
-                    return Err(InvalidMatrix("stereo matrix composition overflowed"));
-                }
-                *coefficient = value as f32;
-                if !coefficient.is_finite() {
-                    return Err(InvalidMatrix("stereo matrix composition overflowed"));
-                }
-            }
-        }
-        Self::new(result)
-    }
-
-    fn is_identity(self) -> bool {
-        self.coefficients == [[1.0, 0.0], [0.0, 1.0]]
-    }
-}
+pub use hex_dsp::{InvalidMatrix, StereoFrame, StereoMatrix};
 
 #[cfg(test)]
 mod compensation_tests;
@@ -1656,6 +1561,11 @@ mod tests {
             .with_input_gain_millidb(SNAPSHOT_PATCH_INPUT_GAIN)
             .unwrap()
             .with_output_gain_millidb(SNAPSHOT_PATCH_OUTPUT_GAIN)
+            .unwrap()
+            .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+                asset: hex_lattice_contract::DeviceAssetKey::new(42).unwrap(),
+            }])
             .unwrap();
         let snapshot = hex_lattice_contract::DeviceParameterSnapshot::new(&[(
             SNAPSHOT_PATCH_PARAMETER,
@@ -1667,6 +1577,7 @@ mod tests {
 
         assert_eq!(patched.input_gain_millidb(), SNAPSHOT_PATCH_INPUT_GAIN);
         assert_eq!(patched.output_gain_millidb(), SNAPSHOT_PATCH_OUTPUT_GAIN);
+        assert_eq!(patched.asset_references(), state.asset_references());
         assert_eq!(
             definition
                 .read_parameter(&patched, SNAPSHOT_PATCH_PARAMETER)
@@ -1768,44 +1679,11 @@ mod tests {
             Some(selection),
         ));
         let entry = &mut chain.entries[0];
-        let primary = entry.primary.as_deref_mut().expect("primary runtime");
+        let (primary, scratch) = entry.runtime.legacy_mut().expect("legacy runtimes");
         let primary_audition = primary.transient_audition().expect("primary capability");
         assert_eq!(primary_audition.requested_selection(), None);
-        let scratch = entry.scratch.as_deref_mut().expect("scratch runtime");
         let scratch_audition = scratch.transient_audition().expect("scratch capability");
         assert_eq!(scratch_audition.requested_selection(), None);
-    }
-
-    #[test]
-    fn identity_is_a_zero_latency_bit_preserving_fast_path() {
-        let identity = StereoMatrix::identity();
-        assert_eq!(identity.latency_frames(), 0);
-        let input = [f32::from_bits(0x8000_0000), f32::from_bits(0x7fc0_0123)];
-        let output = identity.apply(input);
-        assert_eq!(output[0].to_bits(), input[0].to_bits());
-        assert_eq!(output[1].to_bits(), input[1].to_bits());
-        let mut block = [input, [1.0, -1.0]];
-        identity.apply_block(&mut block);
-        assert_eq!(block[0][1].to_bits(), input[1].to_bits());
-    }
-
-    #[test]
-    fn coefficients_are_finite_and_composition_overflow_is_refused() {
-        assert!(StereoMatrix::new([[f32::NAN, 0.0], [0.0, 1.0]]).is_err());
-        assert!(StereoMatrix::new([[f32::INFINITY, 0.0], [0.0, 1.0]]).is_err());
-        let large = StereoMatrix::new([[f32::MAX, 0.0], [0.0, f32::MAX]]).unwrap();
-        let scale = StereoMatrix::new([[2.0, 0.0], [0.0, 2.0]]).unwrap();
-        assert!(large.then(scale).is_err());
-    }
-
-    #[test]
-    fn composition_preserves_serial_noncommutative_order() {
-        let swap = StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap();
-        let left_gain = StereoMatrix::new([[2.0, 0.0], [0.0, 1.0]]).unwrap();
-        let swapped_then_gain = swap.then(left_gain).unwrap();
-        let gain_then_swap = left_gain.then(swap).unwrap();
-        assert_eq!(swapped_then_gain.apply([1.0, 3.0]), [6.0, 1.0]);
-        assert_eq!(gain_then_swap.apply([1.0, 3.0]), [3.0, 2.0]);
     }
 
     struct IndependentDefinition;
@@ -2571,8 +2449,10 @@ mod tests {
         // identity metadata. Excluding this old suffix is valid for a tail
         // owner, but exact full-chain carry must refuse before inherit_from.
         let entry = candidate.entries.first_mut().unwrap();
-        entry.primary = Some(Box::new(IncompatibleRuntime));
-        entry.scratch = Some(Box::new(IncompatibleRuntime));
+        entry.runtime = RuntimeOwnership::Legacy {
+            primary: Box::new(IncompatibleRuntime),
+            scratch: Box::new(IncompatibleRuntime),
+        };
         assert!(candidate.can_inherit_from_excluding_old_range(&previous, 0..1));
         assert!(!candidate.can_inherit_from(&previous));
     }

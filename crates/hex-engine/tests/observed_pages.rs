@@ -459,3 +459,61 @@ fn new_observed_legacy_refusal_is_before_all_mutation_and_old_paths_remain_valid
 fn automated_gain_with_return_feeds_and_borrowed_pages_matches_resident_pcm_nodes_and_owners() {
     assert_mixed_pcm_and_observation(fixture_with_options(true, true));
 }
+#[test]
+fn main_candidate_observation_streamed_pages_keeps_pcm_and_refusal_semantics() {
+    let mut f = fixture_with_options(true, true);
+    let owners = Arc::strong_count(&f.streamed);
+    let mut observed = [[0.0; 2]; 512];
+    let mut output = observed;
+    let mut expected = output;
+    let mut calls = 0;
+    let mut actual = SessionPlayback::new(Arc::clone(&f.streamed)).unwrap();
+    let mut plain = SessionPlayback::new(Arc::clone(&f.resident)).unwrap();
+    actual.apply(SessionPlaybackCommand::Play).unwrap();
+    plain.apply(SessionPlaybackCommand::Play).unwrap();
+    let before = actual.performance_frame();
+    assert!(
+        actual
+            .render_with_post_node_and_main_observers(
+                &mut output,
+                None,
+                Some(&mut |_: &[Frame]| calls += 1)
+            )
+            .is_err()
+    );
+    assert_eq!(calls, 0);
+    assert_eq!(actual.performance_frame(), before);
+    actual
+        .render_with_pages_post_node_and_main_observers(
+            &mut output,
+            &mut f.pages,
+            None,
+            Some(&mut |frames: &[Frame]| {
+                calls += 1;
+                observed.copy_from_slice(frames);
+            }),
+        )
+        .unwrap();
+    plain.render(&mut expected).unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(observed, output);
+    assert_eq!(output, expected);
+    assert_eq!(actual.performance_frame(), 512);
+    drop(actual);
+    assert_eq!(Arc::strong_count(&f.streamed), owners);
+    let mut actual = hex_engine::Renderer::new(f.streamed.arrangement());
+    let mut plain = hex_engine::Renderer::new(f.resident.arrangement());
+    actual.play();
+    plain.play();
+    actual
+        .render_with_pages_and_main_observer(
+            &mut output,
+            &mut f.pages,
+            Some(&mut |frames: &[Frame]| observed.copy_from_slice(frames)),
+        )
+        .unwrap();
+    plain.render(&mut expected).unwrap();
+    assert_eq!(observed, output);
+    assert_eq!(output, expected);
+    assert_eq!(actual.position(), 512);
+}

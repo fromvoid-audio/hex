@@ -12,7 +12,7 @@ See [reference inventory](docs/research/reference.md).
 
 The default GPUI desktop now edits a canonical audio project, with background WAV
 import, cached waveforms, compiled CoreAudio playback, track gain/balance/mute/solo
-and master gain, clip nudge/trim/delete/split/duplicate, editable linear fades and source-implemented pointer dragging, timeline zoom/pan/fit,
+and master gain, clip nudge/trim/delete/split/duplicate, editable fades with hold-f endpoint/curve handles and source-implemented pointer dragging, timeline zoom/pan/fit,
 undo/redo, project
 open/save/save-as and background PCM16 WAV export. The older four-track generated
 Arrangement/Session prototype remains available with `--demo`.
@@ -49,7 +49,29 @@ remains open. Asset relinking is deferred.
 
 ## Run
 
+On macOS, `./launch` fetches the latest `origin/main`, fast-forwards a clean local
+`main`, builds and installs the optimized app at the configured
+stable path (default `artifacts/hex.app`), then opens that verified build. It refuses
+dirty, non-main, ahead or divergent checkouts. If the update changes the launcher,
+it re-executes from the updated source before continuing.
+
+Normal launch always fetches and invokes the optimized build, even if an app is
+already installed. It does not run tests or require an earlier CI report. Source,
+artifact and configured signature checks still apply; receipts record tests as not
+run. `./launch --test` adds full exact-source local CI before building.
+`./launch --open` only verifies and opens the installed optimized app;
+it does not update source, build or run tests. This mode can open an already running
+installed app normally. The update/build workflow requires the native toolchain and
+authenticated `gh` for PR provenance. Save and quit hex before using it; it refuses
+running installed or raw `hex-desktop` processes and never force-quits. Build
+provenance and a finite smoke checklist remain under `artifacts/launch/` and
+`artifacts/local-ci/`; native
+interaction and listening results remain user checks.
+
 ```sh
+./launch          # fetch latest main, build/install and open; no tests
+./launch --test   # also run full exact-source local CI before building
+./launch --open   # open the installed optimized app without updating/building
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
 # Optimized stable test delivery after exact-source CI (see docs/test-builds.md):
@@ -73,7 +95,7 @@ User-test builds use the optimized stable development app at `artifacts/hex.app`
 with exact-source CI, provenance and verified replacement without retained
 rollback copies. The bundle script refuses to overwrite a running app, including macOS case-insensitive
 `Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
-delivery. See [native test builds](docs/test-builds.md) for the required arguments
+delivery, or use `./launch --open` to open the installed app. See [native test builds](docs/test-builds.md) for the required arguments
 and repository-owned build/install process. Pulse manages tickets only.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by

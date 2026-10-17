@@ -27,6 +27,7 @@ struct ContentKey {
     selected_clip: Option<ClipId>,
     lane: Option<LaneBounds>,
     drag_available: bool,
+    fade_key_held: bool,
 }
 
 #[derive(Default)]
@@ -133,7 +134,8 @@ impl Render for ClipContents {
 }
 impl EditorView {
     fn clip_content_cache_allowed(&self) -> bool {
-        !self.edit_pending()
+        self.clip_name_edit.is_none()
+            && !self.edit_pending()
             && !self.opening_project
             && !self.close_prompt_open
             && !self.save_dialog_open
@@ -142,6 +144,7 @@ impl EditorView {
             && self.active_clip_drag.is_none()
             && self.active_browser_audio_drag.is_none()
             && self.active_native_device_drag.is_none()
+            && self.active_fade_drag.is_none()
             && self.active_trim_drag.is_none()
             && self.active_midi_trim_drag.is_none()
             && self.time_range_move_gesture.is_none()
@@ -187,6 +190,7 @@ impl EditorView {
             palette: theme::preferences(),
             selected_clip: self.selected_clip(),
             lane: self.drag_lanes.get(&track.id()).copied(),
+            fade_key_held: self.fade_key_held,
             drag_available: self.worker_requests_pending == 0 && self.pending_requests.is_empty(),
         };
         let parent = cx.weak_entity();

@@ -3,7 +3,11 @@
 User-selected update, 9 October 2026: implemented; native user acceptance pending.
 
 Audio and MIDI clips move within or between hybrid tracks through one
-metadata-only native gesture. Audio start/duration remain project-rate frames;
+metadata-only native gesture, started from the shaded upper-third clip header
+with an open-hand cursor. Clicking the header selects the clip, including while
+worker edits are pending or when leaving another clip's inline name editor. The lower two
+thirds behaves as empty track space for time selection and double-click painting;
+narrow full-height edges still trim. Audio start/duration remain project-rate frames;
 MIDI start/length remain canonical beats. The UI preview resolves a typed
 destination and its rendered frame bounds using the canonical tempo map.
 Release uses the same destination resolver and dispatches one validated
@@ -105,3 +109,21 @@ builds; this extension is not yet native-accepted.
 209 rendered UI tests pass/one ignored; core/history/persistence/render checks
 and strict affected lint/build pass. Review: `artifacts/hex-overwrite-drop-20261009.app`.
 Native interaction acceptance remains pending.
+
+## held-clip intersection feedback — 17 october 2026
+
+The existing-track landing preview highlights its occupied intersections with the
+editable theme secondary accent (bright turquoise by default). Audio and MIDI
+victims share the same feedback, including browser sample landing previews.
+Only the intersection inside the visible viewport is tinted; gaps and exact
+edge touches stay clear. A move excludes its original clip; Option-copy includes
+it, with stationary modifier changes refreshing the highlight. Overlapping
+victims are merged before painting so tint intensity stays uniform. Release,
+cancellation and invalid/stale targets remove the transient feedback with the
+existing preview lifetime. No project/history or overwrite semantics change.
+
+Source regressions cover mixed audio/MIDI intersection geometry, gaps, clipped
+spans, exact touches, merged victims, source exclusion/copy toggles and release
+cleanup. Native visual acceptance remains pending: hold an audio or MIDI clip
+over another clip, inspect partial/full overlap and gaps, toggle Option over its
+original position, then cancel/drop and check that the highlight disappears.

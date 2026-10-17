@@ -8,5 +8,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+conformance = []
+
+[[example]]
+name = "owned_history_profile"
+required-features = ["conformance"]
+
 [dependencies]
+hex-dsp = { path = "../hex-dsp" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }

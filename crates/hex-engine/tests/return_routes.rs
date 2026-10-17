@@ -910,3 +910,120 @@ fn feed_removal_keeps_destination_history_and_changed_source_tail_cannot_feed_de
         assert_eq!(actual, expected, "changed source={change_source}");
     }
 }
+#[test]
+fn main_observation_is_post_master_asymmetric_and_pcm_identical() {
+    let samples = [[0.8, -0.2]; 384];
+    let mut f = fixture(&samples, 0.5, 0.25, 0.5);
+    add_return_device(&mut f, UTILITY_DEFINITION.default_state().unwrap());
+    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let bank = media(&f, &samples);
+    let compiled = compile::project(f.editor.project(), &bank).unwrap();
+    for metered in [false, true] {
+        let mut actual = Renderer::new(&compiled);
+        let mut plain = Renderer::new(&compiled);
+        actual.set_effect_metering(metered);
+        plain.set_effect_metering(metered);
+        actual.play();
+        plain.play();
+        let mut output = [[9.0; 2]; 384];
+        let mut expected = output;
+        let mut observed = output;
+        let mut calls = 0;
+        actual
+            .render_with_main_observer(
+                &mut output,
+                Some(&mut |frames: &[[f32; 2]]| {
+                    calls += 1;
+                    observed.copy_from_slice(frames);
+                }),
+            )
+            .unwrap();
+        plain.render(&mut expected).unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(observed, output);
+        assert_eq!(output, expected);
+        assert_eq!(actual.position(), 384);
+        for frame in output {
+            assert!((frame[0] - 0.225).abs() < 1e-7);
+            assert!((frame[1] + 0.05625).abs() < 1e-7);
+        }
+    }
+    let prepared = Arc::new(
+        PreparedRevision::prepare(f.editor.project(), &bank, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    let mut actual = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut plain = SessionPlayback::new(prepared).unwrap();
+    actual.apply(SessionPlaybackCommand::Play).unwrap();
+    plain.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[9.0; 2]; 384];
+    let mut expected = output;
+    let mut observed = output;
+    let mut calls = 0;
+    let mut nodes = 0;
+    actual
+        .render_with_post_node_and_main_observers(
+            &mut output,
+            Some(&mut |_, _, _: &[[f32; 2]]| nodes += 1),
+            Some(&mut |frames: &[[f32; 2]]| {
+                calls += 1;
+                observed.copy_from_slice(frames);
+            }),
+        )
+        .unwrap();
+    plain.render(&mut expected).unwrap();
+    assert!(nodes > 0);
+    assert_eq!(calls, 1);
+    assert_eq!(observed, output);
+    assert_eq!(output, expected);
+    assert_eq!(actual.performance_frame(), 384);
+    for frame in output {
+        assert!((frame[0] - 0.225).abs() < 1e-7);
+        assert!((frame[1] + 0.05625).abs() < 1e-7);
+    }
+}
+#[test]
+fn main_observer_none_pause_empty_and_overflow_keep_existing_render_law() {
+    let samples = [[0.8, -0.2]; 4];
+    let f = fixture(&samples, 1.0, 0.0, 1.0);
+    let compiled = compile::project(f.editor.project(), &media(&f, &samples)).unwrap();
+    let mut renderer = Renderer::new(&compiled);
+    let mut output = [[9.0; 2]; 2];
+    let mut calls = 0;
+    renderer
+        .render_with_main_observer(
+            &mut output,
+            Some(&mut |frames: &[[f32; 2]]| {
+                assert_eq!(frames, &[[0.0; 2]; 2]);
+                calls += 1;
+            }),
+        )
+        .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(renderer.position(), 0);
+    renderer
+        .render_with_main_observer(
+            &mut [],
+            Some(&mut |frames: &[[f32; 2]]| {
+                assert!(frames.is_empty());
+                calls += 1;
+            }),
+        )
+        .unwrap();
+    assert_eq!(calls, 2);
+    renderer.play();
+    renderer
+        .render_with_main_observer(&mut output, None)
+        .unwrap();
+    assert_eq!(renderer.position(), 2);
+    renderer.seek(u64::MAX);
+    let original = output;
+    assert!(
+        renderer
+            .render_with_main_observer(&mut output, Some(&mut |_: &[[f32; 2]]| calls += 1))
+            .is_err()
+    );
+    assert_eq!(calls, 2);
+    assert_eq!(output, original);
+    assert_eq!(renderer.position(), u64::MAX);
+}

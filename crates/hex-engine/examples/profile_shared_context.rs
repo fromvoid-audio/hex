@@ -254,6 +254,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             next_id += 1;
         }
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -271,6 +272,8 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: clip_length,

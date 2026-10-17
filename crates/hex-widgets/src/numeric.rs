@@ -123,6 +123,11 @@ impl NumericSpec {
     pub const fn max(&self) -> f64 {
         self.max
     }
+    /// Finite inclusive canonical domain, shared with accessibility.
+    pub const fn bounds(&self) -> (f64, f64) {
+        (self.min, self.max)
+    }
+
     pub const fn default(&self) -> f64 {
         self.default
     }

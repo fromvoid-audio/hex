@@ -2065,8 +2065,7 @@ impl SessionPlayback {
                 .checked_add(chain.stateful_count())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             tail_runtime_bytes = tail_runtime_bytes
-                .checked_add(chain.declared_runtime_bytes())
-                .and_then(|bytes| bytes.checked_add(chain.declared_runtime_bytes()))
+                .checked_add(chain.declared_pair_bytes())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if let Some(tail) = previous
                 .tail_mutable_instruments
@@ -2155,8 +2154,7 @@ impl SessionPlayback {
                     .checked_add(old_chain.stateful_count())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_runtime_bytes = tail_runtime_bytes
-                    .checked_add(old_chain.declared_runtime_bytes())
-                    .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                    .checked_add(old_chain.declared_pair_bytes())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                     || tail_runtime_bytes
@@ -2256,8 +2254,7 @@ impl SessionPlayback {
                 .checked_add(old_chain.stateful_count())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             tail_runtime_bytes = tail_runtime_bytes
-                .checked_add(old_chain.declared_runtime_bytes())
-                .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                .checked_add(old_chain.declared_pair_bytes())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                 || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
@@ -2365,8 +2362,7 @@ impl SessionPlayback {
                     .checked_add(old_chain.stateful_count())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_runtime_bytes = tail_runtime_bytes
-                    .checked_add(old_chain.declared_runtime_bytes())
-                    .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                    .checked_add(old_chain.declared_pair_bytes())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             tail_processor_count = tail_processor_count

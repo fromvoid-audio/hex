@@ -1,5 +1,11 @@
 # hex-project
 
+Neutral device asset references resolve against the existing project catalog
+before history commits and snapshot restoration. Device-only references prevent
+asset removal, and generic expected-state replacement retains atomic Undo/Redo.
+This is control-side identity validation, not PCM/resource admission. See
+[device assets](../../docs/device-assets.md).
+
 ## Purpose
 
 Canonical control-side arrangement: stable typed IDs, media references,
@@ -234,3 +240,12 @@ or Return removes incident routes in the same undoable edit; removing an
 instrument with an incoming MIDI route requires clearing that route first.
 Project owns validation/history only; engine owns bounded source scheduling,
 audio processing, latency alignment and runtime admission.
+
+Nested audio-event sequences and typed edits belong to this canonical model.
+They retain immutable source coordinates, use bounded nonoverlapping intervals
+and participate in normal transactional history; see
+[audio events](../../docs/audio-events.md).
+
+Arrangement and Session clip labels are canonical independent metadata.
+`RenameClip` validates a stable clip ID/name and shares normal transactional
+history. Splits/copies retain names. See [clip names](../../docs/clip-names.md).

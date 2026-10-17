@@ -52,6 +52,13 @@ it back while preserving a preferred hue for gray or black. `device_frame`
 accepts a title, style, header actions and body element; it does not impose
 device-specific layout or parameter semantics.
 
+`ResponseGraph` blank-press creation is owner-opted-in. Owners may separately
+enable creation dragging: the widget retains pointer capture and emits its
+normal begin/change/commit/release/cancel sequence with node ID zero throughout.
+The owner maps that stream to its own provisional identity and transaction;
+asynchronous model publication cannot attach a released press to a new node.
+Click-only creation owners retain their existing behavior.
+
 ### shared device composition
 
 Every device uses one `device_frame`/`device_header` geometry: 14px header,
@@ -163,6 +170,7 @@ Untouched numeric drafts retain the original exact value when an owner finalizes
 them or the field loses focus. Display rounding is not a parameter edit. Actual
 typed/composed input is tracked separately, so deliberately entering the displayed
 rounded value still commits through the existing edit events and validation.
+
 Numeric, toggle, selector and response-graph controls can opt into rendered-order
 Tab traversal with `set_tab_navigation`. Participation defaults off and excludes
 disabled controls (or noneditable graphs), including when availability changes
@@ -195,3 +203,7 @@ input/output index, live and held sample peaks, gain, colors and tooltip text,
 and composes the two controls. Gain and unity lines accompany the audio fill.
 Readout updates do not interrupt pointer gestures; both wells use the shared
 numeric gesture and double-click reset lifecycle.
+
+Windowed generic bodies retain the shared surface and rounded corners while
+placing the standard inset inside their scroll content. The editor owns row
+visibility, offsets and gesture pins; the widget owns chrome and that inset.
