@@ -61,6 +61,9 @@ impl ClipSelection {
             self.anchor = None;
         }
         self.scope = Some((generation, revision));
+        if self.members.is_empty() && self.anchor.is_none() {
+            return;
+        }
         let valid = project
             .tracks()
             .iter()
