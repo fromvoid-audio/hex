@@ -40,6 +40,7 @@ mod return_drag;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
+mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
 pub(super) use send_controls::{
@@ -167,7 +168,7 @@ pub(super) struct DevicePanelState {
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
-    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
+    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -2360,6 +2361,7 @@ enum ControlPresentation {
     CompactDial,
     MiniDial,
     MicroDial,
+    WideMicroDial,
     InlineValue,
     DeviceMeters,
     CompactButton,
@@ -2588,6 +2590,10 @@ fn parameter_control_with_presentation(
                     hex_widgets::MICRO_DIAL_WIDTH,
                     hex_widgets::MICRO_DIAL_HEIGHT,
                 ),
+                ControlPresentation::WideMicroDial => (
+                    hex_widgets::WIDE_MICRO_DIAL_WIDTH,
+                    hex_widgets::MICRO_DIAL_HEIGHT,
+                ),
                 ControlPresentation::InlineValue => (46.0, 14.0),
                 ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
                 _ => (136.0, 26.0),
@@ -2782,7 +2788,8 @@ fn create_parameter_control(
             let kind = match presentation {
                 ControlPresentation::CompactDial
                 | ControlPresentation::MiniDial
-                | ControlPresentation::MicroDial => NumericControlKind::Knob,
+                | ControlPresentation::MicroDial
+                | ControlPresentation::WideMicroDial => NumericControlKind::Knob,
                 ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
                 _ => NumericControlKind::HorizontalSlider,
             };
@@ -2790,6 +2797,7 @@ fn create_parameter_control(
                 ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
                 ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
                 ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
+                ControlPresentation::WideMicroDial => NumericControlAppearance::WideMicroDial,
                 ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
                 ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,
                 _ => NumericControlAppearance::Standard,
