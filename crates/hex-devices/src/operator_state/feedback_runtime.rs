@@ -606,6 +606,8 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
                 self.compatibility_state == previous.compatibility_state
+                    && self.configuration.project_tuning()
+                        == previous.configuration.project_tuning()
                     && self.sample_rate == previous.sample_rate
                     && self.feedback_turns == previous.feedback_turns
                     && self.release_frames == previous.release_frames
@@ -751,6 +753,7 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        tuning: runtime.configuration.project_tuning(),
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,
@@ -812,7 +815,7 @@ mod tests {
 
     fn render_partitioned(partition: usize) -> Vec<StereoFrame> {
         let factory = factory(0.45);
-        assert!(factory.declared_twin_bytes() <= 4096);
+        assert!(factory.declared_twin_bytes() <= 5120);
         let config = factory.configuration.clone();
         let mut standalone: PreparedOperatorFeedbackVoice = config
             .prepare_feedback_voice(60, 103, factory.feedback_turns)
@@ -876,24 +879,24 @@ mod tests {
         let factory = factory(0.4);
         let declared = factory.declared_twin_bytes();
         assert_eq!(declared, size_of::<OperatorFeedbackRuntime>());
-        assert_eq!(declared, 4_072, "actual twin storage {declared}");
+        assert_eq!(declared, 5_096, "actual twin storage {declared}");
         assert!(
-            2 * declared <= 8_192,
+            2 * declared <= 10_240,
             "paired runtime storage {}",
             2 * declared
         );
-        assert_eq!(2 * declared, 8_144, "actual paired runtime storage");
+        assert_eq!(2 * declared, 10_192, "actual paired runtime storage");
         let pair = NativeInstrumentRuntimePair::new(
             &factory,
             NativeInstrumentRuntimeLimits {
-                max_pair_bytes: 8_192,
+                max_pair_bytes: 10_240,
                 max_events_per_block: MAX_EVENTS,
                 max_active_occurrences: MAX_VOICES,
                 max_tail_frames: factory.release_frames,
             },
         )
         .expect("actual prepared pair remains within the fixed ceiling");
-        assert_eq!(pair.fixed_storage_pair_bytes(), Some(8_144));
+        assert_eq!(pair.fixed_storage_pair_bytes(), Some(10_192));
         let runtime = factory.create_runtime();
         let mut events = Vec::with_capacity(17);
         for occurrence_id in 1..=17 {

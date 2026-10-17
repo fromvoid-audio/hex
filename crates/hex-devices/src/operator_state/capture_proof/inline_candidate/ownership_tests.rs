@@ -228,7 +228,7 @@ fn actual_recipe_byte_boundary_staging_map_and_reference_overflows_are_independe
     let (roots, record, _) = fixture();
     let mut store = Store::new(7, 1142, roots);
     let charge = size_of::<Slot>() + context_bytes();
-    for n in 0..413 {
+    for n in 0..344 {
         let h = store
             .stage(
                 Record {
@@ -242,12 +242,12 @@ fn actual_recipe_byte_boundary_staging_map_and_reference_overflows_are_independe
         store.publish(h, 0, record.receipt, true).unwrap();
         store.retain_detached(h).unwrap();
     }
-    assert_eq!(store.pool.retained_bytes, 413 * charge);
+    assert_eq!(store.pool.retained_bytes, 344 * charge);
     let full = store.fingerprint();
     assert_eq!(
         store.stage(
             Record {
-                recipe: 414,
+                recipe: 345,
                 ..record
             },
             record.receipt,

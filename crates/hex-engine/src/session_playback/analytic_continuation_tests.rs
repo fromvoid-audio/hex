@@ -432,7 +432,7 @@ fn continuation_storage_preserves_sampler_footprint_and_preroll_cap() {
     let mut runtime = playing(&fixture(1, 0, 0, 8 << 32), false);
     assert_eq!(
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
-        344
+        352
     );
     assert_eq!(runtime.analytic_continuations.len(), MAX_TRACKS);
     assert_eq!(runtime.analytic_continuations.capacity(), MAX_TRACKS);
