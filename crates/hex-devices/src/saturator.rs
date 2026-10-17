@@ -255,8 +255,9 @@ impl NativeDeviceDefinition for SaturatorDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -325,7 +326,11 @@ struct SaturatorRuntime {
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let settings = self.settings;
         let drive = self.drive_gain;
         let output = self.output_gain;
@@ -339,7 +344,12 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         }
     }
 
-    fn process_bypassed_block(&mut self, _frames: &mut [StereoFrame]) {}
+    fn process_bypassed_block(
+        &mut self,
+        _frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+    }
 
     fn reset(&mut self) {}
 

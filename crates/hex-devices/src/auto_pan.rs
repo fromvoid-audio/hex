@@ -243,8 +243,9 @@ impl NativeDeviceDefinition for AutoPanDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -434,12 +435,20 @@ fn shortest_degrees(from: f64, to: f64) -> f64 {
 }
 
 impl NativeProcessorRuntime for AutoPanRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             self.process_frame(frame);
         }
     }
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let original = *frame;
             self.process_frame(frame);

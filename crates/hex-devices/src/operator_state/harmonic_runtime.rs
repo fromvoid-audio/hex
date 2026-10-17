@@ -732,6 +732,7 @@ impl MutableInstrumentRuntime for Runtime {
         &self,
         events: &[NativeInstrumentEvent],
         frames: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Error> {
         if events.len() > self.factory.max_events_per_block()
             || events
@@ -764,6 +765,7 @@ impl MutableInstrumentRuntime for Runtime {
         &self,
         clock: Option<&dyn NativeInstrumentClock>,
         frames: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Error> {
         let companion = self.factory.settings.companion;
         let beat_required = companion.needs_clock()
@@ -801,14 +803,20 @@ impl MutableInstrumentRuntime for Runtime {
             .ok_or(Error::InvalidEventBatch)?;
         Ok(())
     }
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [StereoFrame]) {
-        self.process_block_with_clock(events, frames, None);
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        self.process_block_with_clock(events, frames, None, _resources);
     }
     fn process_block_with_clock(
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut cursor = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {

@@ -4,7 +4,14 @@ use hex_lattice::{AnalyticContinuation, AnalyticContinuationError, AnalyticConti
 
 fn context(state: &NativeDeviceState) -> Box<dyn PreparedSharedAnalyticContext> {
     OPERATOR_METADATA
-        .prepare_instrument(state, 48_000)
+        .prepare_instrument(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .prepare_shared_analytic_context()
         .unwrap()
@@ -94,9 +101,21 @@ fn carrier_and_modulator_enable_pcm_matches_independently_prepared_level_law() {
             let oracle_note = oracle.prepare_note(60, 100).unwrap();
             for (age, gate) in [(517, u64::MAX), (800, 600)] {
                 let actual = provider
-                    .sample_with_parameters(target_id, &frame, &note, age, gate)
+                    .sample_with_parameters(
+                        target_id,
+                        &frame,
+                        &note,
+                        age,
+                        gate,
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    )
                     .unwrap();
-                let expected = oracle.sample(&oracle_note, age, gate);
+                let expected = oracle.sample(
+                    &oracle_note,
+                    age,
+                    gate,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                );
                 assert!(
                     (actual[0] - expected[0]).abs() < 2e-6,
                     "operator {operator}, elapsed {elapsed}, age {age}: {actual:?} vs {expected:?}"

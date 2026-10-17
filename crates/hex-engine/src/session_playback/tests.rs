@@ -117,11 +117,15 @@ impl hex_lattice::NativeInstrumentDefinition for ContinuityInstrumentDefinition 
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate)
             || state.type_id() != self.id
             || state.state_version() != 1
@@ -242,7 +246,7 @@ impl hex_lattice::NativeInstrumentDefinition for OversizedSharedContextDefinitio
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
@@ -289,7 +293,13 @@ impl hex_lattice::PreparedSharedAnalyticContext for OversizedSharedContext {
         Ok(hex_lattice::PreparedSharedAnalyticNote::new([0; 8], 0))
     }
 
-    fn sample(&self, _: &hex_lattice::PreparedSharedAnalyticNote, _: u64, _: u64) -> [f32; 2] {
+    fn sample(
+        &self,
+        _: &hex_lattice::PreparedSharedAnalyticNote,
+        _: u64,
+        _: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> [f32; 2] {
         [0.0; 2]
     }
 }
@@ -318,6 +328,7 @@ impl hex_lattice::PreparedSharedAnalyticContext for ContinuitySharedContext {
         note: &hex_lattice::PreparedSharedAnalyticNote,
         age: u64,
         gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> [f32; 2] {
         if age < gate.saturating_add(note.release_frames()) {
             let level = f32::from_bits(note.payload()[0] as u32);
@@ -333,6 +344,7 @@ fn continuity_sample(
     age: u64,
     gate: u64,
     release: u64,
+    _resources: &dyn hex_lattice::DeviceResources,
 ) -> [f32; 2] {
     if age < gate.saturating_add(release) {
         let level = f32::from_bits(payload[0] as u32);
@@ -420,6 +432,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         let mut active = self.active;
         let mut previous_offset = 0;
@@ -451,6 +464,7 @@ impl hex_lattice::MutableInstrumentRuntime for ZeroTailMutableRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -599,11 +613,15 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFeedbackDefinition {
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate)
             || state.type_id() != self.metadata.id
             || state.state_version() != 1
@@ -708,6 +726,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         &self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
         let mut voices = self.voices;
         let mut previous_offset = 0;
@@ -757,6 +776,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
         &mut self,
         events: &[hex_lattice::NativeInstrumentEvent],
         frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
     ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
@@ -2003,7 +2023,14 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let old_prepared = hex_devices::eq8::EQ8_DEFINITION
-        .prepare_processor(&old_state, 48_000)
+        .prepare_processor(
+            &old_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .unwrap();
     let mut reference_runtime = old_prepared.create_runtime();
@@ -2012,7 +2039,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut output = input;
     source.render(&mut input).unwrap();
     expected.copy_from_slice(&input);
-    reference_runtime.process_block(&mut expected);
+    reference_runtime.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     old.render(&mut output).unwrap();
     assert_eq!(output, expected, "initial registered EQ8 PCM oracle");
     assert!(!old.device_chains[0].committed_range_is_quiescent(0..1));
@@ -2025,7 +2052,14 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         assert_eq!(candidate.tail_groups.iter().flatten().count(), 0);
         assert!(!candidate.device_chains[0].committed_range_is_quiescent(0..1));
         let prepared = hex_devices::eq8::EQ8_DEFINITION
-            .prepare_processor(&candidate_state, 48_000)
+            .prepare_processor(
+                &candidate_state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap();
         let mut next_reference = prepared.create_runtime();
@@ -2036,7 +2070,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         output.fill([0.0; 2]);
         source.render(&mut input).unwrap();
         expected.copy_from_slice(&input);
-        next_reference.process_block(&mut expected);
+        next_reference.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         candidate.render(&mut output).unwrap();
         assert_eq!(output, expected, "retargeted EQ8 parameter PCM oracle");
         assert!(
@@ -5335,13 +5369,23 @@ fn mutable_handoff_to_disabled_instrument_cuts_held_gate_but_keeps_release_state
         velocity: 100,
     }];
     let mut oracle_prefix = [[0.0; 2]; 16];
-    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_on, &mut oracle_prefix);
+    hex_lattice::MutableInstrumentRuntime::process_block(
+        &mut oracle,
+        &note_on,
+        &mut oracle_prefix,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     let note_off = [hex_lattice::NativeInstrumentEvent::NoteOff {
         frame_offset: 0,
         occurrence_id: 1,
     }];
     let mut expected = [[0.0; 2]; 16];
-    hex_lattice::MutableInstrumentRuntime::process_block(&mut oracle, &note_off, &mut expected);
+    hex_lattice::MutableInstrumentRuntime::process_block(
+        &mut oracle,
+        &note_off,
+        &mut expected,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
     for frame in &mut expected {
         frame[0] *= 0.5;
         frame[1] *= 0.5;

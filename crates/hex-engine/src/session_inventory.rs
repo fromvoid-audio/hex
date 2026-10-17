@@ -475,10 +475,13 @@ impl PreparedSessionInventory {
             let config = slot
                 .map(|device| {
                     instrument_registry
-                        .prepare_instrument_with_tuning(
+                        .prepare_instrument(
                             device.state(),
-                            project.sample_rate(),
-                            shared_contexts.tuning(),
+                            &hex_lattice::DevicePreparationContext {
+                                sample_rate: project.sample_rate(),
+                                tuning: shared_contexts.tuning(),
+                                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                            },
                         )
                         .map_err(|_| crate::Invalid("track instrument state is unsupported"))
                 })

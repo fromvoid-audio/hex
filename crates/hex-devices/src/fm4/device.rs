@@ -374,23 +374,10 @@ impl NativeInstrumentDefinition for Fm4Definition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        if !(8_000..=192_000).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.prepare_instrument_with_tuning(
-            state,
-            sample_rate,
-            &hex_lattice::TuningTable::default(),
-        )
-    }
-    fn prepare_instrument_with_tuning(
-        &self,
-        state: &NativeDeviceState,
-        sample_rate: u32,
-        tuning: &hex_lattice::TuningTable,
-    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        let tuning = context.tuning;
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
