@@ -52,6 +52,13 @@ it back while preserving a preferred hue for gray or black. `device_frame`
 accepts a title, style, header actions and body element; it does not impose
 device-specific layout or parameter semantics.
 
+`ResponseGraph` blank-press creation is owner-opted-in. Owners may separately
+enable creation dragging: the widget retains pointer capture and emits its
+normal begin/change/commit/release/cancel sequence with node ID zero throughout.
+The owner maps that stream to its own provisional identity and transaction;
+asynchronous model publication cannot attach a released press to a new node.
+Click-only creation owners retain their existing behavior.
+
 ### shared device composition
 
 Every device uses one `device_frame`/`device_header` geometry: 14px header,
