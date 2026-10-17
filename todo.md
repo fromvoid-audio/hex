@@ -1,3 +1,38 @@
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable audio/engine/lattice tests and audio
+allocation probes pass; required final-source UI/full CI and native acceptance
+remain pending. Source/check evidence belongs to PR343; Mac execution is paused.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## eq edge creation and held-pointer drag — #2729 / PR342, 17 october 2026
+
+Blank presses preview a stable-ID low/high cut in the outer 5% of the logarithmic
+plot or an interior bell. The same held pointer moves it; release atomically
+commits its final position and identity reservation as one history edit. Escape,
+focus loss and stale source/allocator/selection/project discard the preview.
+Existing node and automation-point gestures retain their paths. Targeted rendered
+regressions and source checks are recorded with PR342; full exact-source CI,
+optimized delivery and native interaction/listening remain separate evidence.
+See [eq editing contract](docs/eq.md).
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback

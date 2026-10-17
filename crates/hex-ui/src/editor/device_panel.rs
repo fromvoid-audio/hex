@@ -40,6 +40,7 @@ mod return_drag;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
+mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::return_send_numeric_control;
 pub(super) use send_controls::{
@@ -167,7 +168,7 @@ pub(super) struct DevicePanelState {
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
-    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectrum>,
+    pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }

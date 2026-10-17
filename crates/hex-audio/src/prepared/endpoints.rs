@@ -265,6 +265,14 @@ impl Client {
             .as_mut()?
             .try_latest()
     }
+    /// One fresh, aligned pair; input is absent for legacy output-only captures.
+    pub fn spectrum_latest_pair(&mut self) -> Option<crate::spectrum_worker::PublishedSpectra> {
+        self.endpoints
+            .owner_mut()?
+            .spectrum_reader
+            .as_mut()?
+            .try_latest_pair()
+    }
     pub fn spectrum_desired(&self) -> Option<spectrum_target::SpectrumTarget> {
         self.endpoints
             .owner_ref()
