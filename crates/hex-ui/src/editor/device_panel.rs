@@ -2354,7 +2354,7 @@ fn binding_policy(
     }
 }
 
-pub(super) fn parameter_control(
+fn parameter_control(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,

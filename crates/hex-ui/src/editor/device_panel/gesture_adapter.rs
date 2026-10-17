@@ -11,15 +11,6 @@ pub fn dispatch_numeric_gesture(
     phase: NumericEventPhase,
     value: ParameterValue,
 ) -> Result<(), &'static str> {
-    // Delayed events from a different control must never address whichever
-    // gesture happens to be active now. Incarnation checks remain with bindings.
-    if phase != NumericEventPhase::Begin
-        && !view.device_gesture.snapshot().is_some_and(|snapshot| {
-            snapshot.target == target && snapshot.key.generation == view.project_generation
-        })
-    {
-        return Ok(());
-    }
     match phase {
         NumericEventPhase::Begin => view.begin_device_gesture(target, value),
         NumericEventPhase::Change => view.change_device_gesture(value),

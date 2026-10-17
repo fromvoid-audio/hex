@@ -8,7 +8,6 @@ use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
 use hex_lattice_contract::ParameterValue;
 use hex_project::TrackId;
 use hex_session::device_gesture::GestureTarget;
-use hex_session::service::Request;
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlEvent, NumericControlKind,
     NumericEventPhase, NumericScale, NumericSpec,
