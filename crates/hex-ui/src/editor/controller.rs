@@ -1330,7 +1330,7 @@ impl EditorView {
         false
     }
 
-    fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+    pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
         if event.project_replaced {
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {

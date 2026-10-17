@@ -211,6 +211,102 @@ mod tests {
     use std::sync::Arc;
 
     #[gpui::test]
+    fn worker_tuning_preview_does_not_publish_before_audio_acceptance(cx: &mut TestAppContext) {
+        use hex_session::service::{Request, Service};
+        use hex_session::tuning_gesture::TuningGestureRequest;
+        fn next(service: &Service) -> hex_session::service::Event {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match service.try_event() {
+                    Ok(event) => return event,
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                        if std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    Err(error) => panic!("tuning worker did not reply: {error}"),
+                }
+            }
+        }
+        let service = Service::new(48_000, 8, 1_000_000).unwrap();
+        let initial = next(&service);
+        let project = initial.state.project.as_ref().clone();
+        let original = project.tuning();
+        let (_, editor) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        let (key, begin) = editor.update(cx, |view, _| {
+            view.tuning.broadcast.observe(0, 0, original);
+            let key = view.tuning.client.begin(0, original).unwrap();
+            let request = view.tuning.client.next_request().unwrap();
+            view.tuning.client.mark_submitted();
+            (key, request)
+        });
+        service.submit(Request::TuningGesture(begin)).unwrap();
+        let begun = next(&service);
+        assert!(begun.tuning_gesture_ack.as_ref().unwrap().accepted);
+        editor.update(cx, |view, _| {
+            view.receive(begun);
+        });
+        let mut scale = original.scale();
+        scale.set_reference(60, 333.0, 0).unwrap();
+        let tuning = ProjectTuning::new(true, scale, original.audition()).unwrap();
+        let (sequence, change) = editor.update(cx, |view, _| {
+            let sequence = view.tuning.client.change(tuning).unwrap();
+            let request = view.tuning.client.next_request().unwrap();
+            view.tuning.client.mark_submitted();
+            (sequence, request)
+        });
+        service.submit(Request::TuningGesture(change)).unwrap();
+        let preview = next(&service);
+        assert!(preview.tuning_preview.is_some());
+        editor.update(cx, |view, _| {
+            view.receive(preview);
+            assert!(view.pending_playback.is_some());
+            assert_eq!(
+                view.tuning.broadcast.accepted,
+                Some(original),
+                "worker acceptance is not the callback's applied receipt"
+            );
+        });
+        // Seed a previously applied preview in the control observer. A rejected
+        // nonterminal update must not restore the older canonical table.
+        editor.update(cx, |view, _| view.tuning.broadcast.observe(0, 0, tuning));
+        service
+            .submit(Request::TuningGesture(TuningGestureRequest::Change {
+                key,
+                sequence,
+                tuning,
+            }))
+            .unwrap();
+        let refused = next(&service);
+        assert!(!refused.tuning_gesture_ack.as_ref().unwrap().accepted);
+        editor.update(cx, |view, _| {
+            view.receive(refused);
+            assert_eq!(view.tuning.broadcast.accepted, Some(tuning));
+        });
+        let commit = editor.update(cx, |view, _| {
+            view.tuning.client.finish(tuning).unwrap();
+            let request = view.tuning.client.next_request().unwrap();
+            view.tuning.client.mark_submitted();
+            request
+        });
+        service.submit(Request::TuningGesture(commit)).unwrap();
+        let committed = next(&service);
+        assert!(committed.tuning_gesture_ack.as_ref().unwrap().accepted);
+        let committed_revision = committed.state.revision;
+        editor.update(cx, |view, _| {
+            view.receive(committed);
+            assert_eq!(
+                view.tuning.broadcast.accepted,
+                Some(tuning),
+                "canonical commit remains available without an audio output"
+            );
+            assert_eq!(view.tuning.broadcast.revision, committed_revision);
+            assert!(view.tuning.client.snapshot().is_none());
+        });
+    }
+
+    #[gpui::test]
     fn explicit_broadcast_click_is_independent_of_tuning_focus_and_project_dirty_state(
         cx: &mut TestAppContext,
     ) {
