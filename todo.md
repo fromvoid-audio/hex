@@ -31,6 +31,10 @@ round trips, construction/drag seam refusal, safe clicked insertion, and wrapped
 insertion/count changes retaining the root. All23 tuning tests and strict scoped
 Clippy pass. Existing Rust1.85 baseline stays unchanged. The previous full-run
 checkpoint is superseded; final exact-source integration checks remain required.
+Extended existing fractional-root and combined device-manifest fixtures also
+reproduced a one-ulp JSON parser error. The pinned serde_json dependency now
+enables float_roundtrip, preserving current-format authored root precision.
+Both owning storage fixtures pass after the repair, including all device owners.
 
 
 ## combined current project format — #2739 / PR350, 17 october 2026
@@ -45,6 +49,21 @@ Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
 covered by the owning storage fixtures. All storage/project/tuning tests and
 strict affected all-target Clippy pass. Source20cd1de3 passed all20 local checks
 with stale=false; checks for the current main integration remain required. No historical30 reader or automatic user-file conversion was added.
+
+## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
+
+Prepared imports and Session assets retain original-rate decoded PCM beside
+unchanged project-rate clip derivatives through single/batch/Session/Open and
+Undo/Redo paths. The same resident-frame ceiling charges unique buffer capacity;
+identity aliases count once, excess Vec capacity counts, and source+derivative
+refusal preserves canonical state/Redo. An identity-alias reload failure at zero
+remaining frames was reproduced and repaired. All113 Session tests pass. The real mixed-rate service fixture now proves
+derivative-only budget refusal and exact source+derivative Save/Open under its
+actual declared workload; targeted worker case passes. Failed full evidence is
+retained, including the second mixed-rate clip fixture reservation repair.
+The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
+resource-root/handle/callback lease admission; full W10/sampler remain open.
+
 
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
@@ -4623,3 +4642,13 @@ stages on Linux and Mac, including real signing; those reports do not certify
 this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+## browser audition lifecycle — pulse2766 / PR374, 17 october 2026
+
+Callback-derived request generations distinguish preparing, playing and finite
+completion, including retirement pressure. Cancel silences pending/queued/active
+PCM independently of project transport; stale decode cannot restart it. Faults
+and shutdown report unavailable. Two fixed atomic acknowledgements add no
+callback allocation, locks or final PCM disposal. Browser layout and transport
+integration remain canonical Pulse2664 / PR280. Source does not establish that
+the reported endless audition is a backend loop; native listening remains open.
