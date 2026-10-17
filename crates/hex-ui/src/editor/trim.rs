@@ -47,6 +47,7 @@ fn replace_midi_trim_preview(
 /// Bounded metadata-only payload; the model helper builds previews without project or PCM copies.
 #[derive(Clone, Debug)]
 pub(super) struct TrimDrag {
+    canceled: Rc<Cell<bool>>,
     pub(super) stretch_modifier: Rc<Cell<bool>>,
     project_generation: u64,
     revision: u64,
@@ -135,7 +136,8 @@ fn payload_is_current(
     viewport: Viewport,
     source_lane: Option<LaneBounds>,
 ) -> bool {
-    drag.project_generation == generation
+    !drag.canceled.get()
+        && drag.project_generation == generation
         && drag.revision == state.revision
         && drag.viewport().start == viewport.start
         && drag.viewport().length == viewport.length
@@ -561,6 +563,7 @@ impl EditorView {
     ) -> Stateful<Div> {
         let clip_id = clip.id();
         let payload = TrimDrag {
+            canceled: Rc::new(Cell::new(false)),
             stretch_modifier: Rc::new(Cell::new(false)),
             project_generation: self.project_generation,
             revision: state.revision,
@@ -610,9 +613,10 @@ impl EditorView {
             .when(edge == TrimEdge::Left, |this| this.left(px(-1.0)))
             .when(edge == TrimEdge::Right, |this| this.right(px(-1.0)))
             .cursor(bracket_cursor(edge))
-            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.trim_drag_current(&pointer_payload) {
+                        view.focus.focus(window);
                         view.remember_pointer_down(
                             pointer_payload.project_generation,
                             clip_id,
@@ -687,6 +691,16 @@ impl EditorView {
             })
     }
 
+    pub(super) fn cancel_trim_gesture(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(drag) = self.active_trim_drag.take() else {
+            return false;
+        };
+        drag.canceled.set(true);
+        drag.preview.borrow_mut().take();
+        cx.notify();
+        true
+    }
+
     pub(super) fn begin_trim_drag(&mut self, drag: &TrimDrag) {
         self.active_trim_drag = Some(drag.clone());
     }
@@ -700,8 +714,7 @@ impl EditorView {
         if self.active_trim_drag.as_ref().is_some_and(|active| {
             active.project_generation == generation && active.clip.id() == clip
         }) {
-            self.active_trim_drag = None;
-            cx.notify();
+            self.cancel_trim_gesture(cx);
         }
     }
 
@@ -893,6 +906,11 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.focus.is_focused(window) {
+            drag.canceled.set(true);
+            self.cancel_trim_gesture(cx);
+            return;
+        }
         if target_track != drag.source_track || !drag_admitted(self) {
             return;
         }
@@ -1293,6 +1311,7 @@ mod tests {
 
     fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
         TrimDrag {
+            canceled: Rc::new(Cell::new(false)),
             stretch_modifier: Rc::new(Cell::new(false)),
             project_generation: 4,
             revision: 7,

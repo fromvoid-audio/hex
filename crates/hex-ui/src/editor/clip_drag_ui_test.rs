@@ -2092,3 +2092,76 @@ fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
         assert_eq!(view.state.as_ref().unwrap().project.clip(clip).unwrap().duration(), 96_000, "UI preview has not changed canonical state");
     });
 }
+
+#[gpui::test]
+fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    for cancel in [0, 1, 2] {
+        let (project, _, _, clip) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let selector = Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
+        let down = visual.debug_bounds(selector).unwrap().center();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, shift);
+        let target = point(down.x - px(42.0), down.y);
+        visual.simulate_mouse_move(point(down.x - px(12.0), down.y), MouseButton::Left, shift);
+        visual.simulate_mouse_move(target, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| assert!(view.active_trim_drag.is_some()));
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.focus.is_focused(window),
+                    "root focus before cancellation {cancel}"
+                )
+            })
+        });
+        if cancel == 1 {
+            visual.update(|window, cx| {
+                editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
+            });
+        } else if cancel == 2 {
+            visual.deactivate_window();
+        } else {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.active_trim_drag.is_none(),
+                "Escape/focus loss clears metadata preview: lose_focus={cancel}"
+            )
+        });
+        // Inactive windows retain their last painted frame. Reactivate and
+        // return focus before inspecting the repainted overlay and re-entry.
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read_with(cx, |view, _| view.focus.focus(window));
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("trim-live-preview").is_none(),
+            "repaint after cancel {cancel}"
+        );
+        visual.simulate_mouse_move(
+            point(target.x - px(10.0), target.y),
+            MouseButton::Left,
+            shift,
+        );
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.active_trim_drag.is_none(),
+                "canceled payload cannot re-enter"
+            )
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, shift);
+        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    }
+}

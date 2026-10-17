@@ -15,10 +15,12 @@ resource-root/handle/callback lease admission; full W10/sampler remain open.
 ## sample bpm and shift edge stretching — pulse2781 / PR387, 17 october2026
 
 Authored original sample BPM, canonical affine edge stretch and metadata-only
-preview/release wiring are implemented in a separate follow-up. Four model/storage
+preview/release wiring are implemented in a separate follow-up. Five model/storage
 fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
-stationary Shift gesture checks pass; excessive stretch refuses project/history
-commit. Final exact-source CI remains pending. Cloud6 owns waveform disappearance
+both-edge stationary Shift gesture checks pass; excessive stretch refuses project/history
+commit. Escape preview persistence was reproduced and repaired; active-window
+Escape/focus/deactivation and canceled re-entry checks pass. Final exact-source
+CI remains pending. Cloud6 owns waveform disappearance
 and the coordinated live preview renderer in2764/PR372; this follow-up is draft
 until that mapping integrates. See docs/sample-bpm-stretch.md for behavior and
 finite coordinator-only native checklist. No Mac execution or app replacement.

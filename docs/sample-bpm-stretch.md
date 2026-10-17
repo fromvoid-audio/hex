@@ -32,9 +32,16 @@ Esc, loss of focus, stale project/revision or an invalid drop cancel the draft.
 
 ## verification status
 
-Initial model/storage tests pass for duration ratios, project tempo changes,
-both edges, cropped roots, loop phase, pitch, one-step history and roundtrip.
-Actual-input numeric/gesture, PCM and full exact-source checks are in progress.
+Five model/storage fixtures pass for duration ratios, project tempo changes
+(including tempo points inside the interval), both edges, cropped roots, custom
+markers, loop phase, pitch, one-step history and roundtrip. Independent stereo
+PCM pitch/partition/seek checks, unsupported-stretch transaction refusal, numeric
+actual-input validation/commit/cancel and both Shift edge/stationary-modifier
+checks pass. A before-fix actual-input test reproduced Escape leaving the trim
+metadata preview active. The fix permanently cancels its shared payload on
+Escape, focus transfer, window deactivation or cancellation; re-entry cannot
+revive it. Active-window cancellation and ordinary trim regressions pass.
+Final full exact-source checks remain pending.
 Cloud6 owns the waveform/cache disappearance fix in2764/PR372. The existing
 transformed trim overlay calls an original-source mapper which returns no ranges
 for an audio-edit domain. The coordinated preview mapping must land before this

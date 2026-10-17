@@ -464,10 +464,7 @@ impl Render for EditorView {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
-                    if let Some(drag) = view.active_trim_drag.take() {
-                        drag.preview.borrow_mut().take();
-                        cx.notify();
-                    }
+                    view.cancel_trim_gesture(cx);
                     if let Some(drag) = view.active_midi_trim_drag.take() {
                         drag.preview.borrow_mut().take();
                         cx.notify();
@@ -477,7 +474,8 @@ impl Render for EditorView {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| {
-                    if view.cancel_active_native_device_drag() {
+                    if view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag() {
+                        cx.stop_active_drag(window);
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
@@ -499,7 +497,9 @@ impl Render for EditorView {
                 }
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && view.cancel_active_native_device_drag() {
+                if event.keystroke.key == "escape"
+                    && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
+                {
                     cx.stop_active_drag(window);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                     cx.stop_propagation();
@@ -539,6 +539,11 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
+                if view.cancel_trim_gesture(cx) {
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
@@ -583,6 +588,11 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_trim_gesture(cx) {
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
