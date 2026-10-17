@@ -404,7 +404,7 @@ impl Render for EditorView {
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left && view.active_fade_drag.is_some() {
-                    view.update_fade_gesture(event.position, cx);
+                    view.update_fade_gesture(event.position, event.modifiers.platform, cx);
                     view.finish_fade_gesture(window, cx);
                     cx.stop_propagation();
                     return;
@@ -441,6 +441,7 @@ impl Render for EditorView {
                     if view.refresh_audio_event_modifiers(event.modifiers.platform) {
                         cx.notify();
                     }
+                    view.update_fade_gesture(window.mouse_position(), event.modifiers.platform, cx);
                     view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
                     view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
                 });
