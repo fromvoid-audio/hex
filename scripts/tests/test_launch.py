@@ -37,7 +37,7 @@ class LaunchTests(unittest.TestCase):
         self.head_reads = 0
         self.ci_result = 0
         self.ci_status = "passed"
-        self.running_raw_desktop = False
+        self.raw_processes = ""
 
         class FakeCiRunner:
             def __init__(inner, root, mode):
@@ -90,8 +90,7 @@ class LaunchTests(unittest.TestCase):
         if argv[:2] == ["open", "-a"]:
             return self.process(argv)
         if argv[:3] == ["ps", "-ww", "-axo"]:
-            output = " 40060 /tmp/hex/target/release/hex-desktop\n" if self.running_raw_desktop else ""
-            return self.process(argv, stdout=output)
+            return self.process(argv, stdout=self.raw_processes)
         self.fail(f"unexpected command: {argv}")
 
     def run_success(self):
@@ -198,16 +197,35 @@ class LaunchTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "open" for call in self.calls))
 
     def test_raw_desktop_process_refuses_before_ci_or_replacement(self):
-        self.running_raw_desktop = True
+        for executable in ("/tmp/hex/target/release/hex-desktop",
+                           "/tmp/hex checkout/target/debug/hex-desktop", "hex-desktop"):
+            with self.subTest(executable=executable), patch.object(launch.sys, "platform", "darwin"), \
+                    patch.object(launch, "command", side_effect=self.command), \
+                    patch.object(launch.ci, "LocalCiRunner", self.fake_ci), \
+                    patch.object(launch.delivery, "assert_inactive"):
+                self.calls.clear()
+                self.raw_processes = f" 40060 {executable}\n"
+                with self.assertRaisesRegex(launch.LaunchError, r"raw hex-desktop is running \(pid 40060\)"):
+                    launch.run_launch(self.root)
+                self.assertNotIn(("ci",), self.calls)
+                self.assertFalse(any(call[:2] == ("sh", "scripts/bundle-macos.sh") for call in self.calls))
+                self.assertFalse(any(call[:2] == ("open", "-a") for call in self.calls))
+
+    def test_process_inspection_failure_refuses_before_ci_or_replacement(self):
+        def failed_ps(argv, **kwargs):
+            if argv[:3] == ["ps", "-ww", "-axo"]:
+                self.calls.append(tuple(argv))
+                return self.process(argv, returncode=1, stderr="process inspection unavailable")
+            return self.command(argv, **kwargs)
+
         with patch.object(launch.sys, "platform", "darwin"), \
-                patch.object(launch, "command", side_effect=self.command), \
+                patch.object(launch, "command", side_effect=failed_ps), \
                 patch.object(launch.ci, "LocalCiRunner", self.fake_ci), \
                 patch.object(launch.delivery, "assert_inactive"):
-            with self.assertRaisesRegex(launch.LaunchError, "raw hex-desktop is running \(pid 40060\)"):
+            with self.assertRaisesRegex(launch.LaunchError, "process inspection unavailable"):
                 launch.run_launch(self.root)
         self.assertNotIn(("ci",), self.calls)
-        self.assertFalse(any(call[:2] == ("sh", "scripts/bundle-macos.sh") for call in self.calls))
-        self.assertFalse(any(call[:2] == ("open", "-a") for call in self.calls))
+        self.assertFalse(any(call[0] in ("sh", "open") for call in self.calls))
 
     def test_mismatched_installed_receipt_never_opens_app(self):
         with patch.object(launch.sys, "platform", "darwin"), \
@@ -244,10 +262,9 @@ class LaunchTests(unittest.TestCase):
         execv.assert_called_once_with(sys.executable, [sys.executable, str(self.root / "launch")])
         self.assertNotIn(("ci",), self.calls)
 
-
-    def test_default_opens_verified_app_without_git_cargo_ci_or_source_checks(self):
+    def test_installed_only_opens_verified_app_without_git_cargo_ci_or_source_checks(self):
         app = self.root.resolve() / "artifacts/hex.app"
-        # Normal startup does not require the caller's source to match the app.
+        # Installed-only startup does not require the caller's source to match the app.
         with patch.object(launch.sys, "platform", "darwin"), \
                 patch.object(launch, "command", side_effect=self.command), \
                 patch.object(launch, "require_clean_main", side_effect=AssertionError("source check on startup")), \
