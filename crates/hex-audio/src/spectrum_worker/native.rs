@@ -128,8 +128,7 @@ mod tests {
     }
     #[test]
     fn fixed_factory_declares_actual_eight_boxes_and_rejects_wrong_rate_without_queue_admission() {
-        let (mut capture, reader, mut reaper) =
-            spawn_native_spectrum_worker(stamp(48000)).unwrap();
+        let (mut capture, reader, mut reaper) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
         let receipt = capture.native_receipt().unwrap();
         assert_eq!(reader.native_identity(), Some(receipt.identity));
         assert_eq!(reaper.native_identity(), Some(receipt.identity));
