@@ -53,6 +53,13 @@ equal-content/foreign-bank refusal, cancelled/work/metadata/shape failures and
 unchanged input accounting. They report whether the pinned constructor gate was
 supported; unsupported environments do not establish native ownership evidence.
 
+The existing analytic/effect/mutable allocation probe also runs against actual
+sealed input storage through these scoped typed borrows. It observes exact
+stereo PCM sums and zero total/net callback allocations and frees, then verifies
+unchanged bank accounting and unresolved-handle integrity on control. This proves
+the borrow/query boundary only; it does not prove graph publication, carried-root
+retention or final-owner retirement. Both actual original sources are stereo.
+
 ## remaining admission work
 
 Retain the actual bank/catalog/scope values in existing graph/context ownership

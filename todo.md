@@ -4878,3 +4878,11 @@ all-target Clippy passed. Full host root retention, unique coexistence accountin
 mono ownership, host wiring and retirement remain OPEN; no referenced processing
 or usable sampler is admitted. PR296 is merged historical kernel evidence; full
 sampler2679 remains open and first. No native execution or compatibility work.
+
+The existing three-class callback allocation oracle now also uses actual sealed
+native input storage and the configuration-scoped catalog borrow. Both original
+sources are stereo; analytic/effect/mutable preflight/process/commit observe
+exact sums [1536,-1024] and zero total/net allocations/frees. Control verifies
+unchanged bank totals/handle obligations afterward. Two resource probe tests and
+strict all-target audio allocation-feature Clippy pass. This remains a borrow
+boundary proof, not actual graph/root publication or final-owner retirement.
