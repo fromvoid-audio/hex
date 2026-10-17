@@ -11,10 +11,29 @@ use hex_widgets::{
 };
 
 const WINDOW_BEATS: u64 = 16;
+// Keep each complete sixteen-beat page, including its exclusive end, inside
+// unsigned Q32.32. The following page would end at 2^64 and overflow.
+const MAX_AUTOMATION_PAGE: u32 = (1 << 28) - 2;
+
+fn change_automation_page(page: u32, delta: i32) -> u32 {
+    page.saturating_add_signed(delta).min(MAX_AUTOMATION_PAGE)
+}
+
+fn automation_page_start(page: u32) -> u64 {
+    (u64::from(page.min(MAX_AUTOMATION_PAGE)) * WINDOW_BEATS) << 32
+}
+
+fn automation_point_beat(page: u32, x: f32) -> u64 {
+    // Both terms are bounded so their sum fits even at the final page's end.
+    automation_page_start(page)
+        + ((WINDOW_BEATS << 32) as f64 * f64::from(x.clamp(0.0, 1.0))).round() as u64
+}
+
 pub(super) struct Panel {
     entity: Entity<ResponseGraph>,
     _subscription: Subscription,
     generation: u64,
+    authored_state: NativeDeviceState,
     selected: Option<NodeId>,
     armed: bool,
     bank: u8,
@@ -67,6 +86,7 @@ pub(super) fn render_body(
                 entity,
                 _subscription: subscription,
                 generation,
+                authored_state: canonical.clone(),
                 selected: state.nodes.first().map(|n| n.id),
                 armed: false,
                 bank: 0,
@@ -78,14 +98,22 @@ pub(super) fn render_body(
             },
         );
     }
-    let Some(panel) = view.device_panel.eq_panels.get(&device) else {
+    let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return div().id("eq-unavailable");
     };
+    if &panel.authored_state != canonical {
+        // Point IDs are local lane indices. Any authored edit, including
+        // create/delete/undo/redo, may shift them. Local drag previews keep the
+        // same authored key until commit and are preserved during the gesture.
+        panel.authored_state = canonical.clone();
+        panel.selected_point = None;
+        panel.preview = None;
+    }
     let selected = panel.selected.filter(|id| state.node(*id).is_ok());
     let bank = panel.bank;
     let automation = panel.automation;
     let selected_point = panel.selected_point;
-    let page = panel.page;
+    let page = panel.page.min(MAX_AUTOMATION_PAGE);
     let displayed = panel.preview.as_ref().map_or(&state, |(_, s)| s).clone();
     let entity = panel.entity.clone();
     let model = if let (Some(id), Some(field)) = (selected, automation) {
@@ -305,7 +333,7 @@ pub(super) fn render_body(
                 )
                 .on_click(cx.listener(move |view, _, _, cx| {
                     if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                        p.page = p.page.saturating_add_signed(delta);
+                        p.page = change_automation_page(p.page, delta);
                         p.selected_point = None;
                         p.preview = None;
                     }
@@ -730,7 +758,7 @@ fn automation_model(
     let lane = lane(state, node, field);
     let mut evaluated = lane.clone();
     evaluated.points.sort_by_key(|point| point.beat);
-    let start = (u64::from(page) * WINDOW_BEATS) << 32;
+    let start = automation_page_start(page);
     let duration = WINDOW_BEATS << 32;
     let base = field.normalized(state.node(node).ok()?.value(field)).ok()?;
     let mut curve = Vec::with_capacity(96);
@@ -848,8 +876,7 @@ fn handle_event(
                 }
             }
             ResponseGraphPhase::Create => {
-                let beat = ((u64::from(page) * WINDOW_BEATS) << 32)
-                    + ((WINDOW_BEATS << 32) as f64 * f64::from(event.position[0])).round() as u64;
+                let beat = automation_point_beat(page, event.position[0]);
                 edit(view, cx, device, 0, move |s, _| {
                     let mut lane = lane(s, id, field);
                     if let Some(p) = lane.points.iter_mut().find(|p| p.beat == beat) {
@@ -892,8 +919,7 @@ fn handle_event(
                 let Some(point) = lane.points.get_mut(index) else {
                     return;
                 };
-                let beat = ((u64::from(page) * WINDOW_BEATS) << 32)
-                    + ((WINDOW_BEATS << 32) as f64 * f64::from(event.position[0])).round() as u64;
+                let beat = automation_point_beat(page, event.position[0]);
                 point.beat = beat;
                 point.normalized = event.position[1];
                 // During dragging point indices stay attached to the same lane;
@@ -1071,4 +1097,30 @@ fn handle_event(
         _ => {}
     }
     cx.notify();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automation_page_navigation_and_point_endpoints_stay_in_q32_32() {
+        assert_eq!(change_automation_page(0, -1), 0);
+        assert_eq!(
+            change_automation_page(MAX_AUTOMATION_PAGE, 1),
+            MAX_AUTOMATION_PAGE
+        );
+        assert_eq!(change_automation_page(u32::MAX, 1), MAX_AUTOMATION_PAGE);
+        assert_eq!(automation_point_beat(0, 0.0), 0);
+        assert_eq!(automation_point_beat(0, 1.0), WINDOW_BEATS << 32);
+        let last_start = automation_page_start(MAX_AUTOMATION_PAGE);
+        let last_end = last_start.checked_add(WINDOW_BEATS << 32).unwrap();
+        assert_eq!(automation_point_beat(u32::MAX, -1.0), last_start);
+        assert_eq!(automation_point_beat(u32::MAX, 2.0), last_end);
+        assert_eq!(
+            automation_point_beat(MAX_AUTOMATION_PAGE, 0.5),
+            last_start + (WINDOW_BEATS << 31)
+        );
+        assert!(last_end < u64::MAX);
+    }
 }

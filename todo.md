@@ -3872,3 +3872,12 @@ UI, engine arrangement/loop/seek/export, identity reservation, legacy-layout and
 actual callback allocation checks pass. The release profile above is recorded
 in `docs/performance.md`; full exact-candidate local CI and stable optimized
 installation remain coordinator work. Native user checklist: `docs/eq.md`.
+
+Final EQ UI review also reproduced and repaired automation-point selection
+retargeting after deletion and insertion before the selected point. A canonical
+opaque-state key clears index-based selection after any authored edit or
+undo/redo while preserving local drag previews. The rendered two-point fixture
+now checks neighbor preservation and selection/history behavior; finite page
+navigation and Q32.32 endpoint checks cover extreme page values. Targeted
+rendered tests and the page-boundary regression pass; final full CI remains
+required on the committed integration candidate.

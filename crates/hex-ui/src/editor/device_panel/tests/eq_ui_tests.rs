@@ -58,17 +58,27 @@ fn plot(
     let bounds = visual
         .debug_bounds(selector("eq-response", device))
         .expect("rendered eq graph");
-    point(
+    let location = point(
         bounds.origin.x + px(7.0) + (bounds.size.width - px(14.0)) * x,
         bounds.origin.y + px(7.0) + (bounds.size.height - px(14.0)) * (1.0 - y),
-    )
+    );
+    let viewport = visual.update(|window, _| window.viewport_size());
+    assert!(
+        location.x >= px(0.0)
+            && location.x < viewport.width
+            && location.y >= px(0.0)
+            && location.y < viewport.height,
+        "test plot point {location:?} lies outside viewport {viewport:?}; graph bounds: {bounds:?}"
+    );
+    location
 }
 #[gpui::test]
 fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.simulate_resize(size(px(1100.0), px(650.0)));
+    // Keep the complete EQ visible after the preceding instrument card.
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
     visual.run_until_parked();
     let location = plot(&mut visual, device, 0.4, 0.5);
     visual.simulate_click(location, Modifiers::default());
@@ -118,20 +128,91 @@ fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppC
         settled(v) && read(v, device).lanes[0].points[0].normalized < 0.3
     });
     visual.run_until_parked();
+    // Insert before a selected point: sorting must not move its selection onto
+    // the newly inserted neighbor at the old lane index.
     visual.simulate_click(destination, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_some()
+    );
+    let neighbor = plot(&mut visual, device, 0.3, 0.8);
+    visual.simulate_click(neighbor, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes[0].points.len() == 2
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_none()
+    );
+    let surviving_neighbor = editor.read_with(cx, |v, _| read(v, device).lanes[0].points[1]);
+    visual.simulate_click(neighbor, Modifiers::default());
     visual.run_until_parked();
     let button = visual
         .debug_bounds(selector("eq-auto-delete", device))
         .unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
     pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes.is_empty()
+        settled(v) && read(v, device).lanes[0].points.len() == 1
     });
+    visual.run_until_parked();
+    assert_eq!(
+        editor.read_with(cx, |v, _| read(v, device).lanes[0].points.clone()),
+        vec![surviving_neighbor],
+        "deleting the first point preserves its neighbor exactly"
+    );
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_none()
+    );
+    // History can shift the selected point's lane index too.
+    visual.simulate_click(destination, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_some()
+    );
     editor.update(cx, |v, _| {
         assert!(v.enqueue(Request::Undo));
     });
     pump_until(&editor, cx, |v| {
-        settled(v) && read(v, device).lanes.len() == 1
+        settled(v) && read(v, device).lanes[0].points.len() == 2
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_none()
+    );
+    visual.simulate_click(neighbor, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_some()
+    );
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Redo));
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes[0].points.len() == 1
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("eq-auto-delete", device))
+            .is_none()
+    );
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes[0].points.len() == 2
     });
     visual.run_until_parked();
     let button = visual.debug_bounds(selector("eq-remove", device)).unwrap();
