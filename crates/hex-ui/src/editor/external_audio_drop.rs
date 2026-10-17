@@ -95,7 +95,7 @@ impl EditorView {
         let (request, control) = match Request::audio_batch(paths.to_vec(), request, context) {
             Ok(request) => request,
             Err(error) => {
-                self.error = Some(error);
+                self.error = Some(error.into());
                 cx.notify();
                 return;
             }

@@ -118,14 +118,12 @@ impl EditorView {
                     .tooltip({
                         let message = error.clone();
                         move |_, cx| {
-                            cx.new(|_| super::transport::MiniTooltip {
-                                description: message.clone().into(),
-                            })
-                            .into()
+                            cx.new(|_| super::display_error::ErrorTooltip(message.clone()))
+                                .into()
                         }
                     })
                     .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                    .child(theme::text(error)),
+                    .child(error.display_text()),
             );
         } else {
             bar = bar.child(
@@ -569,7 +567,8 @@ impl Render for EditorView {
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
-                let time_selection_canceled = view.cancel_time_selection_gesture();
+                let time_selection_canceled =
+                    view.cancel_time_selection_gesture() | view.cancel_clip_paint();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
                     view.midi_selection.clear()

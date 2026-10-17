@@ -1,4 +1,37 @@
+## arrangement clip painting — 17 october 2026
+
+Double-click empty track space, hold the second press, drag right, then release
+creates an empty MIDI clip through the existing undoable placement command.
+Snapped/free preview and cancellation are source implemented. Four focused rendered
+UI tests and the source/format guards pass; native user acceptance is pending. See [clip painting](docs/clip-paint.md)
+for scope and the finite native checklist.
+
+## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
+
+- Worker batch failures retain member/path metadata through the UI boundary;
+  the status strip and error tooltip normalize app-owned explanation only,
+  preserving mixed-case source paths and keeping metadata with its error value.
+- Focused service and production editor-event regressions cover malformed and
+  conversion-limit mixed-case WAV failures, unchanged source bytes and canonical project/history;
+  display tests also cover Unicode case. Source guards pin both error surfaces.
+- Exact local-CI/build evidence is recorded with the candidate externally. Native
+  visual/user acceptance remains separate; exercise a failed `Samples/Kick.WAV`
+  drop and hover the status to confirm path casing, then perform a valid import.
+
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
+
+## Clip conversion — #2658 / PR274, 17 october 2026
+
+- User request: MIDI → audio bounces in place; audio → MIDI removes audio and
+  yields an empty editable source. Note detection is explicitly out of scope.
+- Source implements Arrangement/Session identity-preserving atomic replacement,
+  float32 generated WAV publication, worker preparation, undo/redo and Clip View
+  conversion controls. Effects/mixer stay live; source loops/tempo and bounded
+  mutable preroll use the canonical renderer. See docs/clip-conversion.md for
+  finite duration semantics, media ownership, refusals and native checklist.
+- Focused controller/PCM/history/save-reopen/refusal tests pass at the source
+  milestone. Exact full local-CI evidence is retained with PR274; native macOS
+  interaction/listening remains pending. No macOS bundle was built in Linux.
 
 Native effect/instrument registries validate owned descriptors for each current
 state; patches, availability and engine read-only views resolve dynamic IDs.
