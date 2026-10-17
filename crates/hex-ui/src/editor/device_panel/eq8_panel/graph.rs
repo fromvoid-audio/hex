@@ -504,7 +504,7 @@ pub(super) fn graph_model(
                     let upper = MAX_HZ.min(result.output.frame.sample_rate_hz as f32 * 0.49);
                     [
                         log_position(center, MIN_HZ, upper),
-                        ((dbfs + 72.0) / 72.0).clamp(0.0, 1.0),
+                        super::super::spectrum_display::level(*dbfs),
                     ]
                 })
                 .collect()

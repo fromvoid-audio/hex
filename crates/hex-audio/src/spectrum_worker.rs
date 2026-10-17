@@ -28,6 +28,7 @@ pub const MAX_CAPTURE_FRAMES: usize = 256;
 pub const MAX_BATCHES_PER_POLL: usize = 32;
 pub const ANALYSIS_INTERVAL: Duration = Duration::from_nanos(33_333_334);
 pub const DISPLAY_STALE_AFTER: Duration = Duration::from_millis(100);
+const DECAY_DB_PER_SECOND: f32 = 48.0;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const RESULT_QUEUE_CAPACITY: usize = 1;
@@ -457,6 +458,9 @@ struct SpectrumCore {
     latest_stamp: Option<SpectrumStamp>,
     captured_at: Option<Instant>,
     last_analysis_at: Option<Instant>,
+    output_envelope: Option<SpectrumFrame>,
+    input_envelope: Option<SpectrumFrame>,
+    envelope_at: Option<Instant>,
     dirty_since_analysis: bool,
 }
 
@@ -476,6 +480,9 @@ impl SpectrumCore {
             latest_stamp: None,
             captured_at: None,
             last_analysis_at: None,
+            output_envelope: None,
+            input_envelope: None,
+            envelope_at: None,
             dirty_since_analysis: false,
         }
     }
@@ -566,8 +573,8 @@ impl SpectrumCore {
             *destination = self.rolling[(oldest + offset) % FFT_SIZE];
             self.input_ordered[offset] = self.input_rolling[(oldest + offset) % FFT_SIZE];
         }
-        let frame = self.kernel.as_mut()?.analyze(&self.ordered[..]).ok()?;
-        let input = if self.context?.paired {
+        let mut frame = self.kernel.as_mut()?.analyze(&self.ordered[..]).ok()?;
+        let mut input = if self.context?.paired {
             Some(
                 self.kernel
                     .as_mut()?
@@ -577,6 +584,16 @@ impl SpectrumCore {
         } else {
             None
         };
+        let decay = self.envelope_at.map_or(0.0, |previous| {
+            now.saturating_duration_since(previous).as_secs_f32() * DECAY_DB_PER_SECOND
+        });
+        apply_decay(&mut frame, self.output_envelope.as_ref(), decay);
+        if let Some(input) = input.as_mut() {
+            apply_decay(input, self.input_envelope.as_ref(), decay);
+        }
+        self.output_envelope = Some(frame.clone());
+        self.input_envelope = input.clone();
+        self.envelope_at = Some(now);
         let processed_at = Instant::now();
         let result = PublishedSpectrum {
             stamp: self.latest_stamp?,
@@ -599,7 +616,20 @@ impl SpectrumCore {
         self.filled = 0;
         self.latest_stamp = None;
         self.captured_at = None;
+        self.output_envelope = None;
+        self.input_envelope = None;
+        self.envelope_at = None;
         self.dirty_since_analysis = false;
+    }
+}
+
+// Attack follows actual measured power immediately. Decay affects display-only
+// worker results and never refreshes their capture timestamp or cadence.
+fn apply_decay(frame: &mut SpectrumFrame, previous: Option<&SpectrumFrame>, decay: f32) {
+    if let Some(previous) = previous {
+        for (current, old) in frame.bins_dbfs.iter_mut().zip(previous.bins_dbfs.iter()) {
+            *current = current.max((old - decay).max(crate::spectrum::FLOOR_DBFS));
+        }
     }
 }
 
@@ -613,6 +643,70 @@ enum IngestOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_decay_uses_shared_elapsed_time_and_gap_clears_both_envelopes() {
+        let context = stamp(3, 7, 48_000, 11);
+        let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
+        let now = Instant::now();
+        for sequence in 0..16 {
+            let mut capture = batch(sequence, context, 0.5, 256);
+            capture.paired = true;
+            capture.input_samples.fill([0.25; 2]);
+            capture.captured_start = now;
+            analysis.ingest(capture);
+        }
+        let first = analysis.analyze_pair_if_due(now).unwrap();
+        let later = now + Duration::from_millis(100);
+        for sequence in 16..32 {
+            let mut capture = batch(sequence, context, 0.0, 256);
+            capture.paired = true;
+            capture.captured_start = later;
+            analysis.ingest(capture);
+        }
+        let falling = analysis.analyze_pair_if_due(later).unwrap();
+        for (old, new) in [
+            (&first.output.frame, &falling.output.frame),
+            (
+                first.input.as_ref().unwrap(),
+                falling.input.as_ref().unwrap(),
+            ),
+        ] {
+            for (before, after) in old.bins_dbfs.iter().zip(new.bins_dbfs.iter()) {
+                assert!((after - (before - 4.8).max(crate::spectrum::FLOOR_DBFS)).abs() < 0.001);
+            }
+        }
+        assert!(
+            analysis
+                .analyze_pair_if_due(later + ANALYSIS_INTERVAL)
+                .is_none(),
+            "decay cannot refresh data without captures"
+        );
+        for sequence in 33..49 {
+            let mut capture = batch(sequence, context, 0.0, 256);
+            capture.paired = true;
+            analysis.ingest(capture);
+        }
+        let reset = analysis
+            .analyze_pair_if_due(later + ANALYSIS_INTERVAL)
+            .unwrap();
+        assert!(
+            reset
+                .output
+                .frame
+                .bins_dbfs
+                .iter()
+                .all(|db| *db == crate::spectrum::FLOOR_DBFS)
+        );
+        assert!(
+            reset
+                .input
+                .unwrap()
+                .bins_dbfs
+                .iter()
+                .all(|db| *db == crate::spectrum::FLOOR_DBFS)
+        );
+    }
 
     #[test]
     fn paired_windows_keep_real_levels_stereo_energy_and_reset_together() {
