@@ -840,11 +840,13 @@ fn response_model(
         nodes,
     })
 }
+type SpectrumCurve = Vec<[f32; 2]>;
+
 fn spectrum_layers(
     spectra: Option<&hex_audio::spectrum_worker::PublishedSpectra>,
     show_input: bool,
     upper: f32,
-) -> (Option<Vec<[f32; 2]>>, Option<Vec<[f32; 2]>>) {
+) -> (Option<SpectrumCurve>, Option<SpectrumCurve>) {
     let curve = |frame: &hex_audio::spectrum::SpectrumFrame| {
         frame
             .bins_dbfs

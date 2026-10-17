@@ -80,3 +80,9 @@ numbers or implement feedback/chase/polyphony. See
 The `device_conformance` example and registry-discovered authoring test use the
 opt-in lattice test helpers without a desktop, project, GPUI or CPAL. See
 [authoring](../../docs/native-device-authoring.md) for JSON reports and limits.
+
+Auto Pan and EQ expose optional state-aware parameter semantics through the
+neutral contract. Existing DSP, codecs and envelope evaluation are unchanged;
+EQ declarations retain node identity and legacy shelf restrictions. The authoring
+report includes a populated dynamic fixture. See
+[parameter semantics](../../docs/native-parameter-semantics.md).
