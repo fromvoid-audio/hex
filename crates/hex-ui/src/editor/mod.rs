@@ -25,6 +25,7 @@ mod device_gesture;
 mod device_panel;
 mod device_preset;
 mod dialogs;
+mod display_error;
 mod drag;
 mod drag_autoscroll;
 mod duplicate;
@@ -554,7 +555,7 @@ pub(super) struct EditorView {
     save_dialog_open: bool,
     preset_dialog_open: bool,
     status: String,
-    pub(in crate::editor) error: Option<String>,
+    pub(in crate::editor) error: Option<display_error::DisplayError>,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
