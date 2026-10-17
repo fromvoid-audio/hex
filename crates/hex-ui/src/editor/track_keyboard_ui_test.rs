@@ -26,8 +26,11 @@ fn command_t_uses_existing_add_track_and_one_canonical_undo(cx: &mut TestAppCont
     };
     assert_eq!(canonical.project().tracks().len(), 3);
     assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    let high_water = canonical.project().snapshot().next_id;
     assert!(canonical.undo());
-    assert_eq!(canonical.project(), &original);
+    let mut expected = original.snapshot();
+    expected.next_id = high_water;
+    assert_eq!(canonical.project().snapshot(), expected);
     assert!(!canonical.undo());
     assert!(canonical.redo());
     assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
