@@ -853,3 +853,7 @@ mod tests {
         assert_eq!(peaks[1].max, 0.3);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "waveform_resize_ui_test.rs"]
+mod resize_tests;

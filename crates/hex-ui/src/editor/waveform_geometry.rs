@@ -77,6 +77,8 @@ pub(super) struct WaveformGeometry {
 pub(super) struct WaveformChannelGeometry {
     pub(super) centerline: Path<Pixels>,
     pub(super) waveform: Path<Pixels>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    outline: Vec<gpui::Point<Pixels>>,
 }
 
 impl WaveformGeometryCache {
@@ -125,6 +127,26 @@ impl WaveformGeometryCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.columns = 0;
+    }
+
+    /// Actual path-builder ordinates from the last rendered cached canvases.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn rendered_signal_spans(&self) -> Vec<[f32; 2]> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                std::array::from_fn(|channel| {
+                    let (low, high) = entry.geometry.channels[channel]
+                        .outline
+                        .iter()
+                        .map(|point| f32::from(point.y))
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                            (low.min(y), high.max(y))
+                        });
+                    high - low
+                })
+            })
+            .collect()
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -376,6 +398,8 @@ pub(super) fn prepare_waveform_geometry(
         channels.push(WaveformChannelGeometry {
             centerline,
             waveform,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            outline: maxima.into_iter().chain(minima).collect(),
         });
     }
     Some(WaveformGeometry {
