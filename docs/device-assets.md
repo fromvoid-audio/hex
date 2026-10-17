@@ -115,10 +115,15 @@ the seven affected crates with the same conformance feature. Logs, including
 the initial compile failure, are retained in `artifacts/device-assets/cloud4/`.
 These checks do not constitute full final-source CI or callback lease proof.
 
-Schema integration remains held for coordinator agreement with tuning PR350:
-main is schema29, both unpublished branches still declare incompatible schema30.
-The proposed ordering is tuning30 followed by a combined asset+tuning31, with
-an explicit decision about reading historical asset-only30 documents. Neither
-format may be silently discarded. No schema renumbering or merge has occurred.
+Cloud4 and cloud5 agree on the integration order recorded in Pulse2739 notes:
+W10 retains asset schema30, then tuning PR350 owns combined schema31, requiring
+both tuning and the complete device asset manifest. Cloud5 is the single writer
+for the combined storage migration. Historical schema30 decoding must strictly
+distinguish exactly one recognized family key: assets-only receives disabled
+12TET tuning; tuning-only receives empty bindings. Ambiguous, missing, duplicate,
+unknown and malformed envelopes refuse. Historical test serialization exists;
+user-project persistence is unknown because those projects are inaccessible.
+Neither family may be silently discarded. Main remains schema29; no conflicting
+schema renumbering or merge has occurred. Exact final-source checks remain required.
 Mac verification/implementation requests now go through the coordinator's
 serial local queue; this cloud task does not start local work itself.
