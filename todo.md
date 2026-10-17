@@ -74,6 +74,18 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## whole-clip keyboard clipboard — pulse2770 / PR378, 17 october 2026
+
+Header selection supersedes an unrelated time rectangle; Command-C captures full
+selected clips, and a destination click/Command-V uses a retained worker payload.
+Whole source/loop/fade/note metadata, relative gaps, fresh IDs, one atomic Undo
+and repeated paste survive source deselection. Existing single-source-track
+targeting, multi-track stable owners, rectangle copy and normal/ripple overlap
+rules remain. Actual UI regression fails with a 12,000-frame crop before repair
+and passes with complete 48,000-frame clips afterward, including real worker
+Undo/Redo, text focus and save/reopen. Required exact checks and native acceptance
+remain recorded in Pulse/PR; see docs/time-selection.md. No app delivery claim.
+
 ## contiguous clip selection — pulse2769 / PR377, 17 october 2026
 
 A stable same-track clip-header anchor supports inclusive Shift ranges in either

@@ -60,7 +60,7 @@ pub(crate) fn midi_to(
         .find(|candidate| candidate.midi_clips().iter().any(|item| item.id == clip_id))
         .map(|candidate| candidate.id)
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let mut copied = project
+    let copied = project
         .midi_clip(clip_id)
         .cloned()
         .ok_or(Invalid("midi clip no longer exists"))?;
