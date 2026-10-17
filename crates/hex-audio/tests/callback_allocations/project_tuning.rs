@@ -84,7 +84,11 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
             control.publish(candidate).unwrap();
             let mut output = [[0.0; 2]; 137];
             measured_block(&mut callback, &mut output);
-            assert!(control.status.rejected_revision().is_none(), "{kind}");
+            assert!(
+                control.status.rejected_revision().is_none(),
+                "{kind} at {index}: {:?}",
+                control.status.rejected_revision()
+            );
             assert!(!input.is_cancelled(), "{kind}");
             assert!(output.iter().flatten().all(|sample| sample.is_finite()));
             assert!(
