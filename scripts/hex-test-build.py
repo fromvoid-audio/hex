@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -14,6 +15,7 @@ import plistlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 
@@ -219,6 +221,43 @@ def install_workspace(app: Path) -> Path:
     return app.parent / ".hex-install"
 
 
+def check_install_workspace(workspace: Path, *, apps: bool = True) -> None:
+    """Allow only fixed installer members and Finder's regular metadata file."""
+    assert_plain_path(workspace)
+    if not workspace.is_dir():
+        raise DeliveryError("unexpected temporary installation contents; preserved for inspection")
+    for path in workspace.iterdir():
+        if apps and path.name in ("stage.app", "previous.app"):
+            assert_plain_path(path)
+        elif path.name == ".DS_Store" and stat.S_ISREG(path.lstat().st_mode):
+            continue
+        else:
+            raise DeliveryError("unexpected temporary installation contents; preserved for inspection")
+
+
+def remove_install_workspace(workspace: Path) -> None:
+    # Never recursively remove this directory: it can acquire Finder metadata
+    # after publication. Inspect every member before unlinking that one file.
+    for attempt in range(2):
+        check_install_workspace(workspace, apps=False)
+        metadata = workspace / ".DS_Store"
+        if metadata.exists():
+            metadata.unlink()
+        try:
+            workspace.rmdir()
+            break
+        except OSError as error:
+            if error.errno != errno.ENOTEMPTY:
+                raise
+            # Finder can recreate metadata immediately before rmdir. Reinspect
+            # every member, refuse foreign data, and retry only once. Continued
+            # interference remains an honest incomplete installation.
+            check_install_workspace(workspace, apps=False)
+            if attempt == 1:
+                raise
+    sync_directory(workspace.parent)
+
+
 def recover(app: Path) -> None:
     # Older installers own this history. Never guess which app their journal owns.
     legacy = app.parent / ".hex-test-build-transaction.json"
@@ -228,9 +267,7 @@ def recover(app: Path) -> None:
     assert_plain_path(workspace)
     if not workspace.exists():
         return
-    if not workspace.is_dir() or any(path.name not in ("stage.app", "previous.app")
-                                     for path in workspace.iterdir()):
-        raise DeliveryError("unexpected temporary installation contents; preserved for inspection")
+    check_install_workspace(workspace)
     stage, previous = workspace / "stage.app", workspace / "previous.app"
     for path in (app, stage, previous):
         assert_plain_path(path)
@@ -264,8 +301,7 @@ def recover(app: Path) -> None:
     for path in (stage, previous):
         if path.exists():
             shutil.rmtree(path)
-    workspace.rmdir()
-    sync_directory(app.parent)
+    remove_install_workspace(workspace)
 
 
 def activate(app: Path, stage: Path) -> None:
@@ -274,6 +310,7 @@ def activate(app: Path, stage: Path) -> None:
         raise DeliveryError("candidate must use the fixed temporary installation workspace")
     previous = workspace / "previous.app"
     assert_plain_path(workspace)
+    check_install_workspace(workspace)
     assert_plain_path(previous)
     assert_plain_path(app)
     if previous.exists():
@@ -313,10 +350,10 @@ def activate(app: Path, stage: Path) -> None:
             sync_directory(app.parent)
         raise
     # previous.app is publication custody only, never a retained version backup.
+    check_install_workspace(workspace)
     if previous.exists():
         shutil.rmtree(previous)
-    workspace.rmdir()
-    sync_directory(app.parent)
+    remove_install_workspace(workspace)
 
 
 def validate_ci(report: Path, runner, candidate: str) -> dict:

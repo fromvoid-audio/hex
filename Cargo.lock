@@ -2611,6 +2611,7 @@ dependencies = [
  "hex-engine",
  "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-project",
  "hex-session",
  "hex-stream",
@@ -2693,6 +2694,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-mts"
+version = "0.1.0"
+dependencies = [
+ "hex-tuning",
+ "mts-esp-master-adapter",
+]
+
+[[package]]
 name = "hex-plugin-scan"
 version = "0.1.0"
 dependencies = [
@@ -2741,6 +2750,7 @@ dependencies = [
  "hex-lattice-contract",
  "hex-project",
  "hex-tuning",
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -2771,10 +2781,13 @@ dependencies = [
  "hex-engine",
  "hex-lattice-contract",
  "hex-library",
+ "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-tuning",
  "hex-widgets",
 ]
 
@@ -3643,6 +3656,13 @@ checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mts-esp-master-adapter"
+version = "0.1.0"
+dependencies = [
+ "libloading",
 ]
 
 [[package]]

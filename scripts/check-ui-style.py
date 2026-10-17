@@ -13,7 +13,7 @@ widgets = (
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Clip name components normalize labels or render a native text-input entity.
-    'self.clip_name_label(', 'self.clip_name_header(', 'edit.input.clone())',
+    'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -99,7 +99,7 @@ widgets = (
     'output)', 'gain)', 'balance)', 'cutoff)', 'mute_dc)', 'mute)', 'dc)',
     # Saturator composition uses typed shared controls and a normalized plot;
     # its axis/error text is routed through theme::text at the panel boundary.
-    'plot)', 'chooser)', 'drive)', 'wet)',
+    'plot)', 'plot.id(', 'self.project_spectrum_panel(', 'self.project_spectrum_pointer_events(', 'chooser)', 'drive)', 'wet)',
     # Compressor composition uses shared typed numeric controls and normalized plot.
     'ratio)', 'attack)', 'release)', 'field(',
     # Gate composition contains already-themed compact dial child controls.
@@ -117,6 +117,10 @@ widgets = (
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
     # Fade pointer capture is a typed canvas listener with no rendered text.
     'self.fade_pointer_events(',
+    # Tuning components normalize labels at their theme::text boundary.
+    'tuning_section(', 'self.tuning_control(', 'self.tuning_library_panel(', 'self.tuning_mts_controls(',
+    'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
+    'tuning_nodes)', 'tuning_slots)', 'tuning_reference)', 'settings)', 'right)',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

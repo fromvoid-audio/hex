@@ -13,5 +13,8 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.190"
+
 [lints]
 workspace = true

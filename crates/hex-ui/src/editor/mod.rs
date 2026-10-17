@@ -10,10 +10,15 @@ mod audio_admission;
 mod audio_event_editor;
 mod browser;
 mod browser_input;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_border_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_clipboard_ui_test;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
 mod clip_name;
+mod clip_selection;
 
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -69,6 +74,7 @@ mod output_meter_ui_test;
 mod overview;
 mod play_intent;
 mod project_recovery;
+mod project_spectrum;
 mod recent_projects;
 mod recovery;
 mod recovery_state;
@@ -98,11 +104,13 @@ mod track_keyboard_ui_test;
 mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
+mod track_name;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
 mod transport;
 mod trim;
+mod tuning;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
@@ -154,6 +162,7 @@ struct PendingPlayback {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
 }
 
 struct PendingResidentPublication {
@@ -166,6 +175,7 @@ struct PendingResidentPublication {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
 }
 
 enum PendingEditorAudioResult {
@@ -213,6 +223,7 @@ struct PlaybackCandidate {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
 }
 
 #[derive(Clone, Copy)]
@@ -252,6 +263,10 @@ actions!(
         RecoverSavedProject,
         RecoverPreviousSave,
         OpenSettings,
+        OpenTuning,
+        CloseTuning,
+        CommitTuningName,
+        CancelTuningName,
         SaveProject,
         SaveAsProject,
         ExportProject,
@@ -265,6 +280,9 @@ actions!(
         TrimRight,
         DeleteClip,
         RenameClip,
+        RenameTrack,
+        CommitTrackName,
+        CancelTrackName,
         CommitClipName,
         CancelClipName,
         CopyTimeSelection,
@@ -318,6 +336,8 @@ fn bind_editor_keys(cx: &mut App) {
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     clip_name::bind_keys(cx);
+    tuning::library::bind_keys(cx);
+    track_name::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -404,6 +424,12 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-s", SaveProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-e", ExportProject, Some("hex_editor")),
+        KeyBinding::new("cmd-alt-t", OpenTuning, None),
+        KeyBinding::new("escape", CloseTuning, Some("hex_tuning")),
+        KeyBinding::new("enter", CommitTuningName, Some("hex_tuning_name")),
+        KeyBinding::new("escape", CancelTuningName, Some("hex_tuning_name")),
+        KeyBinding::new("cmd-z", Undo, Some("hex_tuning")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_tuning")),
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
@@ -512,7 +538,9 @@ pub(super) struct EditorView {
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
+    clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
+    track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
@@ -538,6 +566,7 @@ pub(super) struct EditorView {
     device_gesture: hex_session::device_gesture::GestureClient,
     device_gesture_barriers: VecDeque<Request>,
     device_panel: device_panel::DevicePanelState,
+    project_spectrum: project_spectrum::ProjectSpectrumState,
     worker_requests_pending: usize,
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
@@ -662,6 +691,7 @@ pub(super) struct EditorView {
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
     theme_settings: theme_settings::ThemeSettingsState,
+    tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
@@ -791,12 +821,16 @@ impl EditorView {
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
-                && entity.read(cx).computer_keyboard_accepts(
+                && (entity.read(cx).tuning_audition_accepts(
+                    &event.keystroke.key,
+                    event.keystroke.modifiers,
+                    window,
+                ) || entity.read(cx).computer_keyboard_accepts(
                     &event.keystroke.key,
                     event.keystroke.modifiers,
                     window,
                     cx,
-                )
+                ))
             {
                 cx.stop_propagation();
             }
@@ -805,6 +839,7 @@ impl EditorView {
         let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
+                view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
                 }
@@ -832,7 +867,9 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
+                view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
                 }
@@ -854,6 +891,7 @@ impl EditorView {
         });
         let window_bounds = cx.observe_window_bounds(window, |view, window, cx| {
             view.cancel_fade_gesture(cx);
+            view.cancel_project_spectrum_resize(cx);
             if view.cancel_trim_gesture(cx) {
                 cx.stop_active_drag(window);
             }
@@ -891,7 +929,9 @@ impl EditorView {
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
+            clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
+            track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
             selected_cell: None,
@@ -918,6 +958,7 @@ impl EditorView {
             device_gesture: hex_session::device_gesture::GestureClient::default(),
             device_gesture_barriers: VecDeque::new(),
             device_panel: device_panel::DevicePanelState::default(),
+            project_spectrum: Default::default(),
             worker_requests_pending: 0,
             audio_batch: None,
             audio_batch_progress: None,
@@ -1034,6 +1075,7 @@ impl EditorView {
             browser,
             recent_projects,
             theme_settings,
+            tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
             clip_paint_gesture: None,
@@ -1082,6 +1124,7 @@ impl EditorView {
     }
 
     pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
+        let header_focused = self.track_header_focused(window);
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
         self.midi_hit_cycle = None;
@@ -1094,6 +1137,9 @@ impl EditorView {
         self.selected_clip = None;
         self.midi_selection.clear();
         self.update_track_selection_status();
+        if header_focused {
+            self.focus_track_header_after_navigation(track, window);
+        }
     }
 
     pub(super) fn toggle_play(&mut self) {
@@ -1291,6 +1337,7 @@ impl EditorView {
             self.update_track_selection_status();
         }
         self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
     }

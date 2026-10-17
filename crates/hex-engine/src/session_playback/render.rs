@@ -1,5 +1,6 @@
 mod compensated;
 mod computer_keyboard;
+use super::capture::CaptureSink;
 use super::{commands::transition_captures, *};
 use crate::compile::PreparedAudioSource;
 use crate::{MediaPages, MidiTiming, StreamedPageSpan, render_streamed_page_span};
@@ -44,6 +45,17 @@ impl SessionPlayback {
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        self.render_with_signal_observers(output, observer, None)
+    }
+
+    /// Observe native entries and selected direct track/Main signals in one
+    /// transactional pass. Neither observer is a hardware acceptance receipt.
+    pub fn render_with_signal_observers(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let contains_streamed_sources = if self.linear_arrangement_export {
             self.revision.arrangement().contains_streamed_sources()
@@ -53,7 +65,14 @@ impl SessionPlayback {
         if self.playing && !output.is_empty() && contains_streamed_sources {
             return Err(SessionPlaybackError::MediaPagesUnavailable);
         }
-        self.render_internal::<dyn MediaPages>(output, None, observer, None)
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
+        self.render_internal::<dyn MediaPages>(output, None, observer, capture)?;
+        if let Some(project) = project {
+            project.main(output);
+        }
+        Ok(())
     }
 
     /// Render with a borrowed page view. Misses silence only the unavailable
@@ -147,8 +166,26 @@ impl SessionPlayback {
         pages: &mut P,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        self.render_with_pages_and_signal_observers(output, pages, observer, None)
+    }
+
+    /// Borrowed-page counterpart with the same live output tap and scheduler.
+    pub fn render_with_pages_and_signal_observers<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
-        self.render_internal(output, Some(pages), observer, None)
+        let capture = project
+            .as_mut()
+            .map(|tap| &mut **tap as &mut dyn CaptureSink);
+        self.render_internal(output, Some(pages), observer, capture)?;
+        if let Some(project) = project {
+            project.main(output);
+        }
+        Ok(())
     }
 
     /// Observe stereo Main after the existing full render/master/commit path.
@@ -190,7 +227,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        mut capture: Option<&mut OutputCapture<'_, '_>>,
+        mut capture: Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         output.fill([0.0; 2]);
         if output.is_empty() || (!self.playing && self.computer_keyboard.is_none()) {
@@ -311,7 +348,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -557,7 +594,7 @@ impl SessionPlayback {
         mut pages: Option<&mut P>,
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
@@ -1064,7 +1101,7 @@ impl SessionPlayback {
         frame_offset: usize,
         effect_clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
         if !arrangement.return_feed_plan.is_empty() {
@@ -1212,7 +1249,7 @@ impl SessionPlayback {
         performance_frame: u64,
         output: &mut [Frame],
         frame_offset: usize,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
         let table = self.revision.session().sine_table().as_ref();

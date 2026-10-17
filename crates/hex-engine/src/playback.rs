@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 mod candidate_storage;
 mod metronome;
+mod tuning_audition;
 use metronome::Metronome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +294,7 @@ impl PlaybackHandoffError {
 /// Playback graph, with the legacy finite renderer kept as the compatibility path.
 pub struct Playback {
     metronome: Option<Box<Metronome>>,
+    tuning_audition: Option<Box<crate::tuning_audition::Runtime>>,
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
@@ -512,6 +514,7 @@ impl Playback {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             metronome,
+            tuning_audition,
             project: _,
             prepared_revision,
             session_runtime,
@@ -522,6 +525,9 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
+        if tuning_audition.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
         visit(9, 0, true)?; // actual Project handle
         visit(10, 0, prepared_revision.is_some())?;
         visit(11, 0, metronome.is_some())?;
@@ -543,6 +549,7 @@ impl Playback {
         let metronome = None;
         Self {
             metronome,
+            tuning_audition: None,
             project,
             prepared_revision: None,
             session_runtime: None,
@@ -620,6 +627,7 @@ impl Playback {
         let playing = runtime.playing();
         Self {
             metronome,
+            tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime: Some(Box::new(runtime)),
@@ -659,6 +667,7 @@ impl Playback {
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
             metronome,
+            tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime,
@@ -959,6 +968,7 @@ impl Playback {
             )
         ) {
             self.cancel_computer_keyboard();
+            self.cancel_tuning_audition();
         }
         match action {
             PlaybackAction::SetMetronome(enabled) => {
@@ -1112,6 +1122,14 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
+        let continued_audition = match (&self.tuning_audition, &previous.tuning_audition) {
+            (Some(next), Some(old)) if next.shares_live_lease(old) => {
+                Some(next.continued_synth(old).map_err(|_| {
+                    PlaybackHandoffError::Session(crate::SessionPlaybackError::DeviceRuntime)
+                })?)
+            }
+            _ => None,
+        };
         let preserve_keyboard = match (
             self.session_runtime
                 .as_ref()
@@ -1203,6 +1221,14 @@ impl Playback {
             }
         }
         self.inherit_metronome(previous);
+        if let (Some(continued), Some(next), Some(old)) = (
+            continued_audition,
+            self.tuning_audition.as_mut(),
+            previous.tuning_audition.as_mut(),
+        ) {
+            next.preserve_from(old, continued);
+        }
+        previous.cancel_tuning_audition();
         if preserve_keyboard {
             if let (Some(next), Some(old)) = (
                 self.session_runtime
@@ -1264,14 +1290,30 @@ impl Playback {
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_signal_observers(output, observer, None)
+    }
+
+    /// Observe the actual project mix before monitor-only metronome audio.
+    /// A fallback without the canonical Session renderer reports Unavailable
+    /// through the project tap and preserves its ordinary audio behavior.
+    pub fn render_with_signal_observers(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), Invalid> {
         let start = self.position();
         let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime
-                .render_with_node_signal_observer(output, observer)
+                .render_with_signal_observers(output, observer, project)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
+            self.mix_tuning_audition(output);
             return Ok(());
+        }
+        if let Some(project) = project.as_mut() {
+            project.unavailable();
         }
         if self.session_unavailable.is_some()
             && (self
@@ -1303,6 +1345,7 @@ impl Playback {
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
         self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
         Ok(())
     }
 
@@ -1351,6 +1394,7 @@ impl Playback {
                 .render_with_pages(output, pages)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
+            self.mix_tuning_audition(output);
             return Ok(());
         }
         self.render_pages_fallback(output, pages)
@@ -1392,14 +1436,29 @@ impl Playback {
         pages: &mut P,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_pages_and_signal_observers(output, pages, observer, None)
+    }
+
+    /// Page-backed project/device observations from one actual render pass.
+    pub fn render_with_pages_and_signal_observers<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), Invalid> {
         let start = self.position();
         let playing = self.playing();
         if let Some(runtime) = self.session_runtime.as_mut() {
             runtime
-                .render_with_pages_and_node_signal_observer(output, pages, observer)
+                .render_with_pages_and_signal_observers(output, pages, observer, project)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
+            self.mix_tuning_audition(output);
             return Ok(());
+        }
+        if let Some(project) = project.as_mut() {
+            project.unavailable();
         }
         if observer.is_some() {
             return Err(Invalid(
@@ -1407,6 +1466,12 @@ impl Playback {
             ));
         }
         self.render_pages_fallback(output, pages)
+    }
+
+    /// Bounded current canonical identity check, intended once per selection or
+    /// active revision change rather than once per captured sample.
+    pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
+        self.session_runtime.is_some() && self.project.project_track_ids.contains(tracks, || {})
     }
 
     fn render_pages_fallback<P: MediaPages + ?Sized>(
@@ -1443,6 +1508,7 @@ impl Playback {
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
         self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
         Ok(())
     }
 

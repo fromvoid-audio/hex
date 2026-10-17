@@ -103,7 +103,12 @@ never resized on audio. No project compilation, allocation, logging or I/O occur
 callback. Mode changes reset histories; compatible node history follows stable ID.
 
 The response plot is explicitly **authored response**, cached by effective state
-and sample rate. It does not animate the automated response. The spectrum remains
+and sample rate. Enabled band centers and shoulders are sampled within the
+existing256-point graph limit, including all64 bands. Coordinates use actual
+logarithmic frequencies; narrow notches reach their true display depth rather
+than disappearing between fixed samples. The finite polyline still interpolates
+between samples, without a global error guarantee. See [quality cycle1](eq-quality-cycle1.md).
+It does not animate the automated response. The spectrum remains
 live; the selected automation value's **playhead** readout is display telemetry,
 not an exact delayed-callback timestamp. Transient listen selectors carry stable
 node IDs and fade over 256 frames, independently of authored state/history.

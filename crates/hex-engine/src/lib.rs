@@ -1924,6 +1924,7 @@ pub struct PreparedAudioClipView {
 
 #[derive(Debug, Clone)]
 pub struct Project {
+    project_track_ids: project_output::ProjectTrackIds,
     audio_clip_views: Vec<PreparedAudioClipView>,
     sample_rate: u32,
     tracks: Vec<Track>,
@@ -2017,6 +2018,7 @@ impl Project {
             ));
         }
         Ok(Self {
+            project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
             audio_clip_views: Vec::new(),
             audible_end_frame: tracks
                 .iter()
@@ -3175,6 +3177,7 @@ mod tests {
 pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
+mod midi_activity;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -3185,10 +3188,12 @@ mod prepared_tempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
+pub mod tuning_audition;
 
 pub mod compile;
 
 pub mod playback;
+mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
 };
@@ -3215,6 +3220,7 @@ pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,
     OutputCapture, OutputCaptureError, OutputCaptureId, OutputCapturePlan, PreparedStreamAction,
-    SessionHandoffReport, SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand,
-    SessionPlaybackError, SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
+    ProjectOutputTap, ProjectSignal, ProjectSignalObserver, SessionHandoffReport,
+    SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
+    SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };

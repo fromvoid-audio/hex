@@ -10,6 +10,7 @@ pub mod operator_state;
 pub mod operator_waveform;
 pub mod sampler;
 pub mod saturator;
+pub mod tuning_audition;
 pub mod utility;
 pub mod utility_filters;
 

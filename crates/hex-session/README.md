@@ -36,7 +36,16 @@ standard library for its bounded resident media map and dedicated worker.
 values and opaque state. Add-device and parameter requests resolve definitions
 through the engine; the worker patches its latest canonical state and compiles
 before history commits. Discrete requests each create a history step; continuous
-gesture grouping/coalescing remains a separate dependency.
+device and project-tuning gestures use typed generation/token/sequence identities,
+coalesce transient changes, and commit one canonical history step. Their prepared
+overlays remain separate from canonical project state. The project-tuning worker
+uses the same candidate preparation path and preserves the engine's explicit
+refusal while enabled tuning playback is unsupported.
+The worker also owns the bounded eight-slot tuning library and portable Freqs
+import/export requests. Applying a preset checks the captured project generation
+and revision, preserves the current enabled and audition settings, and commits
+through the canonical prepared `SetTuning` command. UI code receives slot/error
+metadata and never performs preset file I/O.
 `hex-storage` owns schema serialization and durable file operations; the session
 worker coordinates open, create-new Save As, and token-checked rolling-recovery
 Save Current with media validation. Opened/saved document paths and exact file

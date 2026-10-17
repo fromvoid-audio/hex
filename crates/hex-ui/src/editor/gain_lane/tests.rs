@@ -292,7 +292,7 @@ mod native {
     }
 
     #[gpui::test]
-    fn command_t_preserves_active_gain_numeric_draft(cx: &mut TestAppContext) {
+    fn command_t_and_r_preserve_active_gain_numeric_draft(cx: &mut TestAppContext) {
         let (handle, entity, _) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
@@ -303,13 +303,17 @@ mod native {
         visual.simulate_input("invalid");
         visual.run_until_parked();
         let focus = visual.update(|window, cx| window.focused(cx).unwrap());
-        visual.simulate_keystrokes("cmd-t");
-        visual.update(|window, _| assert!(focus.is_focused(window)));
-        entity.update(&mut visual, |view, cx| {
-            assert!(view.gain_numeric_editing(cx));
-            assert!(view.last_enqueued_edit.is_none());
-            assert_eq!(view.worker_requests_pending, 0);
-        });
+        for key in ["cmd-t", "cmd-r"] {
+            visual.simulate_keystrokes(key);
+            visual.update(|window, _| assert!(focus.is_focused(window)));
+            entity.update(&mut visual, |view, cx| {
+                assert!(view.gain_numeric_editing(cx));
+                assert!(!view.track_name.is_editing());
+                assert!(view.clip_name_edit.is_none());
+                assert!(view.last_enqueued_edit.is_none());
+                assert_eq!(view.worker_requests_pending, 0);
+            });
+        }
     }
 
     #[gpui::test]

@@ -415,6 +415,78 @@ their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
 context menus and renaming retain their existing behavior. Distinct controls,
 including fade handles and track names, retain their own descriptive tooltips.
 
+## selected clip borders — #2719 / PR335
+
+Each selected Arrangement audio or MIDI clip uses the theme's primary color for
+its existing one-pixel border around the visible clipped bounds. Every member
+of a multi-selection is highlighted, including retained scenes whose primary
+selection did not change. Deselecting restores the prior base border; selected
+audio hover keeps the highlight and unselected hover retains its text-color
+affordance. Selected audio/MIDI edge-trim previews keep the same border color.
+
+Border widths, clip bounds, fills, text, waveform/note drawing and hit areas are
+unchanged. A completed-scene regression fails with the former black selected
+border and passes after the color change. It covers five mixed audio/MIDI clips,
+both viewport crop boundaries, all four border widths, selected hover,
+membership-only deselection, unchanged fills/bounds, a held audio-edge preview
+and Escape cancellation without a model edit. The GPUI observer is test support
+only, with verified upstream baseline/cumulative patch provenance; it reads
+actual painted scene quads rather than claiming native GPU pixel evidence.
+
+Required exact-source checks are recorded in Pulse/PR. Native acceptance stays
+with the coordinator's serial Mac lane on a future approved optimized candidate:
+select/deselect one and several audio/MIDI clips, hover them, inspect both cropped
+viewport edges and drag/cancel their trim/fade affordances. Confirm text, clip
+colors, waveform/notes and edge hit areas remain usable. Record actual source/
+build and a bounded interaction capture. No current app replacement or save/quit
+is required by this visual check; native acceptance is still open.
+
+## contiguous clip header selection — #2769 / PR377
+
+Clicking a clip header starts a clip-selection anchor. Shift-click selects the
+inclusive chronological interval between that anchor and the clicked clip on
+the same track, including audio and MIDI clips. Reverse clicks work; repeated
+Shift-clicks resize the interval around the original anchor. Equal start times
+use stable clip-ID order. A Shift-click on another track starts a new anchor;
+this change defines no cross-track range. Command-click toggles membership and
+sets the anchor; Command-Shift-click adds the interval to existing membership.
+The existing body time-selection and header drag contracts remain separate.
+
+Every member receives the existing selected fill. A membership epoch invalidates
+retained clip scenes even when the primary clip stays the same. This selection
+is view state and creates no project edit or Undo step. The separate border
+request is Pulse2719/PR335; whole-clip clipboard handling is2770/PR378.
+
+Rendered tests exercise five alternating audio/MIDI clips, forward/reverse and
+repeated ranges, additive toggle/union, another-track clicks and retained-scene
+repainting with an unchanged primary selection. Required full-source evidence is
+recorded on the canonical PR. Native acceptance remains with the coordinator:
+on the approved optimized candidate, click first then Shift-click fifth, reverse
+and shrink the range, toggle/add with Command, click another row, then confirm
+header dragging and body time-selection still work. No app replacement or Mac
+execution is part of these source checks.
+## inline track naming — #2768 / PR376
+
+Clicking an Arrangement track header (its name or empty background) focuses that
+header. Command-R edits its name inline; Enter commits one canonical RenameTrack
+edit and Escape cancels the draft. Names retain case and Unicode in the project.
+Arrow navigation from header focus follows the neighboring header. Track control
+clicks retain their own behavior and do not bubble into header selection.
+
+Clip-header focus keeps the existing clip rename shortcut. Browser search,
+clip-name input and numeric text drafts retain their own focus and keys. A track
+name draft prevents competing clip/time gestures, and project replacement or a
+stale revision cancels it. The label uses the existing header dimensions and
+track-name tooltip; this adds no project rename model or layout policy.
+
+Rendered regressions cover actual header-background/name clicks, Enter, Escape,
+clip focus, arrow navigation and text/numeric protection. The dispatched canonical
+command is checked through Undo/Redo and worker save/reopen. Exact final cloud
+checks are recorded on the canonical PR. Native acceptance remains through the
+coordinator's serial lane: focus a header, rename with Command-R/Enter, Undo/Redo,
+Escape a second draft, verify clip rename and search/numeric protection, then
+save/reopen a disposable project with user consent. No current app replacement
+or required save/quit is implied.
 ## track creation shortcut — #2767 / PR375, 17 october 2026
 
 Command-T in editor focus invokes the same canonical `AddTrack` action as the

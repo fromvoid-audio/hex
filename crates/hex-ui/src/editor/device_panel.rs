@@ -48,12 +48,12 @@ mod return_drag;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
-mod spectrum_display;
+pub(super) mod spectrum_display;
 mod utility_panel;
 pub(super) use send_controls::finalize_send_controls_for_track;
 pub(super) use send_controls::return_send_numeric_control;
 
-const DEVICE_PANEL_HEIGHT: f32 = 213.0;
+pub(super) const DEVICE_PANEL_HEIGHT: f32 = 213.0;
 const DEVICE_PANEL_BORDER_WIDTH: f32 = 1.0;
 const DEVICE_PANEL_HEADER_HEIGHT: f32 = 22.0;
 const DEVICE_CHAIN_PADDING: f32 = 3.0;
@@ -2446,7 +2446,7 @@ fn empty_panel(message: &str) -> Stateful<Div> {
     div()
         .id("device-panel-empty")
         .debug_selector(|| "device-panel-empty".into())
-        .h(px(228.0))
+        .h(px(DEVICE_PANEL_HEIGHT))
         .w_full()
         .flex_shrink_0()
         .flex()

@@ -1,3 +1,24 @@
+## owned installer Finder cleanup — pulse2788 / PR394, 17 october2026
+
+A real source394 PhaseB publication verified the new signed app and deleted old
+custody, then failed to remove `.hex-install` because Finder left `.DS_Store`.
+The adjacent receipt stayed old and release ownership pending; this is incomplete
+delivery. The production assembly regression reproduces that precise cutpoint
+before the repair and verifies matching sealed/adjacent receipts after it.
+Only regular Finder metadata in the fixed owned workspace is removed. Unknown
+entries, symlinks and directories remain refused/preserved; running-app checks,
+activation locks, signing and source/inventory validation remain intact. Portable
+regressions cover late unexpected members, safe refusal, normal rebuild retry,
+metadata-only recovery and idempotence. Independent review identified the later
+first-rmdir race: a new before-failing regression now verifies one ENOTEMPTY-only
+retry, late unknown/link preservation and bounded exhaustion with actual durable
+release-owner READY/PENDING assertions (compilation/native tools substituted).
+The original b101 run remains frozen historical evidence; repaired-head exact
+full CI and serial native
+fixture/recovery remain pending. No Mac files were changed by this cloud work.
+Recovery uses qualified fixed source and the existing explicit release-adoption
+normal bundle retry, not a manual sidecar/owner write or a finalize-only API.
+
 ## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
 
 Checkpoint7a24 includes merged350/387 and intermediate runtime351 e1d9d50f;
@@ -74,6 +95,45 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## selected clip borders — pulse2719 / PR335, 17 october 2026
+
+Existing audio/MIDI clip borders and selected live edge previews use the theme's
+primary color, including every multi-selected member. Deselection/hover restore
+their prior affordances; widths, geometry, fills and hit areas stay unchanged.
+Actual scene regression fails with a black selected border before repair and
+passes afterward across mixed clips, clipped bounds, membership-only repaint and
+held edge preview/Escape cancellation. GPUI's observer is test-only with exact
+patch provenance. Full source evidence and remaining native acceptance are in
+Pulse/PR; no app delivery or native GPU-pixel claim. See docs/ui-design.md.
+
+## whole-clip keyboard clipboard — pulse2770 / PR378, 17 october 2026
+
+Header selection supersedes an unrelated time rectangle; Command-C captures full
+selected clips, and a destination click/Command-V uses a retained worker payload.
+Whole source/loop/fade/note metadata, relative gaps, fresh IDs, one atomic Undo
+and repeated paste survive source deselection. Existing single-source-track
+targeting, multi-track stable owners, rectangle copy and normal/ripple overlap
+rules remain. Actual UI regression fails with a 12,000-frame crop before repair
+and passes with complete 48,000-frame clips afterward, including real worker
+Undo/Redo, text focus and save/reopen. Required exact checks and native acceptance
+remain recorded in Pulse/PR; see docs/time-selection.md. No app delivery claim.
+
+## contiguous clip selection — pulse2769 / PR377, 17 october 2026
+
+A stable same-track clip-header anchor supports inclusive Shift ranges in either
+direction, repeated range changes, Command toggles and Command-Shift union. Audio
+and MIDI members paint selected; a membership epoch refreshes retained scenes
+when the primary selection is unchanged. Another-track Shift-click starts a new
+anchor. This is view state; body/time-range and header-drag behavior stay separate.
+Focused/full source checks and remaining native acceptance are recorded in Pulse.
+## inline track rename — pulse2768 / PR376, 17 october 2026
+
+Actual header focus routes Command-R to a compact inline name draft, Enter to
+canonical RenameTrack and Escape to cancellation. Clip rename remains focus
+specific; text/numeric inputs and track controls retain their behavior. Gesture
+eligibility protects active drafts. Source tests include rendered focus/keys,
+canonical single Undo/Redo and worker save/reopen; exact required checks and
+native acceptance are recorded in Pulse/PR.
 ## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
 
 Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
@@ -297,6 +357,23 @@ pending/numeric/automation-point isolation and held-pointer cancellation with
 real editor keybindings. Graph-scoped Escape preserves existing cancellation
 before ancestor editor actions. Full exact-source CI and optimized native input
 acceptance remain required.
+
+## project master and selected-track spectra — #2738 / PR349, 17 october 2026
+
+Added actual independent Master/direct post-device/post-fader track taps, forwarded
+through ordinary/compensated/stopped-monitor/streamed rendering without changing
+PCM or offline capture restrictions. All selected canonical tracks retain their
+own color/layer, up to 256 plus Master. One fixed pool and the existing worker/
+reaper enforce contribution/storage/freshness bounds; incremental work yields to
+EQ between batches. The view-only panel collapses/resizes and clears stale owner,
+selection, generation and output identities. Constrained populated details use a
+compact live plot; larger windows restore preferred height and full controls.
+Source tests cover actual PCM/Returns/loops, allocation/custody/budget refusal,
+anti-phase stereo, independent tones, rates/silence, all 256 identities, responsive
+geometry and existing compact device interactions. Optimized actual-worker source
+profiles are retained with their concurrency/outlier limitations. Exact-source
+full local CI and coordinated native visual/input/listening/performance checks
+remain required. See [tap, lifecycle, limits and profile](docs/project-spectrum.md).
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4727,6 +4804,24 @@ Editor/library/audition (#2741) and desktop MTS publication (#2742) remain open;
 this prerequisite provides no native tuning feature or user-test build by itself.
 Targeted and exact final local validation results are retained on the canonical PR.
 
+- 2026-10-17: cloud5 continued canonical tuning editor PR352: grouped live
+  preview/commit/cancel preparation, root-relative octave-preserving snapping,
+  Shift-only repeat landmarks, and a dedicated phase-preserving reference
+  audition independent of track selection or project-wide tuning enable.
+  Real desktop worker/audio bridge, callback allocation/oracle and GPUI focus/
+  release/close tests pass. Native Mac acceptance remains coordinator-serial;
+  no app delivery or schema edits were performed by this continuation.
+
+- 2026-10-17: cloud5 continued canonical MTS PR353 with a safe hex-mts broker,
+  explicit per-project ownership, coalesced accepted tuning publications,
+  separate desired/published identities, foreign-master refusal, explicit retry
+  and reserved disable/project-switch/shutdown. Five broker lifecycle/race tests
+  and five dynamically loaded ABI fixture tests pass on Linux; standalone
+  adapter strict Clippy passes. Desktop/GPUI composition check and strict Clippy pass; the four focused
+  tuning GPUI tests pass, including explicit broadcast and project-switch release.
+  Final integration checks remain separate. Actual installed
+  macOS MTS runtime/signing/client qualification is pending coordinator-serial
+  native acceptance, with no installer or signing-policy change here.
 ## 17 October 2026 — W06 host binding extraction in progress
 
 Pulse2675 / PR291 factors persistent scalar controls into
@@ -4960,3 +5055,14 @@ strict Clippy pass; no native publication/sampler registration is newly admitted
 The original Session refusal fixture had an old caller alias; rebuilding a valid
 mono bank fixed that test setup. Media source-plan loading, complete all-role
 union and remaining host wiring/retirement still continue in canonical389.
+- 2026-10-17 tuning follow-up: preserve pending reference-audition preparation
+  ownership across UI ticks until its matching completion; verified-mode real
+  worker/key-handler regression fails before repair (9541ec14), passes afterward
+  (cdb30fde). Explicit cancellation/stale owners remain terminal. Final combined
+  full CI and native interaction acceptance remain separate and pending.
+
+- 2026-10-17 tuning/MTS library follow-up: actual current Export failed behind
+  its device terminal on1251 (457acab2). Matching operation/gesture context now
+  rebinds in place at the exact terminal, keeping FIFO and earlier-dialog stale
+  refusal; focused three-case real-worker regression passes d6babcc0. New
+  dialogs defer and failed writes retire. Fresh final full CI remains pending.

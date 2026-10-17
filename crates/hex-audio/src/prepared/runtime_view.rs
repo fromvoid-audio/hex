@@ -63,6 +63,12 @@ impl ActivePublication {
     }
 }
 impl RuntimeRef<'_> {
+    pub(super) fn project_output_supported(&self, tracks: &[u64]) -> bool {
+        match self {
+            Self::Legacy(p) => p.project_output_supported(tracks),
+            Self::Eligible(p) => p.project_output_supported(tracks),
+        }
+    }
     fn status(&self) -> Option<AudioCandidateRuntimeStatus> {
         match self {
             Self::Eligible(runtime) => runtime.status(),
@@ -183,14 +189,15 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.render(output),
         }
     }
-    pub(super) fn render_with_node_signal_observer(
+    pub(super) fn render_with_signal_observers(
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
         match self {
-            Self::Legacy(p) => p.render_with_node_signal_observer(output, observer),
-            Self::Eligible(p) => p.render_with_node_signal_observer(output, observer),
+            Self::Legacy(p) => p.render_with_signal_observers(output, observer, project),
+            Self::Eligible(p) => p.render_with_signal_observers(output, observer, project),
         }
     }
     pub(super) fn clear_gain_recording_override(&mut self) {
