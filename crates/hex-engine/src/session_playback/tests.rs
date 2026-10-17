@@ -852,6 +852,12 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     let sampler_bytes = std::mem::size_of::<hex_lattice::PreparedAnalyticNote>();
     assert_eq!(sampler_bytes, 352);
     let added_sampler_bytes = sampler_bytes - 40;
+    let release_scope_bytes = std::mem::size_of::<crate::midi_note_bank::ScopedMidiNote>()
+        - std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>();
+    let span_scope_bytes = std::mem::size_of::<Option<crate::midi_note_bank::ScopedMidiNote>>()
+        - std::mem::size_of::<Option<crate::midi_note_bank::PreparedMidiNote>>();
+    let added_release_bytes = added_sampler_bytes + release_scope_bytes;
+    let added_span_bytes = added_sampler_bytes + span_scope_bytes;
     let release_capacity = super::SESSION_RELEASE_CAPACITY;
     let release_entries_bytes = release_capacity
         .checked_mul(std::mem::size_of::<super::ReleaseEntry>())
@@ -884,22 +890,33 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS,
         SESSION_RELEASE_CAPACITY
     );
+    eprintln!(
+        "resource scope host layout: sampler={} scoped_note={} release_entry={} span={} current={} scoped={}",
+        sampler_bytes,
+        std::mem::size_of::<crate::midi_note_bank::ScopedMidiNote>(),
+        std::mem::size_of::<super::ReleaseEntry>(),
+        span_buffer_bytes,
+        current_bytes,
+        scoped_bytes
+    );
     #[cfg(target_pointer_width = "64")]
     {
-        // Sampler authority adds eight bytes; tuning custody uses existing
-        // padding. The admission ceilings remain unchanged.
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
-        assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
-        assert_eq!(current_bytes, 16_075_272);
+        // Scope metadata lives only in actual host voice copies. The 352-byte
+        // sampler and all 16/18/36 MiB admission ceilings remain unchanged.
+        assert_eq!(release_scope_bytes, 16);
+        assert_eq!(span_scope_bytes, 8);
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 504);
+        assert_eq!(span_buffer_bytes, 82_952 + 192 * 16);
+        assert_eq!(current_bytes, 16_601_096);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_599_560);
+        assert_eq!(scoped_bytes, 17_125_384);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
-        .checked_sub(added_sampler_bytes)
+        .checked_sub(added_release_bytes)
         .expect("previous sampler fits the entry");
     let previous_span_buffer_size = span_buffer_bytes
-        .checked_sub(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_sampler_bytes)
+        .checked_sub(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_span_bytes)
         .expect("previous sampler fits the span buffer");
     let previous_bytes = release_capacity
         .checked_mul(previous_release_entry_size)
@@ -907,10 +924,10 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         .and_then(|bytes| bytes.checked_add(previous_span_buffer_size))
         .expect("previous fixed MIDI storage byte count is bounded");
     let expected_growth = release_capacity
-        .checked_mul(added_sampler_bytes)
+        .checked_mul(added_release_bytes)
         .and_then(|bytes| bytes.checked_mul(2))
         .and_then(|bytes| {
-            bytes.checked_add(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_sampler_bytes)
+            bytes.checked_add(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_span_bytes)
         })
         .expect("fixed MIDI storage growth is bounded");
     assert_eq!(current_bytes - previous_bytes, expected_growth);

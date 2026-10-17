@@ -342,6 +342,7 @@ impl PreparedRevision {
                 project,
                 instruments,
                 previous_session.map(|previous| previous.shared_contexts().as_ref()),
+                None,
             )?;
             if shared_contexts.payload_bytes()
                 > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
@@ -451,6 +452,7 @@ impl PreparedRevision {
             project,
             &instruments,
             previous_session.map(|previous| previous.shared_contexts().as_ref()),
+            None,
         )?;
         if shared_contexts.payload_bytes()
             > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
@@ -631,7 +633,11 @@ fn prepare_mutable_track_revisions(
             || track
                 .instrument_id
                 .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
-                .is_some_and(|owner| owner.context().import_identity().is_some())
+                .is_some_and(|owner| {
+                    owner
+                        .analytic_context()
+                        .is_some_and(|context| context.import_identity().is_some())
+                })
     };
     let mutable_track_count = arrangement
         .tracks()

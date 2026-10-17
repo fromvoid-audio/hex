@@ -4,7 +4,7 @@ use super::{
     require_positive_frame_advance,
 };
 mod density;
-use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
+use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::ScopedMidiNote};
 use density::admit_voice_density;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
@@ -124,11 +124,11 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    pub(crate) voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+    pub(crate) voice: Option<crate::midi_note_bank::ScopedMidiNote>,
 }
 
 impl MidiRenderSpan {
-    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::PreparedMidiNote> {
+    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::ScopedMidiNote> {
         self.voice
     }
 }
@@ -230,7 +230,7 @@ pub struct MidiReleaseVoice {
     start_frame: u64,
     gate_end_frame: u64,
     end_frame: u64,
-    voice: crate::midi_note_bank::PreparedMidiNote,
+    voice: crate::midi_note_bank::ScopedMidiNote,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,11 +311,11 @@ impl MidiReleaseVoice {
         self.voice = self.voice.with_context_ref(context);
     }
 
-    pub(crate) fn sampler(&self) -> PreparedMidiNote {
+    pub(crate) fn sampler(&self) -> ScopedMidiNote {
         self.voice
     }
 
-    pub(crate) fn set_sampler(&mut self, sampler: PreparedMidiNote) {
+    pub(crate) fn set_sampler(&mut self, sampler: ScopedMidiNote) {
         self.voice = sampler;
     }
 
@@ -389,7 +389,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedMidiNote,
+        voice: ScopedMidiNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {
@@ -420,7 +420,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedMidiNote,
+        voice: ScopedMidiNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {

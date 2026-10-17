@@ -321,6 +321,7 @@ fn compile_project_inner<'a>(
             snapshot,
             instrument_registry,
             None,
+            None,
         )?,
     };
     let device_context = hex_lattice::DevicePreparationContext {

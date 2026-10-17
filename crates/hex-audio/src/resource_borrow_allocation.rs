@@ -429,5 +429,65 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     drop(lease);
     drop(owner);
     verify_callbacks(&state, &candidate_lease);
+    // Real bank -> scoped inline bank copy -> retained/current source owners.
+    // Both configurations reuse slot1 with different typed original sources.
+    let configuration = |id| {
+        let state = state
+            .clone()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(id).unwrap(),
+            }])
+            .unwrap();
+        let resources = candidate.prepare_lease_on_control(&state, 4096).unwrap();
+        let note = resource_pcm::prepare_note(
+            &state,
+            &DevicePreparationContext {
+                sample_rate: 44_100,
+                tuning: &TuningTable::default(),
+                resources: &resources,
+            },
+            0,
+        )
+        .unwrap();
+        hex_engine::InlineResourceFixtureConfiguration {
+            state,
+            resources,
+            note,
+        }
+    };
+    let fixture = hex_engine::InlineResourceHostFixture::prepare_on_control(
+        44_100,
+        64,
+        configuration(ids[1].value()),
+        configuration(ids[0].value()),
+    )
+    .unwrap();
+    drop(candidate_lease);
+    drop(candidate); // only actual current/retained configuration owners remain
+    let mut sum = [0.0_f32; 2];
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            for age in 0..64 {
+                let current = fixture.sample_current(age, 64).unwrap();
+                let carried = fixture.sample_carried(age, 64).unwrap();
+                assert_eq!(current, [0.5, -0.75]);
+                assert_eq!(carried, [0.25; 2]);
+                sum[0] += current[0] + carried[0];
+                sum[1] += current[1] + carried[1];
+            }
+        }
+    });
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(sum, [1536.0, -1024.0]);
+    drop(fixture); // actual configuration/root teardown on control
     eprintln!("native bank callback probe: supported-controls=completed");
 }

@@ -450,6 +450,7 @@ impl PreparedSessionInventory {
                 project,
                 instrument_registry,
                 previous.map(|old| old.shared_contexts.as_ref()),
+                None,
             )?,
         };
         let timing = PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate())

@@ -10,6 +10,12 @@ use hex_lattice_contract::DeviceContractError;
 use std::sync::atomic::AtomicBool;
 
 struct PcmContext(PreparedAnalyticNote);
+struct InlinePcm(PreparedAnalyticNote);
+impl PreparedNativeInstrument for InlinePcm {
+    fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, DeviceContractError> {
+        Ok(self.0)
+    }
+}
 impl PreparedSharedAnalyticContext for PcmContext {
     fn declared_context_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -64,6 +70,156 @@ fn owner(
         Some(lease),
     ))
 }
+
+fn inline_owner(
+    state: NativeDeviceState,
+    lease: PreparedDeviceResourceLease,
+    track: TrackId,
+    device: DeviceId,
+) -> (Arc<SharedContextOwner>, InlinePcm) {
+    let note = hex_lattice::conformance::resource_pcm::prepare_note(
+        &state,
+        &DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &lease,
+        },
+        0,
+    )
+    .unwrap();
+    let owner = Arc::new(SharedContextOwner::from_inline_resources_on_control(
+        SharedContextId::fresh().unwrap(),
+        SharedContextIdentity {
+            tuning: TuningIdentity::default(),
+            resource_scope: 0,
+            track,
+            device,
+            device_type: state.type_id(),
+            state,
+            sample_rate: 48_000,
+        },
+        lease,
+    ));
+    (owner, InlinePcm(note))
+}
+
+#[test]
+fn actual_inline_bank_voices_retain_their_scope_without_enlarging_coefficient_entries() {
+    use crate::midi_note_bank::PreparedMidiNoteBank;
+    use crate::native_device_resources::retained::RETIRED_RESOURCE_ROOTS;
+    let ids = fixtures::ids();
+    let Some(bank) = fixtures::bank(&ids) else {
+        return;
+    };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &fixtures::specs(&ids),
+        fixtures::limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let root = DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "inline resources".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let old_state = fixtures::state(ids[0]);
+    let target_state = fixtures::state(ids[1]);
+    let (old, old_instrument) = inline_owner(
+        old_state.clone(),
+        root.prepare_lease_on_control(&old_state, 4096).unwrap(),
+        track,
+        device,
+    );
+    let (target, target_instrument) = inline_owner(
+        target_state.clone(),
+        root.prepare_lease_on_control(&target_state, 4096).unwrap(),
+        track,
+        device,
+    );
+    assert!(old.analytic_context().is_none());
+    assert!(old.require_analytic_context().is_err());
+    let mut keys = PreparedMidiNoteBank::empty_keys();
+    PreparedMidiNoteBank::add_key(&mut keys, 60, 127).unwrap();
+    let old_bank =
+        PreparedMidiNoteBank::prepare(&mut keys, &old_instrument, None, Some((0, &old))).unwrap();
+    let target_bank =
+        PreparedMidiNoteBank::prepare(&mut keys, &target_instrument, None, Some((0, &target)))
+            .unwrap();
+    let note = old_bank.sampler(old_bank.index(60, 127).unwrap()).unwrap();
+    let target_note = target_bank
+        .sampler(target_bank.index(60, 127).unwrap())
+        .unwrap();
+    assert!(matches!(note.note, PreparedMidiNote::Inline(_)));
+    assert!(note.inline_without_resources().is_none());
+    assert_eq!(note.context_id(), Some(old.id()));
+    assert!(note.rebind(0, &target).is_err());
+    let carried = note
+        .detach(&[])
+        .with_context_ref(SharedContextRef::Retained(0));
+    drop(old_bank);
+    drop(target_bank);
+    drop(root);
+    let table = Arc::new(SharedAnalyticContextTable {
+        owners: vec![target],
+        ..Default::default()
+    });
+    let before = RETIRED_RESOURCE_ROOTS.with(|counter| counter.get());
+    let (table, retained) = std::thread::spawn(move || {
+        let before = RETIRED_RESOURCE_ROOTS.with(|counter| counter.get());
+        let retained = vec![Some(old)];
+        for (age, expected) in [[0.25, -0.75], [-0.5, 1.0], [0.75, -0.25], [-1.0, 0.5]]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                carried
+                    .sample_at(&table, &retained, &[], 0, age as u64, 4)
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                target_note
+                    .sample_at(&table, &retained, &[], 0, age as u64, 4)
+                    .unwrap(),
+                [0.5; 2]
+            );
+        }
+        assert!(carried.sample_at(&table, &[], &[], 0, 0, 4).is_err());
+        assert!(note.sample_at(&table, &retained, &[], 0, 0, 4).is_err()); // target slot cannot supply old ID
+        assert_eq!(RETIRED_RESOURCE_ROOTS.with(|counter| counter.get()), before);
+        (table, retained)
+    })
+    .join()
+    .unwrap();
+    drop(table);
+    assert_eq!(RETIRED_RESOURCE_ROOTS.with(|counter| counter.get()), before);
+    drop(retained);
+    assert_eq!(
+        RETIRED_RESOURCE_ROOTS.with(|counter| counter.get()),
+        before + 1
+    );
+}
 #[test]
 fn carried_shared_host_reads_its_retained_scope_after_slot_reuse_and_control_release() {
     use crate::native_device_resources::retained::RETIRED_RESOURCE_ROOTS;
@@ -111,7 +267,11 @@ fn carried_shared_host_reads_its_retained_scope_after_slot_reuse_and_control_rel
     let target = owner(new_state, new_lease, track, device);
     let note = PreparedMidiNote::Shared {
         context: SharedContextRef::Revision(0),
-        note: old.context().prepare_note(60, 127).unwrap(),
+        note: old
+            .require_analytic_context()
+            .unwrap()
+            .prepare_note(60, 127)
+            .unwrap(),
         id: old.id(),
         binding: AnalyticBinding::Current,
     };
@@ -120,7 +280,11 @@ fn carried_shared_host_reads_its_retained_scope_after_slot_reuse_and_control_rel
         .with_context_ref(SharedContextRef::Retained(0));
     let target_note = PreparedMidiNote::Shared {
         context: SharedContextRef::Revision(0),
-        note: target.context().prepare_note(60, 127).unwrap(),
+        note: target
+            .require_analytic_context()
+            .unwrap()
+            .prepare_note(60, 127)
+            .unwrap(),
         id: target.id(),
         binding: AnalyticBinding::Current,
     };

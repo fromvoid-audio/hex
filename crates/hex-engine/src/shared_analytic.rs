@@ -11,6 +11,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(feature = "instrument-test-support")]
+pub(crate) mod inline_fixture;
 #[cfg(test)]
 mod resource_tests;
 
@@ -130,7 +132,7 @@ pub(crate) struct SharedContextOwner {
     id: SharedContextId,
     identity: SharedContextIdentity,
     declared_bytes: usize,
-    context: Arc<dyn PreparedSharedAnalyticContext>,
+    context: Option<Arc<dyn PreparedSharedAnalyticContext>>,
     resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
 }
 
@@ -159,8 +161,22 @@ impl SharedContextOwner {
             id,
             identity,
             declared_bytes,
-            context: Arc::from(context),
+            context: Some(Arc::from(context)),
             resources,
+        }
+    }
+    fn from_inline_resources_on_control(
+        id: SharedContextId,
+        mut identity: SharedContextIdentity,
+        resources: crate::native_device_resources::PreparedDeviceResourceLease,
+    ) -> Self {
+        identity.resource_scope = resources.source_scope_identity();
+        Self {
+            id,
+            identity,
+            declared_bytes: 0,
+            context: None,
+            resources: Some(resources),
         }
     }
     pub(crate) fn id(&self) -> SharedContextId {
@@ -175,8 +191,17 @@ impl SharedContextOwner {
         self.declared_bytes
     }
 
-    pub(crate) fn context(&self) -> &dyn PreparedSharedAnalyticContext {
-        self.context.as_ref()
+    pub(crate) fn analytic_context(&self) -> Option<&dyn PreparedSharedAnalyticContext> {
+        self.context.as_deref()
+    }
+    pub(crate) fn require_analytic_context(
+        &self,
+    ) -> Result<&dyn PreparedSharedAnalyticContext, Invalid> {
+        self.analytic_context()
+            .ok_or(Invalid("shared analytic provider context is unavailable"))
+    }
+    pub(crate) fn is_inline_resource_scope(&self) -> bool {
+        self.context.is_none() && self.resources.is_some()
     }
 
     pub(crate) fn resources(&self) -> &dyn hex_lattice::DeviceResources {
@@ -210,10 +235,16 @@ impl SharedContextOwner {
         {
             return Ok(None);
         }
-        let Some(target) = self.context().analytic_continuation() else {
+        let Some(target) = self
+            .analytic_context()
+            .and_then(|context| context.analytic_continuation())
+        else {
             return Ok(None);
         };
-        let Some(source) = previous.context().analytic_continuation() else {
+        let Some(source) = previous
+            .analytic_context()
+            .and_then(|context| context.analytic_continuation())
+        else {
             return Ok(None);
         };
         if target.format() != source.format() {
@@ -325,6 +356,7 @@ impl SharedAnalyticContextTable {
         project: &Project,
         registry: &NativeInstrumentRegistry<'_>,
         previous: Option<&Self>,
+        resource_preparation: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
     ) -> Result<Arc<Self>, Invalid> {
         let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
         let tuning_identity = if tuning.is_neutral() {
@@ -352,13 +384,24 @@ impl SharedAnalyticContextTable {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
                 continue;
             };
+            let resources = match resource_preparation {
+                Some(preparation) => preparation
+                    .configuration_lease_on_control(device.state())
+                    .map_err(|_| Invalid("instrument resource scope preparation refused"))?,
+                None if device.state().asset_references().is_empty() => None,
+                None => return Err(Invalid("instrument resource source plan is unavailable")),
+            };
             let prepared = registry
                 .prepare_instrument(
                     device.state(),
                     &hex_lattice::DevicePreparationContext {
                         sample_rate: project.sample_rate(),
                         tuning: &tuning,
-                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        resources: resources.as_ref().map_or(
+                            &hex_lattice::EMPTY_DEVICE_RESOURCES
+                                as &dyn hex_lattice::DeviceResources,
+                            |resources| resources as &dyn hex_lattice::DeviceResources,
+                        ),
                     },
                 )
                 .map_err(|_| Invalid("track instrument state is unsupported"))?;
@@ -380,15 +423,17 @@ impl SharedAnalyticContextTable {
                     return Err(Invalid("mutable continuation capability disappeared"));
                 }
             }
-            let Some(context) = prepared
+            let context = prepared
                 .prepare_shared_analytic_context()
-                .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?
-            else {
+                .map_err(|_| Invalid("shared analytic instrument context is unsupported"))?;
+            if context.is_none() && resources.is_none() {
                 continue;
-            };
+            }
             let identity = SharedContextIdentity {
                 tuning: tuning_identity,
-                resource_scope: 0,
+                resource_scope: resources
+                    .as_ref()
+                    .map_or(0, |lease| lease.source_scope_identity()),
                 track: track.id(),
                 device: device.id(),
                 device_type: device.state().type_id(),
@@ -397,7 +442,10 @@ impl SharedAnalyticContextTable {
             };
             if previous
                 .and_then(|table| table.owner_for_device(device.id()))
-                .is_some_and(|owner| owner.compatible_identity(&identity))
+                .is_some_and(|owner| {
+                    owner.compatible_identity(&identity)
+                        && owner.analytic_context().is_some() == context.is_some()
+                })
             {
                 let owner = previous
                     .and_then(|table| table.owner_for_device(device.id()))
@@ -416,7 +464,9 @@ impl SharedAnalyticContextTable {
                 continue;
             }
 
-            let declared_bytes = context.declared_context_bytes();
+            let declared_bytes = context
+                .as_ref()
+                .map_or(0, |context| context.declared_context_bytes());
             if declared_bytes > MAX_SHARED_ANALYTIC_CONTEXT_BYTES {
                 return Err(Invalid("shared analytic context exceeds its byte limit"));
             }
@@ -429,13 +479,21 @@ impl SharedAnalyticContextTable {
                 ));
             }
             let id = SharedContextId::fresh()?;
-            owners.push(Arc::new(SharedContextOwner::from_prepared_on_control(
-                id,
-                identity,
-                declared_bytes,
-                context,
-                None,
-            )));
+            let owner = match context {
+                Some(context) => SharedContextOwner::from_prepared_on_control(
+                    id,
+                    identity,
+                    declared_bytes,
+                    context,
+                    resources,
+                ),
+                None => SharedContextOwner::from_inline_resources_on_control(
+                    id,
+                    identity,
+                    resources.ok_or(Invalid("inline instrument resource scope is unavailable"))?,
+                ),
+            };
+            owners.push(Arc::new(owner));
         }
         if owners.len() > MAX_SHARED_CONTEXTS_PER_REVISION {
             return Err(Invalid("shared instrument context count limit reached"));

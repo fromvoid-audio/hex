@@ -14,6 +14,26 @@ pub(crate) mod retained;
 pub use retained::{
     DeviceResourceBank, DeviceResourceBankRefusal, OriginalSourceLease, PreparedDeviceResourceLease,
 };
+/// Borrowed control preparation only, never a publication permit. Each host
+/// retains its own checked configuration lease before the bank can retire.
+#[derive(Clone, Copy)]
+pub struct DeviceResourcePreparation<'a> {
+    pub bank: &'a DeviceResourceBank,
+    pub max_scope_metadata_bytes: usize,
+}
+impl DeviceResourcePreparation<'_> {
+    pub(crate) fn configuration_lease_on_control(
+        self,
+        state: &NativeDeviceState,
+    ) -> Result<Option<PreparedDeviceResourceLease>, ResourcePreparationError> {
+        if state.asset_references().is_empty() {
+            return Ok(None);
+        }
+        self.bank
+            .prepare_lease_on_control(state, self.max_scope_metadata_bytes)
+            .map(Some)
+    }
+}
 mod ingress;
 pub use ingress::ResidentAudioIngressRefusal;
 

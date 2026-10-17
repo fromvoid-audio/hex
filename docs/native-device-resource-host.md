@@ -323,3 +323,28 @@ observes the actual reservation's final release on control. The native clip
 renderer probe uses an independent constant-gain PCM oracle through partitioned
 render/seek and records zero total/net callback allocations and frees. This is
 prepared-PCM/custody evidence, not complete graph/reaper or sampler admission.
+
+## inline analytic host scopes
+
+Inline note coefficients remain in the existing 352-byte analytic sampler and
+360-byte bank entry. When a note leaves the bank, its host voice copy adds only
+a nonowning configuration key. Actual source ownership stays in the existing
+current/retained context owner, with a resource lease and no invented DSP
+context. Lookup checks the actual owner ID and class before borrowing its scope;
+a target reusing the same slot cannot satisfy an old carried key.
+
+The real bank/host and MidiReleaseVoice paths preserve old stereo or mono PCM
+after caller-bank retirement while the new configuration uses its own source.
+Missing carried owners refuse. Replacing the actual scope with EMPTY produces
+zero PCM and fails the independent oracle; restored code passes. Actual callback
+probes observe zero total/net allocations/frees, and final root destruction is
+observed on control. The registry's nonempty-reference processing gate remains
+closed, and ordinary asset-free preparation supplies no resource plan.
+
+Host metadata is charged at its real size. On the measured 64-bit source, a
+scoped host note is368bytes, ReleaseEntry504bytes, and the current release/span
+storage16,601,096bytes; including existing context slots/plans is17,125,384bytes.
+The existing16MiB current,18MiB scoped and36MiB paired bounds are unchanged.
+Only the owning layout fixture's exact byte assertions changed; detached-effect
+and harmonic stack fixtures are untouched. This is not complete effect-host,
+all-role metadata, atomic publication or saturated reaper qualification.

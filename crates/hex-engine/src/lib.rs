@@ -70,6 +70,11 @@ pub use audio_only_inputs::{
     StreamedSourceRefusal,
 };
 pub mod native_device_resources;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub use shared_analytic::inline_fixture::{
+    InlineResourceFixtureConfiguration, InlineResourceHostFixture,
+};
 mod owned_shared;
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
@@ -1490,7 +1495,7 @@ impl Track {
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::PreparedMidiNote),
+        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::ScopedMidiNote),
     ) -> Result<(), Invalid> {
         let end = frame
             .checked_add(1)

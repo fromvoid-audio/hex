@@ -1,6 +1,6 @@
 //! Borrowed, checked analytic-to-owned-history adoption at one committed cut.
 use super::*;
-use crate::midi_note_bank::PreparedMidiNote;
+use crate::midi_note_bank::{PreparedMidiNote, ScopedMidiNote};
 use crate::mutable_instrument::{
     MutableOccurrence, MutableOccurrenceKey, MutableOccurrenceSignature,
 };
@@ -26,7 +26,9 @@ impl Import {
             .owner(self.context)
             .ok_or(SessionPlaybackError::SharedAnalyticContext)?;
         Ok(AnalyticInstrumentHistory {
-            source: source.context(),
+            source: source
+                .require_analytic_context()
+                .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?,
             source_id: source
                 .continuation_id()
                 .map_err(|_| SessionPlaybackError::SharedAnalyticContext)?,
@@ -45,7 +47,7 @@ impl Import {
         previous: &SessionPlayback,
         route: TrackRoute,
         loop_pass: u64,
-        sampler: PreparedMidiNote,
+        sampler: ScopedMidiNote,
         start: u64,
         gate: u64,
         end: u64,
@@ -78,7 +80,7 @@ impl Import {
             note: payload,
             id,
             ..
-        } = sampler
+        } = sampler.note
         else {
             return Err(SessionPlaybackError::SharedAnalyticContext);
         };
