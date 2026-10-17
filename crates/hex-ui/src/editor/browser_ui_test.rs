@@ -1709,7 +1709,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     let (list_before, scroll_before) = editor.read_with(cx, |view, _| {
         (
             view.track_scroll.logical_scroll_top_index(),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     visual.simulate_event(gpui::ScrollWheelEvent {
@@ -1721,7 +1721,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
     let (list_after, scroll_after) = editor.read_with(cx, |view, _| {
         (
             view.track_scroll.logical_scroll_top_index(),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     assert_eq!(
@@ -1744,7 +1744,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     visual.simulate_event(gpui::ScrollWheelEvent {
@@ -1757,7 +1757,7 @@ fn arrangement_wheel_zoom_is_pointer_anchored_and_does_not_escape_its_timeline(
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     assert_eq!(after_limit_wheel, at_zoom_limit);
@@ -1944,8 +1944,8 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
         (
             view.visible_viewport(state.timeline_frames),
             view.arrangement_pan.is_some(),
-            view.track_scroll.0.borrow().base_handle.offset(),
-            view.track_scroll.0.borrow().base_handle.max_offset(),
+            view.track_scroll.offset(),
+            view.track_scroll.max_offset(),
         )
     });
     let timeline_width = f32::from(body.size.width - px(176.0));
@@ -1969,7 +1969,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
     );
     visual.run_until_parked();
     let bottom_offset = editor.read_with(cx, |view, _| {
-        let handle = view.track_scroll.0.borrow().base_handle.clone();
+        let handle = view.track_scroll.clone();
         (handle.offset().y, handle.max_offset().height)
     });
     assert_eq!(
@@ -1978,9 +1978,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
     );
     visual.simulate_mouse_move(outside, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
-    let top_offset = editor.read_with(cx, |view, _| {
-        view.track_scroll.0.borrow().base_handle.offset().y
-    });
+    let top_offset = editor.read_with(cx, |view, _| view.track_scroll.offset().y);
     assert_eq!(top_offset, px(0.0), "vertical pan clamps at the first row");
     visual.simulate_mouse_up(outside, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
@@ -1988,7 +1986,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
             view.arrangement_pan.is_some(),
         )
     });
@@ -2006,7 +2004,7 @@ fn middle_drag_pans_both_arrangement_axes_until_release(cx: &mut TestAppContext)
         let state = view.state.as_ref().expect("project");
         (
             view.visible_viewport(state.timeline_frames),
-            view.track_scroll.0.borrow().base_handle.offset(),
+            view.track_scroll.offset(),
         )
     });
     assert_eq!(
