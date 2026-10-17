@@ -478,6 +478,103 @@ fn drag_source_to_inserted_track(
 }
 
 #[gpui::test]
+fn rendered_clip_drop_highlights_only_occupied_audio_and_midi_spans(cx: &mut TestAppContext) {
+    let (project, _, target, clip) = audio_project();
+    let mut model = Editor::new(project, 8).expect("model");
+    model
+        .execute(Command::CopyClipTo {
+            clip,
+            track: target,
+            start: 0,
+        })
+        .expect("audio victim");
+    model
+        .execute(Command::PlaceMidiClip {
+            track: target,
+            start: BeatTime::from_quarters(5).unwrap(),
+            length: BeatTime::ONE,
+        })
+        .expect("midi victim");
+    let project = model.project().clone();
+    let media = BTreeMap::from([(
+        project.clip(clip).unwrap().asset(),
+        hex_engine::Audio::new(48_000, vec![[0.0; 2]; 96_000]).unwrap(),
+    )]);
+    let (_, midi) =
+        hex_engine::compile::project_with_midi_preview(&project, &media).expect("compile previews");
+    let (handle, editor) = editor_window(cx, project, Arc::new(midi));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let delta = f32::from(lane.size.width) * 48_000.0 / TIMELINE_FRAMES as f32;
+    let (_, release) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, delta);
+    let (start, end) = editor.read_with(cx, |view, _| {
+        let preview = view
+            .active_clip_drag
+            .as_ref()
+            .unwrap()
+            .preview
+            .get()
+            .unwrap();
+        (preview.start_frame, preview.end_frame)
+    });
+    for (index, (victim_start, victim_end)) in [(0_u64, 96_000_u64), (120_000, 144_000)]
+        .into_iter()
+        .enumerate()
+    {
+        let overlap = visual
+            .debug_bounds(Box::leak(
+                format!("clip-drop-overlap-{index}").into_boxed_str(),
+            ))
+            .unwrap_or_else(|| {
+                panic!("occupied span {index} highlighted for landing {start}..{end}")
+            });
+        let expected_left = lane.origin.x
+            + lane.size.width * (start.max(victim_start) as f32 / TIMELINE_FRAMES as f32);
+        let expected_width = lane.size.width
+            * ((end.min(victim_end) - start.max(victim_start)) as f32 / TIMELINE_FRAMES as f32);
+        assert!((overlap.origin.x - expected_left).abs() <= px(1.0));
+        assert!((overlap.size.width - expected_width).abs() <= px(1.0));
+    }
+    assert!(visual.debug_bounds("clip-drop-overlap-2").is_none());
+    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("clip-drop-overlap-0").is_none(),
+        "release clears highlights"
+    );
+}
+
+#[gpui::test]
+fn rendered_clip_drop_excludes_moved_source_but_highlights_copied_source(cx: &mut TestAppContext) {
+    let (project, _, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (_, release) = drag_source_to_target(cx, &mut visual, &editor, clip, 0, 0.0);
+    assert!(visual.debug_bounds("clip-drop-overlap-0").is_none());
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_modifiers_change(option);
+    visual.run_until_parked();
+    let overlap = visual
+        .debug_bounds("clip-drop-overlap-0")
+        .expect("copy intersects original");
+    let preview = visual.debug_bounds("clip-drop-preview").unwrap();
+    assert!((overlap.origin.x - preview.origin.x).abs() <= px(1.0));
+    assert!((overlap.size.width - preview.size.width).abs() <= px(1.0));
+    visual.simulate_modifiers_change(Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("clip-drop-overlap-0").is_none());
+    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
 fn rendered_audio_clip_drag_starts_previews_and_commits_a_move(cx: &mut TestAppContext) {
     let (project, source, target, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -665,7 +762,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
         ))
         .expect("central move target");
-    assert_eq!(move_bounds.size.height, original_bounds.size.height);
+    assert!(
+        (f32::from(move_bounds.size.height) - f32::from(original_bounds.size.height) / 3.0).abs()
+            < 1.0
+    );
     assert!(move_bounds.origin.x + move_bounds.size.width <= handle_bounds.origin.x);
 
     let lane = visual

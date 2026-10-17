@@ -11,6 +11,7 @@ mod editor;
 mod editor_backend;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
+pub mod output_meter;
 mod theme;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 use hex_audio::AudioOutput;

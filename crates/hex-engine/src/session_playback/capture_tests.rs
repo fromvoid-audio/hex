@@ -16,6 +16,8 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
         track.soloed = solo && id == 1;
         track.content = TrackContentSnapshot::Hybrid {
             audio_clips: vec![ClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: clip,
@@ -515,6 +517,8 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].content = TrackContentSnapshot::Hybrid {
         midi_clips,
         audio_clips: vec![ClipSnapshot {
+            name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id: 81,
@@ -973,3 +977,139 @@ fn reused_capture_buffers_only_clear_rendered_prefix_on_success() {
 
 #[path = "capture_routing_tests.rs"]
 mod routing;
+
+fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
+    use hex_lattice::conformance::owned_delay;
+    let mut snapshot = audio_fixture_project(true, false, false).snapshot();
+    snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        id: 31,
+        bypassed: false,
+        state: owned_delay::state(17).unwrap(),
+    }];
+    if compensated {
+        snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            id: 32,
+            bypassed: false,
+            state: crate::signal_graph::tests::state(7).unwrap(),
+        }];
+    }
+    snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        id: 21,
+        bypassed: false,
+        state: owned_delay::state(19).unwrap(),
+    }];
+    snapshot.next_id = 40;
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let samples = crate::Audio::new(48_000, vec![[0.4, -0.2]; 32]).unwrap();
+    let effects: [&dyn hex_lattice::NativeDeviceDefinition; 3] = [
+        &owned_delay::DEFINITION,
+        &hex_devices::utility::UTILITY_DEFINITION,
+        &crate::signal_graph::tests::Definition,
+    ];
+    let registry = hex_lattice::NativeDeviceRegistry::new(&effects).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    Arc::new(
+        PreparedRevision::prepare_with_registries(
+            &project,
+            &audio_media(&project, &samples, &samples),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &registry,
+            &instruments,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff() {
+    for compensated in [false, true] {
+        let revision = owned_effect_revision(compensated);
+        let mut tested = linear(Arc::clone(&revision));
+        let mut reference = linear(Arc::clone(&revision));
+        assert_eq!(tested.compensation.is_some(), compensated);
+        for value in [&mut tested, &mut reference] {
+            value.render(&mut [[0.0; 2]; 4]).unwrap();
+        }
+        for value in [&mut tested, &mut reference] {
+            let bus = &revision.arrangement().return_buses()[0];
+            let mut chain =
+                hex_lattice::NativeRuntimeChain::new_prepared(bus.device_chain.to_vec()).unwrap();
+            chain.begin_block();
+            chain.process_block(&mut [[0.6, -0.3]; 3]);
+            chain.commit_block();
+            value.return_effect_tails.slots_mut()[0] = Some(
+                super::return_effect_tails::ReturnEffectTail::new(chain, bus),
+            );
+        }
+        tested.arrangement_frame = u64::MAX - 300;
+        let mut observed = 0;
+        let mut actual = [[9.0; 2]; 512];
+        assert!(
+            tested
+                .render_with_post_node_observer(
+                    &mut actual,
+                    Some(&mut |_, _, _: &[Frame]| observed += 1)
+                )
+                .is_err()
+        );
+        assert!(
+            observed > 0,
+            "failure must follow speculative effect processing"
+        );
+        assert_eq!(actual, [[0.0; 2]; 512]);
+        assert_eq!(tested.performance_frame, 4);
+        let candidate = linear(revision);
+        // This provider forbids inheriting an open transaction. A next-begin
+        // implicit restore is insufficient at the immediate handoff frontier.
+        assert!(candidate.device_chains[0].can_inherit_from(&tested.device_chains[0]));
+        assert!(candidate.return_chains[0].can_inherit_from(&tested.return_chains[0]));
+        assert!(
+            candidate.return_chains[0].can_inherit_from(
+                &tested.return_effect_tails.slots()[0]
+                    .as_ref()
+                    .unwrap()
+                    .chain
+            )
+        );
+        tested.arrangement_frame = 4;
+        let mut expected = actual;
+        tested.render(&mut actual).unwrap();
+        reference.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(tested.performance_frame, reference.performance_frame);
+    }
+}
+
+#[test]
+fn owned_stopped_monitor_drains_private_history_and_closes_transactions() {
+    for compensated in [false, true] {
+        let revision = owned_effect_revision(compensated);
+        let mut tested = linear(Arc::clone(&revision));
+        tested.render(&mut [[0.0; 2]; 16]).unwrap();
+        tested.playing = false;
+        // Install an idle canonical keyboard fixture so the public renderer
+        // enters stopped monitoring rather than its no-monitor silence path.
+        let keyboard_project = project(0.375, 0, 1 << 26);
+        let keyboard = crate::computer_keyboard::ComputerKeyboardRuntime::prepare(
+            &keyboard_project,
+            keyboard_project.tracks()[0].id(),
+            Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default()),
+        )
+        .unwrap();
+        tested.computer_keyboard = Some(Box::new(keyboard));
+        let before = (tested.arrangement_frame, tested.performance_frame);
+        let mut output = [[0.0; 2]; 128];
+        tested.render(&mut output).unwrap();
+        assert!(
+            output.iter().any(|frame| *frame != [0.0; 2]),
+            "compensated={compensated}"
+        );
+        assert_eq!((tested.arrangement_frame, tested.performance_frame), before);
+        let candidate = linear(revision);
+        assert!(candidate.device_chains[0].can_inherit_from(&tested.device_chains[0]));
+        assert!(candidate.return_chains[0].can_inherit_from(&tested.return_chains[0]));
+        tested.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 128]);
+    }
+}

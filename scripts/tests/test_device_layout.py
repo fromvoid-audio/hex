@@ -50,6 +50,13 @@ class DeviceLayoutGuardTests(unittest.TestCase):
             self.production_copy(root)
             self.assertEqual(guard.analyze(root, gallery=False), [])
 
+            rows = root / guard.PANEL / "parameter_rows.rs"
+            rows_original = rows.read_text()
+            rows.write_text(rows_original.replace("crate::device_composition::windowed_body(", "local_unstyled_body("))
+            errors = guard.analyze(root, gallery=False)
+            self.assertTrue(any("parameter_rows.rs::body" in error and "missing shared call" in error for error in errors), errors)
+            rows.write_text(rows_original)
+
             panel = root / guard.PANEL / "utility_panel.rs"
             original = panel.read_text()
             # A local header/surface fork must fail even when its legitimate

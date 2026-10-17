@@ -19,7 +19,7 @@ rtrb = "=0.3.4"
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
-hex-lattice = { path = "../hex-lattice" }
+hex-lattice = { path = "../hex-lattice", features = ["conformance"] }
 allocation-counter = "=0.8.1"
 
 [lints]

@@ -9,7 +9,9 @@ See [instrument slots](../../docs/lattice-instruments.md) for the separate note 
 
 ## Dependencies
 
-This crate uses the Rust standard library and `hex-lattice-contract`. It defines stereo frames,
+This crate uses the Rust standard library, `hex-lattice-contract` and `hex-dsp`.
+It reexports the existing stereo frame/matrix API from host-independent `hex-dsp`,
+which owns that arithmetic without device or host contracts. It defines
 immutable finite 2×2 matrices, ordered composition, and explicit memoryless
 latency metadata, plus the borrowed native-device definition registry and
 preconstructed transactional effect and instrument twins with checked compatible
@@ -33,12 +35,13 @@ Analytic instruments may also prepare an immutable shared context and compact
 copyable note payloads; the host enforces per-context and per-revision byte
 bounds, while the engine owns revision and release leases.
 
-`NativeRuntimeChain::declared_storage_preflight_bytes_for_instances` estimates
-the chain header, requested entry storage, and both processor-runtime twins
+`NativeRuntimeChain::declared_storage_preflight_bytes_for_instances` (legacy) and
+`declared_storage_preflight_bytes_for_prepared` (general capability) estimate
+the chain header, requested entry storage, and total processor-runtime ownership
 from declared fixed payload sizes before runtime factories run. It is not a
 guarantee about allocator-rounded vector capacity. After construction,
 `accounted_storage_bytes` uses the actual entry-vector capacity and charges both
-declared twin payloads. The shared immutable configuration payload is capped at
+declared paired payloads. The shared immutable configuration payload is capped at
 4,096 bytes per device; its Arc handle is part of each runtime entry, while the
 payload remains owned by the prepared graph and is excluded from runtime bytes.
 Shared prepared definitions and allocator bookkeeping are also excluded;
@@ -77,3 +80,15 @@ handling. `zero_input_drain_for_range` charges checked intrinsic latency plus
 residual tail; `output_tail_for_range` continues to report residual tail alone.
 Graph timing, transport history, compensation buffers and handoff policy remain
 engine responsibilities.
+
+The optional `conformance` feature exposes control-side authoring fixtures for
+codec/descriptor contracts, transactional effects and instrument capabilities.
+It uses only existing traits and allocates outside callbacks. See
+[authoring](../../docs/native-device-authoring.md) for checks and finite limits.
+
+The additive owned-effect capability constructs one fallible control-side owner
+of committed/speculative history. General accounting charges total pair bytes;
+legacy factories/literals retain their existing meaning. Host errors explicitly
+abort transactions. Production budgets and native Utility storage qualification
+remain unchanged. See [owned effect transactions](../../docs/owned-effect-transactions.md)
+for the contract, registered test provider, evidence and open large-state custody.

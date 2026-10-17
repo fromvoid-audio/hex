@@ -7,30 +7,30 @@ use std::fmt;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DocumentV25 {
-    format: String,
-    version: u32,
-    sample_rate: u32,
-    next_id: u64,
-    assets: Vec<AssetV2>,
+    pub(super) format: String,
+    pub(super) version: u32,
+    pub(super) sample_rate: u32,
+    pub(super) next_id: u64,
+    pub(super) assets: Vec<AssetV2>,
     #[serde(deserialize_with = "gain_touch::bounded_tracks")]
-    tracks: Vec<gain_touch::TrackV22>,
-    return_tracks: Vec<ReturnTrackDtoV17>,
+    pub(super) tracks: Vec<gain_touch::TrackV22>,
+    pub(super) return_tracks: Vec<ReturnTrackDtoV17>,
     #[serde(deserialize_with = "deserialize_required_loop_region")]
-    loop_region: Option<LoopRegionDto>,
-    master_gain: f32,
-    tempo_points: Vec<TempoPointDto>,
-    meter_points: Vec<MeterPointDto>,
-    session: SessionDtoV12,
+    pub(super) loop_region: Option<LoopRegionDto>,
+    pub(super) master_gain: f32,
+    pub(super) tempo_points: Vec<TempoPointDto>,
+    pub(super) meter_points: Vec<MeterPointDto>,
+    pub(super) session: SessionDtoV12,
     #[serde(deserialize_with = "provenance::required_provenance")]
-    import_provenance: Option<provenance::ProvenanceDto>,
+    pub(super) import_provenance: Option<provenance::ProvenanceDto>,
     #[serde(deserialize_with = "return_feeds::bounded_feeds")]
-    routing: Vec<return_feeds::FeedDto>,
+    pub(super) routing: Vec<return_feeds::FeedDto>,
     #[serde(deserialize_with = "bounded_audio")]
-    audio_feeds: Vec<AudioDto>,
+    pub(super) audio_feeds: Vec<AudioDto>,
     #[serde(deserialize_with = "bounded_midi")]
-    midi_routes: Vec<MidiDto>,
+    pub(super) midi_routes: Vec<MidiDto>,
     #[serde(deserialize_with = "bounded_states")]
-    audio_clip_state: Vec<AudioState>,
+    pub(super) audio_clip_state: Vec<AudioState>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +45,9 @@ fn required_edit<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<crate::audio_edit::AudioEditDto>, D::Error> {
     Option::deserialize(d)
 }
-fn bounded_states<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<AudioState>, D::Error> {
+pub(super) fn bounded_states<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<AudioState>, D::Error> {
     struct States;
     impl<'de> Visitor<'de> for States {
         type Value = Vec<AudioState>;
@@ -111,7 +113,7 @@ pub(super) fn overlay(
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 pub(crate) fn refuse_legacy_audio(project: &Project) -> Result<(), StorageError> {
-    if project.tracks().iter().flat_map(|t|t.clips()).any(|c|c.gain()!=hex_project::ClipGain::UNITY || c.audio_edit().is_some())
+    if project.tracks().iter().flat_map(|t|t.clips()).any(|c|c.gain()!=hex_project::ClipGain::UNITY || c.audio_edit().is_some() || c.fade().has_shape())
         || project.session_cells().iter().any(|c|matches!(c.content(),hex_project::SessionCellContent::Audio(c) if c.gain()!=hex_project::ClipGain::UNITY)) {
         return Err(StorageError::Invalid("older schema cannot save clip gain or musical audio state"));
     }
@@ -170,6 +172,10 @@ impl DocumentV25 {
                 "unsupported project format or version",
             ));
         }
+        doc.into_project()
+    }
+    pub(super) fn into_project(self) -> Result<Project, StorageError> {
+        let doc = self;
         let base = playable_routing::DocumentV24 {
             format: doc.format,
             version: 24,

@@ -12,6 +12,8 @@ widgets = (
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    # Clip name components normalize labels or render a native text-input entity.
+    'self.clip_name_label(', 'self.clip_name_header(', 'edit.input.clone())',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -34,6 +36,8 @@ widgets = (
     # Algorithm diagrams have no text; global controls normalize captions.
     'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
+    # Output meter labels are routed through theme::text in the component.
+    'crate::output_meter::render(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',
     'hex_widgets::device_section(', 'hex_widgets::device_layout(',
@@ -46,7 +50,15 @@ widgets = (
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
+    # Split browser components normalize every caption at their boundary.
+    'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
+    'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
+    'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
+    # Sample source filters route labels through theme::text.
+    'self.sample_filters(', 'filters)',
+
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
@@ -92,7 +104,13 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Audio-event editor components keep their text at the themed boundary.
+    'super::audio_event_editor::view(', 'waveform::button(',
+    'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
+    'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

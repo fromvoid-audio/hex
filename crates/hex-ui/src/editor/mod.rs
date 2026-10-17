@@ -7,11 +7,17 @@ mod arrangement_device_drop_ui_test;
 mod arrangement_main_track_ui_test;
 mod arrangement_seek;
 mod audio_admission;
+mod audio_event_editor;
 mod browser;
 mod browser_input;
 mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
+mod clip_name;
+
+mod clip_paint;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod clip_paint_ui_test;
 mod clip_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_view_ui_test;
@@ -35,6 +41,7 @@ mod export;
 mod external_audio_drop;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod external_audio_drop_ui_test;
+mod fade_handles;
 mod fades;
 mod gain_lane;
 mod gain_recording;
@@ -57,6 +64,8 @@ mod midi_thumbnail;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod output_meter_ui_test;
 mod overview;
 mod play_intent;
 mod project_recovery;
@@ -212,6 +221,8 @@ actions!(
     [
         TogglePlay,
         ToggleBrowser,
+        SearchBrowser,
+        ToggleSnapGrid,
         ThemeSettingsEscape,
         BrowserPrevious,
         BrowserNext,
@@ -247,6 +258,9 @@ actions!(
         TrimLeft,
         TrimRight,
         DeleteClip,
+        RenameClip,
+        CommitClipName,
+        CancelClipName,
         CopyTimeSelection,
         CutTimeSelection,
         PasteTimeSelection,
@@ -296,6 +310,7 @@ const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
+    clip_name::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -308,6 +323,7 @@ fn bind_editor_keys(cx: &mut App) {
         escape_binding(),
         KeyBinding::new("cmd-i", ImportAudio, Some("hex_editor")),
         KeyBinding::new("cmd-alt-b", ToggleBrowser, None),
+        KeyBinding::new("cmd-f", SearchBrowser, None),
         KeyBinding::new("up", BrowserPrevious, Some("hex_browser")),
         KeyBinding::new("down", BrowserNext, Some("hex_browser")),
         KeyBinding::new("enter", BrowserActivate, Some("hex_browser")),
@@ -408,6 +424,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor")),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_midi")),
+        KeyBinding::new("cmd-a", SelectAllMidiNotes, Some("hex_audio_events")),
+        KeyBinding::new("cmd-4", ToggleSnapGrid, Some("hex_editor")),
         KeyBinding::new("b", ToggleMidiDrawMode, Some("hex_midi")),
         KeyBinding::new("shift-up", MidiOctaveUp, Some("hex_midi")),
         KeyBinding::new("shift-down", MidiOctaveDown, Some("hex_midi")),
@@ -485,6 +503,7 @@ pub(super) struct EditorView {
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
+    clip_name_edit: Option<clip_name::NameEdit>,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
@@ -553,6 +572,9 @@ pub(super) struct EditorView {
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
+    audio_event_editor: audio_event_editor::State,
+    audio_event_focus: FocusHandle,
+    _audio_event_blur: gpui::Subscription,
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
@@ -562,6 +584,7 @@ pub(super) struct EditorView {
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
+    output_meter_frame: Option<refresh::AudioFrame>,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
@@ -588,12 +611,16 @@ pub(super) struct EditorView {
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
     active_native_device_drag: Option<drag::NativeDeviceDrag>,
     active_trim_drag: Option<trim::TrimDrag>,
+    fade_key_held: bool,
+    active_fade_drag: Option<fade_handles::FadeDrag>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
     #[cfg(test)]
     drag_move_event_count: usize,
     #[cfg(test)]
     last_enqueued_edit: Option<Command>,
+    #[cfg(test)]
+    last_enqueued_clip_conversion: Option<(u64, u64, ClipId, bool)>,
     #[cfg(test)]
     last_enqueued_native_device_add: Option<(
         TrackId,
@@ -627,6 +654,7 @@ pub(super) struct EditorView {
     theme_settings: theme_settings::ThemeSettingsState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
+    clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
     time_selection_project_scope: bool,
     time_selection_gesture: Option<time_selection::TimeSelectionGesture>,
@@ -764,12 +792,20 @@ impl EditorView {
             }
         });
         let focus = cx.focus_handle();
-        let scrub_focus_blur = cx.on_blur(&focus, window, |view, _, cx| {
+        let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
+            if !view.focus.is_focused(window) {
+                view.cancel_fade_gesture(cx);
+            }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
-            if view.cancel_scrub() {
+            if view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
             }
+        });
+        let audio_event_focus = cx.focus_handle();
+        let audio_event_blur = cx.on_blur(&audio_event_focus, window, |view, _, cx| {
+            view.audio_event_editor.gesture = None;
+            cx.notify();
         });
         let midi_focus = cx.focus_handle();
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
@@ -782,21 +818,26 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_fade_gesture(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
+                view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
+                let paint_cancelled = view.cancel_clip_paint();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
-                if midi_cancelled || scrub_cancelled {
+                if midi_cancelled || scrub_cancelled || paint_cancelled {
                     cx.notify();
                 }
             }
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
-            if view.cancel_midi_note_gesture() | view.cancel_scrub() {
+            view.cancel_fade_gesture(cx);
+            view.audio_event_editor.gesture = None;
+            if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
             }
         });
@@ -827,6 +868,7 @@ impl EditorView {
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
+            clip_name_edit: None,
             mode: EditorMode::Arrangement,
             selected_scene: None,
             selected_cell: None,
@@ -897,6 +939,9 @@ impl EditorView {
             controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
+            audio_event_editor: audio_event_editor::State::default(),
+            audio_event_focus,
+            _audio_event_blur: audio_event_blur,
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
             _scrub_focus_lifecycle: scrub_focus_blur,
@@ -905,6 +950,7 @@ impl EditorView {
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
+            output_meter_frame: None,
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,
@@ -932,12 +978,16 @@ impl EditorView {
             active_native_device_drag: None,
             arrangement_device_preview: None,
             active_trim_drag: None,
+            fade_key_held: false,
+            active_fade_drag: None,
             active_midi_trim_drag: None,
             pointer_down: None,
             #[cfg(test)]
             drag_move_event_count: 0,
             #[cfg(test)]
             last_enqueued_edit: None,
+            #[cfg(test)]
+            last_enqueued_clip_conversion: None,
             #[cfg(test)]
             last_enqueued_native_device_add: None,
             #[cfg(test)]
@@ -962,6 +1012,7 @@ impl EditorView {
             theme_settings,
             context_menu: None,
             edit_cursor: None,
+            clip_paint_gesture: None,
             time_selection: None,
             time_selection_project_scope: false,
             time_selection_gesture: None,
@@ -1216,6 +1267,7 @@ impl EditorView {
             self.update_track_selection_status();
         }
         self.selected_clip = Some(clip);
+        self.focus.focus(window);
         true
     }
 

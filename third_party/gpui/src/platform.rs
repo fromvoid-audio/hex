@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "macos", test))]
+mod accessibility_bridge;
 mod app_menu;
 mod keyboard;
 mod keystroke;
@@ -489,6 +491,14 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_fullscreen(&self) -> bool;
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>);
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
+    fn publish_accessibility(&self, _nodes: Vec<crate::AccessibilityNode>, _refused: bool) {}
+    /// Revoke before accepted close callbacks or UI-owned resources are released.
+    fn revoke_accessibility(&self) {}
+    fn on_accessibility_action(
+        &self,
+        _callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
+    ) {
+    }
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>);
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>);

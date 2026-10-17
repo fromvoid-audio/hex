@@ -28,6 +28,8 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         let mut midi_clips = Vec::new();
         for position in 0..50_u64 {
             audio_clips.push(ClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: id(),
                 asset: 1,
                 start: position * 48_000,
@@ -53,6 +55,8 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 });
             }
             midi_clips.push(MidiClipSnapshot {
+                name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip,
                 start_raw: BeatTime::from_quarters(position * 2)?.raw(),
                 length_raw: length,
@@ -65,6 +69,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
             });
         }
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             id: track,
             name: format!("profile {index:03}"),
             gain: 0.1,

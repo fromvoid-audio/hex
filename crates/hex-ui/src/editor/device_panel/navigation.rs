@@ -62,10 +62,17 @@ impl Navigation {
     }
 }
 
-pub(super) fn rail(view: &mut EditorView, chain: Stateful<Div>) -> Stateful<Div> {
+/// Navigation owns the single scroll instance; windowing holds an alias to it.
+/// Bind before capturing viewport observations or reconciling card geometry.
+pub(super) fn sync_rail_scroll(view: &mut EditorView) {
     view.device_panel
         .navigation
         .sync(view.project_generation, view.device_panel.owner, view.mode);
+    view.device_panel.chain_window.scroll = view.device_panel.navigation.scroll.clone();
+}
+
+pub(super) fn rail(view: &mut EditorView, chain: Stateful<Div>) -> Stateful<Div> {
+    sync_rail_scroll(view);
     chain.track_scroll(&view.device_panel.navigation.scroll)
 }
 
