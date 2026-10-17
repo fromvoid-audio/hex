@@ -4385,6 +4385,40 @@ activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
 
+## 17 October 2026 — W06 host binding extraction in progress
+
+Pulse2675 / PR291 factors persistent scalar controls into
+`device_panel/bindings.rs` and numeric Session adaptation into
+`gesture_adapter.rs`, with Utility, EQ and descriptor panels using the same
+host path. Operator-specific Begin/choice/Tab policy stays in composition.
+The host captures generation/owner/class/type/parameter/emitter identity and
+numeric widgets retain only the exact gesture token they began. Retirement
+cannot cancel a newer same-parameter gesture; synchronous finalization retires
+stale or disabled drafts before submission. Project/session/worker lifecycle
+and compound controls remain in their existing owners; no new UI crate.
+
+Focused original-dispatch and retired-control regressions fail before their
+repairs; the three lease/target tests pass at ab20b1f1. Later identity and
+same-update queued-Begin regression candidates remain unverified while the
+shared native cache checks corrected fade PR309. Architecture/style guards
+pass. The layout guard now follows the extracted production style helper;
+its four source-mutation tests pass. This is incomplete draft work: queued-event
+ordering, final integrated full local CI, final review and native acceptance
+remain open. Independent embedding/catalog/full W06 acceptance is not claimed.
+
+W06 follow-up: at exact8ac4e149 the six-test binding group reports five passes
+and one real rendered ordering failure: a queued Begin reopens a no-op drag
+synchronously finalized in the same App update. Stale-generation and retired
+emitter tests pass. Exacte1abd20a adds a local successful-finish delivery fence;
+independent source review finds no actionable issue. Its positive/later-drag
+checks remain pending while W04 final CI owns the native cache. No GPUI or
+other dependency patch was required; the existing dispatch_input seam is used.
+
+W06 positive ordering proof: exacte009db34 passes all six focused host binding
+tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
+drag stays finalized and a later real drag works. Final integration/review/full
+local CI and broader W06 deliverables remain pending; no native result claimed.
+
 ## latest-main launch by default — pulse2749 / PR359, 17 october 2026
 
 The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
