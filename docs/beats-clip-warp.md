@@ -68,3 +68,9 @@ normal user save/quit if delivery requires it; no force quit or unsaved data los
 Expected evidence: pinned source/app provenance, fixture rates/tempo/ratio/pitch,
 pass/fail per step and bounded audible/UI reproductions. User pointer/keyboard
 and listening interaction is required; source tests do not establish acceptance.
+
+The first full run on888365e1 was deliberately interrupted after workspace/export
+passes when UI compilation exposed an unused test import that strict Clippy would
+reject. It is retained as interrupted, never full PASS. Both new actual-input UI
+cases passed directly on the compiled test binary before removing that import.
+The corrected candidate requires a new full run.

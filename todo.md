@@ -3,7 +3,9 @@
 The selected Arrangement audio clip now exposes Warp and a direct implemented
 algorithm picker above source controls. Beats defaults to transient preservation;
 existing modes, parameters, canonical maps/history and worker preparation remain.
-Independent PCM and persistence tests pass; integration/UI/full checks remain.
+Independent PCM, persistence, engine seek/partition, native/export and both
+actual-input UI checks pass. An unused UI-test import was removed after the first
+full run was deliberately interrupted; corrected exact-source full checks remain.
 See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
 No Mac execution or app installation; full sampler/resource work stays open.
 

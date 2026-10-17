@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+use gpui::{Modifiers, MouseButton, TestVisualTestContext};
 use hex_session::service::ViewState;
 use std::sync::Arc;
 const CHOICES: [&str; 6] = [
@@ -35,7 +35,7 @@ fn algorithm_picker_dispatches_direct_choice_without_resetting_current_settings(
     assert_mode_choice(cx, 0);
     assert_mode_choice(cx, 1);
 }
-fn assert_mode_choice(cx: &mut TestAppContext, requested: usize) {
+fn assert_mode_choice(cx: &mut Testrequested: usize) {
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     editor.update(cx, |view, cx| {
         let old = view.state.as_ref().unwrap();
