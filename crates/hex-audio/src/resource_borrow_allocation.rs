@@ -1,4 +1,4 @@
-//! Real borrowed PCM through the analytic callback ABI; no engine lease admission claim.
+//! Real borrowed PCM through analytic/effect/mutable callbacks; no host lease admission.
 use hex_lattice::{
     BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity, DeviceResourcePcm,
     DeviceResourceView, TuningTable, conformance::resource_pcm,
@@ -7,7 +7,7 @@ use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };
 #[test]
-fn analytic_callback_consumes_borrowed_original_pcm_with_zero_allocations_or_frees() {
+fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees() {
     let mono = vec![0.25_f32; 64];
     let stereo = vec![[0.5_f32, -0.75]; 64];
     let mut refs = Vec::new();
@@ -111,4 +111,48 @@ fn analytic_callback_consumes_borrowed_original_pcm_with_zero_allocations_or_fre
         (0, 0, 0, 0)
     );
     assert_eq!(effect_sum, [1536.0, -1024.0]);
+    use hex_lattice::{NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair};
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 4096,
+        max_events_per_block: 1,
+        max_active_occurrences: 1,
+        max_tail_frames: 64,
+    };
+    let factories = [
+        resource_pcm::mutable::prepare(&state, &context, 0).unwrap(),
+        resource_pcm::mutable::prepare(&state, &context, 1).unwrap(),
+    ];
+    let mut pairs = [
+        NativeInstrumentRuntimePair::new(&factories[0], limits).unwrap(),
+        NativeInstrumentRuntimePair::new(&factories[1], limits).unwrap(),
+    ];
+    let mut mutable_sum = [0.0_f32; 2];
+    let mutable_measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            for (index, pair) in pairs.iter_mut().enumerate() {
+                pair.reset();
+                pair.begin_block();
+                output[index].fill([0.0; 2]);
+                pair.preflight_event_batch(&[], 64, std::hint::black_box(&resources))
+                    .unwrap();
+                pair.process_block(&[], &mut output[index], std::hint::black_box(&resources))
+                    .unwrap();
+                pair.commit_block();
+                for frame in &output[index] {
+                    mutable_sum[0] += frame[0];
+                    mutable_sum[1] += frame[1];
+                }
+            }
+        }
+    });
+    assert_eq!(
+        (
+            mutable_measurement.count_total,
+            mutable_measurement.bytes_total,
+            mutable_measurement.count_current,
+            mutable_measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(mutable_sum, [1536.0, -1024.0]);
 }

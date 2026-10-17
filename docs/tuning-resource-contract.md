@@ -148,3 +148,11 @@ and zero total/net allocations and frees. Outer asset-free host chains still pas
 the empty inventory: per-configuration graph lease scopes, complete coexistence
 union accounting and retirement proof remain pending under unchanged budgets. No neutral shared-library
 2773 implementation or historical-alpha compatibility work is introduced.
+
+The unregistered mutable PCM conformance source now exercises actual committed/
+scratch twins: exact original mono/stereo samples, stale content-identity refusal
+before PCM/history mutation, rollback retry and committed continuation/exhaustion.
+This free-running source intentionally does not implement sampler MIDI semantics.
+The callback allocation probe includes pair preflight/process/commit with exact
+PCM sums and zero total/net allocations and frees. ResourceUnavailable is an
+explicit allocation-free runtime diagnostic; no registry admission is opened.

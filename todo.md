@@ -20,7 +20,11 @@ now require and forward the actual borrowed inventory. The synthetic effect
 consumes real mono/stereo PCM, including bypass cursor advancement; measured
 analytic and effect callbacks have zero total/net allocations and frees.
 Per-configuration host root leases, coexistence-union accounting and retirement
-admission remain unfinished. No cap or note layout increase.
+admission remain unfinished. Mutable twin actual mono/stereo PCM, stale-content
+refusal before mutation, rollback/retry and continuation probes pass; measured
+analytic/effect/mutable callbacks all retain zero total/net allocations/frees.
+This synthetic free-running source is not a registered MIDI sampler. No cap or
+note layout increase.
 No sampler registration, full-CI or native acceptance claim. Beats clip stretching
 2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
 

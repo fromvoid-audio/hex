@@ -330,6 +330,7 @@ pub enum NativeInstrumentRuntimeError {
     IncompatibleHistory,
     IncompatibleTwins,
     BlockNotStarted,
+    ResourceUnavailable,
 }
 
 impl NativeInstrumentRuntimeError {
@@ -342,6 +343,7 @@ impl NativeInstrumentRuntimeError {
             Self::IncompatibleHistory => "native instrument runtime histories are incompatible",
             Self::IncompatibleTwins => "native instrument runtime twins are incompatible",
             Self::BlockNotStarted => "native instrument runtime block was not started",
+            Self::ResourceUnavailable => "native instrument resource inventory is unavailable",
         }
     }
 }

@@ -109,6 +109,9 @@ impl crate::NativeProcessorRuntime for BorrowedPcmEffect {
     }
 }
 
+#[path = "resource_pcm_mutable.rs"]
+pub mod mutable;
+
 #[cfg(test)]
 mod tests {
     use super::*;
