@@ -165,6 +165,7 @@ fn state_table_requires_exact_audio_id_bijection_and_strict_nullable_fields() {
         match edit {
             0 => {
                 bad.as_object_mut().unwrap().remove("audio_clip_state");
+                bad.as_object_mut().unwrap().remove("clip_names");
             }
             1 => {
                 bad["audio_clip_state"].as_array_mut().unwrap().pop();
@@ -215,6 +216,7 @@ fn state_table_requires_exact_audio_id_bijection_and_strict_nullable_fields() {
 }
 fn development(version: u32) -> Value {
     let mut doc: Value = serde_json::from_slice(&encode(&fixture(version == 21)).unwrap()).unwrap();
+    doc.as_object_mut().unwrap().remove("clip_names");
     let states = doc
         .as_object_mut()
         .unwrap()
@@ -300,5 +302,6 @@ fn private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds() {
     let mut old: Value = serde_json::from_slice(&encode(&neutral).unwrap()).unwrap();
     old["version"] = json!(24);
     old.as_object_mut().unwrap().remove("audio_clip_state");
+    old.as_object_mut().unwrap().remove("clip_names");
     assert_eq!(decode(&serde_json::to_vec(&old).unwrap()).unwrap(), neutral);
 }

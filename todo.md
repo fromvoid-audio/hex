@@ -1,3 +1,18 @@
+## browser/name accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `2fa584cf` after candidate `4c0bcbc3`, preserving PR294's split
+browser and PR276's schema26/inline clip names alongside PR188. Auto-merges retain
+name-draft reconciliation, keyboard ownership and cache bypass during editing;
+status minima, meter snapshots, accessibility guards and source-case error surfaces
+remain intact. Both todo histories are preserved. No additional repair was needed.
+
+All21 targeted browser geometry/resize/search, clip-name, controller-layout,
+editor-meter, accessibility, clip-cache and error-display tests pass. UI test
+compilation, architecture/style/device-layout guards, formatting and diff checks
+pass. Prior full CI is historical; exact combined-source full CI and any merge or
+optimized delivery remain primary work. These checks do not establish native
+visual/input acceptance.
+
 ## second current-main accessibility integration — #29 / PR188, 17 october 2026
 
 Integrated main `f0ef237d` after candidate `37b7832e`, preserving clip conversion,
@@ -55,6 +70,17 @@ with a single content inset, checked scroll extent and a source-guard negative
 control against replacing that surface. Current source checks are retained in
 the PR; exact Mac compilation, the three AppKit lifecycle tests and actual
 AX/VoiceOver/input/paint acceptance remain required. No native acceptance claim.
+
+## clip selection and inline names — #2660 / PR276, 17 october 2026
+
+Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
+and press Command-R to edit its name in place. Enter/blur commit, Escape cancels;
+typing owns editing keys. Canonical RenameClip, history, copy/split preservation,
+strict schema26 names and legacy defaults are implemented. See
+[clip names](docs/clip-names.md) for contracts and native checklist.
+Focused project/storage and rendered rename tests pass; exact final-source local
+CI evidence is retained with PR276. Native macOS visual/input acceptance remains
+separate and unverified. No optimized macOS build is produced on this Linux host.
 
 ## arrangement clip painting — 17 october 2026
 
@@ -3952,6 +3978,11 @@ archive; no Hex unsafe boundary or renderer changes. See docs/native-accessibili
 Exact-final full local CI and optimized stable-path delivery are recorded on
 PR188/Pulse29. Real Inspector/VoiceOver, close/veto, popup choices and input/paint
 acceptance remain unverified; this entry does not claim whole-ticket completion.
+
+17 October 2026 — split browser visual composition: Pulse #2678 / PR294;
+see docs/browser-layout.md for scope and native review checklist. Full functional
+follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
+Command-F. Tag assignment/filtering, collections and history remain pending.
 
 ## 17 october 2026 — track header hover
 
