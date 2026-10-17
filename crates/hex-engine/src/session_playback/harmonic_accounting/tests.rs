@@ -235,8 +235,8 @@ fn actual_recipe_charge_and_owner_generation_boundary_identity_govern_admission(
     let pool = payload::PoolCapacity::allocated();
     let charge = size_of::<payload::Slot>() + payload::context_bytes();
     let limit = 2 * 1024 * 1024 / charge;
-    // Complete companion context plus the project table; retain the 2 MiB cap.
-    assert_eq!(limit, 353);
+    // The neutral shared context stays compact; the2MiB cap is unchanged.
+    assert_eq!(limit, 426);
     let recipes: Vec<_> = (1..=limit as u64).map(recipe).collect();
     let mut input = empty(pool);
     input.recipes = &recipes;

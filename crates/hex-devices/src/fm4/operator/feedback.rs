@@ -380,7 +380,7 @@ mod tests {
     fn sine_feedback_matches_independent_full_output_oracle_across_noteoff_and_partitions() {
         let config = fixture([OperatorWaveform::Sine; OPERATORS]);
         assert!(std::mem::size_of::<PreparedOperatorFeedbackVoice>() <= 192);
-        assert_eq!(std::mem::size_of::<PreparedOperatorConfiguration>(), 1808);
+        assert_eq!(std::mem::size_of::<PreparedOperatorConfiguration>(), 784);
         println!(
             "feedback voice={}B, compact note={}B, configuration={}B",
             std::mem::size_of::<PreparedOperatorFeedbackVoice>(),

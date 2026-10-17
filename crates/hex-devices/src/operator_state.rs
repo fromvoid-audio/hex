@@ -1127,9 +1127,7 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         tuning: &hex_lattice::TuningTable,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
-        let configuration = settings
-            .prepare_configuration(sample_rate)?
-            .with_project_tuning(*tuning);
+        let configuration = settings.prepare_configuration(sample_rate)?;
         let authored_state = settings.prepared_authored_state(state)?;
         let effective_levels = *configuration
             .feedback_parameters([0.0; OPERATORS])
@@ -1160,11 +1158,12 @@ impl NativeInstrumentDefinition for OperatorMetadata {
             sine_table,
             feedback_runtime,
             lfo_runtime,
-            harmonic_runtime: harmonic_runtime::Factory::new(
+            harmonic_runtime: harmonic_runtime::Factory::new_with_tuning(
                 settings,
                 configuration.clone(),
                 sine_table,
                 sample_rate,
+                (!tuning.is_neutral()).then_some(*tuning),
             )?,
         }))
     }
@@ -1183,7 +1182,7 @@ struct PreparedOperatorInstrument {
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prefers_mutable_continuation(&self) -> bool {
-        !self.configuration.project_tuning().is_neutral()
+        self.harmonic_runtime.tuning.is_some()
             || self
                 .harmonic_runtime
                 .settings

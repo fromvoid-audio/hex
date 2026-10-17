@@ -13,6 +13,16 @@ local CI remain pending at this checkpoint. See
 MTS, coordinated current combined schema and Mac/user acceptance remain required
 goal4 work; no complete tuning delivery or merge is claimed.
 
+Full workspace verification exposed a real neutral-path regression in the paused
+runtime: a table inside every Operator configuration grew legacy feedback/LFO
+twins beyond their8KiB contract. The repair keeps small configurations free of
+tables/heap owners and passes an optional borrowed table to note preparation;
+only the already-wide custom mutable factory/runtime retains that fixed data.
+Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
+are restored, without raising limits or adding callback table construction.
+All313 device tests, packing proof and volume/history proof pass; renewed full
+workspace/final CI remains required. Earlier failed runner evidence is retained.
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback

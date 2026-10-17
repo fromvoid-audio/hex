@@ -42,27 +42,24 @@ pub(super) fn prepared_steps(
     ratios: &[f64; OPERATORS],
     tuning: &[OperatorTuning; OPERATORS],
 ) -> Result<[u64; OPERATORS], Invalid> {
-    prepared_steps_with_table(
-        sample_rate,
-        pitch,
-        ratios,
-        tuning,
-        &hex_lattice::TuningTable::default(),
-    )
+    prepared_steps_with_table(sample_rate, pitch, ratios, tuning, None)
 }
 pub(super) fn prepared_steps_with_table(
     sample_rate: u32,
     pitch: u8,
     ratios: &[f64; OPERATORS],
     tuning: &[OperatorTuning; OPERATORS],
-    table: &hex_lattice::TuningTable,
+    table: Option<&hex_lattice::TuningTable>,
 ) -> Result<[u64; OPERATORS], Invalid> {
     if !(8_000..=192_000).contains(&sample_rate) || pitch > 127 {
         return Err(Invalid("invalid operator sample rate or pitch"));
     }
-    let note_hz = table
-        .frequency(pitch)
-        .map_err(|_| Invalid("invalid operator pitch"))?;
+    let note_hz = match table {
+        Some(table) => table
+            .frequency(pitch)
+            .map_err(|_| Invalid("invalid operator pitch"))?,
+        None => 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0),
+    };
     if tuning == &[OperatorTuning::Ratio; OPERATORS] {
         // Identical frequency/ratio arithmetic preserves neutral quantization.
         return crate::fm4::prepared_steps_frequency(sample_rate, note_hz, ratios);

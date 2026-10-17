@@ -274,8 +274,6 @@ impl PreparedMutableInstrumentRuntime for OperatorLfoFactory {
 impl<const N: usize> Runtime<N> {
     fn compatible_base(&self, other: &Self) -> bool {
         self.factory.base == other.factory.base
-            && self.factory.configuration.project_tuning()
-                == other.factory.configuration.project_tuning()
             && self.factory.rate == other.factory.rate
             && std::ptr::eq(self.factory.table, other.factory.table)
     }
@@ -886,7 +884,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
     }
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
-        tuning: runtime.factory.configuration.project_tuning(),
+        tuning: None,
         rate: runtime.factory.rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,
