@@ -11,6 +11,20 @@ Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
 The parent EQ redesign, per-node automation, full final-source local CI and any
 native/user-test delivery remain separate work; this entry does not claim them.
 
+## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
+
+- Create-new canonical workload generator writes100 independent120s original
+  mixed-rate WAVs with bounded IO, exact reader fingerprints and44.1/48kHz saved
+  projects sharing relative source paths. Two real Session scenes share assets;
+  audio-only tracks keep existing source/runtime/page limits and safe gains.
+- Small generator controls and an explicit ignored full-workload Desktop smoke
+  cover automated preparation. Native sustained100-track playback/listening and
+  device deadline evidence remain operator acceptance, not generation/headless
+  claims. Exact source/check/build results are recorded externally.
+- See docs/streaming-100-track-workload.md for generation, hashes, explicit smoke
+  and finite optimized operator checklist. PR241 remains the later edit/fault pass;
+  original24/177 broader acceptance stays open.
+
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
 The eleven canonical algorithm diagrams replace the raw matrix UI; new serial
