@@ -5,7 +5,7 @@ use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
     Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, relative, rgb, uniform_list,
+    ScrollWheelEvent, Window, canvas, div, point, prelude::*, px, relative, rgb, list,
 };
 
 impl EditorView {
@@ -83,7 +83,7 @@ impl EditorView {
             self.viewport = (next != Viewport::fit(state.timeline_frames)).then_some(next);
         }
         if dy != 0.0 {
-            let base_handle = self.track_scroll.0.borrow().base_handle.clone();
+            let base_handle = self.track_scroll.clone();
             let offset = base_handle.offset();
             let max_offset = base_handle.max_offset();
             let y = (offset.y + px(dy)).clamp(-max_offset.height, px(0.0));
@@ -186,39 +186,18 @@ impl EditorView {
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
         let playhead = self.cursor_position();
-        let track_count = state.project.tracks().len();
-        let rows = uniform_list(
-            "track-rows",
-            track_count,
-            cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                let Some(state) = this.state.as_ref().cloned() else {
-                    return Vec::new();
-                };
-                let mut items = Vec::with_capacity(range.end.saturating_sub(range.start));
-                for index in range {
-                    if let Some(track) = state.project.tracks().get(index) {
-                        let selected = this.selected_track() == Some(track.id());
-                        items.push(this.track_row(
-                            &state,
-                            track,
-                            index,
-                            selected,
-                            super::tracks::ClipViewTimeline {
-                                viewport: rows_viewport,
-                                grid: &rows_grid,
-                                scale_factor: track_scale_factor,
-                            },
-                            cx,
-                        ));
-                    }
-                }
-                items
-            }),
-        )
-        .w_full()
-        .track_scroll(self.track_scroll.clone())
-        .flex_1()
-        .min_h_0();
+        self.sync_track_layout(state.project.tracks());
+        let rows_entity = cx.entity();
+        let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
+            rows_entity.update(cx, |this, cx| {
+                let Some(state) = this.state.as_ref().cloned() else { return div(); };
+                let Some(track) = state.project.tracks().get(index) else { return div(); };
+                let selected = this.selected_track() == Some(track.id());
+                this.track_row(&state,track,index,selected,super::tracks::ClipViewTimeline {
+                    viewport: rows_viewport, grid: &rows_grid, scale_factor: track_scale_factor,
+                },cx)
+            }).into_any_element()
+        }).w_full().flex_1().min_h_0();
         let mut content = div()
             .relative()
             .flex_1()

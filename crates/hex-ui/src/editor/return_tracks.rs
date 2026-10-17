@@ -40,7 +40,7 @@ impl EditorView {
             return None;
         };
         let body = self.arrangement_bounds?;
-        let scroll_y = f32::from(self.track_scroll.0.borrow().base_handle.offset().y);
+        let scroll_y = f32::from(self.track_scroll.offset().y);
         let expected_top = body.top + track_index as f32 * TRACK_ROW_HEIGHT + scroll_y;
         let expected_bottom = expected_top + TRACK_ROW_HEIGHT;
         let body_bottom = body.top + body.height;

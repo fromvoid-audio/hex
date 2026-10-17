@@ -96,6 +96,7 @@ pub(super) mod time_selection_profile;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
+mod track_layout;
 mod transport;
 mod trim;
 mod viewport;
@@ -579,7 +580,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
     _scrub_focus_lifecycle: gpui::Subscription,
-    track_scroll: gpui::UniformListScrollHandle,
+    track_scroll: track_layout::TrackScroll,
+    track_layout: track_layout::TrackLayout,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -945,7 +947,8 @@ impl EditorView {
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
             _scrub_focus_lifecycle: scrub_focus_blur,
-            track_scroll: gpui::UniformListScrollHandle::new(),
+            track_scroll: track_layout::TrackScroll::new(),
+            track_layout: track_layout::TrackLayout::default(),
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
