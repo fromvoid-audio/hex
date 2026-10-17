@@ -462,7 +462,12 @@ mod tests {
         let (editor, _, target, audio, midi, _) = fixture();
         let mut snapshot = editor.project().snapshot();
         for track in &mut snapshot.tracks {
-            for clip in &mut track.content.midi_clips {
+            let clips = match &mut track.content {
+                crate::TrackContentSnapshot::Audio(_) => continue,
+                crate::TrackContentSnapshot::Instrument(clips) => clips,
+                crate::TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+            };
+            for clip in clips {
                 if clip.id == midi.value() {
                     clip.start_raw = beat(1).raw();
                 }
