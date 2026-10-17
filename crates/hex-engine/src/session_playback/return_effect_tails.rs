@@ -439,8 +439,7 @@ fn reserve_chain(
         .checked_add(chain.len())
         .ok_or(SessionPlaybackError::ReleaseBankFull)?;
     if *processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-        || *runtime_bytes
-            > 2 * hex_lattice::MAX_STATEFUL_PROCESSORS * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+        || *runtime_bytes > 2 * hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES
         || *entry_count > super::MAX_RETAINED_SUFFIX_ENTRIES
     {
         return Err(SessionPlaybackError::ReleaseBankFull);

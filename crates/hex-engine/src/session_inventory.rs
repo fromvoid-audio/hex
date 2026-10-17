@@ -1025,10 +1025,10 @@ impl PreparedSessionInventory {
                         .checked_add(declared)
                         .filter(|bytes| {
                             declared > 0
-                                && declared <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                                && declared <= crate::mutable_instrument::MAX_INSTRUMENT_RETARGET_PROOF_BYTES
                                 && *bytes
                                     <= hex_project::MAX_TRACKS
-                                        * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                                        * crate::mutable_instrument::MAX_INSTRUMENT_RETARGET_PROOF_BYTES
                         })
                         .ok_or(crate::Invalid(
                             "mutable instrument retarget proof exceeds its bounded storage",
