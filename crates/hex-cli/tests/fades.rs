@@ -178,3 +178,25 @@ fn overlapping_saved_ramps_multiply_and_reset_restores_neutral_pcm() {
         .unwrap();
     assert_eq!(fixture.render(editor.project(), "reset"), neutral);
 }
+
+#[test]
+fn endpoint_only_fades_save_prepare_and_export_silence() {
+    for (start, end) in [(3, 0), (0, 4), (3, 4)] {
+        let fixture = Fixture::new(13);
+        let (mut editor, clip) = fixture.editor(13);
+        editor
+            .execute(Command::SetClipFadeEnvelope {
+                clip,
+                fade: hex_project::ClipFade::new(13, 0, 0, 0)
+                    .unwrap()
+                    .with_shape(start, end, 500, -500)
+                    .unwrap(),
+            })
+            .unwrap();
+        let mut expected = [8192_i16; 13];
+        expected[..start as usize].fill(0);
+        expected[13 - end as usize..].fill(0);
+        let bytes = fixture.render(editor.project(), "endpoint-only");
+        assert_stereo_pcm(&bytes, &expected);
+    }
+}

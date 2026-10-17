@@ -294,8 +294,7 @@ impl ArrangementClips {
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
             let required = matches!(&owner.kind, SourceKind::Streamed(_))
                 || s.phase != 0
-                || s.fade.fade_in() != 0
-                || s.fade.fade_out() != 0;
+                || !s.fade.is_neutral();
             if r.binding
                 != (Binding {
                     slot,

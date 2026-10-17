@@ -102,6 +102,13 @@ inspector and handle tooltips disclose. Holding `f` exposes those local edit
 handles even when the inherited endpoints lie outside a split; the stored curve
 continues to display its actual gain until the pointer changes it. Splits retain shaped domains and musical projections.
 
+Direct, unedited streamed clips retain the complete fade envelope, including
+zero-ramp endpoint silence. Retained audio-edit domains support streamed sources
+only when events, pitch, warp, source gain and the entire fade are neutral.
+An authored fade in an edited streamed domain requires resident audio; preparation
+explicitly refuses it before commit, preserving the project and undo/redo history.
+This existing streamed-transform boundary does not bake or discard the envelope.
+
 Native user checklist (pending; source tests do not establish native acceptance):
 
 1. Hold/release `f` over default audio clips; drag both top handles; release `f`.
