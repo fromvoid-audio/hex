@@ -4171,3 +4171,14 @@ metadata and continued rejection of changed/missing/added source, lookalikes
 and symlinks. Full optimized-delivery verification remains required by launch.
 Exact final CI, merged-source launcher delivery and native launch evidence are
 recorded with PR319 and Pulse2703; not inferred from these source fixtures.
+
+## additive release-cache handoff — pulse2704 / PR320, 17 october 2026
+
+Actual primary launch passed all20 checks at0a9a4de6, then release preparation
+falsely classified four new workspace crates as removed/renamed packages.
+The release guard now permits additions only while every recorded member retains
+its name/version; it cleans the complete current workspace with the existing
+lock, scope, source and artifact checks. Real-Cargo regression fails before the
+fix and verifies added dependency output plus removal/rename/version-change
+refusals and preserved external/dev artifacts. Final exact checks and actual
+merged-source launch evidence remain recorded on PR320/Pulse2704.
