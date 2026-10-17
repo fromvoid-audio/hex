@@ -117,3 +117,18 @@ points and the independent native adapter/gallery. Those downstream proofs are
 qualified incrementally under W20; they do not prevent W03–W10 enabling contracts
 from proceeding against this bootstrap. No new catalog device, native acceptance,
 reference parity or full authoring-platform completion is claimed here.
+
+## host asset references
+
+Device asset slots and project asset identities belong in the neutral host
+envelope, separately from the DSP payload. Supported registries restore these
+bindings and host gains after provider codecs reconstruct state, including each
+private default batch candidate. Explicit host edits own reference replacement.
+Keep assets out of analytic-context payloads and hidden shared owners.
+
+W10's first [reference contract](device-assets.md) supports project persistence
+and history only. Nonempty references refuse supported processing before codec
+migration, including direct closed Utility and public prepared-chain admission.
+Direct provider overrides remain responsible for their documented contract.
+Do not register a resource-consuming device until actual prepared leases,
+resource accounting and callback retirement are implemented and verified.
