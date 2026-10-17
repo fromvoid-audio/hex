@@ -74,6 +74,12 @@ fn pcm(revision: Arc<hex_engine::PreparedRevision>, frames: usize) -> Vec<hex_en
 fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
     let folder = Folder::new();
     let (mut session, track, clip) = fixture();
+    session
+        .command(Command::RenameClip {
+            clip,
+            name: "Rendered Chorus".into(),
+        })
+        .unwrap();
     // Non-neutral host gains must not be baked twice after conversion.
     let instrument = session
         .project()
@@ -124,6 +130,7 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
         .bounce_midi_clip(clip, &folder.0, Some(&before))
         .unwrap();
     let audio = session.project().clip(clip).unwrap();
+    assert_eq!(audio.name(), "Rendered Chorus");
     assert_eq!((audio.start(), audio.duration()), (start, frames));
     assert_eq!(
         session.project().track(track).unwrap().clips()[0].id(),
@@ -190,6 +197,7 @@ fn bounce_preserves_placement_sound_mix_history_and_saved_media() {
         .command(Command::ConvertAudioClipToMidi(clip))
         .unwrap();
     let midi = session.project().midi_clip(clip).unwrap();
+    assert_eq!(midi.name(), "Rendered Chorus");
     assert!(midi.notes().is_empty());
     assert_eq!(
         session

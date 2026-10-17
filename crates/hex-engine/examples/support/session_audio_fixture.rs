@@ -84,6 +84,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                name: "clip".into(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: arrangement_clip,
