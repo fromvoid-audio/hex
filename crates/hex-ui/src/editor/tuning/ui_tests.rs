@@ -182,3 +182,44 @@ fn review_pending_canonical_edit_blocks_new_tuning_gesture_and_drag(cx: &mut Tes
         });
     });
 }
+
+#[gpui::test]
+fn review_followup_dice_changes_the_actual_palette_without_editing_the_project(
+    cx: &mut TestAppContext,
+) {
+    let project = hex_project::Project::new(48_000).unwrap();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, _, cx| {
+        editor.update(cx, |view, cx| {
+            view.tuning.open = true;
+            view.refresh_tuning_variations(cx);
+        })
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let original = editor.read_with(&visual, |view, _| {
+        (view.tuning.choices.clone(), view.tuning.value)
+    });
+    for _ in 0..2 {
+        let before = editor.read_with(&visual, |view, _| view.tuning.choices.clone());
+        editor.update(&mut visual, |view, cx| {
+            view.regenerate_tuning_variations(cx)
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.tuning.choices != before,
+                "dice must change actual choices, not only the job serial"
+            );
+            assert_eq!(view.tuning.value, original.1);
+            assert_eq!(view.tuning.choices[0], original.1.scale());
+            assert!(view.tuning.choices.len() <= 65);
+            assert!(view.tuning.choices.iter().all(|scale| scale.valid()
+                && scale.count() == original.1.scale().count()
+                && scale.root_hz() == original.1.scale().root_hz()
+                && scale.root_key() == original.1.scale().root_key()));
+        });
+    }
+}

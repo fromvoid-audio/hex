@@ -305,6 +305,11 @@ impl Synth {
         keys
     }
 
+    /// Whether a new physical note can start without stealing a held owner.
+    pub fn has_held_voice_capacity(&self) -> bool {
+        self.voices.iter().any(|voice| !voice.active || !voice.held)
+    }
+
     /// Bounded owner lookup for preserving physical inputs across a retune.
     pub fn owns_voice(&self, owner: u64) -> bool {
         self.voices

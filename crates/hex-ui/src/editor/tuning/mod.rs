@@ -77,13 +77,14 @@ pub(super) struct TuningState {
     palette_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     context: Option<usize>,
     reach: f32,
+    variation_seed: u64,
     snap: bool,
     pub(super) shift: bool,
     choices: std::sync::Arc<[Scale]>,
     positions: std::sync::Arc<[(f32, f32)]>,
     analysis_pending: bool,
     analysis_serial: u64,
-    analysis_queued: Option<(u64, Scale, f32)>,
+    analysis_queued: Option<(u64, Scale, f32, u64)>,
     analysis: hex_tuning::analysis::Analysis,
     root_shapes: [(usize, usize, f32); 3],
     last_variations: Instant,
@@ -132,6 +133,7 @@ impl TuningState {
             palette_bounds: None,
             context: None,
             reach: 80.0,
+            variation_seed: 0,
             snap: false,
             shift: false,
             choices: std::sync::Arc::from([value.scale()]),
@@ -711,12 +713,17 @@ impl EditorView {
         self.tuning.context = None;
         cx.notify();
     }
+    fn regenerate_tuning_variations(&mut self, cx: &mut Context<Self>) {
+        self.tuning.variation_seed = self.tuning.variation_seed.wrapping_add(1);
+        self.refresh_tuning_variations(cx);
+    }
     fn refresh_tuning_variations(&mut self, cx: &mut Context<Self>) {
         self.tuning.analysis_serial = self.tuning.analysis_serial.saturating_add(1);
         self.tuning.analysis_queued = Some((
             self.tuning.analysis_serial,
             self.tuning.value.scale(),
             self.tuning.reach,
+            self.tuning.variation_seed,
         ));
         self.tuning.last_variations = Instant::now();
         self.start_tuning_analysis(cx);
@@ -725,13 +732,13 @@ impl EditorView {
         if self.tuning.analysis_pending {
             return;
         }
-        let Some((serial, scale, reach)) = self.tuning.analysis_queued.take() else {
+        let Some((serial, scale, reach, seed)) = self.tuning.analysis_queued.take() else {
             return;
         };
         self.tuning.analysis_pending = true;
         let generation = self.project_generation;
         let task = cx.background_executor().spawn(async move {
-            let choices = plots::variations(scale, reach);
+            let choices = plots::variations(scale, reach, seed);
             let positions = plots::positions(&choices);
             let analysis = hex_tuning::analysis::Analysis::new(scale);
             let root_shapes = analysis.root_shapes(scale);
@@ -1037,7 +1044,7 @@ impl EditorView {
                     .child(self.tuning_control(Field::Reach))
                     .child(
                         button("dice", false).on_click(cx.listener(|view, _, _, cx| {
-                            view.refresh_tuning_variations(cx);
+                            view.regenerate_tuning_variations(cx);
                             cx.notify();
                         })),
                     ),

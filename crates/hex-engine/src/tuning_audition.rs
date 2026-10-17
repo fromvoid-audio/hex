@@ -163,7 +163,9 @@ impl Runtime {
             if next != 0 {
                 let key = ((next & 255) - 1) as u8;
                 let velocity = ((next >> 8) & 255) as f32 / 127.0;
-                if self.synth.note_on(key, velocity, next >> 16).is_err() {
+                if !self.synth.has_held_voice_capacity()
+                    || self.synth.note_on(key, velocity, next >> 16).is_err()
+                {
                     self.input.rejected.store(true, Release);
                 }
             }
@@ -191,6 +193,30 @@ mod tests {
         snapshot.tuning =
             hex_tuning::ProjectTuning::new(false, scale, hex_tuning::Audition::default()).unwrap();
         hex_project::Project::from_snapshot(snapshot).unwrap()
+    }
+
+    #[test]
+    fn review_followup_excess_audition_note_refuses_without_stealing_held_owners() {
+        let input = Arc::new(TuningAuditionInput::new(0));
+        let mut runtime = Runtime::prepare(&project(60, 220.0), Arc::clone(&input)).unwrap();
+        for slot in 0..KEY_SLOTS {
+            input
+                .set_key(slot, Some((48 + slot as u8, 100, slot as u64 + 1)))
+                .unwrap();
+        }
+        runtime.mix(&mut [[0.0; 2]; 128]);
+        assert!(
+            input.take_rejection(),
+            "the excess physical note must be explicitly refused"
+        );
+        assert_eq!(input.held_keys(), [0xffff_u64 << 48, 0]);
+        input.set_key(0, None).unwrap();
+        input.set_key(16, None).unwrap();
+        runtime.mix(&mut [[0.0; 2]; 128]);
+        input.set_key(16, Some((64, 100, 100))).unwrap();
+        runtime.mix(&mut [[0.0; 2]; 128]);
+        assert_eq!(input.held_keys(), [0xfffe_u64 << 48, 1]);
+        assert!(!input.take_rejection());
     }
 
     #[test]
