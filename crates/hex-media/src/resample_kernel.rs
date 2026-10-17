@@ -167,3 +167,41 @@ fn sinc(value: f64) -> f64 {
         angle.sin() / angle
     }
 }
+
+/// Real sized owner payload and actual Vec backing, not allocator/Arc overhead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResampleKernelDataLayout {
+    pub owner_payload_bytes: usize,
+    pub owner_payload_alignment: usize,
+    pub weight_capacity: usize,
+    pub weight_element_bytes: usize,
+}
+impl ResampleKernel {
+    /// Fixed sized DATA payload for one constructor kernel allocation, excluding
+    /// its separately bounded table and opaque Arc/allocator metadata.
+    pub const fn owner_payload_bytes() -> usize {
+        std::mem::size_of::<KernelData>()
+    }
+    /// Constructor table ceiling used before any source worker starts.
+    pub const fn max_table_payload_bytes() -> usize {
+        MAX_KERNEL_TABLE_BYTES
+    }
+    pub fn control_data_layout(&self) -> ResampleKernelDataLayout {
+        let KernelData {
+            source_rate: _,
+            target_rate: _,
+            radius: _,
+            taps: _,
+            weights,
+        } = self.inner.as_ref();
+        ResampleKernelDataLayout {
+            owner_payload_bytes: std::mem::size_of::<KernelData>(),
+            owner_payload_alignment: std::mem::align_of::<KernelData>(),
+            weight_capacity: weights.capacity(),
+            weight_element_bytes: std::mem::size_of::<f64>(),
+        }
+    }
+    pub fn shares_allocation_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}

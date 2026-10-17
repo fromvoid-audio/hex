@@ -8,11 +8,16 @@ thin GPUI layer: validated project commands, prepared audio import,
 undo/redo, read-only media views, and playback compilation all pass through one
 session.
 
+Transient controller activation validates project generation and exact instrument
+identity, retains the lease across parameter revisions, and cancels it on project
+replacement or instrument removal. It creates no project/history edit.
+
 The control worker owns a project-scoped time-selection clipboard. Copy is
 metadata-only; cut adopts the captured clipboard after prepared compilation;
 paste compiles before history commit. Successful project opening clears it.
 
 ## Dependencies
+
 
 `hex-project` owns canonical project state and history. `hex-media` decodes WAV
 files into validated audio, converts source rates and supplies cached peak summaries. `hex-engine`
@@ -65,12 +70,16 @@ may be released on the caller after unlocking.
 export-style Arrangement-only runtime. `ArrangementSeekMode::Interactive`
 constructs a normal Session runtime before replaying Arrangement history, so it
 keeps Session route support and can inherit into a normal compiled successor.
-The request and result carry the selected mode. Both modes refuse enabled
-Arrangement transport loops. Wrapping a candidate does not prove its target
+The request and result carry the selected mode. Linear mode refuses enabled
+Arrangement transport loops; Interactive mode reconstructs the first pass to the
+normalized content cursor within the original requested work budget. Wrapping a
+candidate does not prove its target
 position or publication readiness; the caller still validates current
 project/route/Stop identity. Normally the lane owns one candidate runtime; its
 two fixed retirement slots bound defensive stale-state retirement to at most
 two preroll runtime budgets, with no new preparation until both drain.
+
+Tests use `serde_json` to check saved document version/provenance structurally.
 
 ## Does not own
 
@@ -121,7 +130,9 @@ intervals use project-rate frames. Worker open prepares one asset at a time and
 validates both source provenance and playback length before replacing the session.
 Each source is capped at 64 MiB / 8,000,000 frames; resident converted PCM has a
 separate 8,000,000-frame desktop ceiling, including assets retained for undo.
-Opening a saved project still requires its rate to match the active device.
+Resident opening still requires its rate to match the active device. An explicit
+verified-mode Open prepares a prospective document rate; desktop composition must
+open a fresh matching native output before publishing it.
 
 `service::prepare_audio_preview` is a read-only browser-drag preparation helper.
 It uses the same bounded WAV decode and project-rate resampler, then returns only
@@ -194,3 +205,79 @@ Recovery opens dirty without an overwrite association; ordinary relinked Open
 retains its original exact-byte document token. Untitled recovery retains only
 the latest project, with no history. Contracts, source tests and native gaps:
 [project recovery](../../docs/project-recovery.md).
+
+
+## Gain take coordination
+
+Arming prepares a transient raw-fader revision without changing canonical history
+or its cached compiled project. Delivered audio receipts normalize into bounded
+half-open spans using exact content/performance positions and loop passes. A
+revision-stamped splice batch rechecks generation, revision and lane epoch, then
+commits the complete take as one Undo/Redo edit. Failed/stale/cancelled takes leave
+the original lane intact. Audio owns application and receipt delivery; the UI
+owns only drafts and gestures. See [gain recording](../../docs/gain-touch-spans.md).
+
+## Operator listening fixture
+
+`cargo run -p hex-session --example operator_enable_fixture -- <mode> <new.hex>`
+writes a disposable media-free native project for the held-note enable retest.
+Modes are `analytic`, `serial`, `feedback`, `free` and `sync`; it uses registered
+canonical device state, prepares the project before create-new publication, and
+introduces no live-input or production playback API. See
+[the finite native checklist](../../docs/operator-enable-retest.md). Fixture tests
+run explicitly with `cargo test -p hex-session --example operator_enable_fixture`;
+they do not establish native listening acceptance.
+
+The `time_selection_fixture` example creates bounded, create-new 1/100-track
+hybrid fixtures with identical per-track audio/MIDI density for the native
+profiler. It uses the canonical snapshot/storage contracts and one shared WAV;
+it adds no production editing or media codec path. See
+../../docs/time-selection-profile.md.
+
+## canonical audio source capture
+
+Canonical worker views carry an immutable `CanonicalAudioSourceSnapshot`: the
+exact Project and the worker's paired document generation/editor revision. Its
+Arrangement input copies that correlation into the actual prepared owner; source
+catalog generation remains independent. Old snapshots keep their original Project
+and counters after later edits, and preview views have no canonical snapshot.
+The low-level engine context is correlation, not ownership or readiness authority.
+Actual UI streamed publication remains the later integration in Pulse2544/PR239.
+
+## verified document source preparation
+
+Explicit `NewWithAudioMode` / `OpenWithAudioMode` select metadata-only verified
+preparation before media decode. Ordinary New/Open/import behavior remains
+resident by default; a verified document's imports use bounded verified WAV facts
+and mixed-source semantic compilation, without full PCM or resident-duration
+charges. Canonical snapshots retain shared immutable resolved source facts and
+worker context; native constructor custody must be prepared independently.
+Verified-mode events never return legacy Playback, even for empty revisions.
+Waveform availability is explicit, and unsupported offline export is refused.
+See [canonical source plan](../../docs/streamed-session-source-plan.md) for source
+limits, history, semantic epochs, retained paths and remaining native composition.
+
+The optional `WorkerAudioSink` is a neutral desktop-injected boundary, not an
+audio dependency. The existing Session worker initializes it before constructing
+the canonical Session at the negotiated device rate. A failed open explicitly
+keeps offline editing/saving at 48000 Hz. Canonical source snapshots are shared
+without copying their source-plan maps; the sink observes generation changes
+before the corresponding event can wait for UI delivery. Idle request waits and
+full event delivery continue bounded sink polling, and ordinary worker exit calls
+its idempotent close. Default constructors retain the existing Resident path.
+
+`Request::RestartAudio` is a generation-checked, non-editing worker request.
+The injected `WorkerAudioSink::restart_audio` starts an asynchronous reopen;
+canonical generation replacement already notifies `canonical_changed` and does
+not require a duplicate restart request. Readiness/failure is correlated by the
+Desktop adapter, not a new Session-owned device endpoint. Snapshot preparation
+can target the native host's already-rooted construction cell without extracting
+its source bank, draft or runtime into Session ownership.
+
+## Native streaming workload generation
+
+The control-only `native_streaming_fixture` example writes create-new original
+100-source mixed-rate WAVs in bounded blocks and canonical44.1/48kHz projects.
+It uses existing verified-reader fingerprints and storage APIs, without changing
+Session/media limits. See `docs/streaming-100-track-workload.md` for its explicit
+large headless smoke and separate required native/listening acceptance.

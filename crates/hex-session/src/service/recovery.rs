@@ -85,11 +85,13 @@ pub fn missing_assets(
     Ok(missing)
 }
 
-pub(super) fn open_source(
+pub(super) fn open_source_with_mode(
     current: &Session,
     history_capacity: usize,
     source: &ProjectSource,
     relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
+    mode: DocumentAudioMode,
+    reservation: Option<SourcePlanReservation>,
 ) -> Result<OpenCandidate, String> {
     let (mut project, project_dir, document) = read_source(source)?;
     let dirty = document.is_none() || !relinks.is_empty();
@@ -109,8 +111,42 @@ pub(super) fn open_source(
         }
         project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
     }
-    if project.sample_rate() != current.project().sample_rate() {
+    if mode == DocumentAudioMode::Resident
+        && project.sample_rate() != current.project().sample_rate()
+    {
         return Err("project sample rate differs from the active audio device".into());
+    }
+    if mode == DocumentAudioMode::VerifiedStreaming {
+        let reservation = reservation
+            .ok_or("verified source reservation is required")?
+            .validate()
+            .map_err(|e| e.to_string())?;
+        let mut candidate = Session::new_with_audio_mode(
+            project.sample_rate(),
+            history_capacity,
+            current.max_resident_frames(),
+            mode,
+            Some(reservation),
+        )
+        .map_err(|e| e.to_string())?
+        .with_shutdown(Arc::clone(&current.shutdown));
+        // Verify every retained asset, including unused records, without decoding PCM.
+        for asset in project.assets() {
+            let path = if asset.path().is_absolute() {
+                asset.path().to_path_buf()
+            } else {
+                project_dir.join(asset.path())
+            };
+            let source = candidate.verify_import(path).map_err(|e| e.to_string())?;
+            if !source.matches_asset(asset, project.sample_rate()) {
+                return Err("verified media differs from project metadata".into());
+            }
+            candidate.verified_sources.insert(asset.id(), source);
+        }
+        candidate.editor =
+            hex_project::Editor::new(project, history_capacity).map_err(|e| e.to_string())?;
+        candidate.sine_table = current.sine_table();
+        return Ok((candidate, project_dir, document, dirty));
     }
     let mut prepared_assets = Vec::new();
     prepared_assets
@@ -164,7 +200,12 @@ pub(super) fn open_source(
         current.sine_table(),
     )
     .map_err(|error| error.to_string().to_lowercase())?;
-    Ok((session, project_dir, document, dirty))
+    Ok((
+        session.with_shutdown(Arc::clone(&current.shutdown)),
+        project_dir,
+        document,
+        dirty,
+    ))
 }
 
 pub(super) fn checkpoint_project(

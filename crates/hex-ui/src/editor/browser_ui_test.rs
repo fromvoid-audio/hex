@@ -99,16 +99,18 @@ fn browser_drag_fixture_with_tracks(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline ui test".into()))
             });
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -144,8 +146,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                .expect("disposable test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             });
@@ -155,9 +156,12 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     .project()
                     .clone();
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
                     can_undo: false,
                     can_redo: false,
@@ -203,17 +207,19 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             });
             editor.update(cx, |view, cx| {
                 let project = Project::new(48_000).expect("project");
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
                     can_undo: false,
                     can_redo: false,
@@ -348,8 +354,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                .expect("disposable test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             });
@@ -359,9 +364,12 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                     .project()
                     .clone();
                 view.state = Some(Arc::new(ViewState {
+                    canonical_audio_source: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 0,
                     can_undo: true,
                     can_redo: false,
@@ -412,8 +420,7 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             })
@@ -1637,6 +1644,7 @@ fn browser_audio_drag_rejects_changed_snap_or_viewport(cx: &mut TestAppContext) 
             label: "loop.wav".into(),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(std::cell::Cell::new(false)),
             copy_modifier: Rc::new(std::cell::Cell::new(false)),
@@ -1693,9 +1701,12 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         };
         let clip = project.project().midi_clip(clip_id).expect("clip");
         view.state = Some(Arc::new(ViewState {
+            canonical_audio_source: None,
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -1713,6 +1724,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             label: "loop.wav".into(),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),
@@ -1753,6 +1765,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             origin_pointer_x: Rc::new(Cell::new(None)),
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: view.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             copy_modifier: Rc::new(Cell::new(false)),
@@ -1846,8 +1859,7 @@ fn browser_restores_missing_user_folder_without_touching_real_preferences(cx: &m
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             window.replace_root(cx, |window, cx| {
                 EditorView::new_for_test(
                     window,
@@ -1883,8 +1895,7 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             window.replace_root(cx, |window, cx| {
                 EditorView::new_for_test(
                     window,
@@ -1930,4 +1941,152 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
         std::fs::read(&preferences_path).expect("corrupt file remains"),
         corrupt
     );
+}
+
+#[gpui::test]
+fn browser_sample_drop_above_first_track_shows_line_and_inserts_before_it(cx: &mut TestAppContext) {
+    let (handle, editor, tracks, _directory, path) =
+        browser_drag_fixture_with_tracks(cx, &["first", "second"]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let source = visual.debug_bounds("browser-entry-0").expect("sample row");
+    let selector = Box::leak(format!("arrangement-lane-{}", tracks[0].value()).into_boxed_str());
+    let first = visual.debug_bounds(selector).expect("first lane");
+    let down = point(
+        source.origin.x + source.size.width / 2.0,
+        source.origin.y + source.size.height / 2.0,
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0), down.y),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let target = point(
+        first.origin.x + first.size.width / 2.0,
+        first.origin.y + px(1.0),
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insert-preview").is_some());
+    assert!(visual.debug_bounds("clip-drop-preview").is_none());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        let (dropped_path, anchor, _) = view
+            .last_enqueued_import_to_new_track
+            .as_ref()
+            .expect("new track import");
+        assert_eq!(dropped_path, &path);
+        assert_eq!(*anchor, Some(tracks[0]));
+        assert!(view.last_enqueued_import_to_track.is_none());
+    });
+}
+
+#[gpui::test]
+fn browser_click_and_right_request_preview_without_import_search_arrows_keep_caret(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let row = visual.debug_bounds("browser-entry-0").expect("sample row");
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 1);
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("sample preview"))
+        );
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+    let contexts = visual
+        .update_window(handle, |_, window, cx| {
+            let view = editor.read(cx);
+            (
+                window.context_stack(),
+                view.browser_key_context(window, cx),
+                view.browser.results_focused,
+            )
+        })
+        .unwrap();
+    assert_eq!(contexts.1, "hex_browser", "{contexts:?}");
+    assert!(contexts.2, "{contexts:?}");
+    visual.simulate_keystrokes("right");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 2, "{contexts:?}");
+        assert!(view.pending_requests.is_empty());
+    });
+    // Clicking search restores text focus. Left/right then insert at the
+    // restored caret; neither key may send an audition request.
+    let search = visual.debug_bounds("browser-search").expect("search field");
+    visual.simulate_mouse_down(search.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(search.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("right l o left right o");
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "loo");
+        assert_eq!(view.browser.playback_generation, 2);
+    });
+    editor.update(visual, |view, cx| {
+        view.browser.search.update(cx, |input, cx| input.clear(cx));
+        view.browser
+            .listing
+            .as_mut()
+            .unwrap()
+            .entries
+            .push(LibraryEntry {
+                name: "second.wav".into(),
+                path: "/second.wav".into(),
+                kind: EntryKind::WaveAudio,
+            });
+        cx.notify();
+    });
+    visual.simulate_keystrokes("down right up right");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 0);
+        assert_eq!(view.browser.playback_generation, 4);
+        assert!(view.pending_requests.is_empty());
+    });
+    // Enter keeps the existing explicit import path.
+    editor.update(visual, |view, _| view.selected_track = Some(track));
+    visual.simulate_keystrokes("enter");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 4);
+        let (imported_path, imported_track, _, _) = view
+            .last_enqueued_import_to_track
+            .as_ref()
+            .expect("enter enqueues import to selected track");
+        assert_eq!(imported_path, &path);
+        assert_eq!(*imported_track, track);
+    });
+}
+
+#[gpui::test]
+fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let folder = directory.0.join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    editor.update(visual, |view, cx| {
+        view.browser.listing.as_mut().unwrap().entries = vec![LibraryEntry {
+            name: "folder".into(),
+            path: folder.clone(),
+            kind: EntryKind::Directory,
+        }];
+        cx.notify();
+    });
+    let row = visual.debug_bounds("browser-entry-0").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("right");
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.directory, folder);
+        assert_eq!(view.browser.playback_generation, 0);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+    });
 }

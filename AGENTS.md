@@ -169,7 +169,7 @@ in the same change. Keep APIs narrow, module sizes readable, errors explicit,
 public responsibilities documented, and dependencies acyclic. Put related behavior
 and tests with their owning crate; don't duplicate state across boundaries.
 
-Explicit test-only edges are allowed: `hex-audio` may use `hex-project` and
+Explicit test-only edges are allowed: `hex-audio` may use `hex-project`, `hex-media` and
 `hex-lattice-contract` as dev-dependencies for canonical prepared-publication and
 active-device allocation fixtures. Under the non-default `allocation-probe`
 feature, `hex-audio` may also use `hex-lattice` as a dev-dependency and enable
@@ -407,7 +407,7 @@ protection or automated review enforcement is configured.
 ## Stable optimized native test builds
 
 All Hex user-test builds use the supported `scripts/bundle-macos.sh` delivery
-with exact candidate full local-CI evidence, included ticket/PR revisions and a
+with exact candidate full local-CI evidence, included PR revisions and a
 finite checklist; see `docs/test-builds.md`. It builds the optimized desktop and
 replaces only the configured development app, by default
 `/Users/portalsurfer/dev/hex/artifacts/hex.app`, preserving
@@ -416,10 +416,12 @@ revision-named review copies for future testing. Unoptimized debug builds requir
 a specific stated debugging need. Save/quit/retry when the target is running;
 never force-quit or claim disk replacement reloads an active process.
 
-Follow the shared exact local checks → authorized merge → guarded post-merge
-stable delivery → ready_for_review → explicit exact-build owner approval → Done
-sequence. Retain receipts/rollback, report failures and native gaps in Pulse, and
-use supported reconciliation/completion gates. Merge alone is not acceptance.
+Build and install through the repository-owned command in `docs/test-builds.md`.
+Pulse manages tickets only; it does not define or gate Hex builds/installation.
+Keep CI/source/signing receipts and report native gaps separately. Installation
+uses temporary old-app custody only until publication is verified, then removes
+it; do not retain new rollback app copies or delete historical bundles. Rebuild
+older source when needed. Merge and disk installation are not native acceptance.
 
 ## 6. Parallel agents
 

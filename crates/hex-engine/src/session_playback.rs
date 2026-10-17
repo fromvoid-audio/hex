@@ -17,6 +17,7 @@ use crate::{
 use hex_project::{BeatTime, ClipId, MAX_TRACKS, NoteId, SceneId, TrackId};
 use std::{fmt, sync::Arc};
 
+mod candidate_storage;
 mod mutable_checkpoint;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
@@ -95,6 +96,7 @@ pub struct SessionPendingRouteStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionPlaybackError {
+    Capture(capture::OutputCaptureError),
     RevisionTrackMismatch,
     RevisionSampleRateMismatch,
     Allocation,
@@ -129,6 +131,7 @@ impl SessionPlaybackError {
     /// in the audio callback. Detailed numeric timing formatting stays on control.
     pub(crate) fn diagnostic_message(self) -> &'static str {
         match self {
+            Self::Capture(error) => error.message(),
             Self::RevisionTrackMismatch => "prepared arrangement and session tracks differ",
             Self::RevisionSampleRateMismatch => "session playback revision sample rates differ",
             Self::Allocation => "could not reserve session playback runtime storage",
@@ -244,11 +247,10 @@ struct TransitionMoment {
 
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
-    track_index: usize,
+    location: ReleaseLocation,
     track_id: TrackId,
     order: u64,
     mix: crate::PreparedTrackMix,
-    tail_group: Option<u16>,
     continuation: Option<SessionContinuation>,
     voice: MidiReleaseVoice,
 }
@@ -268,6 +270,22 @@ struct SessionContinuation {
     pitch: u8,
     channel: u8,
     velocity: u8,
+}
+
+/// Shared conservative owning-location count for fresh closed constructors.
+/// Playback contributes five outer locations and Session two singleton roots.
+pub(crate) fn candidate_group_reservation(
+    tracks: usize,
+    returns: usize,
+) -> Result<usize, crate::AudioStorageError> {
+    tracks
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(returns))
+        .and_then(|n| n.checked_add(SESSION_TAIL_GROUP_CAPACITY.checked_mul(2)?))
+        .and_then(|n| n.checked_add(return_effect_tails::RETURN_EFFECT_TAIL_CAPACITY))
+        .and_then(|n| n.checked_add(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS))
+        .and_then(|n| n.checked_add(7))
+        .ok_or(crate::AudioStorageError::Overflow)
 }
 
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
@@ -295,6 +313,12 @@ impl SessionHandoffReport {
 /// copied route state and commits clocks/routes/releases only after the entire
 /// requested block succeeds. The existing native `Playback` remains unchanged.
 pub struct SessionPlayback {
+    pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
+    pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
+    capture_runtime: u64,
+    capture_epoch: u64,
+    gain_recording_override: Option<f32>,
+    compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
     periodic_tempo: Option<PreparedPeriodicSessionTempo>,
@@ -311,6 +335,9 @@ pub struct SessionPlayback {
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
+    // Immutable original ownership, including effect-only suffixes. Inline
+    // slots are charged by size_of::<Self>() in actual and paired preflight.
+    tail_track_ids: [Option<TrackId>; SESSION_TAIL_GROUP_CAPACITY],
     tail_mutable_instruments: Vec<Option<MutableInstrumentTail>>,
     tail_mixes: Vec<crate::PreparedTrackMix>,
     tail_suffix_starts: Vec<usize>,
@@ -321,12 +348,17 @@ pub struct SessionPlayback {
     release_scratch: Vec<ReleaseEntry>,
     retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
+    // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
+    // revision context. Actual capacities are charged in preroll accounting.
+    analytic_continuations: Vec<Option<hex_lattice::AnalyticContinuation>>,
+    analytic_continuation_scratch: Vec<Option<hex_lattice::AnalyticContinuation>>,
     release_capacity: usize,
     release_order: u64,
     release_order_scratch: u64,
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
     spans: MidiSpanBuffer,
+    analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
     arrangement_loop_pass: u64,
@@ -352,7 +384,199 @@ impl fmt::Debug for SessionPlayback {
     }
 }
 
+fn effective_midi_route(
+    revision: &PreparedRevision,
+    routes: &[TrackRoute],
+    index: usize,
+) -> Result<TrackRoute, SessionPlaybackError> {
+    let mut route = *routes
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    let track = revision
+        .arrangement()
+        .tracks()
+        .get(index)
+        .ok_or(SessionPlaybackError::UnknownTrack)?;
+    if let Some(source) = track.midi_source_index {
+        let source = routes
+            .get(source)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        route.owner = source.owner;
+        route.pending = source.pending;
+    }
+    Ok(route)
+}
+
 impl SessionPlayback {
+    pub(crate) fn computer_keyboard_latency_supported(&self) -> bool {
+        self.compensation
+            .as_ref()
+            .is_none_or(|runtime| runtime.graph.plan.max_latency_frames() == 0)
+    }
+    pub(crate) fn new_audio_candidate(
+        revision: Arc<PreparedRevision>,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let bytes = preroll::arrangement_runtime_storage_preflight_bytes(&revision)
+            .ok_or(crate::AudioStorageError::UnknownStorage)?;
+        if bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(crate::AudioStorageError::ReservationExceeded);
+        }
+        Self::new(revision).map_err(|_| crate::AudioStorageError::UnsupportedGraph)
+    }
+    pub(crate) fn validate_candidate_runtime_storage(
+        &self,
+        metadata: usize,
+    ) -> Result<(), crate::AudioStorageError> {
+        let bytes = self
+            .accounted_runtime_storage_bytes()
+            .and_then(|n| n.checked_add(metadata))
+            .ok_or(crate::AudioStorageError::UnknownStorage)?;
+        if bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(crate::AudioStorageError::ReservationExceeded);
+        }
+        Ok(())
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_track_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        let index = self.routes.iter().position(|r| r.id == track)?;
+        self.device_chains
+            .get(index)?
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| {
+                let (a, b) = entry.runtime_box_identities();
+                if a > b { (b, a) } else { (a, b) }
+            })
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_boxes(
+        &self,
+        track: hex_project::TrackId,
+    ) -> Option<(Option<usize>, Option<usize>)> {
+        let index = self
+            .tail_track_ids
+            .iter()
+            .position(|id| *id == Some(track))?;
+        self.tail_groups
+            .get(index)?
+            .as_ref()?
+            .storage_view()
+            .entries()
+            .next()
+            .map(|entry| {
+                let (a, b) = entry.runtime_box_identities();
+                if a > b { (b, a) } else { (a, b) }
+            })
+    }
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn test_tail_activity(&self, track: hex_project::TrackId) -> Option<(bool, bool)> {
+        let slot = self
+            .tail_track_ids
+            .iter()
+            .position(|id| *id == Some(track))?;
+        let chain = self.tail_groups.get(slot)?.as_ref()?;
+        Some((
+            !chain.committed_range_is_quiescent(0..chain.len()),
+            self.tail_output_active[slot],
+        ))
+    }
+    #[cfg(test)]
+    pub(crate) fn test_populate_unsupported_tail(&mut self) {
+        self.tail_groups[0] = Some(hex_lattice::NativeRuntimeChain::empty());
+    }
+    /// Constructor-bound inventory of independently movable runtime owner
+    /// locations, adapted from original177 owner_groups.rs. No callback visitor
+    /// or byte/handle completeness claim. The closed constructor class permits
+    /// Utility Track/Tail transfers; other owning locations remain classified.
+    pub(crate) fn visit_candidate_groups(
+        &self,
+        visit: &mut impl FnMut(u8, usize, bool) -> Result<(), crate::AudioStorageError>,
+    ) -> Result<(), crate::AudioStorageError> {
+        // Exhaustive owning-field match: other buffers belong to the Session
+        // container group, not independent transferable device/context groups.
+        let Self {
+            live_expression,
+            computer_keyboard,
+            capture_runtime: _,
+            capture_epoch: _,
+            gain_recording_override: _,
+            compensation,
+            device_metering: _,
+            revision: _,
+            periodic_tempo: _,
+            anchor: _,
+            historical_floor: _,
+            route_historical_floors: _,
+            routes: _,
+            route_scratch: _,
+            device_chains,
+            return_chains,
+            return_scratch: _,
+            return_effect_tails,
+            mutable_instruments,
+            mutable_onsets: _,
+            mutable_events: _,
+            tail_groups,
+            tail_track_ids: _,
+            tail_mutable_instruments,
+            tail_mixes: _,
+            tail_suffix_starts: _,
+            tail_suffix_matrices: _,
+            tail_output_active: _,
+            tail_output_scratch: _,
+            releases: _,
+            release_scratch: _,
+            retained_contexts,
+            context_lease_plan: _,
+            analytic_continuations: _,
+            analytic_continuation_scratch: _,
+            release_capacity: _,
+            release_order: _,
+            release_order_scratch: _,
+            suppressions: _,
+            suppression_scratch: _,
+            spans: _,
+            analytic_import: _,
+            performance_frame: _,
+            arrangement_frame: _,
+            arrangement_loop_pass: _,
+            playing: _,
+            linear_arrangement_export: _,
+            route_state_generation: _,
+            candidate_admission_open: _,
+        } = self;
+        if live_expression.is_some() || computer_keyboard.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        for index in 0..device_chains.len() {
+            visit(0, index, true)?;
+        }
+        for (index, owner) in tail_groups.iter().enumerate() {
+            visit(1, index, owner.is_some())?;
+        }
+        for (index, owner) in mutable_instruments.iter().enumerate() {
+            visit(2, index, owner.is_some())?;
+        }
+        for (index, owner) in tail_mutable_instruments.iter().enumerate() {
+            visit(3, index, owner.is_some())?;
+        }
+        for index in 0..return_chains.len() {
+            visit(4, index, true)?;
+        }
+        for (index, owner) in return_effect_tails.slots().iter().enumerate() {
+            visit(5, index, owner.is_some())?;
+        }
+        for (index, owner) in retained_contexts.iter().enumerate() {
+            visit(6, index, owner.is_some())?;
+        }
+        visit(7, 0, true)?; // this exact Session revision handle
+        visit(8, 0, compensation.is_some())?;
+        Ok(())
+    }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
         self.device_metering = enabled;
         for chain in self
@@ -380,6 +604,38 @@ impl SessionPlayback {
         self.route_state_generation = self.route_state_generation.wrapping_add(1);
     }
 
+    pub(crate) fn attach_live_expression(
+        &mut self,
+        input: Arc<crate::live_expression::LiveExpressionInput>,
+    ) -> Result<(), crate::Invalid> {
+        let index = self
+            .revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|track| track.canonical_track_id() == Some(input.track))
+            .ok_or(crate::Invalid("controller input track unavailable"))?;
+        if !self
+            .mutable_instruments
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(
+                crate::mutable_instrument::MutableInstrumentTrackRuntime::supports_live_expression,
+            )
+        {
+            return Err(crate::Invalid(
+                "this instrument mode does not support controller input",
+            ));
+        }
+        let previous = self.live_expression.replace(input);
+        if self.validate_candidate_runtime_storage(0).is_err() {
+            self.live_expression = previous;
+            return Err(crate::Invalid(
+                "controller input exceeds graph storage budget",
+            ));
+        }
+        Ok(())
+    }
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
         Self::new_with_policy(revision, false)
     }
@@ -687,6 +943,10 @@ impl SessionPlayback {
                 })
                 .transpose()
                 .map_err(SessionPlaybackError::from)?;
+            let mut runtime = runtime;
+            if let Some(runtime) = runtime.as_mut() {
+                runtime.expression_identity = track.instrument_id;
+            }
             mutable_instruments.push(runtime);
         }
         let mut mutable_events = Vec::new();
@@ -784,6 +1044,9 @@ impl SessionPlayback {
             .try_reserve_exact(crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let analytic_continuations = reserve_analytic_continuations()?;
+        let analytic_continuation_scratch = reserve_analytic_continuations()?;
+
         let mut suppressions = Vec::new();
         suppressions
             .try_reserve_exact(release_capacity)
@@ -793,7 +1056,20 @@ impl SessionPlayback {
             .try_reserve_exact(release_capacity)
             .map_err(|_| SessionPlaybackError::Allocation)?;
 
+        let compensation = revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .transpose()
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         Ok(Self {
+            live_expression: None,
+            computer_keyboard: None,
+            capture_runtime: capture::next_runtime()?,
+            capture_epoch: 0,
+            gain_recording_override: None,
+            compensation,
             device_metering: false,
             revision,
             periodic_tempo,
@@ -810,6 +1086,7 @@ impl SessionPlayback {
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
             tail_groups,
+            tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
             tail_mixes,
             tail_suffix_starts,
@@ -820,12 +1097,15 @@ impl SessionPlayback {
             release_scratch,
             retained_contexts,
             context_lease_plan,
+            analytic_continuations,
+            analytic_continuation_scratch,
             release_capacity,
             release_order: 0,
             release_order_scratch: 0,
             suppressions,
             suppression_scratch,
             spans: MidiSpanBuffer::default(),
+            analytic_import: analytic_import::ImportPlan::new()?,
             performance_frame: 0,
             arrangement_frame: 0,
             arrangement_loop_pass: 0,
@@ -1013,6 +1293,18 @@ impl SessionPlayback {
         self.inherit_state(previous)
     }
 
+    pub(crate) fn inherit_candidate_groups(
+        &mut self,
+        previous: &mut Self,
+        groups: crate::audio_candidate::groups::Transfer<'_>,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.linear_arrangement_export || previous.linear_arrangement_export {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_with_groups(previous, Some(groups))
+    }
+
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {
         if self.candidate_admission_open {
             Ok(())
@@ -1082,15 +1374,44 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod capture;
+mod release_location;
+use release_location::ReleaseLocation;
+/// These tables never grow, shrink, swap ownership or allocate in handoff or
+/// rendering. Refusal/destruction of their storage belongs to control.
+fn reserve_analytic_continuations()
+-> Result<Vec<Option<hex_lattice::AnalyticContinuation>>, SessionPlaybackError> {
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(MAX_TRACKS)
+        .map_err(|_| SessionPlaybackError::Allocation)?;
+    if slots.capacity() != MAX_TRACKS {
+        return Err(SessionPlaybackError::Allocation);
+    }
+    slots.resize(MAX_TRACKS, None);
+    Ok(slots)
+}
+
+mod analytic_import;
 mod commands;
 mod handoff;
+mod harmonic_import;
 mod preroll;
 mod render;
+mod stream_actions;
+mod stream_demand;
+pub use capture::{
+    MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
+    OutputCaptureId, OutputCapturePlan,
+};
+pub use stream_actions::PreparedStreamAction;
 mod return_effect_tails;
 pub use preroll::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
 };
 use return_effect_tails::{ReturnEffectTailBank, ReturnEffectTailPlan};
+#[cfg(test)]
+mod harmonic_accounting;
 #[cfg(test)]
 mod tests;
 
@@ -1164,3 +1485,15 @@ mod render_diagnostic_tests {
         );
     }
 }
+mod gain_recording;
+#[cfg(test)]
+mod return_feed_tests;
+
+#[cfg(test)]
+mod compensation_tests;
+
+#[cfg(test)]
+mod routing_tests;
+
+#[cfg(test)]
+mod live_expression_tests;

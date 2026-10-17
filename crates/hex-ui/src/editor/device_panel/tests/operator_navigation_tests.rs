@@ -1,5 +1,6 @@
 use super::*;
 use gpui::Focusable;
+use operator_panel::preview::{Field, Switch};
 
 pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let (service, _, track, _, _, _) = actor_utility_fixture();
@@ -30,6 +31,199 @@ pub(super) fn operator_fixture() -> (Service, Arc<ViewState>, TrackId, DeviceId)
 
 fn selector(text: String) -> &'static str {
     Box::leak(text.into_boxed_str())
+}
+
+#[gpui::test]
+fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, _, track, device) = operator_fixture();
+    let path = std::env::temp_dir().join(format!("hex-lfo-mapping-{}.hex", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    service.submit(Request::SaveNew(path.clone())).unwrap();
+    let saved = receive_service_event(&service);
+    assert!(saved.error.is_none());
+    let (handle, editor) = actor_editor_window(cx, service, saved.state.clone(), track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(540.0)));
+    visual.run_until_parked();
+    let tab = lfo_link_bounds(&mut visual, device);
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-lfo-destinations-{}",
+                device.value()
+            )))
+            .is_some()
+    );
+    for parameter in 89..=92 {
+        let bounds = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}",
+                device.value()
+            )))
+            .unwrap();
+        let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+        let detail = visual
+            .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+            .unwrap();
+        assert!(
+            bounds.bottom() <= rail.top() || bounds.top() >= rail.bottom(),
+            "destination control overlaps shared navigation: {bounds:?} rail={rail:?}"
+        );
+        assert!(
+            bounds.bottom() <= detail.bottom() && bounds.right() <= detail.right(),
+            "destination control is clipped: {bounds:?} detail={detail:?}"
+        );
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(true)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        visual.run_until_parked();
+        let selected = ["a", "b", "c", "d"][(parameter - 88) as usize..].join(" ");
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "operator-lfo-selected-{}-{selected}",
+                    device.value()
+                )))
+                .is_some(),
+            "selected readout must follow each canonical destination edit"
+        );
+    }
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-lfo-selected-{}-",
+                device.value()
+            )))
+            .is_some(),
+        "all-off selected readout follows canonical destination values"
+    );
+    let detail = visual
+        .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+        .unwrap();
+    let depth = visual
+        .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
+        .unwrap();
+    let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+    assert!(
+        depth.bottom() <= rail.top(),
+        "pitch-depth explanation overlaps navigation: {depth:?} rail={rail:?}"
+    );
+    assert!(
+        depth.bottom() <= detail.bottom() && depth.right() <= detail.right(),
+        "pitch-depth explanation is clipped: {depth:?} detail={detail:?}"
+    );
+    for width in [880.0, 1440.0] {
+        visual.simulate_resize(size(px(width), px(540.0)));
+        for sync in [true, false] {
+            editor.update(cx, |view, _| {
+                assert!(view.enqueue(Request::SetDeviceParameter {
+                    device,
+                    parameter: hex_lattice_contract::ParameterId::from_static(84),
+                    value: ParameterValue::Bool(sync),
+                }));
+            });
+            pump_until(&editor, cx, |view| {
+                view.worker_requests_pending == 0
+                    && view.state.as_ref().is_some_and(|state| {
+                        operator_parameter_value(state, track, device, 84)
+                            == ParameterValue::Bool(sync)
+                    })
+            });
+            visual.run_until_parked();
+            let depth = visual
+                .debug_bounds(selector(format!("operator-lfo-depth-{}", device.value())))
+                .unwrap();
+            let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+            assert!(
+                depth.bottom() <= rail.top(),
+                "depth overlaps navigation at width={width}, sync={sync}: {depth:?} rail={rail:?}"
+            );
+            let detail = visual
+                .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+                .unwrap();
+            for caption in [
+                format!("operator-lfo-depth-{}", device.value()),
+                format!("operator-lfo-destinations-{}", device.value()),
+                format!("operator-lfo-selected-{}-", device.value()),
+            ] {
+                let bounds = visual.debug_bounds(selector(caption)).unwrap();
+                assert!(
+                    bounds.right() <= detail.right() && bounds.bottom() <= rail.top(),
+                    "lfo caption is clipped or overlaps navigation at width={width}, sync={sync}: {bounds:?}"
+                );
+            }
+        }
+    }
+    enter_typed_value(
+        &mut visual,
+        device,
+        hex_lattice_contract::ParameterId::from_static(87),
+        "50",
+    );
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 87) == ParameterValue::Float(50.0)
+            })
+    });
+    let mapped = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+    });
+    editor.update(cx, |view, cx| view.save_project(cx));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && !view.saving_project
+            && view.state.as_ref().is_some_and(|state| !state.unsaved)
+    });
+    let reload = Service::new(48_000, 8, 8_000_000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert_eq!(
+        reopened.state.project.device(device).unwrap().state(),
+        &mapped
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+fn lfo_link_bounds(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pixels> {
+    visual
+        .debug_bounds(selector(format!("operator-lfo-link-{}", device.value())))
+        .unwrap()
 }
 
 // The legacy fallback lets this exact regression execute on the unfixed source:
@@ -100,7 +294,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             device.value()
         )))
         .unwrap();
-    let lfo = tab_bounds(&mut visual, device, "lfo", "lfo");
+    let lfo = lfo_link_bounds(&mut visual, device);
     visual.simulate_click(lfo.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -117,7 +311,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         tab_bounds(&mut visual, device, "oscillator", "osc"),
         oscillator
     );
-    assert_eq!(tab_bounds(&mut visual, device, "lfo", "lfo"), lfo);
+    assert_eq!(lfo_link_bounds(&mut visual, device), lfo);
     for parameter in 82..=92 {
         assert!(
             visual
@@ -153,6 +347,27 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             )))
             .unwrap();
         visual.simulate_click(badge.center(), Modifiers::default());
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.device_gesture_barriers.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, 513 + operator)
+                        == ParameterValue::Bool(false)
+                })
+        });
+        // Badges now make a canonical enable edit as well as selecting context.
+        // Undo that edit before testing that subsequent navigation preserves sound.
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.device_gesture_barriers.is_empty()
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, 513 + operator)
+                        == ParameterValue::Bool(true)
+                })
+        });
         visual.run_until_parked();
         assert!(
             visual
@@ -215,7 +430,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.worker_requests_pending == 0 && view.pending_requests.is_empty()
         });
     }
-    for switch in 0..2 {
+    {
+        let switch = Switch::Pitch.index();
         let bounds = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-toggle-{switch}",
@@ -246,7 +462,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         .debug_bounds(selector(format!(
             "operator-preview-{}-{}",
             device.value(),
-            operator_panel::preview::Field::Time as usize
+            Field::Time as usize
         )))
         .unwrap();
     visual.simulate_click(
@@ -269,6 +485,30 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             .unwrap(),
         rail
     );
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-page-{}-envelope",
+                device.value()
+            )))
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-page-{}-oscillator",
+                device.value()
+            )))
+            .is_none()
+    );
+    let shell = visual
+        .debug_bounds(selector(format!(
+            "device-{}-parameter-1-knob",
+            device.value()
+        )))
+        .unwrap();
+    visual.simulate_click(shell.center(), Modifiers::default());
+    visual.run_until_parked();
     assert_eq!(
         tab_bounds(&mut visual, device, "envelope", "amp env"),
         envelope
@@ -282,7 +522,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         .debug_bounds(selector(format!(
             "operator-preview-{}-{}-knob",
             device.value(),
-            operator_panel::preview::Field::FineB as usize
+            Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(fine.center(), Modifiers::default());
@@ -306,6 +546,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             "focused routing activation takes precedence over session launch"
         );
     });
+    visual.simulate_click(shell.center(), Modifiers::default());
+    visual.run_until_parked();
     visual.simulate_click(envelope.center(), Modifiers::default());
     visual.simulate_click(fine.center(), Modifiers::default());
     tab_to_routing(&mut visual, &editor, device);
@@ -349,12 +591,17 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
-    for operator in [1, 2, 3, 0] {
+    for (operator, field) in [
+        (1, Field::FineB),
+        (2, Field::FineC),
+        (3, Field::FineD),
+        (0, Field::FineA),
+    ] {
         let fine = visual
             .debug_bounds(selector(format!(
                 "operator-preview-{}-{}-knob",
                 device.value(),
-                operator_panel::preview::Field::FineA as usize + operator
+                field as usize
             )))
             .unwrap();
         visual.simulate_click(fine.center(), Modifiers::default());
@@ -427,7 +674,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
         .debug_bounds(selector(format!(
             "operator-preview-{}-{}-value",
             device.value(),
-            operator_panel::preview::Field::FineB as usize
+            Field::FineB as usize
         )))
         .unwrap();
     visual.simulate_click(value.center(), Modifiers::default());
@@ -437,8 +684,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values
-                [operator_panel::preview::Field::FineB as usize],
+            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
             12.0
         )
     });
@@ -454,8 +700,7 @@ fn operator_fine_pointer_focus_and_keyboard_follow_stable_owner(cx: &mut TestApp
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_panel.operator_previews[&device].values
-                [operator_panel::preview::Field::FineB as usize],
+            view.device_panel.operator_previews[&device].values[Field::FineB as usize],
             12.0,
             "hidden owner cannot receive stale numeric input"
         )

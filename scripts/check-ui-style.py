@@ -8,22 +8,41 @@ errors = []
 # Text children must be normalized centrally; other children are view elements.
 widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
-    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.clip_detail_view(',
+    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
-    'self.icon(', 'self.control_icon(', 'self.arrangement(', 'self.ruler(', 'self.clip_view(',
+    'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
+    'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
     # `theme::text` at their component boundary.
+    'detail_caption(', 'detail_field(', 'upper_display)', 'envelope_fields)',
+    # Companion inspector children are typed controls or already-themed rows.
+    'harmonics::tools(', 'restart)', 'oscillator_velocity)', 'quantize)',
+    'row.child(', 'loop_cell)',
+    'tools)', 'oscillator_fields)', 'link)', 'enabled)', 'hex_widgets::device_segment(',
+    'harmonic_range_control)', 'harmonic_repeat_control)', 'harmonic_tools)',
+    'view.device_panel.operator_harmonics[&key].entity.clone())',
     'operator_row(', 'operator_label(', 'page_tab(', 'shell)', 'page_tabs)', 'detail)',
     'level)', 'primary)', 'multiplier)', 'fixed_control)', 'section_title(', 'page_tabs(', 'control)',
     'preview::render(', 'fine)', 'toggle(', 'heading)', 'left)', 'select_row)',
     'routing_link(', 'selector(',
     'dials)', 'icon)', 'toggle.entity.clone())', 'selector.entity.clone())',
-    'waveform)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
+    'waveform)', 'waveform_preview)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
+    # Algorithm diagrams have no text; global controls normalize captions.
+    'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
+    # Generic device layout components accept already-themed child elements.
+    'hex_widgets::device_display(', 'hex_widgets::device_body(',
+    'hex_widgets::device_section(', 'hex_widgets::device_layout(',
+    'hex_widgets::device_rail(', 'hex_widgets::device_grouped_row(',
+    'hex_widgets::device_split(',
+    # Shared production composition slots are already-bound native view elements.
+    'compact_rail(', 'dense_rail(', 'device_compact_section(', 'plot(', 'range)', 'footer)', 'rail)',
+    'first)', 'second)', 'preview)', 'tabs)', 'rails)',
+    'hex_widgets::device_divider(', 'hex_widgets::device_identity_marker(',
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
@@ -31,11 +50,14 @@ widgets = (
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
-    'source_adjust_button(',
+    'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    'super::waveform::prepared_waveform_view_cached(',
+    'source_adjust_button(', 'gain_adjust_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
     'status_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
+    'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
@@ -46,6 +68,9 @@ widgets = (
     'header::title_bar(', 'header::loading_toolbar(',
     'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
+    # Device preset header actions reuse themed compact action buttons.
+    'super::device_preset::actions(', 'super::device_panel::action_button(',
+    'super::super::device_preset::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     'self.return_send_menu(', 'send_adjust_button(', 'super::device_panel::return_send_numeric_control(', 'upper.flex_1().min_h_0()',
@@ -65,6 +90,9 @@ widgets = (
     'super::device_panel::bottom_bar(', 'overview)',
     # Shared host meter strip supplies lowercase tooltip text through theme::text.
     'gain_meters::render(', 'super::gain_meters::render(',
+    # Typed routing/recording components normalize their labels at the boundary.
+    'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    'binding.entity.clone())', 'super::super::gain_recording::controls(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
@@ -81,17 +109,15 @@ for root_view in ('app.rs', 'editor/render.rs'):
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
 # The shared compact title row reserves balanced space for native controls;
-# editor startup and the loaded editor both use that component. The generated
-# demo still owns its separate toolbar and retains the same leading inset.
+# one EditorView renders both pending-backend startup and the loaded editor.
+# The generated demo retains its separate toolbar with the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
 if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
     errors.append('editor/header.rs: center title with balanced native-control insets')
-for top_row in ('editor/bootstrap.rs', 'editor/render.rs'):
+for top_row in ('editor/render.rs',):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
     if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
         errors.append(f'{top_row}: use the shared title row')
-if 'header::loading_toolbar' not in (ROOT / 'crates/hex-ui/src/editor/bootstrap.rs').read_text():
-    errors.append('editor/bootstrap.rs: align startup toolbar with editor toolbar geometry')
 demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')

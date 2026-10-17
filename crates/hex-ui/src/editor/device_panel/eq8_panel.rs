@@ -17,8 +17,8 @@ use hex_widgets::{
     ResponseGraphNode, Toggle, ToggleChanged, ToggleConfig,
 };
 
-pub(super) const FRAME_WIDTH: f32 = 600.0;
-const BODY_HEIGHT: f32 = super::UTILITY_FRAME_BODY_HEIGHT;
+pub(super) const FRAME_WIDTH: f32 = crate::device_composition::EQ8_FRAME_WIDTH;
+const BODY_HEIGHT: f32 = super::DEVICE_FRAME_BODY_HEIGHT;
 const BAND_COUNT: usize = 8;
 const RESPONSE_POINTS: usize = 96;
 const MIN_HZ: f32 = 20.0;
@@ -189,7 +189,7 @@ pub(super) fn render_body(
             .child(theme::text("response unavailable"));
     };
     let selected = panel.selected_band.min(BAND_COUNT - 1);
-    let controls = div()
+    let controls = crate::device_composition::control_row()
         .id(ElementId::Name(
             format!("eq8-selected-{}", device.value()).into(),
         ))
@@ -235,34 +235,14 @@ pub(super) fn render_body(
             id(202),
             "out",
         ));
-    div()
+    let main = crate::device_composition::plot_column(toolbar, graph, controls).id(
+        ElementId::Name(format!("eq8-main-{}", device.value()).into()),
+    );
+    crate::device_composition::split_body(left, main)
         .id(ElementId::Name(
             format!("eq8-body-{}", device.value()).into(),
         ))
         .debug_selector(move || format!("eq8-body-{}", device.value()))
-        .w_full()
-        .h(px(BODY_HEIGHT))
-        .min_h_0()
-        .overflow_hidden()
-        .flex()
-        .gap(px(4.0))
-        .p(px(3.0))
-        .child(left)
-        .child(
-            div()
-                .id(ElementId::Name(
-                    format!("eq8-main-{}", device.value()).into(),
-                ))
-                .w_full()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(toolbar)
-                .child(div().w_full().flex_1().min_h_0().child(graph))
-                .child(controls),
-        )
 }
 
 fn audition_toggle(
@@ -300,7 +280,7 @@ fn audition_toggle(
             if !event.checked
                 && let Some(audio) = view.audio.as_mut()
             {
-                let _ = audio.control.processor_audition.cancel_immediately();
+                let _ = audio.control.audition_cancel();
             }
             cx.notify();
         });
@@ -315,7 +295,10 @@ fn audition_toggle(
             .child(unavailable("audition toggle unavailable"));
     };
     let entity = control.entity.clone();
-    entity.update(cx, |toggle, cx| toggle.set_checked(armed, cx));
+    entity.update(cx, |toggle, cx| {
+        let _ = toggle.set_external_style(super::control_style(), cx);
+        toggle.set_checked(armed, cx);
+    });
     div()
         .id(ElementId::Name(
             format!("eq8-audition-arm-{}", device.value()).into(),
@@ -347,97 +330,89 @@ fn spectrum_toggle(
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), device_type);
     let generation = view.project_generation;
     let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
-    let selected =
-        view.audio.as_ref().and_then(|audio| {
-            audio.control.spectrum_target.desired().map(|target| {
-                target.identity == identity && target.project_generation == generation
-            })
-        }) == Some(true);
+    let selected = view.audio.as_ref().and_then(|audio| {
+        audio
+            .control
+            .spectrum_desired()
+            .map(|target| target.identity == identity && target.project_generation == generation)
+    }) == Some(true);
     let available = view.audio.as_ref().is_some_and(|audio| {
-        audio.spectrum.is_some() && (8_000..=192_000).contains(&audio.sample_rate)
+        audio.spectrum_error.is_none() && (8_000..=192_000).contains(&audio.sample_rate)
     });
     let tooltip = view
         .audio
         .as_ref()
         .and_then(|audio| audio.spectrum_error.clone())
         .unwrap_or_else(|| "show post-eq8 output spectrum".to_owned());
-    div()
-        .id(ElementId::Name(
-            format!("eq8-spectrum-{}", device.value()).into(),
-        ))
-        .debug_selector(move || format!("eq8-spectrum-{}", device.value()))
-        .w(px(18.0))
-        .h(px(13.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .text_size(px(9.0))
-        .text_color(rgb(if selected && available {
-            theme::color(theme::PaletteRole::Secondary)
-        } else {
-            theme::color(theme::PaletteRole::Muted)
-        }))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-        .tooltip(move |_, cx| {
-            cx.new(|_| super::super::transport::MiniTooltip {
-                description: tooltip.clone().into(),
-            })
-            .into()
+    hex_widgets::device_action(
+        theme::text("∿"),
+        theme::device_segment_style(selected && available),
+    )
+    .id(ElementId::Name(
+        format!("eq8-spectrum-{}", device.value()).into(),
+    ))
+    .debug_selector(move || format!("eq8-spectrum-{}", device.value()))
+    .w(px(18.0))
+    .h(px(13.0))
+    .cursor_pointer()
+    .tooltip(move |_, cx| {
+        cx.new(|_| super::super::transport::MiniTooltip {
+            description: tooltip.clone().into(),
         })
-        .child(theme::text("∿"))
-        .on_click(cx.listener(move |view, _, _, cx| {
-            let active = view.audio.as_ref().and_then(|audio| {
-                audio.control.spectrum_target.desired().map(|target| {
-                    target.identity == identity && target.project_generation == generation
-                })
-            }) == Some(true);
-            if active {
-                if let Some(audio) = view.audio.as_mut() {
-                    let _ = audio.control.spectrum_target.clear();
-                }
-                view.device_panel.spectrum_result = None;
-                view.device_panel.message = None;
-            } else if view.project_generation != generation
-                || view.state.as_ref().map(|state| state.revision) != Some(project_revision)
-            {
-                view.device_panel.message = Some("spectrum target changed; select it again".into());
-            } else if let Some(floor) = view
-                .audio_admission
-                .published_audio_revision(generation, project_revision)
-            {
-                if let Some(audio) = view.audio.as_mut() {
-                    if audio.spectrum.is_none() {
-                        view.device_panel.message = Some(
-                            audio
-                                .spectrum_error
-                                .clone()
-                                .unwrap_or_else(|| "spectrum analysis unavailable".into()),
-                        );
-                    } else {
-                        match audio.control.spectrum_target.select(
-                            identity,
-                            generation,
-                            floor,
-                            audio.sample_rate,
-                        ) {
-                            Ok(_) => view.device_panel.message = None,
-                            Err(_) => {
-                                view.device_panel.message =
-                                    Some("spectrum analysis is unavailable for this target".into())
-                            }
+        .into()
+    })
+    .on_click(cx.listener(move |view, _, _, cx| {
+        let active = view.audio.as_ref().and_then(|audio| {
+            audio.control.spectrum_desired().map(|target| {
+                target.identity == identity && target.project_generation == generation
+            })
+        }) == Some(true);
+        if active {
+            if let Some(audio) = view.audio.as_mut() {
+                let _ = audio.control.spectrum_clear();
+            }
+            view.device_panel.spectrum_result = None;
+            view.device_panel.message = None;
+        } else if view.project_generation != generation
+            || view.state.as_ref().map(|state| state.revision) != Some(project_revision)
+        {
+            view.device_panel.message = Some("spectrum target changed; select it again".into());
+        } else if let Some(floor) = view
+            .audio_admission
+            .published_audio_revision(generation, project_revision)
+        {
+            if let Some(audio) = view.audio.as_mut() {
+                if audio.spectrum_error.is_some() || !(8_000..=192_000).contains(&audio.sample_rate)
+                {
+                    view.device_panel.message = Some(
+                        audio
+                            .spectrum_error
+                            .clone()
+                            .unwrap_or_else(|| "spectrum analysis unavailable".into()),
+                    );
+                } else {
+                    match audio.control.spectrum_select(
+                        identity,
+                        generation,
+                        floor,
+                        audio.sample_rate,
+                    ) {
+                        Ok(_) => view.device_panel.message = None,
+                        Err(_) => {
+                            view.device_panel.message =
+                                Some("spectrum analysis is unavailable for this target".into())
                         }
                     }
-                } else {
-                    view.device_panel.message = Some("audio output is unavailable".into());
                 }
             } else {
-                view.device_panel.message =
-                    Some("waiting for the current project audio revision".into());
+                view.device_panel.message = Some("audio output is unavailable".into());
             }
-            cx.notify();
-        }))
+        } else {
+            view.device_panel.message =
+                Some("waiting for the current project audio revision".into());
+        }
+        cx.notify();
+    }))
 }
 
 fn band_list(
@@ -448,12 +423,12 @@ fn band_list(
     device_view: &NativeDeviceView,
     bank: usize,
     selected: usize,
-) -> Stateful<Div> {
+) -> Div {
     let mut rows = Vec::with_capacity(BAND_COUNT);
     for band in 0..BAND_COUNT {
         let index = band + 1;
         let selected = selected == band;
-        let mut row = div()
+        let row = hex_widgets::device_compact_row(super::device_layout_style(), selected)
             .id(ElementId::Name(
                 format!("eq8-band-row-{}-{band}", device.value()).into(),
             ))
@@ -507,12 +482,9 @@ fn band_list(
                 device_view,
                 band_id(bank, band, 1),
             ));
-        if selected {
-            row = row.bg(rgb(theme::color(theme::PaletteRole::Hover)));
-        }
         rows.push(row);
     }
-    let mut column = div()
+    let mut column = crate::device_composition::rail_column()
         .id(ElementId::Name(
             format!("eq8-bands-{}", device.value()).into(),
         ))
@@ -526,7 +498,9 @@ fn band_list(
     for row in rows {
         column = column.child(row);
     }
-    column
+    crate::device_composition::compact_rail(column)
+        .w(px(96.0))
+        .flex_shrink_0()
 }
 
 fn compact_control(
@@ -585,25 +559,13 @@ fn lane_button(
     label: &'static str,
 ) -> Stateful<Div> {
     let selected = lane == selected_lane;
-    div()
+    hex_widgets::device_segment(theme::text(label), theme::device_segment_style(selected))
         .id(ElementId::Name(
             format!("eq8-lane-{}-{lane}", device.value()).into(),
         ))
         .debug_selector(move || format!("eq8-lane-{}-{lane}", device.value()))
         .w(px(18.0))
         .h(px(14.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(hex_widgets::CONTROL_CORNER_RADIUS))
-        .bg(rgb(if selected {
-            theme::color(theme::PaletteRole::Secondary)
-        } else {
-            theme::color(theme::PaletteRole::Raised)
-        }))
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-        .child(theme::text(label))
         .on_click(cx.listener(move |view, _, _, cx| {
             if !finalize_controls(view, cx) {
                 return;
@@ -634,11 +596,7 @@ fn bank_label(bank: usize) -> &'static str {
 }
 
 fn section_heading(label: &'static str) -> Div {
-    div()
-        .h(px(10.0))
-        .text_size(px(8.0))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-        .child(theme::text(label))
+    hex_widgets::device_caption(theme::text(label), super::control_style())
 }
 
 fn unavailable(label: &'static str) -> Div {

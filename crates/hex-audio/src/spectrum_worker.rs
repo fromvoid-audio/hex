@@ -6,6 +6,10 @@
 //! and attempts one nonblocking SPSC push.
 
 use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
+mod native;
+pub(crate) use native::{
+    NativeSpectrumIdentity, NativeSpectrumReceipt, spawn_native_spectrum_worker,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
     error::Error,
@@ -79,6 +83,7 @@ pub struct SpectrumCapture {
     producer: Producer<CaptureBatch>,
     next_sequence: u64,
     exhausted: bool,
+    native: Option<NativeSpectrumReceipt>,
 }
 
 impl SpectrumCapture {
@@ -111,7 +116,10 @@ impl SpectrumCapture {
         };
         self.next_sequence = next_sequence;
 
-        if frames.is_empty()
+        if self
+            .native
+            .is_some_and(|receipt| receipt.identity.sample_rate != stamp.sample_rate_hz)
+            || frames.is_empty()
             || frames.len() > MAX_CAPTURE_FRAMES
             || !(MIN_CAPTURE_SAMPLE_RATE_HZ..=MAX_CAPTURE_SAMPLE_RATE_HZ)
                 .contains(&stamp.sample_rate_hz)
@@ -156,6 +164,7 @@ impl SpectrumCapture {
 pub struct SpectrumReader {
     results: Receiver<PublishedSpectrum>,
     latest: Option<PublishedSpectrum>,
+    native: Option<NativeSpectrumIdentity>,
 }
 
 impl SpectrumReader {
@@ -187,8 +196,18 @@ impl SpectrumReader {
 pub struct SpectrumReaper {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    native: Option<NativeSpectrumIdentity>,
+    phase: ReaperPhase,
+    first_panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReaperPhase {
+    Ready,
+    Pending,
+    Complete,
+    Failed,
+}
 impl SpectrumReaper {
     /// Request exit without joining. Safe to use while retaining a quarantined
     /// stream and callback; all destruction still waits for successful pause.
@@ -199,11 +218,34 @@ impl SpectrumReaper {
     /// Stop and join after the callback producer has been destroyed by stream
     /// disposal. The worker consumer and queue allocation are reclaimed here.
     pub fn shutdown_and_join(mut self) -> Result<(), SpectrumWorkerError> {
+        self.advance_shutdown_on_control()
+    }
+    /// Persistent lifecycle seam. No owner take before Pending, no ordinary
+    /// mutex is held, and a worker panic keeps its exact first payload here.
+    pub(crate) fn advance_shutdown_on_control(&mut self) -> Result<(), SpectrumWorkerError> {
         self.request_stop();
+        match self.phase {
+            ReaperPhase::Complete => return Ok(()),
+            ReaperPhase::Pending | ReaperPhase::Failed => {
+                return Err(SpectrumWorkerError::ThreadPanicked);
+            }
+            ReaperPhase::Ready => {}
+        }
+        self.phase = ReaperPhase::Pending;
         let Some(join) = self.join.take() else {
-            return Ok(());
+            return Err(SpectrumWorkerError::ThreadPanicked);
         };
-        join.join().map_err(|_| SpectrumWorkerError::ThreadPanicked)
+        match join.join() {
+            Ok(()) => {
+                self.phase = ReaperPhase::Complete;
+                Ok(())
+            }
+            Err(payload) => {
+                self.first_panic = Some(payload);
+                self.phase = ReaperPhase::Failed;
+                Err(SpectrumWorkerError::ThreadPanicked)
+            }
+        }
     }
 }
 
@@ -220,6 +262,7 @@ pub enum SpectrumWorkerError {
     InvalidSampleRate(u32),
     ThreadSpawn(std::io::Error),
     ThreadPanicked,
+    StorageOverflow,
 }
 
 impl fmt::Display for SpectrumWorkerError {
@@ -231,6 +274,7 @@ impl fmt::Display for SpectrumWorkerError {
             Self::ThreadSpawn(error) => {
                 write!(formatter, "could not start spectrum worker: {error}")
             }
+            Self::StorageOverflow => formatter.write_str("spectrum storage size overflow"),
             Self::ThreadPanicked => formatter.write_str("spectrum worker exited unexpectedly"),
         }
     }
@@ -242,16 +286,37 @@ impl Error for SpectrumWorkerError {}
 pub fn spawn_spectrum_worker(
     initial_stamp: SpectrumStamp,
 ) -> Result<(SpectrumCapture, SpectrumReader, SpectrumReaper), SpectrumWorkerError> {
+    spawn_worker(initial_stamp, false, None)
+}
+fn spawn_worker(
+    initial_stamp: SpectrumStamp,
+    fixed_native: bool,
+    entry: Option<fn()>,
+) -> Result<(SpectrumCapture, SpectrumReader, SpectrumReaper), SpectrumWorkerError> {
     let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
         .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
 
+    let core = SpectrumCore::new(kernel, initial_stamp.sample_rate_hz);
     let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
     let (result_sender, result_receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
+    let receipt = if fixed_native {
+        Some(
+            NativeSpectrumReceipt::new(&producer, &stop, &core, initial_stamp.sample_rate_hz)
+                .ok_or(SpectrumWorkerError::StorageOverflow)?,
+        )
+    } else {
+        None
+    };
     let worker_stop = Arc::clone(&stop);
     let join = thread::Builder::new()
         .name("hex-spectrum".into())
-        .spawn(move || worker_loop(consumer, result_sender, worker_stop, initial_stamp, kernel))
+        .spawn(move || {
+            if let Some(entry) = entry {
+                entry();
+            }
+            worker_loop(consumer, result_sender, worker_stop, core)
+        })
         .map_err(SpectrumWorkerError::ThreadSpawn)?;
 
     Ok((
@@ -259,14 +324,19 @@ pub fn spawn_spectrum_worker(
             producer,
             next_sequence: 0,
             exhausted: false,
+            native: receipt,
         },
         SpectrumReader {
             results: result_receiver,
             latest: None,
+            native: receipt.map(|receipt| receipt.identity),
         },
         SpectrumReaper {
             stop,
             join: Some(join),
+            native: receipt.map(|receipt| receipt.identity),
+            phase: ReaperPhase::Ready,
+            first_panic: None,
         },
     ))
 }
@@ -284,10 +354,8 @@ fn worker_loop(
     mut consumer: Consumer<CaptureBatch>,
     result_sender: SyncSender<PublishedSpectrum>,
     stop: Arc<AtomicBool>,
-    initial_stamp: SpectrumStamp,
-    kernel: SpectrumKernel,
+    mut core: SpectrumCore,
 ) {
-    let mut core = SpectrumCore::new(kernel, initial_stamp.sample_rate_hz);
     while !stop.load(Ordering::Acquire) {
         let mut drained = 0;
         while drained < MAX_BATCHES_PER_POLL {
@@ -487,6 +555,7 @@ mod tests {
             producer,
             next_sequence: 0,
             exhausted: false,
+            native: None,
         };
         let frames = [[0.25; 2]; MAX_CAPTURE_FRAMES];
         let context = stamp(1, 2, 8_000, 10);
@@ -597,6 +666,7 @@ mod tests {
         let mut reader = SpectrumReader {
             results: receiver,
             latest: None,
+            native: None,
         };
         // Receipt happens now, but the channel carries the original capture
         // timestamp so expensive/queued processing cannot refresh stale audio.
@@ -612,25 +682,62 @@ mod tests {
         let start = Instant::now();
         let first_context = stamp(4, 1, 192_000, 1);
         for sequence in 0..16 {
-            analysis.ingest(batch(sequence, first_context, 0.3, 256));
+            let mut captured = batch(sequence, first_context, 0.3, 256);
+            captured.captured_start = start;
+            analysis.ingest(captured);
         }
         assert!(analysis.analyze_if_due(start).is_some());
 
         let next_context = stamp(4, 2, 192_000, 2);
         let next_capture_at = start + Duration::from_millis(21);
         for sequence in 16..32 {
-            analysis.ingest(batch(sequence, next_context, 0.4, 256));
+            let mut captured = batch(sequence, next_context, 0.4, 256);
+            captured.captured_start = next_capture_at;
+            analysis.ingest(captured);
         }
         assert!(analysis.analyze_if_due(next_capture_at).is_none());
         let second = analysis
             .analyze_if_due(start + Duration::from_millis(34))
             .expect("global cadence elapsed");
+        assert_eq!(second.stamp, next_context);
+        assert_eq!(second.captured_at, next_capture_at);
+        assert!(second.is_fresh_at(next_capture_at + DISPLAY_STALE_AFTER));
+        assert!(
+            !second.is_fresh_at(next_capture_at + DISPLAY_STALE_AFTER + Duration::from_nanos(1))
+        );
         assert!(!second.is_fresh_at(start + Duration::from_millis(122)));
         assert!(
             analysis
                 .analyze_if_due(start + Duration::from_millis(200))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn delayed_capture_is_fresh_by_capture_age_not_fixture_start() {
+        let mut analysis = core();
+        let start = Instant::now();
+        let captured_at = start + Duration::from_millis(40);
+        let context = stamp(4, 2, 8_000, 2);
+        for sequence in 0..16 {
+            let mut captured = batch(sequence, context, 0.4, 256);
+            captured.captured_start = captured_at;
+            analysis.ingest(captured);
+        }
+        let result = analysis
+            .analyze_if_due(start + Duration::from_millis(54))
+            .expect("complete delayed capture window");
+        assert_eq!(result.captured_at, captured_at);
+        // The old absolute +122 ms query is only 82 ms after this capture.
+        let query_at = start + Duration::from_millis(122);
+        assert!(query_at.duration_since(start) > DISPLAY_STALE_AFTER);
+        assert_eq!(
+            query_at.duration_since(result.captured_at),
+            Duration::from_millis(82)
+        );
+        assert!(result.is_fresh_at(query_at));
+        assert!(result.is_fresh_at(captured_at + DISPLAY_STALE_AFTER));
+        assert!(!result.is_fresh_at(captured_at + DISPLAY_STALE_AFTER + Duration::from_nanos(1)));
     }
 
     #[test]
@@ -679,6 +786,7 @@ mod tests {
             producer,
             next_sequence: u64::MAX,
             exhausted: false,
+            native: None,
         };
         assert_eq!(
             capture.submit(stamp(1, 2, 8_000, 1), &[[0.0, 0.0]]),
@@ -697,6 +805,7 @@ mod tests {
             producer,
             next_sequence: 0,
             exhausted: false,
+            native: None,
         };
         let context = stamp(1, 1, 8_000, 1);
         assert_eq!(

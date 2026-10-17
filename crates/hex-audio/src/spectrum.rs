@@ -77,6 +77,22 @@ pub struct SpectrumKernel {
 }
 
 impl SpectrumKernel {
+    pub(crate) fn heap_data_bytes(&self) -> Option<usize> {
+        let Self {
+            sample_rate_hz: _,
+            window,
+            window_sum: _,
+            bands: _,
+            real,
+            imaginary,
+            left_power,
+        } = self;
+        std::mem::size_of_val(window.as_ref())
+            .checked_add(std::mem::size_of_val(real.as_ref()))?
+            .checked_add(std::mem::size_of_val(imaginary.as_ref()))?
+            .checked_add(std::mem::size_of_val(left_power.as_ref()))
+    }
+
     /// Construct reusable fixed storage for a supported audio sample rate.
     pub fn new(sample_rate_hz: u32) -> Result<Self, SpectrumError> {
         if !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&sample_rate_hz) {

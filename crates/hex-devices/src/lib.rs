@@ -11,6 +11,13 @@ pub mod saturator;
 pub mod utility;
 pub mod utility_filters;
 
+// Private mathematical precursor; no native registration or production API.
+#[cfg(test)]
+mod signed_envelope;
+#[cfg(test)]
+#[path = "signed_envelope/tests.rs"]
+mod signed_envelope_tests;
+
 use hex_lattice::{
     NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument, StereoFrame,
 };
@@ -127,6 +134,10 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
 }
 
 impl PreparedNativeInstrument for PreparedSineInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
     fn prepare_note(
         &self,
         pitch: u8,
@@ -208,6 +219,16 @@ impl SineTable {
         Self { samples }
     }
 
+    /// Control-only exclusive leaf declaration; shared wrapper/handles are
+    /// separate. New owning fields require this module's explicit audit.
+    pub fn control_storage_declaration(&self) -> hex_lattice::PreparedStorageDeclaration {
+        let Self { samples } = self;
+        let _: &[f32; TABLE_SIZE + 1] = samples;
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<Self>(),
+        }
+    }
+
     pub fn prepare_voice(
         &self,
         sample_rate: u32,
@@ -256,6 +277,14 @@ impl SineTable {
         };
         let phase = voice.phase_step.wrapping_mul(relative_frame);
         self.sample_phase(phase) * amplitude * voice.amplitude
+    }
+
+    pub(crate) fn sample_phase_policy(&self, phase: u64, interpolate: bool) -> f32 {
+        if interpolate {
+            self.sample_phase(phase)
+        } else {
+            self.samples[((phase >> (64 - TABLE_BITS)) & TABLE_MASK) as usize]
+        }
     }
 
     /// Interpolated periodic lookup; the caller supplies a wrapping turn phase.
@@ -354,3 +383,8 @@ mod tests {
         }
     }
 }
+
+// Isolated harmonic-kernel proof pending canonical/host dependency integration.
+mod operator_filter;
+#[cfg(test)]
+mod operator_harmonics;

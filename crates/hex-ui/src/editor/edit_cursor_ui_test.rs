@@ -183,12 +183,17 @@ fn main_cursor_draws_across_tracks_and_command_e_routes_atomic_project_split(
         main_lane.origin.x + main_lane.size.width * 0.1,
         main_lane.origin.y + main_lane.size.height * 0.7,
     );
-    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    let unsnapped = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(click, MouseButton::Left, unsnapped);
+    visual.simulate_mouse_up(click, MouseButton::Left, unsnapped);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let cursor = view.edit_cursor.expect("main cursor");
         assert!(view.time_selection_project_scope);
+        assert!(view.normalized_time_selection().is_none());
         assert!(cursor.frame > 0 && cursor.frame < 96_000);
         assert!(view.selected_track.is_none());
     });
@@ -1296,9 +1301,13 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         status: None,
         error: Some("test rejection".to_owned()),
         request_complete: true,
+        computer_keyboard_complete: None,
+        live_expression_complete: None,
+        audio_batch_complete: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,
+        stopped_playback_restore_complete: false,
         created: None,
         duplicate_complete: false,
         restore_complete: None,

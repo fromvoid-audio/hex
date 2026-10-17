@@ -42,6 +42,9 @@ fn lfo_history_save_and_nyquist_admission_preserve_the_project_on_refusal() {
         (87, ParameterValue::Float(100.0)),
         (88, ParameterValue::Bool(false)),
         (89, ParameterValue::Bool(false)),
+        (90, ParameterValue::Bool(false)),
+        (91, ParameterValue::Bool(false)),
+        (92, ParameterValue::Bool(false)),
     ] {
         let before = session.project().device(device).unwrap().state().clone();
         graph = session
@@ -267,6 +270,13 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         ParameterValue::Float(0.65),
     )
     .expect("authored feedback setting");
+    let original = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &original,
+        ParameterId::from_static(513),
+        ParameterValue::Bool(false),
+    )
+    .expect("authored disabled oscillator");
     let (_, prepared) = session
         .command_prepared_revision(
             Command::ReplaceDeviceState {
@@ -287,7 +297,19 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.payload().len(), 364);
+    assert_eq!(selected.state_version(), 15);
+    assert_eq!(selected.payload().len(), 1728);
+    for (id, enabled) in [(513, false), (514, true), (515, true), (516, true)] {
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                &selected,
+                ParameterId::from_static(id),
+            )
+            .expect("preserved oscillator enable"),
+            ParameterValue::Bool(enabled)
+        );
+    }
     assert_eq!(&selected.payload()[288..], &original.payload()[288..]);
     let undone = session
         .undo_prepared_revision(Some(&changed))
@@ -308,7 +330,7 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
 }
 
 #[test]
-fn seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
+fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), mut graph) = session
         .command_prepared_revision(
@@ -340,6 +362,23 @@ fn seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
         ParameterValue::Float(0.4),
     )
     .expect("feedback amount");
+    // A is unmodulated in the legacy parallel fixture, enabling its feedback.
+    state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &state,
+        ParameterId::from_static(61),
+        ParameterValue::Choice(2),
+    )
+    .expect("legacy parallel routing");
+    // The historical runtime retains its 16-voice admission policy; new
+    // operator mode uses an independent 64-occurrence/32-sounding-voice policy.
+    state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &state,
+        ParameterId::from_static(608),
+        ParameterValue::Choice(0),
+    )
+    .expect("legacy processing");
     (_, graph) = session
         .command_prepared_revision(Command::ReplaceDeviceState { device, state }, Some(&graph))
         .expect("mutable feedback runtime admitted");

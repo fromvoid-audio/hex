@@ -37,7 +37,17 @@ pub(crate) enum PreparedMidiNote {
     Shared {
         context: SharedContextRef,
         note: PreparedSharedAnalyticNote,
+        id: crate::shared_analytic::SharedContextId,
+        binding: AnalyticBinding,
     },
+}
+
+/// Current owners borrow a single revision transition. Detached tails carry
+/// their own fixed snapshot and can never be retargeted by later owner edits.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AnalyticBinding {
+    Current,
+    Detached(Option<hex_lattice::AnalyticContinuation>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +74,82 @@ impl PreparedMidiNote {
     pub(crate) fn with_context_ref(self, context: SharedContextRef) -> Self {
         match self {
             Self::Inline(_) => self,
-            Self::Shared { note, .. } => Self::Shared { context, note },
+            Self::Shared {
+                note, id, binding, ..
+            } => Self::Shared {
+                context,
+                note,
+                id,
+                binding,
+            },
+        }
+    }
+
+    pub(crate) fn context_id(self) -> Option<crate::shared_analytic::SharedContextId> {
+        match self {
+            Self::Inline(_) => None,
+            Self::Shared { id, .. } => Some(id),
+        }
+    }
+
+    pub(crate) fn is_current(self) -> bool {
+        matches!(
+            self,
+            Self::Shared {
+                binding: AnalyticBinding::Current,
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn detach(self, transitions: &[Option<hex_lattice::AnalyticContinuation>]) -> Self {
+        match self {
+            Self::Shared {
+                context,
+                note,
+                id,
+                binding: AnalyticBinding::Current,
+            } => {
+                let transition = match context {
+                    SharedContextRef::Revision(index) => {
+                        transitions.get(usize::from(index)).copied().flatten()
+                    }
+                    SharedContextRef::Retained(_) => None,
+                };
+                Self::Shared {
+                    context,
+                    note,
+                    id,
+                    binding: AnalyticBinding::Detached(transition),
+                }
+            }
+            _ => self,
+        }
+    }
+
+    pub(crate) fn rebind(self, context: u16, owner: &SharedContextOwner) -> Result<Self, Invalid> {
+        match self {
+            Self::Shared {
+                note,
+                binding: AnalyticBinding::Current,
+                ..
+            } => {
+                owner
+                    .context()
+                    .analytic_continuation()
+                    .ok_or(Invalid(
+                        "shared analytic continuation capability is unavailable",
+                    ))?
+                    .validate_note(&note)
+                    .map_err(|_| Invalid("shared analytic continuation note was refused"))?;
+                Ok(Self::Shared {
+                    context: SharedContextRef::Revision(context),
+                    note,
+                    id: owner.id(),
+                    binding: AnalyticBinding::Current,
+                })
+            }
+            _ => Ok(self),
         }
     }
 
@@ -75,16 +160,60 @@ impl PreparedMidiNote {
         age_frames: u64,
         gate_frames: u64,
     ) -> Option<Frame> {
+        self.sample_at(contexts, retained, &[], 0, age_frames, gate_frames)
+            .ok()
+    }
+
+    pub(crate) fn sample_at(
+        &self,
+        contexts: &SharedAnalyticContextTable,
+        retained: &[Option<Arc<SharedContextOwner>>],
+        transitions: &[Option<hex_lattice::AnalyticContinuation>],
+        performance_frame: u64,
+        age_frames: u64,
+        gate_frames: u64,
+    ) -> Result<Frame, Invalid> {
         match self {
-            Self::Inline(note) => Some(note.sample(age_frames, gate_frames)),
-            Self::Shared { context, note } => {
+            Self::Inline(note) => Ok(note.sample(age_frames, gate_frames)),
+            Self::Shared {
+                context,
+                note,
+                id,
+                binding,
+            } => {
                 let owner = match *context {
                     SharedContextRef::Revision(index) => contexts.owner(index),
                     SharedContextRef::Retained(index) => {
                         retained.get(usize::from(index)).and_then(Option::as_deref)
                     }
-                }?;
-                Some(owner.context().sample(note, age_frames, gate_frames))
+                }
+                .filter(|owner| owner.id() == *id)
+                .ok_or(Invalid("shared analytic context identity is unavailable"))?;
+                let transition = match binding {
+                    AnalyticBinding::Current => match context {
+                        SharedContextRef::Revision(index) => {
+                            transitions.get(usize::from(*index)).copied().flatten()
+                        }
+                        SharedContextRef::Retained(_) => None,
+                    },
+                    AnalyticBinding::Detached(transition) => *transition,
+                };
+                if let Some(transition) = transition {
+                    let provider = owner.context().analytic_continuation().ok_or(Invalid(
+                        "shared analytic continuation capability is unavailable",
+                    ))?;
+                    let target = owner.continuation_id()?;
+                    let parameters = provider
+                        .parameters_at(target, &transition, performance_frame)
+                        .map_err(|_| {
+                            Invalid("shared analytic continuation parameters were refused")
+                        })?;
+                    provider
+                        .sample_with_parameters(target, &parameters, note, age_frames, gate_frames)
+                        .map_err(|_| Invalid("shared analytic continuation sample was refused"))
+                } else {
+                    Ok(owner.context().sample(note, age_frames, gate_frames))
+                }
             }
         }
     }
@@ -206,6 +335,8 @@ impl PreparedMidiNoteBank {
             let sampler = if let Some((context_index, context)) = shared_context {
                 PreparedMidiNote::Shared {
                     context: SharedContextRef::Revision(context_index),
+                    id: context.id(),
+                    binding: AnalyticBinding::Current,
                     note: context
                         .context()
                         .prepare_note(pitch, velocity)
@@ -268,6 +399,23 @@ impl PreparedMidiNoteBank {
         self.entries
             .get(usize::from(index))
             .map(|entry| entry.sampler)
+    }
+
+    pub(crate) fn validate_continuation_notes(
+        &self,
+        target: &SharedContextOwner,
+    ) -> Result<(), Invalid> {
+        let provider = target.context().analytic_continuation().ok_or(Invalid(
+            "shared analytic continuation capability is unavailable",
+        ))?;
+        for entry in &self.entries {
+            if let PreparedMidiNote::Shared { note, .. } = entry.sampler {
+                provider
+                    .validate_note(&note)
+                    .map_err(|_| Invalid("shared analytic continuation note was refused"))?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn storage_bytes(&self) -> Result<usize, Invalid> {

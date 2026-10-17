@@ -5,7 +5,7 @@
 //! graph or touches the audio callback.
 
 use hex_audio::prepared::{
-    Control, FreshRuntimeCancellationResult, FreshRuntimeFence, SESSION_ROUTE_CAPACITY,
+    Client, Control, FreshRuntimeCancellationResult, FreshRuntimeFence, SESSION_ROUTE_CAPACITY,
     SessionRouteEntry, SessionRouteOwner,
 };
 use hex_engine::{PreparedRevision, SessionCapabilityStatus};
@@ -15,6 +15,36 @@ use hex_session::arrangement_seek::{
     MAX_SEEK_WORK_FRAMES,
 };
 use std::sync::Arc;
+
+pub(super) trait SeekAudioControl {
+    fn status_view(&self) -> Option<&hex_audio::prepared::Status>;
+    fn capture_fence(&self) -> Option<FreshRuntimeFence>;
+    fn cancel_publication(&self, revision: u64) -> FreshRuntimeCancellationResult;
+}
+
+impl SeekAudioControl for Control {
+    fn status_view(&self) -> Option<&hex_audio::prepared::Status> {
+        Some(&self.status)
+    }
+    fn capture_fence(&self) -> Option<FreshRuntimeFence> {
+        self.capture_fresh_runtime_fence()
+    }
+    fn cancel_publication(&self, revision: u64) -> FreshRuntimeCancellationResult {
+        self.cancel_fresh_runtime_publication(revision)
+    }
+}
+
+impl SeekAudioControl for Client {
+    fn status_view(&self) -> Option<&hex_audio::prepared::Status> {
+        self.status()
+    }
+    fn capture_fence(&self) -> Option<FreshRuntimeFence> {
+        self.capture_fresh_runtime_fence()
+    }
+    fn cancel_publication(&self, revision: u64) -> FreshRuntimeCancellationResult {
+        self.cancel_fresh_runtime_publication(revision)
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct SeekIntent {
@@ -44,6 +74,7 @@ pub(super) struct PendingSeek {
     pub fence: FreshRuntimeFence,
     pub stage: SeekStage,
     pub cancelled: bool,
+    pub cancellation_retry: bool,
 }
 
 impl PendingSeek {
@@ -96,6 +127,7 @@ impl PendingSeek {
             fence,
             stage: SeekStage::Preparing,
             cancelled: false,
+            cancellation_retry: false,
         }
     }
 }
@@ -106,16 +138,17 @@ impl PendingSeek {
 /// The second coherent read inside `capture_fresh_runtime_fence` must match the
 /// first header. A route/command change after this point is rejected by the
 /// callback's conditional publication policy.
-pub(super) fn capture_arrangement_fence(
-    control: &Control,
+pub(super) fn capture_arrangement_fence<C: SeekAudioControl>(
+    control: &C,
     project: &Project,
     expected_audio_revision: u64,
 ) -> Option<FreshRuntimeFence> {
+    let status = control.status_view()?;
     if !audio_ready_for_seek(control) {
         return None;
     }
     let mut entries = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
-    let snapshot = control.status.session_routes(&mut entries)?;
+    let snapshot = status.session_routes(&mut entries)?;
     if snapshot.audio_revision != expected_audio_revision
         || snapshot.count != project.tracks().len()
         || snapshot.count > entries.len()
@@ -125,27 +158,29 @@ pub(super) fn capture_arrangement_fence(
         return None;
     }
 
-    let fence = control.capture_fresh_runtime_fence()?;
+    let fence = control.capture_fence()?;
     (fence.expected_active_revision() == snapshot.audio_revision
         && fence.route_state_generation() == snapshot.route_state_generation)
         .then_some(fence)
 }
 
-pub(super) fn audio_ready_for_seek(control: &Control) -> bool {
-    !control.status.device_fault.load(Acquire)
-        && !control.status.render_fault.load(Acquire)
-        && !control.status.shutdown_complete.load(Acquire)
+pub(super) fn audio_ready_for_seek<C: SeekAudioControl>(control: &C) -> bool {
+    control.status_view().is_some_and(|status| {
+        !status.device_fault.load(Acquire)
+            && !status.render_fault.load(Acquire)
+            && !status.shutdown_complete.load(Acquire)
+    })
 }
 
-fn cancel_published_seek(
-    control: Option<&Control>,
+fn cancel_published_seek<C: SeekAudioControl>(
+    control: Option<&C>,
     pending: &mut PendingSeek,
 ) -> Option<FreshRuntimeCancellationResult> {
     let SeekStage::Published { audio_revision } = pending.stage else {
         return None;
     };
     pending.cancelled = true;
-    control.map(|control| control.cancel_fresh_runtime_publication(audio_revision))
+    control.map(|control| control.cancel_publication(audio_revision))
 }
 
 pub(super) fn routes_are_current(entries: &[SessionRouteEntry], project: &Project) -> bool {
@@ -172,6 +207,45 @@ pub(super) fn requires_preroll(prepared: Option<&Arc<PreparedRevision>>) -> Opti
     prepared.map(|prepared| prepared.arrangement_seek_requires_preroll())
 }
 
+pub(super) fn seek_requires_preroll_for_mode(
+    mode: hex_session::DocumentAudioMode,
+    prepared: Option<&Arc<PreparedRevision>>,
+    verified_candidate_is_applied: bool,
+) -> Option<bool> {
+    match mode {
+        hex_session::DocumentAudioMode::Resident => requires_preroll(prepared),
+        hex_session::DocumentAudioMode::VerifiedStreaming => {
+            verified_candidate_is_applied.then_some(false)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct VerifiedSeekCandidateContext {
+    client_mode: hex_session::DocumentAudioMode,
+    output_identity: Option<u64>,
+    candidate_audio_revision: u64,
+    applied_audio_revision: u64,
+    candidate_generation: u64,
+    current_generation: u64,
+    candidate_project_revision: u64,
+    current_project_revision: u64,
+    applied_project_revision: Option<u64>,
+    has_prepared_revision: bool,
+    is_canonical_candidate: bool,
+}
+
+fn verified_audio_candidate_is_current(context: VerifiedSeekCandidateContext) -> bool {
+    context.client_mode == hex_session::DocumentAudioMode::VerifiedStreaming
+        && context.output_identity.is_some()
+        && !context.has_prepared_revision
+        && context.is_canonical_candidate
+        && context.candidate_audio_revision == context.applied_audio_revision
+        && context.candidate_generation == context.current_generation
+        && context.candidate_project_revision == context.current_project_revision
+        && context.applied_project_revision == Some(context.current_project_revision)
+}
+
 #[cfg(test)]
 #[path = "arrangement_seek_tests.rs"]
 mod tests;
@@ -182,11 +256,40 @@ use std::sync::atomic::Ordering::Acquire;
 
 impl EditorView {
     pub(super) fn current_seek_requires_preroll(&self) -> Option<bool> {
-        self.audible_playback
-            .as_ref()?
-            .prepared_revision
-            .as_ref()
-            .map(|prepared| prepared.arrangement_seek_requires_preroll())
+        let candidate = self.audible_playback.as_ref()?;
+        let (audio, state) = match self.document_audio_mode {
+            hex_session::DocumentAudioMode::Resident => {
+                return candidate
+                    .prepared_revision
+                    .as_ref()
+                    .map(|prepared| prepared.arrangement_seek_requires_preroll());
+            }
+            hex_session::DocumentAudioMode::VerifiedStreaming => {
+                (self.audio.as_ref()?, self.state.as_ref()?)
+            }
+        };
+        let status = audio.control.status()?;
+        let applied_revision = status.applied_revision.load(Acquire);
+        let verified_candidate_is_applied =
+            verified_audio_candidate_is_current(VerifiedSeekCandidateContext {
+                client_mode: audio.mode,
+                output_identity: audio.control.output_identity(),
+                candidate_audio_revision: candidate.audio_revision,
+                applied_audio_revision: applied_revision,
+                candidate_generation: candidate.project_generation,
+                current_generation: self.project_generation,
+                candidate_project_revision: candidate.state.revision,
+                current_project_revision: state.revision,
+                applied_project_revision: self.applied_project_revision,
+                has_prepared_revision: candidate.prepared_revision.is_some(),
+                is_canonical_candidate: candidate.seek_request_id.is_none()
+                    && candidate.device_preview_identity.is_none(),
+            });
+        seek_requires_preroll_for_mode(
+            self.document_audio_mode,
+            candidate.prepared_revision.as_ref(),
+            verified_candidate_is_applied,
+        )
     }
 
     pub(super) fn current_preroll_source(
@@ -205,6 +308,12 @@ impl EditorView {
     }
 
     pub(super) fn request_prepared_seek(&mut self, destination_frame: u64, start_playing: bool) {
+        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+            self.error = Some(
+                "stateful arrangement seek is unavailable for verified streaming audio".into(),
+            );
+            return;
+        }
         let Some((prepared_revision, audio_revision, project_revision)) =
             self.current_preroll_source()
         else {
@@ -313,7 +422,8 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let audio = self.audio.as_ref()?;
         let audible = self.audible_playback.as_ref()?;
-        let applied = audio.control.status.applied_revision.load(Acquire);
+        let status = audio.control.status()?;
+        let applied = status.applied_revision.load(Acquire);
         if self.mode != super::EditorMode::Arrangement
             || state.revision != intent.project_revision
             || self.project_generation != intent.project_generation
@@ -347,6 +457,17 @@ impl EditorView {
 
     pub(super) fn tick_prepared_arrangement_seek(&mut self) -> bool {
         let mut changed = false;
+        if let Some(pending) = self
+            .prepared_seek
+            .as_mut()
+            .filter(|pending| pending.cancellation_retry)
+        {
+            if let Some(audio) = self.audio.as_ref() {
+                let result = cancel_published_seek(Some(&audio.control), pending);
+                pending.cancellation_retry = result == Some(FreshRuntimeCancellationResult::Busy);
+                changed = !pending.cancellation_retry;
+            }
+        }
         if let Some(result) = self.retired_seek_result.take() {
             match self.service.retire_arrangement_seek_result(result) {
                 Ok(()) => changed = true,
@@ -460,10 +581,13 @@ impl EditorView {
         let Some(audible) = self.audible_playback.as_ref() else {
             return false;
         };
-        let active_revision = audio.control.status.applied_revision.load(Acquire);
+        let Some(status) = audio.control.status() else {
+            return false;
+        };
+        let active_revision = status.applied_revision.load(Acquire);
         let mut entries = [hex_audio::prepared::SessionRouteEntry::default();
             hex_audio::prepared::SESSION_ROUTE_CAPACITY];
-        let Some(routes) = audio.control.status.session_routes(&mut entries) else {
+        let Some(routes) = status.session_routes(&mut entries) else {
             return false;
         };
         audio_ready_for_seek(&audio.control)
@@ -532,7 +656,9 @@ impl EditorView {
             }
             super::arrangement_seek::SeekStage::Published { .. } => {
                 let control = self.audio.as_ref().map(|audio| &audio.control);
-                super::arrangement_seek::cancel_published_seek(control, &mut pending);
+                pending.cancellation_retry =
+                    super::arrangement_seek::cancel_published_seek(control, &mut pending)
+                        == Some(FreshRuntimeCancellationResult::Busy);
                 self.prepared_seek = Some(pending);
             }
         }
@@ -541,6 +667,10 @@ impl EditorView {
 
 impl Drop for EditorView {
     fn drop(&mut self) {
+        self.cancel_browser_sample_playback();
+        if let Some(control) = &self.audio_batch {
+            control.request_cancel();
+        }
         // CandidateReady still lives in PendingPlayback, so convert it into
         // the same bounded result owner before the Service begins shutdown.
         self.invalidate_prepared_seek();

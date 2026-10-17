@@ -190,12 +190,12 @@ pub(super) fn waveform(choice: u32, phase: f64, cycle: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operator_state::{OPERATOR_METADATA, OPERATOR_TYPE_ID};
+    use crate::operator_state::{OPERATOR_METADATA, OPERATOR_STATE_VERSION, OPERATOR_TYPE_ID};
     use hex_lattice_contract::{NativeDeviceMetadata, NativeDeviceState};
 
     #[test]
     fn legacy_prefixes_migrate_neutral_and_all_inactive_lfo_words_are_strict() {
-        let current = OPERATOR_METADATA.default_state().unwrap();
+        let current = crate::operator_state::tests::legacy_state();
         for (version, length) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320), (6, 320)] {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,
@@ -206,7 +206,7 @@ mod tests {
             let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
             assert_eq!(&migrated.payload()[..length], old.payload());
             assert_eq!(&migrated.payload()[320..], &current.payload()[320..]);
-            assert_eq!(migrated.state_version(), 7);
+            assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
         }
         let mut invalid_v6 = current.payload()[..320].to_vec();
         invalid_v6[36 * 4..37 * 4].copy_from_slice(&0.0_f32.to_le_bytes());
@@ -231,7 +231,7 @@ mod tests {
             (9, 2),
             (10, 2),
         ] {
-            let mut bytes = current.payload().to_vec();
+            let mut bytes = current.payload()[..364].to_vec();
             bytes[320 + word * 4..324 + word * 4].copy_from_slice(&invalid.to_le_bytes());
             let bad = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, bytes).unwrap();
             assert!(OPERATOR_METADATA.migrate_state(&bad).is_err());

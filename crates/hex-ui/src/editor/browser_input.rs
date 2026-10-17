@@ -375,6 +375,7 @@ impl Focusable for BrowserSearch {
 impl gpui::Render for BrowserSearch {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .debug_selector(|| "browser-search".into())
             .flex()
             .min_w_0()
             .overflow_hidden()
@@ -388,7 +389,6 @@ impl gpui::Render for BrowserSearch {
             .border_color(gpui::rgb(crate::theme::color(
                 crate::theme::PaletteRole::Border,
             )))
-            .key_context("hex_browser_search")
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))

@@ -46,6 +46,9 @@ expected_changes = {
     "src/app/test_context.rs",
     "src/platform/test/platform.rs",
     "src/window.rs",
+    "src/view.rs",
+    "src/scene.rs",
+    "src/bounds_tree.rs",
     "src/taffy.rs",
 }
 if set(manifest["patched_files"]) != expected_changes:
@@ -67,4 +70,4 @@ if len(gpui) != 1 or string_value(gpui[0], "source") is not None or string_value
     errors.append("lockfile must resolve exactly the local GPUI 0.2.2 patch")
 if errors:
     raise SystemExit("\n".join(errors))
-print("GPUI patch passed: verified baseline, documented input, cursor, titlebar, test-support and explicit grid-literal deltas, excluded native dependency")
+print("GPUI patch passed: verified baseline, documented input, cursor, titlebar, test-support, cache-epoch, scene-replay and explicit grid-literal deltas, excluded native dependency")

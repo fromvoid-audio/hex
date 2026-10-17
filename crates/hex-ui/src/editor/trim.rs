@@ -56,6 +56,7 @@ pub(super) struct TrimDrag {
     source_lane: LaneBounds,
     viewport_start: u64,
     viewport_length: u64,
+    pub(super) scroll: super::drag_autoscroll::DragScroll,
     snap_grid: super::musical_time::SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
@@ -75,6 +76,7 @@ pub(super) struct MidiTrimDrag {
     source_lane: LaneBounds,
     viewport_start: u64,
     viewport_length: u64,
+    pub(super) scroll: super::drag_autoscroll::DragScroll,
     snap_grid: super::musical_time::SnapGrid,
     pub(super) snap_modifier: Rc<Cell<bool>>,
     pub(super) last_pointer_x: Rc<Cell<Option<f32>>>,
@@ -134,8 +136,8 @@ fn payload_is_current(
 ) -> bool {
     drag.project_generation == generation
         && drag.revision == state.revision
-        && drag.viewport_start == viewport.start
-        && drag.viewport_length == viewport.length
+        && drag.viewport().start == viewport.start
+        && drag.viewport().length == viewport.length
         && source_lane.is_some_and(|lane| {
             lane.left == drag.source_lane.left && lane.width == drag.source_lane.width
         })
@@ -164,8 +166,8 @@ fn midi_payload_is_current(
 ) -> bool {
     drag.project_generation == generation
         && drag.revision == state.revision
-        && drag.viewport_start == viewport.start
-        && drag.viewport_length == viewport.length
+        && drag.viewport().start == viewport.start
+        && drag.viewport().length == viewport.length
         && source_lane.is_some_and(|lane| {
             lane.left == drag.source_lane.left && lane.width == drag.source_lane.width
         })
@@ -232,7 +234,12 @@ fn preview_for_pointer(
     let frame = snapped_edge_frame(drag, project, pointer_x, lane, viewport)?;
     let clip = drag
         .clip
-        .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
+        .preview_edge_trim_with_tempo(
+            drag.edge,
+            frame,
+            drag.asset_playback_frames,
+            project.tempo_map(),
+        )
         .ok()?;
     Some(TrimPreviewState { clip })
 }
@@ -373,6 +380,7 @@ impl EditorView {
             source_lane: lane,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: self.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),
@@ -546,6 +554,7 @@ impl EditorView {
             source_lane: lane,
             viewport_start: viewport.start,
             viewport_length: viewport.length,
+            scroll: Default::default(),
             snap_grid: self.snap_grid,
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),
@@ -887,10 +896,12 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Ok(preview) = drag
-            .clip
-            .preview_edge_trim(drag.edge, frame, drag.asset_playback_frames)
-        else {
+        let Ok(preview) = drag.clip.preview_edge_trim_with_tempo(
+            drag.edge,
+            frame,
+            drag.asset_playback_frames,
+            state.project.tempo_map(),
+        ) else {
             return;
         };
         if preview_is_noop(&drag.clip, &preview) {
@@ -915,6 +926,24 @@ impl gpui::Render for TrimPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
         let _ = &self.data;
         div().w(px(0.0)).h(px(0.0))
+    }
+}
+
+impl TrimDrag {
+    pub(super) fn viewport(&self) -> Viewport {
+        self.scroll.get().viewport.unwrap_or(Viewport {
+            start: self.viewport_start,
+            length: self.viewport_length,
+        })
+    }
+}
+
+impl MidiTrimDrag {
+    pub(super) fn viewport(&self) -> Viewport {
+        self.scroll.get().viewport.unwrap_or(Viewport {
+            start: self.viewport_start,
+            length: self.viewport_length,
+        })
     }
 }
 
@@ -1059,9 +1088,12 @@ mod tests {
         ));
 
         let stale_revision = ViewState {
+            canonical_audio_source: None,
             project: Arc::clone(&state.project),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&state.midi_preview),
+            gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
             can_undo: false,
             can_redo: false,
@@ -1115,9 +1147,12 @@ mod tests {
             .execute(Command::RemoveClip(clip_id))
             .expect("remove clip");
         let removed = ViewState {
+            canonical_audio_source: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 500,
             can_undo: false,
             can_redo: false,
@@ -1159,9 +1194,12 @@ mod tests {
             300,
         );
         let moved = ViewState {
+            canonical_audio_source: None,
             project: Arc::new(moved_editor.project().clone()),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 500,
             can_undo: false,
             can_redo: false,
@@ -1206,9 +1244,12 @@ mod tests {
             panic!("clip result")
         };
         let state = ViewState {
+            canonical_audio_source: None,
             project: Arc::new(editor.project().clone()),
             waveforms: BTreeMap::new(),
+            audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 500,
             can_undo: false,
             can_redo: false,
@@ -1235,6 +1276,7 @@ mod tests {
             },
             viewport_start: 0,
             viewport_length: 500,
+            scroll: Default::default(),
             snap_grid: super::super::musical_time::SnapGrid::Off,
             snap_modifier: Rc::new(Cell::new(false)),
             last_pointer_x: Rc::new(Cell::new(None)),

@@ -2,11 +2,23 @@
 
 ## Purpose
 
+Mutable instruments declare their own fixed runtime storage; they are not
+limited by the effect-only 4 KiB per-twin policy. Both copies draw from the
+existing combined 2 MiB/256-instance active DSP budget and independently bounded
+retained-tail bank. Checkpoint/preroll accounting charges the full declaration
+and host ledgers. Mutable track, checkpoint and keyboard admission share a
+140-second finite tail ceiling; density, storage and replay bounds remain
+independent. See [host timing and tails](../../docs/lattice-instruments.md#host-clock-origins-and-finite-mutable-tails-2646--pr261)
+and [instrument admission](../../docs/lattice-instruments.md#variable-size-mutable-runtime-admission).
+
 Own musical state, typed playback commands, timing, and deterministic rendering.
+A transient generation/track/instrument-bound controller lease freezes one
+pressure/bend/wheel snapshot per render transaction; no native MIDI dependency
+enters the engine. See [controller input](../../docs/controller-input.md).
 
 ## Dependencies
 
-hex-project, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
+hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
 library; no UI/device-stream dependencies.
 
 ## Does not own
@@ -75,7 +87,12 @@ transport loops are refused. This API does not inspect live route ownership,
 restore Session routes, or establish native seek/publication readiness; live
 route fencing and supersede/Stop admission remain a separate integration layer.
 Interactive Session preroll uses the same bounded replay contract with the
-dedicated seek worker's 8 MiB control stack reservation. The opt-in
+dedicated seek worker's 8 MiB control stack reservation. It admits enabled
+transport loops, normalizing end/beyond-end targets into the loop before the
+first-pass replay. Both returned clocks start at that normalized content frame;
+the exact revision, mutable gates, stateful history and ordinary subsequent loop
+rendering are preserved. The raw request still must fit the explicit work budget.
+The opt-in
 [`playback stack probe`](../../docs/playback-stack.md) records isolated
 debug/release completion thresholds for Utility and dense mutable-instrument
 fixtures; it measures requested-stack completion, not peak stack residency.
@@ -441,3 +458,136 @@ For the additive shared-context sampling comparison, run
 It prepares an injected 100-track/1,600-note fixture, checks inline/shared PCM
 outside timing, and reports render versus control construction separately.
 It is a headless benchmark, not a native callback deadline test.
+
+`SessionPlayback` and `playback::Playback` expose the combined borrowed
+`render_with_pages_and_post_node_observer<P: MediaPages + ?Sized>` path. It uses
+the existing Session render transaction with both inputs; page and observer
+borrows are never retained. Observer code must not allocate, block, clone owners
+or retain sample slices. Post-node samples are speculative until both block
+render and caller final-output validation succeed. With no Session runtime,
+Playback's new observed path refuses before output/clock/provider/state mutation;
+with no observer it preserves existing page rendering. Existing public methods
+retain their contracts. This adds no stream dependency or native admission.
+
+Canonical stereo Return feeds use a bounded control-prepared topological plan
+with pinned ready ties in Arrangement and prepared Session/export kernels.
+Post-chain/matrix/gain/mute source output feeds destination input additively;
+current Main sums stay pinned, master runs once, and captured old chains remain
+Main-only. The no-feed loops keep their original arithmetic order. See
+[routing](../../docs/routing.md) for typed track inputs, MIDI sources and graph
+validation. Production compensation aligns declared delays; native deadlines and
+listening require separate evidence.
+
+Prepared track-gain lanes apply absolute sample-offset gain once after devices
+and before Main/sends in Arrangement, Session and export. No-automation paths
+remain; detached tails freeze the effective transition gain. Actual prepared knot
+capacity is reported separately from process memory and native deadline evidence.
+See [track gain automation](../../docs/track-gain-automation.md).
+
+Canonical selected TrackId/ReturnId outputs are available through control-built
+`OutputCapturePlan` and borrowed `OutputCapture` slices, transactionally committed
+with Main. See [the capture contract](../../docs/output-capture.md) for admitted
+Arrangement-only modes, original retired-tail identity, bounds and export limits.
+
+## Opt-in analytic parameter continuation
+
+Prepared analytic providers may approve bounded coefficient continuation between
+compatible contexts. Current-owner notes and detached tails have explicit binding
+provenance; detachment snapshots the finite transition and retains its target
+context lease. Rapid edits start at the actual applied boundary, preserve onset
+and gate, and preflight before ownership mutation. Unsupported providers retain
+the existing old-context policy. Two control-allocated fixed `MAX_TRACKS` tables
+are charged to preroll accounting; handoff/render never resize or drop their
+allocations. Stop and accepted seek clear the current transition. Arrangement,
+Session and output capture use the same sampled frame. See
+[contract and validation gaps](../../docs/operator-enable-continuation.md).
+
+Analytic-to-mutable handoff uses candidate-owned fixed seed/proof buffers reserved
+on control. Both preflight and commit fill borrowed scratch and return eligibility,
+so neither creates or returns large inline plans on the callback stack. Actual
+capacities and the checked preflight bound are charged to preroll storage; declined
+queries reset the valid prefix, and handoff never resizes or drops the buffers.
+
+Control-side `audio_transform` prepares immutable original-domain PCM through
+std-only hex-warp, enforcing finite output/scratch/work and retained PCM limits.
+All compiler entry points use the same direct/prepared decision. Compiled roots
+and crops form a read-only worker waveform sidecar, never callback analysis.
+See [musical editing](../../docs/musical-editing.md).
+
+## Routing, touch and compensation
+
+Typed track inputs use a combined dependency schedule with Return feeds and
+sends. MIDI source selection compiles root-authored notes into each destination's
+actual instrument; Session inventory retains canonical UI cells separately from
+bounded routed templates. Audio owner and effective MIDI owner remain distinct.
+
+The `compensation` module owns control-validated latency plans and preallocated
+transactional stereo delays; `signal_graph` binds them to actual processors,
+instrument generation, faders and Main. Exact origin stamps drive downstream
+clock/gain queries, and compatible handoffs retain in-flight state. Unsupported
+live topology/history changes explicitly require Stop. Export trims causal
+startup while retaining the requested final frame. See
+[latency compensation](../../docs/latency-compensation.md) for limits and gaps.
+
+Prepared gain touch spans override the unchanged base lane only inside their
+half-open intervals. A separately armed transient fader supports audio-owned live
+values without editing the canonical project; delivery receipts and atomic take
+history belong to audio/session. See [gain recording](../../docs/gain-touch-spans.md).
+
+## private audio-only preparation roots
+
+Opt-in `AudioPreparationCustody` owns constructor-paired sources, persistent
+Arrangement/Session preparation stages and a private Arrangement Project value.
+`with_audio_project_inventory` reserves final containers before moves and exposes
+restricted metadata only. Track/Return/feed reports inspect actual row, staging or
+root storage, and all root children restore into validated persistent destinations
+before existing disposal. Ordinary compiler Arc ingress remains Unknown; no legacy
+owner is promoted by pointer or reference-count inference. No native publication,
+complete accounting or retirement admission is established by this path.
+`with_audio_prepared_revision` additionally reserves four declared owning handles
+and requested layouts, then wraps the same Project, Session and preview in the
+actual private PreparedRevision. No compiler is rerun. Reports borrow actual final
+locations and charge the four headers plus all child backings/sidecars/spares.
+Control restoration accepts only these constructor-paired owners. Occupied
+original slots, shared aliases, Weak observers or invalid associations refuse
+without abandoning remaining owners; incomplete custody is retained without retry.
+Current SessionPlayback analytic-import scratch remains covered by its existing
+runtime/preroll accounting and is outside these immutable preparation declarations.
+See [integration and toolchain contract](../../docs/streaming-prerequisite-integration.md).
+
+The admitted resident constructor retains the canonical `Arc<AudioData>` and its
+original Vec buffer. Their distinct allocation declarations charge actual Vec
+capacity and deduplicate both locations across aliases; each Arc owning handle
+remains an independent obligation. Raw/derived Audio origins stay Unknown.
+Session roots retain the exact copied MeterMap, with both backing vectors and
+copy-growth overlap observed in persistent assembly custody. Main's ordinary
+touch/transform/routing/recording paths are unchanged; this private class refuses
+unrepresented touch spans, authored audio edits and playable input routes before
+source movement. It does not enable complete accounting or native publication.
+
+The control-only `AudioRootStorageLedger` borrows the actual private audio-only
+custodies and caller banks without owner clones or transfers. It separates
+anchored DATA/location/declaration rows from every physical owning handle and
+unresolved retirement; `require_complete` remains refused. Capacity pressure
+invalidates the partial ledger while original owners stay in normal custody.
+See [the bounded accounting manifest](../../docs/audio-only-storage-accounting.md).
+
+Constructor-candidate disposal inventories both occupied and vacant owning
+locations. The closed audio-only class permits dormant root and empty-chain
+handles, but rejects populated mutable/tail/retained-context/compensation owners;
+absence never certifies an owner closure or transfer fanout. Non-default
+`instrument-test-support` adds bounded candidate action/render and scalar
+transport methods for headless actual-slot tests, with no raw runtime/Arc escape
+or default admission authority. See [final-active disposal](../../docs/final-active-audio-disposal.md).
+
+PR239 adds a borrowed control-side construction seam for a host's already
+reserved preparation cell. `OwnedAudioInputs::try_new_in_place` keeps partial
+source collections in that cell through bank validation;
+`AudioPreparationCustody::begin_prepared_revision_in_place_on_control` keeps the
+original bank there through pre-transfer reservation. `AudioCandidateDraft`
+retains the actual runtime before later fallible bookkeeping, then transfers
+that same runtime and preparation into an empty owner destination only after
+all checks. Refusal and first-panic states remain host-owned until explicit
+control-side cleanup; these APIs do not publish, grant readiness or certify
+complete storage. The host must keep draft/custody wrappers and all their
+charges until their normal destruction, including after successful transfer.

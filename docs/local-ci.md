@@ -17,9 +17,12 @@ target/cache configuration, and executes checks sequentially. It does not instal
 tools or hooks, change the machine's Cargo configuration, launch the app, bundle
 an application, or contact a hosted CI service.
 
-The full run executes its runner and native delivery regression tests, the architecture, GPUI patch and UI
-style guards, formatting, locked workspace and UI-feature tests, audio and stream
-allocation probes, strict workspace and feature-specific Clippy, and a locked
+The full run executes its runner and native delivery regression tests, the
+architecture, GPUI patch, dependency patch, UI style and device-composition guards,
+formatting, denied dependency future-lint regressions, locked workspace and
+UI-feature tests, the native layout gallery's rendered test harness, audio and stream
+allocation probes (including the actual Session/Desktop adapter under the
+nondefault audio feature), strict workspace and feature-specific Clippy, and a locked
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
 
@@ -32,11 +35,38 @@ Git's file listing. If the repository identity changes during execution, the run
 is marked `stale` and returns nonzero even when commands passed. Interrupted and
 missing-tool runs retain a summary, logs and explicit incomplete/skipped steps.
 
-`--quick` runs only the three source guards and formatting. Formatting does not
+`--quick` runs the five source guards and formatting. Formatting does not
 use Cargo's target cache, so quick mode neither resolves nor claims/cleans a Cargo
 target. Its summary status is `partial`, and it is never sufficient merge evidence. A full successful summary
 is tied to the recorded unchanged commit and working-tree digest; any source edit
 afterward makes that evidence stale for the new tree.
+
+`python3 scripts/check-device-layout.py` checks the production device boundary.
+Its Rust token scan skips comments and quoted data, balances function bodies,
+and requires the shared shell, semantic style resolver, generic/unsupported
+compositions and Track/Return dispatch calls. Dedicated panel modules are
+discovered automatically; current effect panels must be reachable from both
+owners, while Vector is instrument-only. A new instrument-specific panel must
+declare that class in the guard alongside its dispatch. Panel and production
+composition code may choose content geometry, but paint, borders, rounded
+surfaces and style construction belong in widgets and the theme resolver.
+Retained-control style helpers are included: local style literals and later
+field overrides cannot bypass the semantic resolver through those helpers.
+The gallery must call the same production compositions. Plot/response math in
+their separate graph modules, device-chain host navigation and drop-feedback
+artwork are outside this narrow scan. It does not prove arbitrary Rust helper
+indirection, rendered fidelity, native input or audio behavior.
+
+`python3 -m unittest discover -s scripts/tests -p test_device_layout.py -v`
+includes negative controls against temporary copies of actual production source:
+local surface/header paint and rounding, missing Return fallback composition,
+retained-control color forks, gallery style/composition forks and an unregistered
+effect dispatch must fail. Tests never mutate the checkout.
+These guard regressions also run in the full runner's script-test step.
+The explicit `device-gallery-tests` step runs `cargo test -p hex-ui --example
+layout_review --features ui-test-support --locked`; normal workspace example
+compilation alone does not execute that rendered harness. These GPUI scene/input
+fixtures do not establish native GPU pixels or physical interaction acceptance.
 
 ## continuous integration and merge policy
 
@@ -74,7 +104,9 @@ recorded and stops the run before any build or cleanup.
 Build phases on macOS/Linux use a nonblocking cooperative file lock keyed by that canonical
 target path. It covers cache ownership checks, handoff cleanup and every
 target-using Cargo step in the runner. Formatting and other commands that do not
-use build artifacts stay outside this lock. A second local-CI run targeting the same directory fails
+use build artifacts stay outside this lock. Python wrapper steps that invoke
+Cargo must explicitly declare target use; the dependency future-lint step does
+so and receives the same claimed, pinned target before it can create artifacts. A second local-CI run targeting the same directory fails
 immediately with the current holder when available; it does not wait or remove
 the persistent lock file. The lock is advisory: direct Cargo invocations and
 other tools do not participate. Operators must avoid running raw Cargo commands,

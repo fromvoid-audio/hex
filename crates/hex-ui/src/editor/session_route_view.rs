@@ -4,7 +4,6 @@ use hex_audio::prepared::{
     SessionRouteTarget, Status,
 };
 use hex_project::Project;
-use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CellRouteMarker {
@@ -49,7 +48,7 @@ pub(super) fn cell_route_markers(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ValidationKey {
-    channel_identity: usize,
+    channel_identity: u64,
     audio_revision: u64,
     route_generation: u64,
     capability: hex_engine::SessionCapabilityStatus,
@@ -67,7 +66,7 @@ struct ValidationCache {
 /// Bounded UI cache. Failed reads leave the last good entries untouched on the
 /// same live channel; all successful snapshots replace them, including empty ones.
 pub(super) struct RouteView {
-    channel: Option<Arc<Status>>,
+    channel: Option<u64>,
     snapshot: Option<SessionRouteSnapshot>,
     scratch: [SessionRouteEntry; SESSION_ROUTE_CAPACITY],
     entries: [SessionRouteEntry; SESSION_ROUTE_CAPACITY],
@@ -87,9 +86,9 @@ impl Default for RouteView {
 }
 
 impl RouteView {
-    pub fn poll(&mut self, status: Arc<Status>) -> bool {
+    pub fn poll(&mut self, identity: u64, status: &Status) -> bool {
         let channel_changed =
-            reset_channel_if_changed(&mut self.channel, &mut self.snapshot, &status);
+            reset_channel_if_changed(&mut self.channel, &mut self.snapshot, identity);
         if channel_changed {
             self.validation = None;
         }
@@ -106,13 +105,12 @@ impl RouteView {
 
     pub fn matching_snapshot(
         &self,
-        status: &Arc<Status>,
+        identity: u64,
         audible: Option<(u64, u64, u64)>,
         displayed_revision: u64,
         displayed_generation: u64,
     ) -> Option<SessionRouteSnapshot> {
-        let cached_channel = self.channel.as_ref()?;
-        if !Arc::ptr_eq(status, cached_channel) {
+        if self.channel? != identity {
             return None;
         }
         let snapshot = self.snapshot?;
@@ -130,11 +128,11 @@ impl RouteView {
         project_revision: u64,
         project_generation: u64,
     ) -> bool {
-        let Some(channel) = self.channel.as_ref() else {
+        let Some(channel) = self.channel else {
             return false;
         };
         let key = ValidationKey {
-            channel_identity: Arc::as_ptr(channel) as usize,
+            channel_identity: channel,
             audio_revision: snapshot.audio_revision,
             route_generation: snapshot.route_state_generation,
             capability: snapshot.capability,
@@ -171,16 +169,13 @@ impl RouteView {
 }
 
 fn reset_channel_if_changed(
-    channel: &mut Option<Arc<Status>>,
+    channel: &mut Option<u64>,
     snapshot: &mut Option<SessionRouteSnapshot>,
-    status: &Arc<Status>,
+    identity: u64,
 ) -> bool {
-    if channel
-        .as_ref()
-        .is_none_or(|previous| !Arc::ptr_eq(previous, status))
-    {
+    if *channel != Some(identity) {
         *snapshot = None;
-        *channel = Some(Arc::clone(status));
+        *channel = Some(identity);
         true
     } else {
         false
@@ -324,7 +319,7 @@ mod tests {
     fn snapshot_requires_exact_audio_revision_project_revision_and_generation() {
         let mut view = RouteView::default();
         let status = Arc::new(Status::default());
-        let _ = view.poll(Arc::clone(&status));
+        let _ = view.poll(1, &status);
         let scratch = std::array::from_fn(|_| SessionRouteEntry::default());
         let exact = make_snapshot(4, 0, SessionCapabilityStatus::Available);
         assert!(cache_read_result(
@@ -333,20 +328,11 @@ mod tests {
             Some(exact),
             &scratch,
         ));
-        let matching = view.matching_snapshot(&status, Some((4, 8, 2)), 8, 2);
+        let matching = view.matching_snapshot(1, Some((4, 8, 2)), 8, 2);
         assert_eq!(matching, Some(exact));
-        assert!(
-            view.matching_snapshot(&status, Some((5, 8, 2)), 8, 2)
-                .is_none()
-        );
-        assert!(
-            view.matching_snapshot(&status, Some((4, 9, 2)), 8, 2)
-                .is_none()
-        );
-        assert!(
-            view.matching_snapshot(&status, Some((4, 8, 3)), 8, 2)
-                .is_none()
-        );
+        assert!(view.matching_snapshot(1, Some((5, 8, 2)), 8, 2).is_none());
+        assert!(view.matching_snapshot(1, Some((4, 9, 2)), 8, 2).is_none());
+        assert!(view.matching_snapshot(1, Some((4, 8, 3)), 8, 2).is_none());
     }
 
     #[test]
@@ -381,7 +367,7 @@ mod tests {
         let (project, first, second, clip) = telemetry_project();
         let mut view = RouteView::default();
         let status = Arc::new(Status::default());
-        let _ = view.poll(Arc::clone(&status));
+        let _ = view.poll(1, &status);
         let entries = [
             SessionRouteEntry {
                 pending: Some(SessionPendingRoute {
@@ -493,12 +479,8 @@ mod tests {
         let mut snapshot = None;
         let mut entries = std::array::from_fn(|_| SessionRouteEntry::default());
         let mut scratch = std::array::from_fn(|_| SessionRouteEntry::default());
-        let first = Arc::new(Status::default());
-        assert!(reset_channel_if_changed(
-            &mut channel,
-            &mut snapshot,
-            &first
-        ));
+        let first = 1;
+        assert!(reset_channel_if_changed(&mut channel, &mut snapshot, first));
         let good = make_snapshot(9, 1, SessionCapabilityStatus::Available);
         scratch[0] = route(42, SessionRouteOwner::Arrangement);
         assert!(cache_read_result(
@@ -521,11 +503,11 @@ mod tests {
         assert_eq!(snapshot, Some(good));
         assert_eq!(entries[0].track_id, 42);
 
-        let second = Arc::new(Status::default());
+        let second = 2;
         assert!(reset_channel_if_changed(
             &mut channel,
             &mut snapshot,
-            &second
+            second
         ));
         assert!(snapshot.is_none());
         let empty = make_snapshot(0, 0, SessionCapabilityStatus::Legacy);
@@ -543,11 +525,12 @@ mod tests {
     fn recovery_and_fault_reset_drop_channel_and_validation() {
         let mut view = RouteView::default();
         let status = Arc::new(Status::default());
-        let _ = view.poll(Arc::clone(&status));
+        let _ = view.poll(1, &status);
         assert!(view.channel.is_some());
+        assert_eq!(Arc::strong_count(&status), 1); // no escaping observer owner
         view.validation = Some(super::ValidationCache {
             key: super::ValidationKey {
-                channel_identity: Arc::as_ptr(&status) as usize,
+                channel_identity: 1,
                 audio_revision: 1,
                 route_generation: 1,
                 capability: SessionCapabilityStatus::Available,

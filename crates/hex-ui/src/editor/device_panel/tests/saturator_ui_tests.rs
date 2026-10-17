@@ -65,6 +65,15 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(
+        visual
+            .rendered_surface_geometry("device-plot-section")
+            .expect("shared rounded transfer section")
+            .0
+            .top_left,
+        px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
+    );
     for parameter in 1..=4 {
         let control = visual
             .debug_bounds(Box::leak(
