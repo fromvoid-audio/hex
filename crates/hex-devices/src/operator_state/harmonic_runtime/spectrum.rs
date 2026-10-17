@@ -7,16 +7,19 @@ pub(super) struct HarmonicPhaseTable {
     sine: Vec<f64>,
 }
 impl HarmonicPhaseTable {
-    fn lookup(&self, phase: u64) -> f64 {
+    fn lookup(&self, phase: u64, interpolate: bool) -> f64 {
         let index = (phase >> (64 - PHASE_BITS)) as usize;
+        if !interpolate {
+            return self.sine[index];
+        }
         let fraction = (phase & ((1_u64 << (64 - PHASE_BITS)) - 1)) as f64
             / (1_u64 << (64 - PHASE_BITS)) as f64;
         self.sine[index] + (self.sine[index + 1] - self.sine[index]) * fraction
     }
-    fn sample(&self, phase: u64) -> (f64, f64) {
+    fn sample(&self, phase: u64, interpolate: bool) -> (f64, f64) {
         (
-            self.lookup(phase),
-            self.lookup(phase.wrapping_add(1_u64 << 62)),
+            self.lookup(phase, interpolate),
+            self.lookup(phase.wrapping_add(1_u64 << 62), interpolate),
         )
     }
 }
@@ -129,6 +132,7 @@ impl Spectrum {
             }),
         }
     }
+    #[cfg(test)]
     #[inline(always)]
     #[allow(clippy::too_many_arguments)] // Explicit absolute age keeps white noise partition-independent.
     pub(super) fn sample(
@@ -142,6 +146,31 @@ impl Spectrum {
         bank: &OperatorWaveformBank,
         phase_table: &HarmonicPhaseTable,
     ) -> f32 {
+        self.sample_policy(
+            operator,
+            phase,
+            step,
+            age,
+            base_step,
+            sine,
+            bank,
+            phase_table,
+            true,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn sample_policy(
+        &self,
+        operator: usize,
+        phase: u64,
+        step: u64,
+        age: u64,
+        base_step: u64,
+        sine: &SineTable,
+        bank: &OperatorWaveformBank,
+        phase_table: &HarmonicPhaseTable,
+        interpolate: bool,
+    ) -> f32 {
         let mut value = 0.0;
         // Keep the original full builtin bank, including its 512-partial caps.
         let mut active = self.builtin_active[operator];
@@ -153,14 +182,15 @@ impl Spectrum {
                 continue;
             }
             let sample = if shape == 0 {
-                sine.sample_phase(phase)
+                sine.sample_phase_policy(phase, interpolate)
             } else {
-                bank.sample_frame(
+                bank.sample_frame_policy(
                     OperatorWaveform::from_choice(shape as u32).unwrap_or(OperatorWaveform::Sine),
                     harmonic_cap_index(step).unwrap_or(0),
                     phase,
                     age,
                     crate::operator_waveform::noise_stream(base_step, operator),
+                    interpolate,
                 )
             };
             value += f64::from(sample) * weight;
@@ -170,7 +200,7 @@ impl Spectrum {
         if self.coefficients[operator][..cap].iter().all(|v| *v == 0.0) {
             return value as f32;
         }
-        let (sin, cosine) = phase_table.sample(phase);
+        let (sin, cosine) = phase_table.sample(phase, interpolate);
         if cap <= 8 {
             let mut b1 = 0.0;
             let mut b2 = 0.0;

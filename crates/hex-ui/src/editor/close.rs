@@ -227,8 +227,7 @@ mod window_tests {
         let handle = *bootstrap;
         let editor = cx
             .update_window(handle, |_, window, cx| {
-                let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                    .expect("disposable service");
+                let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
                 let editor = window.replace_root(cx, |window, cx| {
                     EditorView::new(window, cx, service, Err("test offline output".into()))
                 });
@@ -398,8 +397,7 @@ mod window_tests {
     ) {
         let bootstrap = cx.add_window(|_, _| Empty);
         let handle = *bootstrap;
-        let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-            .expect("disposable service");
+        let service = Service::new(48_000, 32, 8_000_000).expect("disposable service");
         let _ = next_service_event(&service);
         service
             .submit(Request::Edit(hex_project::Command::AddTrack {
@@ -506,8 +504,7 @@ mod window_tests {
 
     #[gpui::test]
     fn failed_gesture_compile_refuses_deferred_save_and_export(cx: &mut TestAppContext) {
-        let service = Service::new(48_000, 64, super::super::MAX_RESIDENT_FRAMES)
-            .expect("disposable service");
+        let service = Service::new(48_000, 64, 8_000_000).expect("disposable service");
         let _ = next_service_event(&service);
         service
             .submit(Request::Edit(hex_project::Command::AddTrack {

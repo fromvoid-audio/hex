@@ -84,7 +84,7 @@ fn handle_graph_event(
             .is_some_and(|panel| panel.audition_gesture_active)
         {
             if let Some(audio) = view.audio.as_mut() {
-                let _ = audio.control.processor_audition.release();
+                let _ = audio.control.audition_release();
             }
             if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
                 panel.audition_gesture_active = false;
@@ -102,7 +102,7 @@ fn handle_graph_event(
         .is_some_and(|panel| panel.audition_gesture_active)
     {
         if let Some(audio) = view.audio.as_mut() {
-            let _ = audio.control.processor_audition.cancel_immediately();
+            let _ = audio.control.audition_cancel();
         }
         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
             panel.audition_gesture_active = false;
@@ -293,6 +293,11 @@ fn begin_band_audition(
     owner: hex_engine::ProcessorChainOwner,
     band: usize,
 ) {
+    if view.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        view.device_panel.message =
+            Some("eq8 band audition is unavailable for verified streaming audio".into());
+        return;
+    }
     if !view
         .device_panel
         .eq8_panels
@@ -339,13 +344,14 @@ fn begin_band_audition(
         index: band as u8,
         lane: lane as u8,
     };
-    match audio.control.processor_audition.select(
+    let target = hex_audio::processor_audition::ProcessorAuditionTarget {
         identity,
-        generation,
-        floor,
-        audio.sample_rate,
+        project_generation: generation,
+        activation_floor: floor,
+        sample_rate_hz: audio.sample_rate,
         selection,
-    ) {
+    };
+    match audio.control.audition_select(target) {
         Ok(_) => {
             if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
                 panel.audition_gesture_active = true;
@@ -472,7 +478,7 @@ pub(super) fn graph_model(
         .filter(|result| {
             view.audio
                 .as_ref()
-                .and_then(|audio| audio.control.spectrum_target.desired())
+                .and_then(|audio| audio.control.spectrum_desired())
                 .is_some_and(|target| {
                     target.identity == target_identity
                         && target.token == result.stamp.target

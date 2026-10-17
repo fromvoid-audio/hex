@@ -672,8 +672,7 @@ mod tests {
         let bootstrap = cx.add_window(|_, _| Empty);
         let handle: AnyWindowHandle = *bootstrap;
         cx.update_window(handle, |_, window, window_cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             let editor = window.replace_root(window_cx, |window, window_cx| {
                 EditorView::new(
                     window,

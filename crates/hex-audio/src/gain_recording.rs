@@ -94,6 +94,7 @@ pub struct Control {
     sequence: u64,
     outstanding: usize,
     finishing: bool,
+    status: Option<std::sync::Arc<crate::prepared::Status>>,
 }
 pub(crate) struct Callback {
     commands: Consumer<Command>,
@@ -126,6 +127,7 @@ pub(crate) fn channel() -> (Control, Callback) {
             sequence: 0,
             outstanding: 0,
             finishing: false,
+            status: None,
         },
         Callback {
             commands: incoming,
@@ -141,6 +143,10 @@ pub(crate) fn channel() -> (Control, Callback) {
     )
 }
 impl Control {
+    pub(crate) fn bind_status(&mut self, status: std::sync::Arc<crate::prepared::Status>) {
+        self.status = Some(status);
+    }
+
     pub fn target(&self) -> Option<Target> {
         self.target
     }
@@ -155,13 +161,29 @@ impl Control {
             return Err("gain recording target is invalid");
         }
         validate_gain(gain)?;
-        self.commands
+        // Split actors reserve from the same idle word as publication BEFORE
+        // queue mutation. Legacy unsplit Control retains its historical ordering.
+        let reserved = self
+            .status
+            .as_ref()
+            .map_or(Ok(false), |s| s.reserve_gain_begin())?;
+        if self
+            .commands
             .push(Command {
                 target,
                 sequence: 1,
                 kind: Kind::Begin(gain),
             })
-            .map_err(|_| "gain recording command queue is full")?;
+            .is_err()
+        {
+            if reserved && let Some(status) = &self.status {
+                status.gain_end();
+            }
+            return Err("gain recording command queue is full");
+        }
+        if let Some(status) = &self.status {
+            status.gain_begin_committed();
+        }
         self.target = Some(target);
         self.sequence = 1;
         self.outstanding = 1;
@@ -228,6 +250,9 @@ impl Control {
                 Receipt::Finished { .. } | Receipt::Aborted { .. } => {
                     self.target = None;
                     self.finishing = false;
+                    if let Some(status) = &self.status {
+                        status.gain_end();
+                    }
                 }
             }
         }
@@ -242,6 +267,14 @@ fn validate_gain(gain: f32) -> Result<(), &'static str> {
     }
 }
 impl Callback {
+    pub(crate) fn constructor_channel_storage(
+        &self,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
+        ChannelStorage::ring(self.commands.buffer())?
+            .plus(ChannelStorage::ring(self.receipts.buffer())?)
+    }
+
     fn emit(&mut self, receipt: Receipt) {
         if self.receipts.push(receipt).is_err() {
             self.receipt_fault = true;

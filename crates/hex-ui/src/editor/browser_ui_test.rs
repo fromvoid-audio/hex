@@ -99,8 +99,7 @@ fn browser_drag_fixture_with_tracks(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline ui test".into()))
             });
@@ -147,8 +146,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                .expect("disposable test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             });
@@ -209,8 +207,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             });
@@ -357,8 +354,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service = Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES)
-                .expect("disposable test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("disposable test service");
             let editor = window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             });
@@ -424,8 +420,7 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             window.replace_root(cx, |window, cx| {
                 EditorView::new(window, cx, service, Err("offline test".into()))
             })
@@ -1864,8 +1859,7 @@ fn browser_restores_missing_user_folder_without_touching_real_preferences(cx: &m
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             window.replace_root(cx, |window, cx| {
                 EditorView::new_for_test(
                     window,
@@ -1901,8 +1895,7 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
-            let service =
-                Service::new(48_000, 32, super::super::MAX_RESIDENT_FRAMES).expect("test service");
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
             window.replace_root(cx, |window, cx| {
                 EditorView::new_for_test(
                     window,

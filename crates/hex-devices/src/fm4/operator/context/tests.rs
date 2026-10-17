@@ -86,3 +86,28 @@ fn configuration_and_note_fit_the_shared_contract_without_heap_owners() {
         size_of::<PreparedOperatorNote>()
     );
 }
+
+#[test]
+fn private_note_payload_preserves_original_midi_and_rejects_corrupt_origin() {
+    let config = PreparedOperatorConfiguration::new(
+        48000,
+        [Oscillator::new(1.0, 1.0, 0.0).unwrap(); 4],
+        Routing::new([[0.0; 4]; 4], [1.0, 0.0, 0.0, 0.0]).unwrap(),
+        [OperatorEnvelope::new(1.0, 1.0, 1.0, 0.0, 0.001, 0.001).unwrap(); 4],
+    )
+    .unwrap();
+    for (pitch, velocity) in [(0, 1), (60, 100), (127, 127)] {
+        let note = config.prepare_note(pitch, velocity).unwrap();
+        assert_eq!(note.midi_origin(), (pitch, velocity));
+        let payload = note.into_shared_payload();
+        assert_eq!(
+            PreparedOperatorNote::from_shared_payload(&payload),
+            Some(note)
+        );
+        for mask in [1u64 << 48, 1u64 << 47, 1u64 << 39, 1u64 << 40] {
+            let mut bad = payload;
+            bad[5] ^= mask;
+            assert!(PreparedOperatorNote::from_shared_payload(&bad).is_none());
+        }
+    }
+}

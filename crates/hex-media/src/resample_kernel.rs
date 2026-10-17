@@ -177,6 +177,15 @@ pub struct ResampleKernelDataLayout {
     pub weight_element_bytes: usize,
 }
 impl ResampleKernel {
+    /// Fixed sized DATA payload for one constructor kernel allocation, excluding
+    /// its separately bounded table and opaque Arc/allocator metadata.
+    pub const fn owner_payload_bytes() -> usize {
+        std::mem::size_of::<KernelData>()
+    }
+    /// Constructor table ceiling used before any source worker starts.
+    pub const fn max_table_payload_bytes() -> usize {
+        MAX_KERNEL_TABLE_BYTES
+    }
     pub fn control_data_layout(&self) -> ResampleKernelDataLayout {
         let KernelData {
             source_rate: _,

@@ -271,6 +271,8 @@ impl OperatorFeedbackRuntime {
 
     fn apply_event(&mut self, event: NativeInstrumentEvent) {
         match event {
+            // Unsupported controllers are rejected by preflight before processing.
+            NativeInstrumentEvent::Expression { .. } => {}
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -477,13 +479,17 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         for event in events.iter().copied() {
             let offset = match event {
                 NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. } => frame_offset,
+                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | NativeInstrumentEvent::Expression { frame_offset, .. } => frame_offset,
             };
             if offset >= frame_count || offset < previous_offset {
                 return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
             }
             Self::advance_proof(&mut proof, offset - previous_offset, self.release_frames)?;
             match event {
+                NativeInstrumentEvent::Expression { .. } => {
+                    return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                }
                 NativeInstrumentEvent::NoteOn {
                     occurrence_id,
                     pitch,
@@ -572,7 +578,8 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while events.get(event_index).is_some_and(|event| match *event {
                 NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. } => {
+                | NativeInstrumentEvent::NoteOff { frame_offset, .. }
+                | NativeInstrumentEvent::Expression { frame_offset, .. } => {
                     frame_offset == frame_index
                 }
             }) {
@@ -744,6 +751,7 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,
         base,
@@ -776,7 +784,7 @@ mod tests {
     fn factory_with_parameters(feedback: f32, level: f32, carrier: f32) -> OperatorFeedbackFactory {
         let state = OPERATOR_METADATA
             .patch_parameter(
-                &OPERATOR_METADATA.default_state().expect("defaults"),
+                &crate::operator_state::tests::legacy_state(),
                 parameter::oscillator_level(1),
                 ParameterValue::Float(level),
             )
@@ -1022,7 +1030,7 @@ mod tests {
 
         let unsupported_state = OPERATOR_METADATA
             .patch_parameter(
-                &OPERATOR_METADATA.default_state().expect("defaults"),
+                &crate::operator_state::tests::legacy_state(),
                 parameter::waveform(1),
                 ParameterValue::Choice(1),
             )
@@ -1104,7 +1112,7 @@ mod tests {
 
     #[test]
     fn zero_effective_feedback_keeps_analytic_factory_absent() {
-        let state = OPERATOR_METADATA.default_state().expect("defaults");
+        let state = crate::operator_state::tests::legacy_state();
         let settings = OperatorSettings::from_state(&state).expect("settings");
         assert!(
             prepare_factory(

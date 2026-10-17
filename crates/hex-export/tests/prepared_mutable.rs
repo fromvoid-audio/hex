@@ -176,10 +176,10 @@ impl MutableInstrumentRuntime for Runtime {
         }
         let mut offset = 0;
         for event in events {
-            let current = match event {
-                NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                | NativeInstrumentEvent::NoteOff { frame_offset, .. } => *frame_offset,
-            };
+            if matches!(event, NativeInstrumentEvent::Expression { .. }) {
+                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+            let current = event.frame_offset();
             if current < offset || current >= frame_count {
                 return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
             }
@@ -192,14 +192,13 @@ impl MutableInstrumentRuntime for Runtime {
         let mut event_index = 0;
         for (frame_offset, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {
-                let offset = match event {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. } => frame_offset,
-                };
+                let offset = event.frame_offset();
                 if offset != frame_offset {
                     break;
                 }
                 match event {
+                    // Unsupported by this fixture's read-only preflight.
+                    NativeInstrumentEvent::Expression { .. } => {}
                     NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
                             *voice = Voice {

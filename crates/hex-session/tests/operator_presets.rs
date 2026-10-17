@@ -297,8 +297,8 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.state_version(), 14);
-    assert_eq!(selected.payload().len(), 1616);
+    assert_eq!(selected.state_version(), 15);
+    assert_eq!(selected.payload().len(), 1728);
     for (id, enabled) in [(513, false), (514, true), (515, true), (516, true)] {
         assert_eq!(
             hex_engine::native_device_parameter_for_class(
@@ -330,7 +330,7 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
 }
 
 #[test]
-fn seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
+fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (Created::Track(track), mut graph) = session
         .command_prepared_revision(
@@ -362,6 +362,23 @@ fn seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_history() {
         ParameterValue::Float(0.4),
     )
     .expect("feedback amount");
+    // A is unmodulated in the legacy parallel fixture, enabling its feedback.
+    state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &state,
+        ParameterId::from_static(61),
+        ParameterValue::Choice(2),
+    )
+    .expect("legacy parallel routing");
+    // The historical runtime retains its 16-voice admission policy; new
+    // operator mode uses an independent 64-occurrence/32-sounding-voice policy.
+    state = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &state,
+        ParameterId::from_static(608),
+        ParameterValue::Choice(0),
+    )
+    .expect("legacy processing");
     (_, graph) = session
         .command_prepared_revision(Command::ReplaceDeviceState { device, state }, Some(&graph))
         .expect("mutable feedback runtime admitted");

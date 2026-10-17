@@ -65,7 +65,7 @@ fn exact_pcm_and_provider(
 
 #[test]
 fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
-    let input = OPERATOR_METADATA.default_state().unwrap();
+    let input = tests::legacy_state();
     let original = input.payload().as_ptr();
     let bytes = input.payload().to_vec();
     let prepared = context(&input);
@@ -73,7 +73,7 @@ fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
     assert_eq!(authored.payload().len(), PAYLOAD_BYTES); // Arc slice, no retained Vec slack.
     assert!(std::ptr::eq(authored.payload(), input.payload()));
-    assert_eq!(prepared.declared_context_bytes(), 2880); // Includes host gain metadata.
+    assert_eq!(prepared.declared_context_bytes(), 2992); // Includes host gain metadata.
     drop(input);
     assert_eq!(
         operator(prepared.as_ref())
@@ -89,7 +89,7 @@ fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
 
 #[test]
 fn exact_bytes_retain_signed_zero_disabled_oscillator_and_inactive_lfo_history() {
-    let mut input = OPERATOR_METADATA.default_state().unwrap();
+    let mut input = tests::legacy_state();
     for (parameter, value) in [
         (
             parameter::amplitude_velocity(1),
@@ -130,7 +130,7 @@ fn exact_bytes_retain_signed_zero_disabled_oscillator_and_inactive_lfo_history()
 
 #[test]
 fn equal_content_on_unrelated_input_owners_does_not_intern_contexts_or_payloads() {
-    let input = OPERATOR_METADATA.default_state().unwrap();
+    let input = tests::legacy_state();
     let other = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
         OPERATOR_STATE_VERSION,
@@ -158,7 +158,7 @@ fn equal_content_on_unrelated_input_owners_does_not_intern_contexts_or_payloads(
 
 #[test]
 fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
-    let current = OPERATOR_METADATA.default_state().unwrap();
+    let current = tests::legacy_state();
     for (version, len) in [
         (1, 224),
         (2, 240),
@@ -189,7 +189,7 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
 
 #[test]
 fn legacy_duration_normalization_keeps_new_bytes_and_input_unchanged() {
-    let current = OPERATOR_METADATA.default_state().unwrap();
+    let current = tests::legacy_state();
     for (version, len) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320)] {
         let mut bytes = current.payload()[..len].to_vec();
         bytes[35 * 4..36 * 4].copy_from_slice(&120.0f32.to_le_bytes());
@@ -210,7 +210,7 @@ fn legacy_duration_normalization_keeps_new_bytes_and_input_unchanged() {
 
 #[test]
 fn malformed_versions_lengths_flags_and_values_keep_decoder_refusals() {
-    let current = OPERATOR_METADATA.default_state().unwrap();
+    let current = tests::legacy_state();
     let mut cases = Vec::new();
     for (version, len) in [
         (8, 379),

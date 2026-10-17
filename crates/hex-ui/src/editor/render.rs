@@ -1,8 +1,9 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NextTrack,
-    OpenProject, OpenRecentProject, OpenRelinkedProject, PanTimelineLeft, PanTimelineRight,
+    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight,
+    NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
+    OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
     PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
     RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
     SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
@@ -92,8 +93,10 @@ impl EditorView {
         }));
     }
 
-    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+    fn status_bar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let mut bar = div()
+            .id("editor-status-bar")
+            .debug_selector(|| "editor-status-bar".into())
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
@@ -145,6 +148,7 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
             bar = bar.child(
                 div()
@@ -402,6 +406,8 @@ impl Render for EditorView {
             .track_focus(&self.focus)
             .key_context(if self.theme_settings.open {
                 "hex_theme_settings"
+            } else if self.controller_input_is_open() {
+                "hex_controller_input"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
             } else if self.gain_numeric_editing(cx) {
@@ -601,7 +607,20 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
-            .on_action(cx.listener(|view, _: &OpenProject, _, cx| view.open_dialog(cx)))
+            .on_action(cx.listener(|view, _: &NewProject, _, cx| {
+                view.new_project(hex_session::DocumentAudioMode::Resident);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &NewStreamingProject, _, cx| {
+                view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &OpenProject, _, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::Resident, cx)
+            }))
+            .on_action(cx.listener(|view, _: &OpenStreamingProject, _, cx| {
+                view.open_dialog(hex_session::DocumentAudioMode::VerifiedStreaming, cx)
+            }))
             .on_action(cx.listener(|view, _: &OpenRelinkedProject, window, cx| {
                 view.project_recovery_dialog(super::project_recovery::OpenKind::Relink, window, cx)
             }))
@@ -1018,6 +1037,7 @@ impl Render for EditorView {
             .children(self.floating_browser_audio_drag_ghost())
             .children(self.floating_clip_drag_ghost())
             .children(self.context_menu_overlay(window, cx))
+            .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
     }
 }

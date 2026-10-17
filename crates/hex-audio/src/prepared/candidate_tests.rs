@@ -65,6 +65,12 @@ pub(crate) fn candidate() -> Option<AudioCandidateOwner> {
 pub(super) fn candidate_with_session(
     with_session: bool,
 ) -> Option<(AudioCandidateOwner, Option<hex_project::ClipId>)> {
+    candidate_with_context(with_session, None)
+}
+pub(crate) fn candidate_with_context(
+    with_session: bool,
+    context: Option<hex_engine::AudioSourceContext>,
+) -> Option<(AudioCandidateOwner, Option<hex_project::ClipId>)> {
     if !hex_engine::audio_storage_constructor_layout_supported() {
         return None;
     }
@@ -149,12 +155,14 @@ pub(super) fn candidate_with_session(
     .ok()
     .unwrap();
     let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
-    let token = custody
-        .begin_input_on_control(
-            AudioArrangementInput::new(editor.project(), 11, bank).with_audio_prepared_revision(),
-        )
-        .ok()
-        .unwrap();
+    let input =
+        AudioArrangementInput::new(editor.project(), 11, bank).with_audio_prepared_revision();
+    let input = if let Some(context) = context {
+        input.with_source_context(context)
+    } else {
+        input
+    };
+    let token = custody.begin_input_on_control(input).ok().unwrap();
     Some((
         AudioCandidateOwner::try_new_on_control(custody, token)
             .ok()
@@ -177,7 +185,7 @@ pub(crate) fn anchored() -> (
 fn legacy() -> Playback {
     Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap())
 }
-pub(super) fn pair() -> crate::CandidateDomain {
+pub(crate) fn pair() -> crate::CandidateDomain {
     let mut runtime =
         hex_stream::StreamRuntime::new(hex_stream::StreamConfig::with_pool_pages(4), vec![])
             .unwrap();
@@ -588,7 +596,7 @@ fn constructor_domain_opt_in_requires_vacancy_and_preserves_legacy_refusal_owner
     let refusal = control.publish(original).err().unwrap();
     assert_eq!(Arc::strong_count(&original_root), 2);
     assert_eq!(control.revision, 0);
-    assert!(!control.publication_pending.load(Acquire));
+    assert!(!control.status.publication_pending.load(Acquire));
     assert!(
         control
             .configure_audio_candidate_domains(reservation)

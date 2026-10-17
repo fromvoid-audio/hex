@@ -10,7 +10,7 @@ use hex_lattice::{
 use std::mem::size_of;
 
 fn format() -> AnalyticContinuationFormat {
-    AnalyticContinuationFormat::new(crate::operator_state::OPERATOR_TYPE_ID, 1).unwrap()
+    AnalyticContinuationFormat::new(crate::operator_state::OPERATOR_TYPE_ID, 2).unwrap()
 }
 fn binding(words: [u64; 8], target: u64, start: u64, duration: u32) -> EnableBinding {
     let target = AnalyticContinuationId::new(target).unwrap();
@@ -85,7 +85,7 @@ fn unknown_format_reserved_words_and_corrupt_clocks_refuse_before_mutation() {
     let (roots, record, _) = fixture();
     let root = &roots[0];
     let original = record.enable.transition.unwrap();
-    for version in [2, u32::MAX] {
+    for version in [1, 3, u32::MAX] {
         let wrong =
             AnalyticContinuationFormat::new(crate::operator_state::OPERATOR_TYPE_ID, version)
                 .unwrap();

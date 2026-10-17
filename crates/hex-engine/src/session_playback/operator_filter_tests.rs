@@ -6,7 +6,7 @@ fn fixture() -> Project {
 }
 fn fixture_duration(duration: u64) -> Project {
     let mut snapshot = project(1.0, 0, duration).snapshot();
-    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    let mut state = crate::operator_legacy_test::legacy_operator_state();
     for (id, v) in [
         (1, 1.0),
         (2, 1.0),

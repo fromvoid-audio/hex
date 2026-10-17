@@ -1,7 +1,8 @@
 use super::{
-    PendingSeek, SeekIntent, SeekStage, ToggleAction, cancel_published_seek,
-    capture_arrangement_fence, desired_playing_with_pending, latch_latest_intent, requires_preroll,
-    resolve_prepared_seek_terminal, routes_are_current, toggle_action,
+    PendingSeek, SeekIntent, SeekStage, ToggleAction, VerifiedSeekCandidateContext,
+    cancel_published_seek, capture_arrangement_fence, desired_playing_with_pending,
+    latch_latest_intent, requires_preroll, resolve_prepared_seek_terminal, routes_are_current,
+    seek_requires_preroll_for_mode, toggle_action, verified_audio_candidate_is_current,
 };
 use hex_audio::prepared::{
     self, FreshRuntimeCancellationResult, PublicationPolicy, SessionPendingRoute,
@@ -165,6 +166,93 @@ fn prepared_revision_selects_analytic_or_preroll_route() {
 }
 
 #[test]
+fn verified_seek_uses_direct_route_only_for_current_applied_candidate() {
+    let current = VerifiedSeekCandidateContext {
+        client_mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        output_identity: Some(7),
+        candidate_audio_revision: 11,
+        applied_audio_revision: 11,
+        candidate_generation: 4,
+        current_generation: 4,
+        candidate_project_revision: 9,
+        current_project_revision: 9,
+        applied_project_revision: Some(9),
+        has_prepared_revision: false,
+        is_canonical_candidate: true,
+    };
+    assert!(verified_audio_candidate_is_current(current));
+    assert_eq!(
+        seek_requires_preroll_for_mode(
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+            None,
+            true,
+        ),
+        Some(false),
+        "an applied Verified candidate uses the direct seek path"
+    );
+
+    let not_applied = VerifiedSeekCandidateContext {
+        applied_audio_revision: 10,
+        ..current
+    };
+    assert!(!verified_audio_candidate_is_current(not_applied));
+    assert_eq!(
+        seek_requires_preroll_for_mode(
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+            None,
+            false,
+        ),
+        None,
+        "a submitted but unapplied Verified candidate cannot seek"
+    );
+
+    for stale in [
+        VerifiedSeekCandidateContext {
+            output_identity: None,
+            ..current
+        },
+        VerifiedSeekCandidateContext {
+            candidate_generation: 3,
+            ..current
+        },
+        VerifiedSeekCandidateContext {
+            candidate_project_revision: 8,
+            ..current
+        },
+        VerifiedSeekCandidateContext {
+            applied_project_revision: None,
+            ..current
+        },
+        VerifiedSeekCandidateContext {
+            has_prepared_revision: true,
+            ..current
+        },
+        VerifiedSeekCandidateContext {
+            is_canonical_candidate: false,
+            ..current
+        },
+        VerifiedSeekCandidateContext {
+            client_mode: hex_session::DocumentAudioMode::Resident,
+            ..current
+        },
+    ] {
+        assert!(
+            !verified_audio_candidate_is_current(stale),
+            "stale, missing-client, or owning candidates must not use Verified direct seek"
+        );
+    }
+
+    assert_eq!(
+        seek_requires_preroll_for_mode(
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+            None,
+            false,
+        ),
+        None
+    );
+}
+
+#[test]
 fn queued_play_intent_controls_the_next_toggle_and_seek() {
     assert!(desired_playing_with_pending(false, Some(true), None));
     assert!(desired_playing_with_pending(false, None, Some(true)));
@@ -194,7 +282,9 @@ fn second_spacebar_cancels_pending_stateful_play_instead_of_restarting_it() {
 
 #[test]
 fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_terminal() {
-    let project = stateful_project();
+    let mut snapshot = stateful_project().snapshot();
+    snapshot.loop_region = Some(hex_project::LoopRegion::new(128, 512, true).expect("loop"));
+    let project = Project::from_snapshot(snapshot).expect("stateful looping project");
     let prepared = Arc::new(
         PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
             .expect("stateful prepared revision"),

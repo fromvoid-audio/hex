@@ -150,6 +150,7 @@ impl Custody {
             return;
         };
         let work = &mut work_guard.publication;
+        self.advance_runtime_preparations(work, abandoned);
         {
             let mut bank_guard = lock(&self.bank);
             let bank = &mut bank_guard.publication;
@@ -192,6 +193,7 @@ impl Custody {
             executions,
             failed_payloads,
             banks: _,
+            preparations: _,
         } = work;
         for index in 0..executions.len() {
             let Some(execution) = executions[index].as_mut() else {

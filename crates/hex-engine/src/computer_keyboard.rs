@@ -136,6 +136,8 @@ impl hex_lattice::NativeInstrumentClock for KeyboardClock<'_> {
 /// Authored voices and live voices deliberately have independent mutable pools.
 pub(crate) struct ComputerKeyboardRuntime {
     track: TrackId,
+    instrument_id: Option<hex_project::DeviceId>,
+    expression: Option<crate::live_expression::Snapshot>,
     input: Arc<ComputerKeyboardInput>,
     samplers: Vec<Option<Sampler>>,
     supported: [bool; NOTES],
@@ -153,6 +155,8 @@ pub(crate) struct ComputerKeyboardRuntime {
     scratch_monitor_anchor: Option<(u64, u64, u32)>,
     boundary: bool,
     faulted: bool,
+    preserve_on_handoff: bool,
+    lease_detached: bool,
 }
 impl ComputerKeyboardRuntime {
     pub(crate) fn prepare(
@@ -174,7 +178,10 @@ impl ComputerKeyboardRuntime {
         let instrument = registry
             .prepare_instrument(device.state(), project.sample_rate())
             .map_err(|_| Invalid("computer keyboard instrument preparation failed"))?;
-        Self::prepare_instrument(track, input, project.sample_rate(), instrument.as_ref())
+        let mut runtime =
+            Self::prepare_instrument(track, input, project.sample_rate(), instrument.as_ref())?;
+        runtime.instrument_id = Some(device.id());
+        Ok(runtime)
     }
 
     fn prepare_instrument(
@@ -193,7 +200,7 @@ impl ComputerKeyboardRuntime {
                     factory.as_ref(),
                     NativeInstrumentRuntimeLimits {
                         max_pair_bytes: 2 * 1024 * 1024,
-                        max_events_per_block: 256,
+                        max_events_per_block: 259,
                         max_active_occurrences: VOICES,
                         max_tail_frames: crate::mutable_instrument::max_mutable_tail_frames(
                             sample_rate,
@@ -276,6 +283,8 @@ impl ComputerKeyboardRuntime {
         }
         let result = Self {
             track,
+            instrument_id: None,
+            expression: None,
             input,
             samplers,
             supported,
@@ -293,6 +302,8 @@ impl ComputerKeyboardRuntime {
             scratch_monitor_anchor: None,
             boundary: false,
             faulted: false,
+            preserve_on_handoff: false,
+            lease_detached: false,
         };
         if result
             .storage_bytes()
@@ -364,11 +375,80 @@ impl ComputerKeyboardRuntime {
             sample_rate: timing.sample_rate(),
         })
     }
+    pub(crate) fn request_controller_handoff_preservation(&mut self) {
+        self.preserve_on_handoff = true;
+    }
+    pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
+        self.preserve_on_handoff
+            && Arc::ptr_eq(&self.input, &previous.input)
+            && !self.input.is_cancelled()
+    }
+    pub(crate) fn can_preserve_from(&self, previous: &Self) -> bool {
+        self.requests_preservation_from(previous)
+            && !previous.lease_detached
+            && !previous.faulted
+            && self.track == previous.track
+            && self.instrument_id == previous.instrument_id
+            && self.supported == previous.supported
+            && self.release_frames == previous.release_frames
+            && self.samplers.len() == previous.samplers.len()
+            && match (&self.mutable, &previous.mutable) {
+                (Some(next), Some(old)) => next.can_inherit_from(old),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+    /// Copy fixed committed state only after exact-source and pair preflight.
+    /// The retired owner retains its storage but loses the authority to cancel
+    /// or read this physical-key lease after successful publication.
+    pub(crate) fn preserve_from(&mut self, previous: &mut Self) -> Result<(), Invalid> {
+        if let (Some(next), Some(old)) = (&mut self.mutable, &previous.mutable) {
+            next.inherit_from(old).map_err(|_| {
+                Invalid("computer keyboard controller history could not be inherited")
+            })?;
+        }
+        self.primary = previous.primary;
+        self.scratch = previous.primary;
+        self.desired = previous.desired;
+        self.next_id = previous.next_id;
+        self.scratch_next_id = previous.next_id;
+        self.age = previous.age;
+        self.scratch_age = previous.age;
+        self.monitor_anchor = previous.monitor_anchor;
+        self.scratch_monitor_anchor = previous.monitor_anchor;
+        self.boundary = previous.boundary;
+        self.expression = previous.expression;
+        self.preserve_on_handoff = false;
+        previous.lease_detached = true;
+        previous.cancel();
+        Ok(())
+    }
+    pub(crate) fn set_expression(
+        &mut self,
+        selected: Option<(
+            TrackId,
+            hex_project::DeviceId,
+            crate::live_expression::Snapshot,
+        )>,
+    ) {
+        self.expression = match selected {
+            Some((track, instrument, snapshot))
+                if track == self.track && self.instrument_id == Some(instrument) =>
+            {
+                Some(snapshot)
+            }
+            _ => self
+                .expression
+                .map(|_| crate::live_expression::Snapshot::default()),
+        };
+    }
     pub(crate) fn track(&self) -> TrackId {
         self.track
     }
     pub(crate) fn cancel(&mut self) {
-        self.input.cancel();
+        if !self.lease_detached {
+            self.input.cancel();
+        }
         self.primary.fill(None);
         self.scratch.fill(None);
         if let Some(runtime) = &mut self.mutable {
@@ -376,7 +456,7 @@ impl ComputerKeyboardRuntime {
         }
     }
     pub(crate) fn begin_block(&mut self) {
-        if self.input.is_cancelled() || self.faulted {
+        if self.lease_detached || self.input.is_cancelled() || self.faulted {
             self.primary.fill(None);
             if let Some(runtime) = &mut self.mutable {
                 runtime.reset();
@@ -387,7 +467,7 @@ impl ComputerKeyboardRuntime {
         self.scratch_age = self.age;
         self.scratch_monitor_anchor = self.monitor_anchor;
         self.desired = std::array::from_fn(|index| {
-            if self.input.is_cancelled() || self.faulted {
+            if self.lease_detached || self.input.is_cancelled() || self.faulted {
                 0
             } else {
                 self.input.notes[index].load(Acquire)
@@ -423,8 +503,12 @@ impl ComputerKeyboardRuntime {
         let mut events = [NativeInstrumentEvent::NoteOff {
             frame_offset: 0,
             occurrence_id: 0,
-        }; 2 * VOICES];
+        }; 2 * VOICES + 3];
         let mut len = 0;
+        if let Some(expression) = self.expression {
+            events[..3].copy_from_slice(&expression.events());
+            len = 3;
+        }
         self.scratch.iter_mut().for_each(|slot| {
             if slot.is_some_and(|voice| {
                 voice
@@ -638,6 +722,100 @@ mod tests {
             assert_eq!(playback.performance_frame(), 0);
         }
     }
+    #[test]
+    fn controller_only_keyboard_publication_preserves_held_pcm_and_detaches_retired_lease() {
+        let (project, track) = fixture();
+        let revision = prepared(&project);
+        let input = Arc::new(ComputerKeyboardInput::default());
+        let oracle_input = Arc::new(ComputerKeyboardInput::default());
+        for keys in [&input, &oracle_input] {
+            keys.set_key(0, Some((60, 100, 1))).unwrap();
+        }
+        let mut old = Playback::from_prepared(Arc::clone(&revision));
+        let mut oracle = Playback::from_prepared(Arc::clone(&revision));
+        old.prepare_computer_keyboard(&project, track, Arc::clone(&input))
+            .unwrap();
+        oracle
+            .prepare_computer_keyboard(&project, track, Arc::clone(&oracle_input))
+            .unwrap();
+        let mut actual = [[0.0; 2]; 257];
+        let mut expected = actual;
+        old.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+        let mut next = Playback::from_prepared(revision);
+        next.prepare_computer_keyboard_for_controller_activation(
+            &project,
+            track,
+            Arc::clone(&input),
+        )
+        .unwrap();
+        next.try_inherit_runtime_from(&mut old).unwrap();
+        assert!(!input.is_cancelled());
+        old.cancel_computer_keyboard();
+        old.apply(PlaybackCommand::Stop);
+        drop(old);
+        assert!(
+            !input.is_cancelled(),
+            "retirement cannot cancel the adopted physical-key lease"
+        );
+        next.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "held notes keep their committed phase, envelope and age"
+        );
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+        input.set_key(0, None).unwrap();
+        oracle_input.set_key(0, None).unwrap();
+        next.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "the original physical key still sends its note off"
+        );
+    }
+
+    #[test]
+    fn controller_keyboard_preservation_rejects_different_revision_and_never_revives_cancelled_input()
+     {
+        let (project, track) = fixture();
+        let revision = prepared(&project);
+        let input = Arc::new(ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut old = Playback::from_prepared(Arc::clone(&revision));
+        old.prepare_computer_keyboard(&project, track, Arc::clone(&input))
+            .unwrap();
+        old.render(&mut [[0.0; 2]; 64]).unwrap();
+        let mut wrong = Playback::from_prepared(prepared(&project));
+        wrong
+            .prepare_computer_keyboard_for_controller_activation(
+                &project,
+                track,
+                Arc::clone(&input),
+            )
+            .unwrap();
+        assert!(wrong.try_inherit_runtime_from(&mut old).is_err());
+        assert!(
+            !input.is_cancelled(),
+            "rejection leaves the active owner untouched"
+        );
+        input.cancel();
+        let mut cancelled = Playback::from_prepared(revision);
+        cancelled
+            .prepare_computer_keyboard_for_controller_activation(
+                &project,
+                track,
+                Arc::clone(&input),
+            )
+            .unwrap();
+        cancelled.try_inherit_runtime_from(&mut old).unwrap();
+        let mut silent = [[1.0; 2]; 64];
+        cancelled.render(&mut silent).unwrap();
+        assert_eq!(silent, [[0.0; 2]; 64]);
+        assert!(input.is_cancelled());
+    }
+
     #[test]
     fn computer_keyboard_cancel_stop_and_bank_replacement_never_retrigger_old_held_keys() {
         let (project, track) = fixture();

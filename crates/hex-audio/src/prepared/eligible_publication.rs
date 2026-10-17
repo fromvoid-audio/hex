@@ -1,21 +1,33 @@
 //! Control reservation and the same real publication/return rings. This owning
 //! seam does not itself grant native installation or page readiness.
 use super::*;
-impl Control {
+impl PublicationControl {
+    /// Scalar submission observation; callback installation/ACK is separate.
+    pub fn submitted_revision(&self) -> u64 {
+        self.revision
+    }
+    /// A negative-only fault/closing observation, never admission authority.
+    pub fn audio_candidate_claims_available(&self) -> bool {
+        self.candidate_root.eligible_claims_open()
+    }
     /// Reserve exact-demand rows per retained runtime before accepting any
     /// source domain or graph. Existing resident callers need not opt in.
     pub fn configure_audio_candidate_streaming(
         &mut self,
         extents_per_domain: usize,
     ) -> Result<(), &'static str> {
-        if !self.native_custody
+        if self.status.client_exposed.load(Acquire)
+            || !self.native_custody
             || self.revision != 0
-            || self.closing.load(Acquire)
-            || self.publication_pending.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
         {
             return Err("stream demand requires a vacant native channel");
         }
-        self.candidate_root.configure_streaming(extents_per_domain)
+        self.candidate_root
+            .configure_streaming(extents_per_domain)?;
+        self.status.verified_streaming_mode.store(true, Release);
+        Ok(())
     }
 
     /// Move the one exact page endpoint into this native channel. Queue pressure
@@ -26,7 +38,7 @@ impl Control {
         domain: crate::candidate_catalog::CandidateDomain,
         reservation: hex_stream::StreamReadinessReservation,
     ) -> Result<crate::AudioCandidateDomainToken, Box<crate::AudioCandidateDomainRefusal>> {
-        if !self.native_custody || self.closing.load(Acquire) {
+        if !self.native_custody || self.status.closing.load(Acquire) {
             return Err(Box::new(crate::AudioCandidateDomainRefusal {
                 reason: "candidate native custody unavailable",
                 domain,
@@ -44,6 +56,57 @@ impl Control {
             })
     }
 
+    /// Reserve an existing N2 cell and its construction allowance before any
+    /// source worker starts. Success means accepted custody even if close won;
+    /// it does not mean the catalog is verified or pages can be rendered.
+    pub fn begin_audio_candidate_domain_preparation(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root
+            .begin_domain_preparation(config, definitions, readiness)
+    }
+    /// Poll on the publication worker. Reserve the actual queue entry before
+    /// sealing; a ready endpoint cannot escape or be dropped on queue refusal.
+    pub fn poll_audio_candidate_domain_preparation(
+        &mut self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> Result<crate::AudioCandidateDomainPreparationProgress, &'static str> {
+        let chunk = self
+            .publications
+            .write_chunk_uninit(1)
+            .map_err(|_| "candidate publication queue is full")?;
+        self.candidate_root.poll_domain_preparation(token, |pages| {
+            chunk.fill_from_iter(std::iter::once(QueuedPublication::Domain(pages)));
+        })
+    }
+
+    /// Exact accepted, nonretiring sealed catalog association. This remains
+    /// meaningful for source-free successors; it is not page readiness.
+    pub fn audio_candidate_domain_is_sealed(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+    ) -> bool {
+        self.candidate_root.domain_is_sealed(token)
+    }
+    /// Borrowed worker-side coverage check against the actual retained sealed
+    /// catalog and exact Root slot/incarnation. Neutral file facts alone cannot
+    /// make an unrelated or already-retiring token cover a source.
+    pub fn audio_candidate_domain_covers_source(
+        &self,
+        token: crate::AudioCandidateDomainToken,
+        source: &hex_engine::StreamedSourceMetadata,
+    ) -> bool {
+        self.candidate_root.domain_covers_source(token, source)
+    }
+
     /// Reserve the opted-in constructor Root before its first accepted owner.
     /// The existing channel must be vacant; legacy publication stays unchanged
     /// on channels that do not opt in.
@@ -53,8 +116,11 @@ impl Control {
     ) -> Result<(), &'static str> {
         if !self.native_custody
             || self.revision != 0
-            || self.closing.load(Acquire)
-            || self.publication_pending.load(Acquire)
+            || !self.status.preview_unused()
+            || !self.resident_forwarding_virgin()
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
             || self.held_control_return.is_some()
             || self.latest_fresh_runtime_cancellation.is_some()
         {
@@ -81,17 +147,107 @@ impl Control {
                 .capacity()
                 .checked_mul(std::mem::size_of::<ReturnedPublication>())
                 .and_then(|n| n.checked_add(std::mem::size_of_val(returned.buffer()))),
-            self.commands
-                .buffer()
-                .capacity()
-                .checked_mul(std::mem::size_of::<QueuedCommand>())
-                .and_then(|n| n.checked_add(std::mem::size_of_val(self.commands.buffer()))),
+            Some(self.command_storage_bytes),
         ]
         .into_iter()
         .try_fold(native_bytes, |n, value| n.checked_add(value?))
         .ok_or("constructor queue DATA overflow")?;
         self.candidate_root
-            .configure_publications(reservation, queue_bytes)
+            .configure_publications(reservation, queue_bytes)?;
+        // Closed constructor claims never adopt the independent owning browser
+        // preview lane. The virgin predicate proves shutdown drops no PCM here.
+        self.status.constructor_mode.store(true, Release);
+
+        Ok(())
+    }
+    /// Reserve persistent graph construction in one existing runtime/archive
+    /// cell before copying source rows or constructing a bank. The returned
+    /// scalar token grants neither publication nor a no-install receipt.
+    pub fn reserve_audio_candidate_preparation(
+        &mut self,
+        reservation: crate::AudioCandidatePreparationReservation,
+        domains: Vec<crate::AudioCandidateDomainToken>,
+    ) -> Result<crate::AudioCandidatePreparationToken, crate::AudioCandidatePreparationRefusal>
+    {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidatePreparationRefusal {
+                reason: "candidate native custody unavailable",
+                domains,
+            });
+        }
+        self.candidate_root
+            .reserve_runtime_preparation(reservation, domains)
+    }
+    /// Bind a newly ready exact domain into the already-reserved graph cell.
+    /// This permits reserving graph construction BEFORE starting its source
+    /// worker; no second runtime slot or source registration is introduced.
+    pub fn bind_audio_candidate_preparation_domains(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        domains: Vec<crate::AudioCandidateDomainToken>,
+    ) -> Result<(), crate::AudioCandidatePreparationRefusal> {
+        self.candidate_root
+            .bind_runtime_preparation_domains(token, domains)
+    }
+    /// The closure executes on the worker while dedicated construction custody
+    /// remains rooted. No ordinary bank/terminal lock spans copies or compilation.
+    pub fn prepare_audio_candidate_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
+        self.candidate_root.with_runtime_preparation(token, prepare)
+    }
+    /// Queue this exact rooted, completed preparation without returning an owner
+    /// to the adapter or releasing/reacquiring its reserved runtime/archive cell.
+    /// Busy/refusal retains all construction custody under the same token.
+    pub fn stage_audio_candidate_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        context_generation: u64,
+    ) -> Result<crate::AudioCandidateTicket, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("candidate native custody unavailable");
+        }
+        if self.revision == u64::MAX {
+            return Err("playback revision exhausted");
+        }
+        if !self.status.publication_pending.reserve_publication() {
+            return Err("playback publication already pending");
+        }
+        let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
+            self.status.publication_pending.store(false, Release);
+            return Err("candidate publication queue is full");
+        };
+        let revision = self.revision + 1;
+        let header = (
+            revision,
+            context_generation,
+            PublicationPolicy::InheritRuntime,
+        );
+        match self
+            .candidate_root
+            .stage_runtime_preparation(token, self.rate, header, |queued| {
+                chunk.fill_from_iter(std::iter::once(QueuedPublication::Eligible(queued)));
+            }) {
+            Ok(ticket) => {
+                self.revision = revision;
+                self.status.submitted_revision.store(revision, Release);
+                Ok(ticket)
+            }
+            Err(reason) => {
+                self.status.publication_pending.store(false, Release);
+                Err(reason)
+            }
+        }
+    }
+    pub fn cancel_audio_candidate_preparation(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+    ) -> bool {
+        self.candidate_root.cancel_runtime_preparation(token)
     }
     /// Cancel this exact retained slot/incarnation before its callback apply
     /// decision. No owning handle or per-call allocation escapes the Root.
@@ -112,7 +268,7 @@ impl Control {
         policy: PublicationPolicy,
         context_generation: u64,
     ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateEligibleStageRefusal> {
-        let reason = if !self.native_custody || self.closing.load(Acquire) {
+        let reason = if !self.native_custody || self.status.closing.load(Acquire) {
             Some("candidate native custody unavailable")
         } else if owner.sample_rate() != self.rate
             || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
@@ -120,7 +276,7 @@ impl Control {
             Some("candidate constructor rate or phase differs")
         } else if policy != PublicationPolicy::InheritRuntime {
             Some("constructor fresh-runtime policy is not supported")
-        } else if self.gain_recording.target().is_some() {
+        } else if self.status.publication_pending.gain_active() {
             Some("finish gain recording before replacing playback")
         } else if self.revision == u64::MAX {
             Some("playback revision exhausted")
@@ -147,11 +303,7 @@ impl Control {
                 });
             }
         };
-        if self
-            .publication_pending
-            .compare_exchange(false, true, AcqRel, Acquire)
-            .is_err()
-        {
+        if !self.status.publication_pending.reserve_publication() {
             return Err(crate::AudioCandidateEligibleStageRefusal {
                 reason: "playback publication already pending",
                 owner,
@@ -159,7 +311,7 @@ impl Control {
             });
         }
         let Ok(chunk) = self.publications.write_chunk_uninit(1) else {
-            self.publication_pending.store(false, Release);
+            self.status.publication_pending.store(false, Release);
             return Err(crate::AudioCandidateEligibleStageRefusal {
                 reason: "candidate publication queue is full",
                 owner,
@@ -180,10 +332,11 @@ impl Control {
         ) {
             Ok(ticket) => {
                 self.revision = revision;
+                self.status.submitted_revision.store(revision, Release);
                 Ok(ticket)
             }
             Err(refused) => {
-                self.publication_pending.store(false, Release);
+                self.status.publication_pending.store(false, Release);
                 Err(refused)
             }
         }
@@ -269,7 +422,7 @@ impl Callback {
                     self.return_publication(ReturnedPublication::Eligible(
                         value.reject_before_install(),
                     ));
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                     if let Some(ticket) = self.stream_pending_play.take() {
                         self.status.publish_rejected_action(
                             ticket,
@@ -308,8 +461,16 @@ impl Callback {
                     self.publish_transport();
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status
+                        .applied_source
+                        .publish(match self.active.as_ref() {
+                            Some(ActivePublication::Eligible(active)) => {
+                                active.applied_audio_source()
+                            }
+                            _ => None,
+                        });
                     self.status.applied_revision.store(revision, Release);
-                    self.publication_pending.store(false, Release);
+                    self.status.publication_pending.store(false, Release);
                 }
             }
         }

@@ -127,18 +127,48 @@ struct Domain<'a> {
     pages: &'a StreamCallbackPages,
     opaque: u8,
 }
+#[cfg(test)]
+pub(super) fn pending_pair_data(
+    control: &StreamControl,
+    pages: &StreamCallbackPages,
+) -> Result<crate::StreamDataFootprint, AudioStreamStorageError> {
+    Domain {
+        control,
+        pages,
+        opaque: 0,
+    }
+    .footprint()
+}
 pub(super) fn closed_constructor_pair_data(
     control: &StreamControl,
     pages: &StreamCallbackPages,
+) -> Result<crate::StreamDataFootprint, AudioStreamStorageError> {
+    pair_data_with_handles(control, pages, 2)
+}
+pub(super) fn closed_prebound_pair_data(
+    control: &StreamControl,
+    pages: &StreamCallbackPages,
+    disposal: &super::PreparedStreamDisposal,
+) -> Result<crate::StreamDataFootprint, AudioStreamStorageError> {
+    if !disposal.matches_prepared_pair(control, pages) {
+        return Err(AudioStreamStorageError::PairMismatch);
+    }
+    pair_data_with_handles(control, pages, 3)
+}
+fn pair_data_with_handles(
+    control: &StreamControl,
+    pages: &StreamCallbackPages,
+    pair_handles: usize,
 ) -> Result<crate::StreamDataFootprint, AudioStreamStorageError> {
     if !Arc::ptr_eq(&control.owner, &pages._owner) || !Arc::ptr_eq(&control.pair_id, &pages.pair_id)
     {
         return Err(AudioStreamStorageError::PairMismatch);
     }
-    // Only the actual factory's two halves may exist at sealing. Once both
-    // are consumed, no public lease/owner handle remains available to clone.
+    // Only the factory endpoints and (when supplied above) the exact prebound
+    // disposal may hold the pair. No arbitrary extra lease/Weak is adopted;
+    // after consumption no public owner remains available to clone.
     if Arc::strong_count(&control.owner) != 2
-        || Arc::strong_count(&control.pair_id) != 2
+        || Arc::strong_count(&control.pair_id) != pair_handles
         || Arc::weak_count(&control.owner) != 0
         || Arc::weak_count(&control.pair_id) != 0
         || Arc::weak_count(&control.owner.stop) != 0

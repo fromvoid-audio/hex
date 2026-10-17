@@ -150,15 +150,6 @@ pub(super) fn toolbar_row() -> Stateful<Div> {
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
 }
 
-pub(super) fn loading_toolbar(message: &str) -> Stateful<Div> {
-    toolbar_row().justify_center().child(
-        div()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .child(theme::text(message)),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::project_title;

@@ -71,10 +71,11 @@ impl Queued {
                 hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled,
             );
         }
-        let streamed = next
-            .runtime
-            .as_ref()
-            .is_none_or(|runtime| runtime.contains_streamed_sources());
+        let streamed = next.streaming.is_some()
+            || next
+                .runtime
+                .as_ref()
+                .is_none_or(|runtime| runtime.contains_streamed_sources());
         if streamed {
             let Some(request) = stream.as_deref_mut() else {
                 return InstallDecision::Refused(
@@ -252,13 +253,7 @@ impl Queued {
         InstallDecision::Ready
     }
     pub(crate) fn streaming_enabled(&self) -> bool {
-        self.state.streaming.is_some() && self.contains_streamed_sources()
-    }
-    pub(crate) fn contains_streamed_sources(&self) -> bool {
-        self.state
-            .runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.contains_streamed_sources())
+        self.state.streaming.is_some()
     }
     pub(crate) fn cancel_stream_readiness(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.cancel_stream_pending(domains);
@@ -270,6 +265,13 @@ impl Queued {
     }
 }
 impl Active {
+    pub(crate) fn applied_audio_source(&self) -> Option<crate::prepared::AppliedAudioSource> {
+        Some(crate::prepared::AppliedAudioSource {
+            context: self.state.runtime.as_ref()?.source_context()?,
+            audio_revision: self.state.revision,
+            output_identity: self.state.stamp.root,
+        })
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.state.revision
     }

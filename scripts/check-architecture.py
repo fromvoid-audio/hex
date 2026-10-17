@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
+    'hex-midi': set(),
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
     'hex-diagnostics': set(),
@@ -26,18 +27,22 @@ ALLOWED = {
     'hex-widgets': set(),
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
-    'hex-ui': {'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
-    'hex-desktop': {'hex-diagnostics', 'hex-ui', 'hex-audio'},
+    'hex-ui': {'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
+    # Desktop injects the Session sink and binds neutral source facts to actual
+    # audio/stream constructor custody; Session has no device/stream edge.
+    'hex-desktop': {'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Actual Session -> native adapter fixtures, never a production editor model.
+    'hex-desktop': {'hex-project'},
     'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
 }
-BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
+BOUNDARIES = {'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
               # Source and controlled scanner identities never enter DSP.
@@ -50,7 +55,7 @@ BOUNDARIES = {'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'fs2': {'hex-storage'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does
 # not permit cryptography or a new dependency on the stream runtime path.
-BUILD_BOUNDARIES = {'sha2': {'hex-stream'}}
+BUILD_BOUNDARIES = {'coremidi': {'hex-midi'}, 'sha2': {'hex-stream'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
@@ -68,8 +73,8 @@ for name, package in packages.items():
         target = dep['name']
         if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
             errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
-        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream'} or dep['kind'] != 'dev'):
-            errors.append(f'{name}: allocation-counter is allowed only for audio/stream dev probes')
+        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop'} or dep['kind'] != 'dev'):
+            errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop dev probes')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())

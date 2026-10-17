@@ -5,14 +5,13 @@ use hex_widgets::NumericSpec;
 pub(super) enum NumericDisplayCodec {
     Percent,
     Balance,
+    Pan,
     MidSide,
     Hertz,
     Ratio,
     AmplitudeDb,
     Seconds,
     Number,
-    Turns,
-    LinearGain,
 }
 
 impl NumericDisplayCodec {
@@ -21,12 +20,11 @@ impl NumericDisplayCodec {
             move |value| match self {
                 Self::Percent => format!("{}%", format_number(value * 100.0, 2)),
                 Self::Balance => format_side(value, "l", "r"),
+                Self::Pan => format_side(value / 100.0, "l", "r"),
                 Self::MidSide if value == 0.0 => "0".to_owned(),
                 Self::MidSide => format_side(value, "m", "s"),
                 Self::Hertz => format!("{} hz", format_number(value, 2)),
                 Self::Number => format_number(value, 2),
-                Self::Turns => format!("{}t", format_number(value, 2)),
-                Self::LinearGain => format!("{}x", format_number(value, 2)),
                 Self::AmplitudeDb if value == 0.0 => "-inf db".to_owned(),
                 Self::AmplitudeDb => format!("{:.1} db", 20.0 * value.log10()),
                 Self::Seconds if value < 1.0 => format!("{} ms", format_number(value * 1000.0, 1)),
@@ -34,20 +32,6 @@ impl NumericDisplayCodec {
                 Self::Ratio => format!("{}:1", format_number(value, 2)),
             },
             move |text| match self {
-                Self::Turns | Self::LinearGain => {
-                    let text = text.trim();
-                    let (unit, suffix) = if self == Self::Turns {
-                        ("turns", 't')
-                    } else {
-                        ("linear", 'x')
-                    };
-                    text.strip_suffix(unit)
-                        .or_else(|| text.strip_suffix(suffix))
-                        .unwrap_or(text)
-                        .trim()
-                        .parse::<f64>()
-                        .ok()
-                }
                 Self::Number => text
                     .trim()
                     .strip_suffix('x')
@@ -92,6 +76,22 @@ impl NumericDisplayCodec {
                     .ok()
                     .map(|value| value / 100.0),
                 Self::Balance => parse_side(text, "l", "r"),
+                Self::Pan => {
+                    let text = text.trim().to_ascii_lowercase();
+                    match text.as_str() {
+                        "l" => Some(-50.0),
+                        "r" => Some(50.0),
+                        "c" => Some(0.0),
+                        _ if text.ends_with(" l")
+                            || text.ends_with(" r")
+                            || text.starts_with("l ")
+                            || text.starts_with("r ") =>
+                        {
+                            parse_side(&text, "l", "r").map(|value| value * 100.0)
+                        }
+                        _ => text.parse::<f64>().ok(),
+                    }
+                }
                 Self::MidSide => parse_side(text, "m", "s"),
                 Self::Ratio => text
                     .trim()
@@ -166,33 +166,17 @@ mod tests {
     use hex_widgets::{NumericScale, NumericSpec};
 
     #[test]
-    fn routing_units_accept_compact_full_and_bare_values_without_changing_domains() {
-        for (codec, min, max, short, full) in [
-            (NumericDisplayCodec::Turns, -8.0, 8.0, "t", "turns"),
-            (NumericDisplayCodec::LinearGain, -1.0, 1.0, "x", "linear"),
-        ] {
-            let raw = NumericSpec::new(
-                min,
-                max,
-                0.0,
-                NumericScale::Bipolar,
-                2,
-                Some(std::sync::Arc::<str>::from(full)),
-            )
-            .unwrap();
-            let compact = codec.apply(raw.clone());
-            for value in [min, -0.75, 0.0, max] {
-                let display = compact.format(value).unwrap();
-                assert!(display.ends_with(short));
-                assert_eq!(compact.parse(&display).unwrap(), value);
-                assert_eq!(compact.parse(&format!("{value} {full}")).unwrap(), value);
-                assert_eq!(compact.parse(&value.to_string()).unwrap(), value);
-                assert_eq!(compact.to_normalized(value), raw.to_normalized(value));
-            }
-            for text in ["nan", "inf", "9", "1 db", "1 hz", "1%"] {
-                assert!(compact.parse(text).is_err(), "reject {text:?}");
-            }
+    fn pan_points_show_center_and_accept_typed_sides_without_rescaling_bare_values() {
+        let spec = NumericDisplayCodec::Pan.apply(
+            NumericSpec::new(-50.0, 50.0, 0.0, NumericScale::Linear, 2, None::<&str>).unwrap(),
+        );
+        for (value, text) in [(-50.0, "50 l"), (0.0, "c"), (50.0, "50 r")] {
+            assert_eq!(spec.format(value).unwrap(), text);
+            assert_eq!(spec.parse(text).unwrap(), value);
         }
+        assert_eq!(spec.parse("12.5").unwrap(), 12.5);
+        assert_eq!(spec.parse("l").unwrap(), -50.0);
+        assert!(spec.parse("51 r").is_err());
     }
 
     #[test]

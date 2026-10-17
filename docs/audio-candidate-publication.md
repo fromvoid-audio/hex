@@ -287,3 +287,23 @@ promotion, partial BUFFERING, pressure/failure retry, real Pause/Stop ordering,
 mutable runtime accounting and remaining PR238/239/native acceptance boundaries.
 The earlier checkpoints above describe their staged source state, not the final
 readiness behavior. Default resident and non-opted-in paths remain unchanged.
+
+
+## native channel storage at the service boundary (pr239 checkpoint)
+
+The constructor declaration now includes actual capacity/backing for the six
+auxiliary preview/gain/spectrum/audition rings and their shared scalar payloads,
+in addition to the main publication/return/command rings. Owning-module visitors
+measure known payload DATA; constructor-bounded opaque Arc control blocks remain
+RESOURCE groups. Queue occupancy is not allocation capacity. This does not
+upgrade the public scalar ledger's completeness or estimate allocator/OS bytes.
+
+Successful constructor publication opt-in requires the independent browser
+preview lane to be never used, then closes its request/publication path. Merely
+canceling a previous preview cannot certify absence of its retained PCM. Failed
+reservation leaves Resident preview available. A preview publication refusal
+returns the exact caller Audio owner. This prevents an unaccounted owning preview
+from entering the closed VerifiedStreaming class. The source/service checkpoint
+and pending worker/client terminal split are documented in
+[source preparation](streamed-session-source-plan.md); source compilation alone
+is not UI/native integration.
