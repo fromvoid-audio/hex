@@ -468,7 +468,7 @@ pub(in crate::editor) fn view(
             .w(px(72.0))
             .on_click(cx.listener(|view, _, window, cx| {
                 view.audio_event_focus.focus(window);
-                view.audio_event_editor.grid = view.audio_event_editor.grid.next();
+                view.audio_event_editor.grid = view.audio_event_editor.grid.toggled();
                 view.audio_event_editor.gesture = None;
                 cx.notify();
             })),
