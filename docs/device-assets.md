@@ -128,3 +128,15 @@ existing migration code as unrelated cleanup. The separate AGENTS policy change
 is Pulse2758/PR366. Exact final-source checks remain required.
 Mac verification/implementation requests now go through the coordinator's
 serial local queue; this cloud task does not start local work itself.
+
+The first integrated full run at `6ed1e8fc` passed source checks but failed five
+Operator storage-proof tests: the optional asset-reference slice adds16 bytes
+to `NativeDeviceState`, including asset-free states. The actual shared context
+charge is now3008 bytes and the capture-proof context charge2628. Under the
+unchanged2MiB retained limit, complete typed recipes fit409 entries and inline
+recipes412. Boundary tests derive their count from actual charges and still
+require the next recipe to refuse without mutation; concrete layout assertions
+retain the measured current sizes. No production budget or runtime limit is
+raised. All136 Operator-state tests pass after this proof repair. The failed full
+receipt remains `artifacts/local-ci/20261017T132900Z-db43c519/summary.json`;
+final exact-source full validation must be rerun after the repair.
