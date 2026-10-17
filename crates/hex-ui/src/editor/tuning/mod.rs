@@ -62,6 +62,7 @@ pub(super) struct TuningState {
     context: Option<usize>,
     reach: f32,
     snap: bool,
+    pub(super) shift: bool,
     choices: std::sync::Arc<[Scale]>,
     positions: std::sync::Arc<[(f32, f32)]>,
     analysis_pending: bool,
@@ -108,6 +109,7 @@ impl TuningState {
             context: None,
             reach: 80.0,
             snap: false,
+            shift: false,
             choices: std::sync::Arc::from([value.scale()]),
             positions: std::sync::Arc::from([(0.5, 0.5)]),
             analysis_pending: false,
@@ -249,6 +251,7 @@ impl Field {
 impl EditorView {
     pub(super) fn open_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tuning.open = true;
+        self.tuning.shift = window.modifiers().shift;
         self.refresh_tuning_variations(cx);
         self.tuning.focus.focus(window);
         self.sync_tuning(cx);
@@ -526,7 +529,7 @@ impl EditorView {
                 (event.value as usize).saturating_sub(1),
             ),
             Field::Period => {
-                let cents = if self.tuning.snap {
+                let cents = if self.tuning.shift {
                     snap_period(event.value as f32)
                 } else {
                     event.value as f32
@@ -539,12 +542,19 @@ impl EditorView {
                     Err(hex_tuning::Invalid("root frequency must be 10 to 20000 hz"))
                 } else {
                     scale.set_degree_frequency(i, event.value);
+                    if self.tuning.snap {
+                        let cents = snap_node_cents(scale.cents()[i], scale.cents()[scale.root_degree()]);
+                        scale.move_degree(i, cents);
+                    }
                     self.tuning.selected = i;
                     Ok(())
                 }
             }
             Field::Cents(i) => {
-                scale.move_degree(i, event.value as f32);
+                let cents = if self.tuning.snap {
+                    snap_node_cents(event.value as f32, scale.cents()[scale.root_degree()])
+                } else { event.value as f32 };
+                scale.move_degree(i, cents);
                 self.tuning.selected = i;
                 Ok(())
             }
@@ -587,8 +597,8 @@ impl EditorView {
             1 => s.set_just_major(),
             2 => {
                 let i = self.tuning.selected;
-                let (point, _) = nearest_lattice(s.cents()[i]);
-                s.move_degree(i, point.cents());
+                let cents = snap_node_cents(s.cents()[i], s.cents()[s.root_degree()]);
+                s.move_degree(i, cents);
             }
             3 => {
                 if let Some(i) = s.insert_degree_after(self.tuning.selected) {
@@ -737,6 +747,9 @@ impl EditorView {
             + (f32::from(event.position.x) - drag.anchor_x) / f32::from(bounds.size.width).max(1.0)
                 * s.period_cents()
                 * speed;
+        let cents = if self.tuning.snap {
+            snap_node_cents(cents, s.cents()[s.root_degree()])
+        } else { cents };
         s.move_degree(drag.degree, cents);
         if let Ok(next) =
             ProjectTuning::new(self.tuning.value.enabled(), s, self.tuning.value.audition())
@@ -1110,4 +1123,23 @@ fn snap_period(cents: f32) -> f32 {
     .into_iter()
     .min_by(|a, b| (a - cents).abs().total_cmp(&(b - cents).abs()))
     .unwrap_or(cents)
+}
+
+fn snap_node_cents(cents: f32, root: f32) -> f32 {
+    let (_, error) = nearest_lattice(cents - root);
+    cents - error
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::*;
+    #[test]
+    fn node_snap_keeps_root_and_octave_position_and_period_has_its_own_landmarks() {
+        let fifth = 1200.0 * (3.0_f32 / 2.0).log2();
+        assert!((snap_node_cents(1900.0, 0.0) - (1200.0 + fifth)).abs() < 0.01);
+        assert!((snap_node_cents(1000.0, 300.0) - (300.0 + fifth)).abs() < 0.01);
+        assert_eq!(snap_node_cents(300.0, 300.0), 300.0);
+        assert_eq!(snap_period(1180.0), 1200.0);
+        assert_eq!(snap_period(2390.0), 2400.0);
+    }
 }

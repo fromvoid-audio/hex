@@ -429,6 +429,7 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
+                    view.tuning.shift = event.modifiers.shift;
                     view.refresh_drag_modifiers(
                         event.modifiers.platform,
                         event.modifiers.alt,

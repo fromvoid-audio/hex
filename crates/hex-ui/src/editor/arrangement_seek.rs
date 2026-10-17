@@ -557,6 +557,7 @@ impl EditorView {
                     prepared_revision: Some(prepared_revision),
                     seek_request_id: Some(request_id),
                     device_preview_identity: None,
+                    tuning_preview_identity: None,
                 });
                 self.status = "arrangement seek ready · waiting for audio".into();
                 changed = true;
