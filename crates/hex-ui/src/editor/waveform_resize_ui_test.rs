@@ -117,7 +117,12 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
     cx.update(crate::editor::bind_editor_keys);
     let mut failures = Vec::new();
     for (rate, frames, pattern) in [(48_000, 96_000, 0), (44_100, 88_200, 1)] {
-        for processing in ["plain", "pitch with warp off", "beats warp"] {
+        for (processing, looping) in [
+            ("plain", false),
+            ("pitch with warp off", false),
+            ("beats warp", false),
+            ("beats warp", true),
+        ] {
             for edge in [TrimEdge::Left, TrimEdge::Right] {
                 let mut canonical = Editor::new(Project::new(rate).unwrap(), 16).unwrap();
                 let Created::Imported { track, asset, clip } = canonical
@@ -131,6 +136,17 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                 else {
                     panic!("sample import");
                 };
+                if looping {
+                    canonical
+                        .execute(Command::SetClipLooping {
+                            clip,
+                            looping: true,
+                        })
+                        .unwrap();
+                    canonical
+                        .execute(Command::SetClipSourcePhase { clip, phase: 701 })
+                        .unwrap();
+                }
                 if processing == "pitch with warp off" {
                     canonical
                         .execute(Command::SetAudioClipPitch { clip, cents: 137 })
@@ -301,7 +317,7 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                         if !rendered[0].spans.iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping
                         {
-                            failures.push(format!("{rate}/{pattern}/{processing}/{edge:?}/{distance}: spans={:?}, accepted_root={root_matches}, mapping={:?}, expected={expected_mapping:?}", rendered[0].spans, rendered[0].prepared));
+                            failures.push(format!("{rate}/{pattern}/{processing}/loop={looping}/{edge:?}/{distance}: spans={:?}, accepted_root={root_matches}, mapping={:?}, expected={expected_mapping:?}", rendered[0].spans, rendered[0].prepared));
                         }
                         assert!(view.last_enqueued_edit.is_none());
                         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
@@ -314,8 +330,25 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                     Modifiers::default(),
                 );
                 visual.run_until_parked();
+                editor.update(&mut visual, |view, cx| {
+                    // Rebuild the ordinary retained clip scene as well: its
+                    // previous painted paths legitimately bypass geometry-cache
+                    // preparation, which this probe observes.
+                    view.clip_content_cache = Default::default();
+                    view.waveform_geometry_cache.borrow_mut().clear();
+                    cx.notify();
+                });
+                visual.run_until_parked();
                 editor.read_with(&visual, |view, _| {
-                    assert!(view.last_enqueued_edit.is_none())
+                    assert!(view.last_enqueued_edit.is_none());
+                    assert!(view.active_trim_drag.is_none());
+                    let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
+                    assert_eq!(rendered.len(), 1);
+                    assert!(
+                        rendered[0].spans.iter().all(|span| *span > 1.0),
+                        "waveform must remain visible after the drag ends"
+                    );
+                    assert!(Arc::ptr_eq(&rendered[0].source, expected_source));
                 });
             }
         }
