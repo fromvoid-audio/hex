@@ -165,7 +165,7 @@ impl EditorView {
                     let _ = this.update(cx, |view, cx| {
                         view.export_dialog_open = false;
                         if let Ok(Err(error)) = picked {
-                            view.error = Some(error.to_string().to_lowercase());
+                            view.error = Some(error.to_string().to_lowercase().into());
                         }
                         cx.notify();
                     });
@@ -263,7 +263,7 @@ impl EditorView {
                         );
                         self.error = None;
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => self.error = Some(error.into()),
                 }
                 true
             }

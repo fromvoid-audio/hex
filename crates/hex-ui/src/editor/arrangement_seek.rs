@@ -408,8 +408,11 @@ impl EditorView {
                 self.status = "seek queued · reclaiming the previous candidate".into();
             }
             Err(error) => {
-                self.error =
-                    Some(format!("could not prepare arrangement seek: {error:?}").to_lowercase());
+                self.error = Some(
+                    format!("could not prepare arrangement seek: {error:?}")
+                        .to_lowercase()
+                        .into(),
+                );
             }
         }
     }
@@ -560,7 +563,11 @@ impl EditorView {
             }
             Err(error) => {
                 self.prepared_seek = None;
-                self.error = Some(format!("arrangement seek failed: {error:?}").to_lowercase());
+                self.error = Some(
+                    format!("arrangement seek failed: {error:?}")
+                        .to_lowercase()
+                        .into(),
+                );
                 changed = true;
             }
         }
@@ -731,7 +738,7 @@ fn desired_playing_with_pending(
 pub(super) fn resolve_prepared_seek_terminal(
     pending_seek: &mut Option<PendingSeek>,
     status: &mut String,
-    error: &mut Option<String>,
+    error: &mut Option<super::display_error::DisplayError>,
     applied_high_water: u64,
     rejected_revision: Option<(u64, PlaybackHandoffRejection)>,
 ) -> bool {
@@ -751,7 +758,11 @@ pub(super) fn resolve_prepared_seek_terminal(
         let reason = rejected_revision
             .map(|(_, reason)| reason.message())
             .unwrap_or("audio rejected the seek");
-        *error = Some(format!("arrangement seek rejected: {reason}").to_lowercase());
+        *error = Some(
+            format!("arrangement seek rejected: {reason}")
+                .to_lowercase()
+                .into(),
+        );
     } else if !cancelled {
         *status = "cursor ready".into();
     }

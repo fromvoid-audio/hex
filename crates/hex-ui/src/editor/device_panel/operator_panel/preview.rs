@@ -344,7 +344,7 @@ pub(super) fn finalize_controls(
         .collect();
     for entity in controls {
         if let Err(error) = entity.update(cx, |control, cx| control.finish_edit(cx)) {
-            view.error = Some(format!("finish the operator preview value edit: {error}"));
+            view.error = Some(format!("finish the operator preview value edit: {error}").into());
             cx.notify();
             return false;
         }
