@@ -1,3 +1,14 @@
+## device asset state storage proof — pulse2681 / PR297, 17 october 2026
+
+Integrated full checks exposed five stale Operator storage-size/boundary proofs
+at6ed1e8fc. Charge the actual16-byte asset-reference field even when empty:
+shared context3008, capture context2628; the unchanged2MiB retained ceiling fits
+409 typed or412 inline recipes. Boundary refusal and no-mutation checks remain;
+no production cap is raised. All136 Operator-state tests pass after repair.
+The next full run found the same engine boundary:425 recipes fit rather than426;
+the unchanged ceiling and next-recipe refusal remain. Both failed full receipts
+and focused repair logs are retained; final full CI pending.
+
 ## native parameter semantics — #2674 / PR290, 17 october 2026
 
 Optional validated state-aware semantics preserve descriptor literals and authored
@@ -4349,6 +4360,23 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+## device asset reference persistence — #2681 / PR297, 17 october 2026
+
+First W10 slice adds bounded neutral asset-slot identities outside the unchanged
+DSP payload, registry/codec metadata preservation, canonical catalog/history
+validation and strict schema30 persistence when references exist. Asset-free
+projects keep schema29. Older encoders/presets and all supported native processing
+paths refuse references they cannot preserve or admit. Focused checks and source
+review are underway; final full CI remains required. No sampler registration,
+PCM leases, live assignment or complete asset-platform acceptance is claimed.
+See [contract and next slices](docs/device-assets.md). Sampler2679 remains first.
+
+Cloud continuation integrated W05 metadata validation while preserving asset
+bindings (`f3008e71`); 422 portable contract/lattice/project/storage tests pass.
+Host compilation exposed a missing asset-error mapping, repaired at `83e94448`;
+six asset-related device/engine/Session checks and affected strict Clippy pass.
+The failed compile log is retained. Full final-source CI, coordinated tuning/asset
+schema migration and resource leases remain open; no live sampler is admitted.
 
 ## stable native signing identity — pulse2745 / PR355, 17 october 2026
 
