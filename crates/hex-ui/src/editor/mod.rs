@@ -93,11 +93,11 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_keyboard_ui_test;
 mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
-#[cfg(all(test, feature = "ui-test-support"))]
-mod track_keyboard_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
