@@ -17,6 +17,22 @@ const CUT_CREATION_EDGE: f32 = 0.05;
 // unsigned Q32.32. The following page would end at 2^64 and overflow.
 const MAX_AUTOMATION_PAGE: u32 = (1 << 28) - 2;
 
+// Content geometry only: preserve shared device-action paint and tooltip/input
+// behavior, while giving complete labels their intrinsic width and padding.
+fn text_action_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    action_button(id, label, tooltip, role, selected)
+        .w_auto()
+        .min_w(px(hex_widgets::DEVICE_HEADER_ACTION_SIZE))
+        .px(px(3.0))
+        .whitespace_nowrap()
+}
+
 fn change_automation_page(page: u32, delta: i32) -> u32 {
     page.saturating_add_signed(delta).min(MAX_AUTOMATION_PAGE)
 }
@@ -260,7 +276,7 @@ pub(super) fn render_body(
     )));
     for (index, label) in ["st", "l", "r", "m", "s"].into_iter().enumerate() {
         toolbar = toolbar.child(
-            action_button(
+            text_action_button(
                 format!("eq-bank-{}-{index}", device.value()),
                 label,
                 "select authored channel bank",
@@ -290,7 +306,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|panel| panel.show_input);
     toolbar = toolbar.child(
-        action_button(
+        text_action_button(
             format!("eq-spectrum-input-{}", device.value()),
             "input",
             "show actual pre-eq input spectrum; output stays visible",
@@ -310,7 +326,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|p| p.armed);
     toolbar = toolbar.child(
-        action_button(
+        text_action_button(
             format!("eq-audition-{}", device.value()),
             "listen",
             "hold a node to audition its filter",
@@ -356,7 +372,7 @@ pub(super) fn render_body(
             }
         }
         bottom = bottom.child(
-            action_button(
+            text_action_button(
                 format!("eq-auto-{}", device.value()),
                 if automation.is_some() {
                     "response"
@@ -383,7 +399,7 @@ pub(super) fn render_body(
             })),
         );
         bottom = bottom.child(
-            action_button(
+            text_action_button(
                 format!("eq-remove-{}", device.value()),
                 "remove",
                 "remove selected node and its automation",
@@ -419,7 +435,7 @@ pub(super) fn render_body(
             (NodeParameter::Enabled, "on"),
         ] {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-field-{}-{label}", device.value()),
                     label,
                     "select automation parameter",
@@ -438,7 +454,7 @@ pub(super) fn render_body(
         }
         for (delta, label) in [(-1, "←"), (1, "→")] {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-page-{}-{delta}", device.value()),
                     label,
                     "show previous or next sixteen quarter-note beats",
@@ -462,7 +478,7 @@ pub(super) fn render_body(
         )));
         if let (Some(id), Some(point)) = (selected, selected_point) {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-delete-{}", device.value()),
                     "− point",
                     "remove selected automation point",
