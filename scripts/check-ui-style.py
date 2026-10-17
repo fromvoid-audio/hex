@@ -74,7 +74,7 @@ widgets = (
     'parameter_control(', 'rendered)', 'add_button)', 'chain)', 'render_add_menu(',
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
-    'menu_message(', 'action_button(', 'action_button_sized(', 'entity.clone())', 'control.entity.clone())',
+    'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
     'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
