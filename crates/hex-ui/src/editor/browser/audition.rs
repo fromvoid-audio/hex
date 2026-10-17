@@ -107,7 +107,7 @@ impl EditorView {
             Phase::Preparing | Phase::Playing
         );
         let preparing = self.browser.playback_phase == Phase::Preparing;
-        let toggle = self.audition_control(
+        let audition = self.audition_control(
             "browser-audition-auto",
             "a",
             if self.browser.auto_audition {
@@ -218,7 +218,7 @@ impl EditorView {
             .items_center()
             .gap(px(2.0))
             .debug_selector(|| "browser-audition-row".to_owned())
-            .child(toggle)
+            .child(audition)
             .child(control)
             .child(waveform)
     }
