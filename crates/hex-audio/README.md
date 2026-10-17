@@ -139,8 +139,9 @@ the rolling window. Ordinary applied-revision changes keep contiguous output
 samples and update the published revision. Sample-rate changes reconstruct the
 kernel on the worker. Results expire after 100 ms without accepted capture. The
 worker thread owns FFT construction/reconstruction and analysis. The prepared
-CPAL callback only stages the selected EQ8 post-node output into fixed storage
-and submits bounded batches; it performs no FFT.
+CPAL callback stages the selected EQ entry's actual input/output in fixed storage
+and submits one aligned packet; it performs no FFT. Output-only APIs remain
+projections of the same worker/reader, and legacy captures have no input layer.
 
 The callback owns the capture producer. After a successful stream pause, the
 lifecycle owner drops the stream/callback first, joins the worker reaper second,
