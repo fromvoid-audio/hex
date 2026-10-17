@@ -6,12 +6,16 @@ use hex_project::{Command, Created, Editor, Project};
 use hex_session::service::{Event, Request, Service, ViewState};
 use std::sync::Arc;
 
+mod accessibility_tests;
 mod auto_pan_ui_tests;
+mod chain_window_tests;
 mod compressor_ui_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
+mod eq_ui_tests;
 mod gate_ui_tests;
+mod header_style_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
 mod operator_enable_ui_tests;
@@ -20,7 +24,7 @@ mod operator_harmonic_ui_tests;
 mod operator_navigation_tests;
 mod operator_preview_navigation_tests;
 mod operator_tab_tests;
-
+mod parameter_rows_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
 
@@ -637,6 +641,23 @@ fn fm4_browser_drop_admits_builtin_instrument_in_fixed_panel(cx: &mut TestAppCon
         visual.debug_bounds(body).is_some(),
         "FM4 has a rendered card"
     );
+    assert!(
+        editor.read_with(cx, |view, _| view.device_panel.views[&instrument_id]
+            .2
+            .as_ref()
+            .unwrap()
+            .parameters
+            .iter()
+            .any(|p| p.descriptor.id.value() == 29)),
+        "full carrier metadata remains available before scrolling"
+    );
+    editor.update(cx, |view, cx| {
+        view.device_panel.parameter_rows[&instrument_id]
+            .scroll
+            .set_offset(point(px(0.0), px(-1_000_000.0)));
+        cx.notify();
+    });
+    visual.run_until_parked();
     let carrier =
         Box::leak(format!("device-{}-parameter-29-slider", instrument_id.value()).into_boxed_str());
     assert!(
@@ -4475,7 +4496,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     });
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
-        let _ = super::view(view, cx);
+        let _ = super::view(view, None, cx);
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -5103,7 +5124,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
                 parameter,
                 value: ParameterValue::Bool(first_ack_value),
             });
-        let _panel = super::view(view, cx);
+        let _panel = super::view(view, None, cx);
         assert_eq!(
             view.device_panel.pending_values.get(&key),
             Some(&ParameterValue::Bool(first_ack_value))

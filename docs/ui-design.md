@@ -7,6 +7,13 @@ source labels are normalized at this display boundary. Do not lowercase paths,
 IDs, file contents, saved user names, protocol keys, or third-party API identifiers.
 Technical documentation and attribution preserve proper source names.
 
+Batch-import member failures carry the original `PathBuf`, member number and
+app-owned explanation from the session worker into one typed editor error value.
+The status strip and its error tooltip share the same presentation: normalize
+only explanation fragments through `theme::text`, then insert the original path
+without case folding. Generic editor errors retain normal lowercase display.
+A later error replaces the entire value, including its source metadata.
+
 All app-rendered text uses **Ioskeley Mono**, sourced from
 [ahatem/IoskeleyMono](https://github.com/ahatem/IoskeleyMono), release v2.1.0.
 Normal-width unhinted regular/medium/bold/italic files are embedded in the binary.

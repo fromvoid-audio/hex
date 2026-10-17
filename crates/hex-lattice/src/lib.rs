@@ -1,4 +1,6 @@
 //! Validated stereo DSP primitives and the registered native processor seam.
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 mod meter;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
@@ -198,7 +200,7 @@ pub trait NativeProcessorRuntime: StdAny + Send {
 /// Device-neutral selector for a transient processor audition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessorAuditionSelection {
-    pub index: u8,
+    pub index: u32,
     pub lane: u8,
 }
 
@@ -322,6 +324,10 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .arrangement_beat_at_offset(self.offset.checked_add(offset)?)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock.beat_at_offset(self.offset.checked_add(offset)?)
     }

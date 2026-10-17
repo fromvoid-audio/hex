@@ -24,8 +24,8 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(
-            view.time_selection_gesture.is_none(),
-            "a clip hit remains available to clip selection and drag handling"
+            view.time_selection_gesture.is_some(),
+            "the clip body behaves as an empty lane for point selection"
         );
     });
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
@@ -1304,6 +1304,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         computer_keyboard_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
+        audio_batch_failure: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,

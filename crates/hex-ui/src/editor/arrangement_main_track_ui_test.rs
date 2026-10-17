@@ -59,6 +59,7 @@ fn completed_event(state: &ViewState) -> Event {
         computer_keyboard_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
+        audio_batch_failure: None,
         save_complete: false,
         open_complete: false,
         project_replaced: false,

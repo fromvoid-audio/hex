@@ -15,6 +15,27 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Rename any Arrangement or Session clip by stable ID.
+    RenameClip {
+        clip: ClipId,
+        name: String,
+    },
+    SetTrackColor {
+        track: TrackId,
+        color: crate::ElementColor,
+    },
+    SetClipFlavor {
+        clip: ClipId,
+        flavor: crate::ClipFlavor,
+    },
+    /// Replace audio with an empty editable MIDI source, retaining clip identity.
+    ConvertAudioClipToMidi(ClipId),
+    /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
+    ConvertMidiClipToAudio {
+        clip: ClipId,
+        path: PathBuf,
+        frames: u64,
+    },
     /// One prepared history operation creates a normal hybrid track with a device.
     InsertTrackWithDevice {
         name: String,
@@ -105,6 +126,16 @@ pub enum Command {
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Atomically replace opaque device state and reserve fresh identities.
+    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// another edit; history preserves the allocator high-water mark on undo.
+    ReplaceDeviceStateWithIdentityReservation {
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        state: hex_lattice_contract::NativeDeviceState,
+        expected_next_id: u64,
+        reserved_ids: u64,
     },
     SetDeviceBypass {
         device: DeviceId,
@@ -689,6 +720,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
+            color: crate::ElementColor::default(),
             gain_lane: crate::GainLane::default(),
             id,
             name,
@@ -879,6 +911,8 @@ pub(crate) fn preview_edge_trim(
         clip.fade
     };
     Ok(Clip {
+        name: clip.name.clone(),
+        flavor: clip.flavor,
         gain: clip.gain,
         edit: clip.edit.clone(),
         id: clip.id,
@@ -950,6 +984,8 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
+        name: original.name.clone(),
+        flavor: original.flavor,
         id: right_id,
         asset: original.asset,
         start: frame,
@@ -1144,6 +1180,12 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::ConvertAudioClipToMidi(clip) => {
+                crate::clip_conversion::audio_to_midi(self, clip)
+            }
+            Command::ConvertMidiClipToAudio { clip, path, frames } => {
+                crate::clip_conversion::midi_to_audio(self, clip, path, frames)
+            }
             Command::SpliceGainTouchBatch {
                 track,
                 expected_epoch,
@@ -1229,6 +1271,11 @@ impl Project {
                 lane.spans.clear();
                 Ok(Created::None)
             }
+            Command::SetTrackColor { track, color } => {
+                self.track_mut(track)?.color = color;
+                Ok(Created::None)
+            }
+            Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::SetRouting(edges) => self.adopt_routing(edges),
             Command::SetAudioFeed {
                 source,
@@ -1251,6 +1298,7 @@ impl Project {
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
+            | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
@@ -1353,6 +1401,7 @@ impl Project {
                 let fade = original.fade;
                 let source_phase = original.source_phase;
                 let gain = original.gain;
+                let flavor = original.flavor;
                 let audio_edit = original.edit.clone();
                 let duplicate = self.apply(Command::PlaceClip {
                     track,
@@ -1367,6 +1416,7 @@ impl Project {
                     self.clip_mut(duplicate_id)?.fade = fade;
                     self.clip_mut(duplicate_id)?.source_phase = source_phase;
                     self.clip_mut(duplicate_id)?.gain = gain;
+                    self.clip_mut(duplicate_id)?.flavor = flavor;
                     let mut duplicated = self
                         .clip(duplicate_id)
                         .cloned()
@@ -1743,6 +1793,7 @@ impl Project {
                 self.session.cells.retain(|cell| cell.track != id);
                 Ok(Created::None)
             }
+            Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
                 self.track_mut(track)?.name = name;
@@ -1898,6 +1949,8 @@ impl Project {
                 let id = ClipId(self.allocate_id()?);
                 let fade = ClipFade::neutral(duration)?;
                 self.audio_clips_mut(track)?.push(Clip {
+                    name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -2225,6 +2278,8 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -2286,6 +2341,8 @@ mod overwrite_tests {
                 .audio_clips_mut(target)
                 .expect("target content")
                 .push(Clip {
+                    name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,

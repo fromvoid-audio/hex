@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) fn render(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     return_id: hex_project::ReturnId,
@@ -24,9 +25,34 @@ pub(super) fn render(
     let stale_keys: Vec<_> = view
         .device_panel
         .controls
-        .keys()
-        .filter(|key| !alive.contains(&key.device))
-        .copied()
+        .iter()
+        .filter(|(key, control)| {
+            devices
+                .iter()
+                .find(|device| device.id() == key.device)
+                .is_none_or(|device| {
+                    !parameter_control_matches_identity(
+                        control,
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Effect,
+                            type_id: device.state().type_id(),
+                        },
+                    )
+                })
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    let changed_types: HashSet<_> = view
+        .device_panel
+        .views
+        .iter()
+        .filter_map(|(id, (_, cached, _))| {
+            devices
+                .iter()
+                .find(|device| device.id() == *id)
+                .filter(|device| device.state().type_id() != cached.type_id())
+                .map(|_| *id)
+        })
         .collect();
     let active_target = view
         .device_gesture
@@ -56,6 +82,10 @@ pub(super) fn render(
         .controls
         .retain(|key, _| alive.contains(&key.device));
     view.device_panel.views.retain(|id, _| alive.contains(id));
+    for device in &devices {
+        cache_device_metadata(&mut view.device_panel, device, NativeDeviceClass::Effect);
+    }
+    parameter_rows::reconcile(view, cx);
     view.device_panel
         .meter_states
         .retain(|id, _| alive.contains(id));
@@ -65,14 +95,34 @@ pub(super) fn render(
             .find(|device| device.id() == id)
             .map(|device| device.state().type_id())
     });
-    retire_removed_eq8_graphs(view, cx, &alive);
+    let alive_eq8: HashSet<_> = devices
+        .iter()
+        .filter(|device| device.state().type_id().as_str() == Ok("hex.eq8"))
+        .map(hex_project::Device::id)
+        .collect();
+    retire_removed_eq8_graphs(view, cx, &alive_eq8);
+    view.device_panel
+        .eq8_panels
+        .retain(|device, _| alive_eq8.contains(device));
+    view.device_panel
+        .eq8_audition_toggles
+        .retain(|device, _| alive_eq8.contains(device));
+    view.device_panel
+        .eq8_responses
+        .retain(|device, _| alive_eq8.contains(device));
+    view.device_panel
+        .eq8_graph_gestures
+        .retain(|device, _| alive_eq8.contains(device));
     if let Some(audio) = view.audio.as_mut()
         && let Some(target) = audio.control.spectrum_desired()
         && matches!(target.identity.owner, hex_engine::ProcessorChainOwner::Return(id) if id == return_id.value())
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
-                && target.identity.device_type.as_str() == Ok("hex.eq8")
+                && matches!(
+                    target.identity.device_type.as_str(),
+                    Ok("hex.eq8" | "hex.eq")
+                )
         })
     {
         let _ = audio.control.spectrum_clear();
@@ -84,14 +134,17 @@ pub(super) fn render(
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
-                && target.identity.device_type.as_str() == Ok("hex.eq8")
+                && matches!(
+                    target.identity.device_type.as_str(),
+                    Ok("hex.eq8" | "hex.eq")
+                )
         })
     {
         let _ = audio.control.audition_cancel();
     }
     view.device_panel
         .pending_values
-        .retain(|key, _| alive.contains(&key.device));
+        .retain(|key, _| alive.contains(&key.device) && !changed_types.contains(&key.device));
     if stale_target_has_work {
         view.device_panel.message = Some("device target is no longer available".into());
     } else if view.device_panel.message.as_deref() == Some("device target is no longer available") {
@@ -147,6 +200,7 @@ pub(super) fn render(
         .message
         .clone()
         .unwrap_or_else(|| format!("{} · return effects", return_track.name()));
+    let track_name_view = title_label(title, view.device_panel.message.is_some());
     let header = div()
         .id("device-panel-header")
         .debug_selector(|| "device-panel-header".into())
@@ -158,20 +212,9 @@ pub(super) fn render(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(rgb(if view.device_panel.message.is_some() {
-                    theme::color(theme::PaletteRole::Primary)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                }))
-                .child(theme::text(title)),
-        )
+        .child(track_name_view)
         .child(add_button);
-    let chain = super::return_drag::render_chain(view, cx, return_id, &devices);
+    let chain = super::return_drag::render_chain(view, window, cx, return_id, &devices);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
@@ -182,6 +225,7 @@ pub(super) fn render(
 
 pub(super) fn render_return_effect(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     return_id: hex_project::ReturnId,
     devices: &[hex_project::Device],
@@ -304,6 +348,20 @@ pub(super) fn render_return_effect(
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
                 super::auto_pan_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.eq") {
+                let sample_rate = view
+                    .state
+                    .as_ref()
+                    .map_or(48000, |state| state.project.sample_rate());
+                super::eq_panel::render_body(
+                    view,
+                    cx,
+                    id,
+                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
+                    device.state(),
+                    device_view,
+                    sample_rate,
+                )
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 super::eq8_panel::render_body(
                     view,
@@ -317,24 +375,17 @@ pub(super) fn render_return_effect(
                         .map_or(48_000, |state| state.project.sample_rate()),
                 )
             } else {
-                let controls = device_view.parameters.iter().map(|parameter| {
-                    parameter_control(
-                        view,
-                        cx,
-                        id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Effect,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    )
-                });
-                crate::device_composition::wrapped_body(controls)
-                    .id(ElementId::Name(
-                        format!("device-body-{}", id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", id.value()))
-                    .overflow_y_scroll()
+                parameter_rows::body(
+                    view,
+                    window,
+                    cx,
+                    id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                )
             };
             device_frame(
                 device_drag_title(
@@ -384,7 +435,7 @@ pub(super) fn render_return_effect(
     );
     let frame_width = match device.state().type_id().as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8") => super::eq8_panel::FRAME_WIDTH,
+        Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,

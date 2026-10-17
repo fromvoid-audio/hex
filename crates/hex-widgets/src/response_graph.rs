@@ -9,7 +9,7 @@ use gpui::{
 };
 
 const MAX_CURVE_POINTS: usize = 256;
-const MAX_NODES: usize = 32;
+const MAX_NODES: usize = 64;
 const PLOT_INSET: f32 = 7.0;
 const NODE_RADIUS: f32 = 8.0;
 
@@ -23,6 +23,8 @@ pub struct ResponseGraphNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseGraphPhase {
+    /// Owner-opted-in blank plot click; subsequent double-click presses do not create again.
+    Create,
     Select,
     /// Physical pointer press on a node; does not start a parameter edit.
     Press,
@@ -100,6 +102,7 @@ pub struct ResponseGraph {
     drag: Option<Drag>,
     press: Option<Press>,
     editable: bool,
+    creation_enabled: bool,
     tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
@@ -137,10 +140,17 @@ impl ResponseGraph {
             drag: None,
             press: None,
             editable: false,
+            creation_enabled: false,
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
+    }
+
+    /// Allow blank plot presses to create one owner-defined point. Node hits
+    /// keep select/drag semantics; double-click's second press is suppressed.
+    pub fn set_creation_enabled(&mut self, enabled: bool) {
+        self.creation_enabled = enabled;
     }
 
     /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
@@ -265,6 +275,15 @@ impl ResponseGraph {
             })
             .min_by(|left, right| left.0.total_cmp(&right.0));
         let Some((_, node_id)) = hit else {
+            if self.creation_enabled && event.click_count == 1 {
+                cx.emit(ResponseGraphEvent {
+                    phase: ResponseGraphPhase::Create,
+                    node_id: 0,
+                    position,
+                    modifiers: event.modifiers,
+                });
+                cx.stop_propagation();
+            }
             return;
         };
         let node_origin = self
