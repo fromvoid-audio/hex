@@ -69,6 +69,15 @@ actual runtime/override bytes and same-tuning versus changed-tuning handoff cost
 for17 held keys. Timing excludes construction, rendering and donor destruction;
 it does not establish physical audio deadlines.
 
+The first cloud release probe (128 handoffs per mode,17 held keys,48 kHz,
+137-frame renders between handoffs) reported same-tuning p50/p95/p99/max
+13.565/21.706/59.395/74.034 microseconds and alternating tuning
+17.749/23.632/1136.897/1226.521 microseconds. Runtime size54,576 bytes includes
+45,056 bytes for paired inline overrides. This is one uncontrolled shared-host
+sample with large outliers, not a speedup or sustained deadline certificate.
+Retained raw output names the command and fixture; final candidate validation
+remains separate from this development measurement.
+
 ## evidence and remaining checks
 
 Cloud continuation reproduced and repaired the Operator fixture's nonexistent
