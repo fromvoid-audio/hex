@@ -86,13 +86,39 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                     )
                     .unwrap(),
                 );
+                let prepared_peaks = Arc::new(
+                    CachedWaveform::from_peaks(
+                        frames as usize,
+                        (0..127)
+                            .map(|bin| {
+                                let a = 0.1 + (bin % 7) as f32 / 30.0;
+                                [
+                                    CachedPeak {
+                                        min: -a * 0.7,
+                                        max: a,
+                                    },
+                                    CachedPeak {
+                                        min: -a,
+                                        max: a * 0.8,
+                                    },
+                                ]
+                            })
+                            .collect(),
+                    )
+                    .unwrap(),
+                );
+                let expected_source = if processing == "plain" {
+                    &peaks
+                } else {
+                    &prepared_peaks
+                };
                 let mut prepared = BTreeMap::new();
                 if let Some(edit) = original.clip(clip).unwrap().audio_edit() {
                     let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
                     prepared.insert(
                         clip,
                         AudioClipWaveform {
-                            waveform: Arc::clone(&peaks),
+                            waveform: Arc::clone(&prepared_peaks),
                             offset,
                             length: original.clip(clip).unwrap().duration(),
                         },
@@ -157,9 +183,17 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                     editor.read_with(&visual, |view, _| {
                         let drag = view.active_trim_drag.as_ref().expect("actual active trim");
                         assert_eq!(drag.source_track, track);
-                        let rendered = view.waveform_geometry_cache.borrow().rendered_signal_spans();
+                        let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
                         assert_eq!(rendered.len(), 1, "only the actual preview waveform is painted");
-                        assert!(rendered[0].iter().all(|span| *span > 1.0), "{rate}/{pattern}/{processing}/{edge:?}: accepted nonzero stereo waveform disappeared: {rendered:?}");
+                        assert!(rendered[0].spans.iter().all(|span| *span > 1.0), "{rate}/{pattern}/{processing}/{edge:?}: accepted nonzero stereo waveform disappeared: {:?}", rendered[0].spans);
+                        assert!(Arc::ptr_eq(&rendered[0].source, expected_source), "use the accepted root, not raw/fabricated preview peaks");
+                        let preview = drag.preview.borrow();
+                        let preview = &preview.as_ref().unwrap().clip;
+                        let expected_mapping = preview.audio_edit().map(|edit| {
+                            let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
+                            (preview.start(), offset)
+                        });
+                        assert_eq!(rendered[0].prepared, expected_mapping, "preview crop must map into the unchanged processing root");
                         assert!(view.last_enqueued_edit.is_none());
                         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
                     });

@@ -81,6 +81,13 @@ pub(super) struct WaveformChannelGeometry {
     outline: Vec<gpui::Point<Pixels>>,
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) struct RenderedWaveformSample {
+    pub(super) source: Arc<CachedWaveform>,
+    pub(super) prepared: Option<(u64, u64)>,
+    pub(super) spans: [f32; 2],
+}
+
 impl WaveformGeometryCache {
     fn get(
         &mut self,
@@ -129,13 +136,22 @@ impl WaveformGeometryCache {
         self.columns = 0;
     }
 
-    /// Actual path-builder ordinates from the last rendered cached canvases.
+    /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
     #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn rendered_signal_spans(&self) -> Vec<[f32; 2]> {
+    pub(super) fn rendered_waveforms(&self) -> Vec<RenderedWaveformSample> {
         self.entries
             .iter()
-            .map(|entry| {
-                std::array::from_fn(|channel| {
+            .map(|entry| RenderedWaveformSample {
+                source: Arc::clone(&entry.source),
+                prepared: match entry.key.mapping {
+                    WaveformMappingKey::Prepared {
+                        timeline_origin,
+                        root_offset,
+                        ..
+                    } => Some((timeline_origin, root_offset)),
+                    _ => None,
+                },
+                spans: std::array::from_fn(|channel| {
                     let (low, high) = entry.geometry.channels[channel]
                         .outline
                         .iter()
@@ -144,7 +160,7 @@ impl WaveformGeometryCache {
                             (low.min(y), high.max(y))
                         });
                     high - low
-                })
+                }),
             })
             .collect()
     }
