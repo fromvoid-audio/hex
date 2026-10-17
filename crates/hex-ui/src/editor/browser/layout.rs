@@ -519,7 +519,12 @@ impl EditorView {
                     );
                 }
                 let metadata = slot.metadata.borrow().clone();
-                let waveform = div().relative().flex_1().min_h_0().overflow_hidden();
+                let waveform = div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
                 let waveform_panel = if let Some(metadata) = metadata {
                     waveform.child(super::super::waveform::waveform_summary_view(Arc::clone(
                         &metadata.waveform,
