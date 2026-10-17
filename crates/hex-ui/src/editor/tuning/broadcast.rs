@@ -131,7 +131,7 @@ impl Broadcast {
     }
     fn status(&self) -> String {
         if let Some(error) = &self.error {
-            return error.clone();
+            return error.to_lowercase();
         }
         let Some(snapshot) = self.snapshot else {
             return "mts unavailable".into();
@@ -144,7 +144,7 @@ impl Broadcast {
             State::Disabling => "mts stopping".into(),
             State::Stopped => "mts publisher stopped".into(),
             State::Blocked => "mts blocked · another master is active · retry explicitly".into(),
-            State::Unavailable(error) => format!("mts unavailable · {error}"),
+            State::Unavailable(error) => format!("mts unavailable · {error}").to_lowercase(),
             State::Pending | State::Active => format!(
                 "mts {} · desired {} · published {} · clients {}",
                 if snapshot.state == State::Active {
@@ -209,6 +209,56 @@ mod tests {
     use super::*;
     use gpui::{AppContext, Modifiers, TestAppContext, VisualTestContext};
     use std::sync::Arc;
+
+    #[test]
+    fn review_final_native_mts_errors_are_lowercase_at_the_ui_boundary() {
+        let mut worker = hex_mts::Worker::start().unwrap();
+        let handle = worker.handle();
+        let owner = Owner {
+            client: handle.new_client().unwrap(),
+            generation: 0,
+        };
+        handle
+            .enable(
+                Publication::new(
+                    Revision {
+                        owner,
+                        serial: 1,
+                        project_revision: 0,
+                    },
+                    ProjectTuning::default(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let snapshot = loop {
+            let snapshot = handle.snapshot().unwrap();
+            if matches!(snapshot.state, State::Unavailable(_)) {
+                break snapshot;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        let State::Unavailable(error) = snapshot.state else {
+            panic!("unavailable backend");
+        };
+        let original_error = error.to_string();
+        assert!(original_error.contains("MTS"));
+        let mut broadcast = Broadcast::default();
+        broadcast.owner = snapshot.owner;
+        broadcast.snapshot = Some(snapshot);
+        let status = broadcast.status();
+        assert_eq!(status, status.to_lowercase());
+        broadcast.error = Some(original_error.clone());
+        assert_eq!(broadcast.status(), original_error.to_lowercase());
+        assert_eq!(
+            error.to_string(),
+            original_error,
+            "native/source metadata stays unchanged"
+        );
+        worker.shutdown();
+    }
 
     #[gpui::test]
     fn worker_tuning_preview_does_not_publish_before_audio_acceptance(cx: &mut TestAppContext) {

@@ -63,10 +63,14 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
 1. Open tuning in a new neutral project. Opening does not enable tuning or dirty
    the project. Check useful resizing, lowercase typography, focus, scroll,
    shortcuts, keyboard accessibility and traffic-light clearance. Record any
-   missing accessibility semantics explicitly.
+   missing accessibility semantics explicitly. Native MTS errors render lowercase
+   while original source/error metadata stays intact.
 2. Edit degree Hz/cents with Enter, Escape, blur and arrow/fine steps. Insert,
    drag and remove on the pitch line and context menu; exercise the 3/48-degree
-   bounds and protected root. One whole gesture is one Undo/Redo step.
+   bounds and protected root. Right-click an unselected node: add/remove must
+   target that node. A period compression that violates one-cent spacing must
+   report refusal and preserve the scale; a valid period must recover. Check
+   fractional audition-level coarse/fine steps. One whole gesture is one Undo/Redo step.
 3. Set root degree/key/Hz, non-octave period and ratio/Shift snapping; exercise
    equal divisions, just major and selected-note snap. Check pitch-space point
    selection, Reach/dice changes and lattice/pair/whole-scale statistics. Click
@@ -78,6 +82,8 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    Save/reopen with a locally pending tuning Change and with a reserved Commit:
    both must persist the latest value. Closing/quitting an acknowledged but
    uncommitted preview must prompt; canceling close must preserve the work.
+   In an otherwise empty project with a tuning draft, Open/New must require the
+   existing replacement confirmation before discarding it.
    Import/export FREQS1/2/3 scratch fixtures, including malformed refusal.
    Save/reopen a tuning scratch project and verify working scale/audition,
    independent of slot names. The storage fixtures above verify both schema31
@@ -96,7 +102,9 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    the delayed candidate must not restart a held tone. Include a refused held
    high note, then retune it into the supported
    range without releasing the physical key: it should become audible while
-   already sounding voices keep their phase/envelope. Check held/recent reference
+   already sounding supported voices keep their phase/envelope. Move a held or
+   releasing reference tone above Nyquist: only that voice must retire with a
+   visible refusal, while the valid retuned project graph still installs. Check held/recent reference
    and Arrangement/Session gate highlights. Hold all 17 mapped input keys: the
    excess note must refuse visibly without stealing an already held owner;
    release/repress after capacity is available to recover. Verify bypassed or
