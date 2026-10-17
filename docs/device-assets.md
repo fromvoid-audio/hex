@@ -70,3 +70,27 @@ export. Asset import plus assignment must become one prepared undoable edit.
 Only after those paths are proved can sampler become selectable. Streaming,
 portable asset presets, relinking/content integrity, IRs/tables and complete
 W10/W15/W20/native/reference acceptance remain open.
+
+## user-paused cloud checkpoint
+
+The user paused all local work on17 October2026, then authorized focused
+checkpoint pushes and primary-dispatched cloud continuation. Implementation
+465d95c761e3c38671792ec25e11bbd7dfbca09f is pushed on canonical PR297.
+This note changes no implementation. No local compiler/test process remains
+owned by this task; do not automatically resume local checks or installation.
+
+Development checks: contract/lattice with conformance enabled and the initial
+three storage/history tests pass. The latest chain/custom-override/concrete
+Utility/closed Utility/Session tests and complete final candidate checks are
+still unverified. Initial independent implementation review found no actionable
+findings. Raw development logs remain in the Mac worktree under
+artifacts/device-assets/development/ and are not automatically cloud-accessible.
+No full W10 CI run or live sampler delivery has occurred.
+
+Integration warning: parallel tuning issue2739, observed sourceac29a1ad in
+worktree0bed, also introduces storage schema30 in schema/tuning.rs. W10's
+asset-reference schema30 must be reconciled with that canonical work before
+merge, preserving both strict migrations and all data. Do not publish two
+incompatible schema30 formats or discard tuning/references. W05/W06 integration
+and fresh exact-source checks also remain required. The cloud primary owns
+dispatch and ordering; this Mac remains paused until explicit user resume.
