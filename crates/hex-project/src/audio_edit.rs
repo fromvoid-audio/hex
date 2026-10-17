@@ -132,6 +132,8 @@ pub struct AudioClipDomain {
     pub looping: bool,
     pub clock: AudioDomainClock,
     pub pitch_cents: i16,
+    /// Authored original tempo, independent of project tempo and manual edge stretch.
+    pub sample_bpm: Option<crate::Tempo>,
     pub warp: Option<WarpSettings>,
     pub warp_enabled: bool,
     pub source_gain: Vec<SourceGainPoint>,
@@ -302,6 +304,7 @@ impl AudioClipEdit {
                 looping: clip.looping,
                 clock: AudioDomainClock::Frames(clip.duration),
                 pitch_cents: 0,
+                sample_bpm: None,
                 warp: None,
                 warp_enabled: false,
                 source_gain: Vec::new(),
@@ -596,3 +599,8 @@ pub(crate) use commands::{
     apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
     set_fades, source_policy, trim_view,
 };
+
+mod stretch;
+pub use stretch::preview_audio_clip_stretch;
+
+mod warp_projection;

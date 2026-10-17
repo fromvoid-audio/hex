@@ -17,6 +17,22 @@ const CUT_CREATION_EDGE: f32 = 0.05;
 // unsigned Q32.32. The following page would end at 2^64 and overflow.
 const MAX_AUTOMATION_PAGE: u32 = (1 << 28) - 2;
 
+// Content geometry only: preserve shared device-action paint and tooltip/input
+// behavior, while giving complete labels their intrinsic width and padding.
+fn text_action_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    action_button(id, label, tooltip, role, selected)
+        .w_auto()
+        .min_w(px(hex_widgets::DEVICE_HEADER_ACTION_SIZE))
+        .px(px(3.0))
+        .whitespace_nowrap()
+}
+
 fn change_automation_page(page: u32, delta: i32) -> u32 {
     page.saturating_add_signed(delta).min(MAX_AUTOMATION_PAGE)
 }
@@ -38,6 +54,7 @@ pub(super) struct Panel {
     authored_state: NativeDeviceState,
     selected: Option<NodeId>,
     armed: bool,
+    show_input: bool,
     bank: u8,
     automation: Option<NodeParameter>,
     selected_point: Option<usize>,
@@ -107,6 +124,7 @@ pub(super) fn render_body(
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
+            graph.set_backspace_removal(true);
             graph
         });
         let generation = view.project_generation;
@@ -122,6 +140,7 @@ pub(super) fn render_body(
                 authored_state: canonical.clone(),
                 selected: state.nodes.first().map(|n| n.id),
                 armed: false,
+                show_input: true,
                 bank: 0,
                 automation: None,
                 selected_point: None,
@@ -214,6 +233,7 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(automation.is_none());
+            let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_model(
                 model,
                 theme::device_style(theme::DeviceStyleRole::Display),
@@ -226,10 +246,11 @@ pub(super) fn render_body(
         type_id: eq::EQ_TYPE_ID,
     };
     let mut toolbar = div()
+        .debug_selector(move || format!("eq-toolbar-{}", device.value()))
         .flex()
         .items_center()
         .gap(px(3.0))
-        .h(px(18.0))
+        .h(px(40.0))
         .text_size(px(8.0))
         .flex_shrink_0();
     toolbar = toolbar.child(control(
@@ -250,9 +271,12 @@ pub(super) fn render_body(
         eq::OUTPUT_GAIN,
         "out",
     ));
+    toolbar = toolbar.child(hex_widgets::device_divider(theme::device_style(
+        theme::DeviceStyleRole::Layout,
+    )));
     for (index, label) in ["st", "l", "r", "m", "s"].into_iter().enumerate() {
         toolbar = toolbar.child(
-            action_button(
+            text_action_button(
                 format!("eq-bank-{}-{index}", device.value()),
                 label,
                 "select authored channel bank",
@@ -272,28 +296,37 @@ pub(super) fn render_body(
         );
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
-    if let Some(id) = selected {
-        toolbar = toolbar.child(
-            action_button(
-                format!("eq-remove-{}", device.value()),
-                "remove",
-                "remove selected node and its automation",
-                theme::DeviceActionRole::Normal,
-                true,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                edit(view, cx, device, 0, move |s, _| s.remove(id));
-            })),
-        );
-    }
+    toolbar = toolbar.child(hex_widgets::device_divider(theme::device_style(
+        theme::DeviceStyleRole::Layout,
+    )));
     toolbar = toolbar.child(spectrum_toggle(view, cx, device, owner, eq::EQ_TYPE_ID));
+    let show_input = view
+        .device_panel
+        .eq_panels
+        .get(&device)
+        .is_some_and(|panel| panel.show_input);
+    toolbar = toolbar.child(
+        text_action_button(
+            format!("eq-spectrum-input-{}", device.value()),
+            "input",
+            "show actual pre-eq input spectrum; output stays visible",
+            theme::DeviceActionRole::Normal,
+            show_input,
+        )
+        .on_click(cx.listener(move |view, _, _, cx| {
+            if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                panel.show_input = !panel.show_input;
+            }
+            cx.notify();
+        })),
+    );
     let armed = view
         .device_panel
         .eq_panels
         .get(&device)
         .is_some_and(|p| p.armed);
     toolbar = toolbar.child(
-        action_button(
+        text_action_button(
             format!("eq-audition-{}", device.value()),
             "listen",
             "hold a node to audition its filter",
@@ -310,7 +343,13 @@ pub(super) fn render_body(
             cx.notify();
         })),
     );
-    let mut bottom = div().flex().items_center().gap(px(2.0)).h(px(36.0));
+    let mut bottom = div()
+        .debug_selector(move || format!("eq-footer-{}", device.value()))
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .h(px(40.0))
+        .flex_shrink_0();
     if let Some(id) = selected {
         for (field, label) in [
             (NodeParameter::Enabled, "on"),
@@ -333,7 +372,7 @@ pub(super) fn render_body(
             }
         }
         bottom = bottom.child(
-            action_button(
+            text_action_button(
                 format!("eq-auto-{}", device.value()),
                 if automation.is_some() {
                     "response"
@@ -359,21 +398,29 @@ pub(super) fn render_body(
                 cx.notify();
             })),
         );
+        bottom = bottom.child(
+            text_action_button(
+                format!("eq-remove-{}", device.value()),
+                "remove",
+                "remove selected node and its automation",
+                theme::DeviceActionRole::Normal,
+                true,
+            )
+            .on_click(cx.listener(move |view, _, _, cx| {
+                edit(view, cx, device, 0, move |s, _| s.remove(id));
+            })),
+        );
     } else {
         bottom = bottom.child(theme::text(
             "click the response to add a node · select and drag to edit",
         ));
-    }
-    if let Some(id) = selected {
-        if let Some(field) = automation {
-            bottom = bottom.child(theme::text(playhead_readout(view, &state, id, field)));
-        }
     }
     if automation.is_none() {
         toolbar = toolbar.child(theme::text("authored response"));
     }
     if let Some(field) = automation {
         let mut controls = div()
+            .debug_selector(move || format!("eq-automation-toolbar-{}", device.value()))
             .flex()
             .items_center()
             .gap(px(2.0))
@@ -388,7 +435,7 @@ pub(super) fn render_body(
             (NodeParameter::Enabled, "on"),
         ] {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-field-{}-{label}", device.value()),
                     label,
                     "select automation parameter",
@@ -407,7 +454,7 @@ pub(super) fn render_body(
         }
         for (delta, label) in [(-1, "←"), (1, "→")] {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-page-{}-{delta}", device.value()),
                     label,
                     "show previous or next sixteen quarter-note beats",
@@ -431,7 +478,7 @@ pub(super) fn render_body(
         )));
         if let (Some(id), Some(point)) = (selected, selected_point) {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-delete-{}", device.value()),
                     "− point",
                     "remove selected automation point",
@@ -449,10 +496,18 @@ pub(super) fn render_body(
                 })),
             );
         }
+        if let Some(id) = selected {
+            controls = controls.child(
+                div()
+                    .debug_selector(move || format!("eq-playhead-{}", device.value()))
+                    .flex_shrink_0()
+                    .child(theme::text(playhead_readout(view, &state, id, field))),
+            );
+        }
         toolbar = div()
             .flex()
             .flex_col()
-            .h(px(34.0))
+            .h(px(56.0))
             .flex_shrink_0()
             .child(toolbar)
             .child(controls);
@@ -556,13 +611,13 @@ fn control(
         device,
         identity,
         parameter,
-        if matches!(
-            parameter.descriptor.kind,
-            hex_lattice_contract::ParameterKind::Float { .. }
-        ) {
-            ControlPresentation::MiniDial
-        } else {
-            ControlPresentation::CompactSelector
+        match parameter.descriptor.kind {
+            hex_lattice_contract::ParameterKind::Float { .. } if label == "freq" => {
+                ControlPresentation::WideMicroDial
+            }
+            hex_lattice_contract::ParameterKind::Float { .. } => ControlPresentation::MiniDial,
+            hex_lattice_contract::ParameterKind::Bool => ControlPresentation::CompactButton,
+            _ => ControlPresentation::CompactSelector,
         },
         ControlText {
             label: Some(label),
@@ -572,6 +627,8 @@ fn control(
     .id(ElementId::Name(
         format!("eq-control-{}-{}", device.value(), id.value()).into(),
     ))
+    .debug_selector(move || format!("eq-control-{}-{}", device.value(), id.value()))
+    .flex_shrink_0()
 }
 fn current(view: &EditorView, device: DeviceId) -> Option<NativeDeviceState> {
     Some(view.state.as_ref()?.project.device(device)?.state().clone())
@@ -791,46 +848,63 @@ fn response_model(
         })
         .collect();
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), eq::EQ_TYPE_ID);
-    let analyzer = view
+    let spectra = view.device_panel.spectrum_result.as_ref().filter(|result| {
+        view.audio
+            .as_ref()
+            .and_then(|audio| audio.control.spectrum_desired())
+            .is_some_and(|target| {
+                target.identity == identity
+                    && target.token == result.output.stamp.target
+                    && target.project_generation == result.output.stamp.generation
+                    && target.sample_rate_hz == result.output.stamp.sample_rate_hz
+                    && result.output.stamp.applied_revision >= target.activation_floor
+            })
+    });
+    let show_input = view
         .device_panel
-        .spectrum_result
-        .as_ref()
-        .filter(|result| {
-            view.audio
-                .as_ref()
-                .and_then(|audio| audio.control.spectrum_desired())
-                .is_some_and(|target| {
-                    target.identity == identity
-                        && target.token == result.stamp.target
-                        && target.project_generation == result.stamp.generation
-                        && target.sample_rate_hz == result.stamp.sample_rate_hz
-                        && result.stamp.applied_revision >= target.activation_floor
-                })
-        })
-        .map(|result| {
-            result
-                .frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .map(|(index, db)| {
-                    let (low, high) =
-                        hex_audio::spectrum::band_bounds_hz(result.frame.sample_rate_hz, index)
-                            .unwrap_or((20.0, 20000.0));
-                    [
-                        (((low * high).sqrt() / 20.0).ln() / (upper / 20.0).ln()).clamp(0.0, 1.0),
-                        ((db + 72.0) / 72.0).clamp(0.0, 1.0),
-                    ]
-                })
-                .collect()
-        });
+        .eq_panels
+        .get(&device)
+        .is_some_and(|panel| panel.show_input);
+    let (analyzer, input_analyzer) = spectrum_layers(spectra, show_input, upper);
     Some(ResponseGraphModel {
         primary,
         secondary,
         analyzer,
+        input_analyzer,
         nodes,
     })
 }
+type SpectrumCurve = Vec<[f32; 2]>;
+
+fn spectrum_layers(
+    spectra: Option<&hex_audio::spectrum_worker::PublishedSpectra>,
+    show_input: bool,
+    upper: f32,
+) -> (Option<SpectrumCurve>, Option<SpectrumCurve>) {
+    let curve = |frame: &hex_audio::spectrum::SpectrumFrame| {
+        frame
+            .bins_dbfs
+            .iter()
+            .enumerate()
+            .map(|(index, db)| {
+                let (low, high) = hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)
+                    .unwrap_or((20.0, 20000.0));
+                [
+                    (((low * high).sqrt() / 20.0).ln() / (upper / 20.0).ln()).clamp(0.0, 1.0),
+                    super::spectrum_display::level(*db),
+                ]
+            })
+            .collect()
+    };
+    (
+        spectra.map(|pair| curve(&pair.output.frame)),
+        spectra
+            .and_then(|pair| pair.input.as_ref())
+            .filter(|_| show_input)
+            .map(curve),
+    )
+}
+
 fn automation_model(
     state: &EqState,
     node: NodeId,
@@ -869,6 +943,7 @@ fn automation_model(
         primary: curve.clone(),
         secondary: curve,
         analyzer: None,
+        input_analyzer: None,
         nodes,
     })
 }
@@ -1106,6 +1181,22 @@ fn handle_event(
     };
     let (selected, automation, bank, page) =
         (panel.selected, panel.automation, panel.bank, panel.page);
+    if event.phase == ResponseGraphPhase::Remove {
+        // Automation point IDs are lane-local indices, never stable band IDs.
+        // The graph consumes the key in that mode, without deleting a band.
+        if automation.is_some()
+            || panel.creation.is_some()
+            || panel.preview.is_some()
+            || panel.creation_selection.is_some()
+            || current(view, device).as_ref() != Some(&panel.authored_state)
+        {
+            return;
+        }
+        if let Some(id) = selected.filter(|id| id.value() == event.node_id) {
+            edit(view, cx, device, 0, move |state, _| state.remove(id));
+        }
+        return;
+    }
     if automation.is_none() && event.node_id == 0 {
         if event.phase == ResponseGraphPhase::Create {
             begin_creation(view, cx, device, event.position, bank);
@@ -1328,6 +1419,40 @@ fn handle_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hiding_input_retains_output_and_uses_identical_spectrum_coordinates() {
+        use hex_audio::{
+            spectrum::SpectrumFrame,
+            spectrum_worker::{
+                PublishedSpectra, PublishedSpectrum, SpectrumStamp, SpectrumTargetId,
+            },
+        };
+        let frame = SpectrumFrame {
+            sample_rate_hz: 48_000,
+            bins_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
+        };
+        let pair = PublishedSpectra {
+            input: Some(frame.clone()),
+            output: PublishedSpectrum {
+                stamp: SpectrumStamp {
+                    target: SpectrumTargetId(1),
+                    generation: 2,
+                    sample_rate_hz: 48_000,
+                    applied_revision: 3,
+                },
+                frame,
+                captured_at: std::time::Instant::now(),
+                processed_at: std::time::Instant::now(),
+            },
+        };
+        let shown = spectrum_layers(Some(&pair), true, 20_000.0);
+        assert_eq!(shown.0, shown.1, "equal signals align on the same axes");
+        let hidden = spectrum_layers(Some(&pair), false, 20_000.0);
+        assert_eq!(hidden.0, shown.0, "input visibility cannot hide output");
+        assert!(hidden.1.is_none());
+        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None));
+    }
 
     #[test]
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {

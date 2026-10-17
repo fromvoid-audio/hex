@@ -31,7 +31,7 @@ struct WaveformGeometryEntry {
     columns: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct WaveformGeometryKey {
     mapping: WaveformMappingKey,
     visible_start: u64,
@@ -43,8 +43,9 @@ struct WaveformGeometryKey {
     scale: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Prepared {
         timeline_origin: u64,
         root_offset: u64,
@@ -77,6 +78,15 @@ pub(super) struct WaveformGeometry {
 pub(super) struct WaveformChannelGeometry {
     pub(super) centerline: Path<Pixels>,
     pub(super) waveform: Path<Pixels>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    outline: Vec<gpui::Point<Pixels>>,
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) struct RenderedWaveformSample {
+    pub(super) source: Arc<CachedWaveform>,
+    pub(super) prepared: Option<(u64, u64)>,
+    pub(super) spans: [f32; 2],
 }
 
 impl WaveformGeometryCache {
@@ -105,6 +115,19 @@ impl WaveformGeometryCache {
         if columns == 0 || columns > MAX_CACHED_WAVEFORM_COLUMNS {
             return;
         }
+        // Only one transient stretch snapshot is retained. Ordinary entries keep
+        // their existing budget; pointer motion cannot retain a history of
+        // copied marker/event metadata for every previous preview position.
+        if matches!(key.mapping, WaveformMappingKey::Stretch(_)) {
+            self.entries.retain(|entry| {
+                if matches!(entry.key.mapping, WaveformMappingKey::Stretch(_)) {
+                    self.columns = self.columns.saturating_sub(entry.columns);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         while self.entries.len() >= MAX_CACHED_WAVEFORM_ENTRIES
             || self.columns.saturating_add(columns) > MAX_CACHED_WAVEFORM_COLUMNS
         {
@@ -127,6 +150,35 @@ impl WaveformGeometryCache {
         self.columns = 0;
     }
 
+    /// Actual immutable source, mapping and path-builder ordinates painted by the cache.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn rendered_waveforms(&self) -> Vec<RenderedWaveformSample> {
+        self.entries
+            .iter()
+            .map(|entry| RenderedWaveformSample {
+                source: Arc::clone(&entry.source),
+                prepared: match entry.key.mapping {
+                    WaveformMappingKey::Prepared {
+                        timeline_origin,
+                        root_offset,
+                        ..
+                    } => Some((timeline_origin, root_offset)),
+                    _ => None,
+                },
+                spans: std::array::from_fn(|channel| {
+                    let (low, high) = entry.geometry.channels[channel]
+                        .outline
+                        .iter()
+                        .map(|point| f32::from(point.y))
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                            (low.min(y), high.max(y))
+                        });
+                    high - low
+                }),
+            })
+            .collect()
+    }
+
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn entry_count(&self) -> usize {
         self.entries.len()
@@ -135,6 +187,7 @@ impl WaveformGeometryCache {
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
+    Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Prepared {
         timeline_origin: u64,
         root_offset: u64,
@@ -177,7 +230,7 @@ pub(super) fn cached_waveform_geometry(
     if let Some(geometry) = cache
         .try_borrow_mut()
         .ok()
-        .and_then(|mut cache| cache.get(key, waveform))
+        .and_then(|mut cache| cache.get(key.clone(), waveform))
     {
         return Some(geometry);
     }
@@ -208,6 +261,7 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::Stretch(projection) => WaveformMappingKey::Stretch(Arc::clone(projection)),
         WaveformMapping::Prepared {
             timeline_origin,
             root_offset,
@@ -266,6 +320,7 @@ pub(super) fn prepare_waveform_geometry(
     let height = f32::from(bounds.size.height);
     let frames = visible_end.saturating_sub(visible_start);
     let gain = match mapping {
+        WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
         WaveformMapping::GainedSource { gain, .. } | WaveformMapping::Prepared { gain, .. } => {
             gain.linear()
@@ -279,6 +334,10 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::Stretch(projection) => {
+                let ranges = projection.ranges(start..end, waveform.source_frames);
+                aggregate_ranges(waveform, ranges.as_slice())
+            }
             WaveformMapping::Prepared {
                 timeline_origin,
                 root_offset,
@@ -376,6 +435,8 @@ pub(super) fn prepare_waveform_geometry(
         channels.push(WaveformChannelGeometry {
             centerline,
             waveform,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            outline: maxima.into_iter().chain(minima).collect(),
         });
     }
     Some(WaveformGeometry {
@@ -459,9 +520,14 @@ mod tests {
         let cache_key = key(0, extent);
         let geometry = geometry(&source, 0, extent);
         let mut cache = WaveformGeometryCache::default();
-        cache.insert(cache_key, Arc::clone(&source), Arc::clone(&geometry), 32);
+        cache.insert(
+            cache_key.clone(),
+            Arc::clone(&source),
+            Arc::clone(&geometry),
+            32,
+        );
         assert!(Arc::ptr_eq(
-            &cache.get(cache_key, &source).expect("cache hit"),
+            &cache.get(cache_key.clone(), &source).expect("cache hit"),
             &geometry,
         ));
         assert!(

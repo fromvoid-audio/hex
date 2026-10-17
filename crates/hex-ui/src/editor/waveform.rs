@@ -13,6 +13,91 @@ const MAX_WAVEFORM_COLUMNS: usize = 4096;
 const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
+/// Same-revision accepted peaks and the original/prospective metadata view.
+/// Ordinary trim retains its processing root; no decoding or DSP belongs here.
+#[derive(Clone, Copy)]
+pub(super) struct WaveformPreview<'a> {
+    pub(super) original: &'a Clip,
+    pub(super) preview: &'a Clip,
+    pub(super) tempo: &'a hex_project::TempoMap,
+    pub(super) asset: Option<&'a Arc<CachedWaveform>>,
+    pub(super) prepared: Option<&'a hex_session::service::AudioClipWaveform>,
+}
+
+pub(super) fn preview_waveform_view_cached(
+    request: WaveformPreview<'_>,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+) -> Option<Div> {
+    let WaveformPreview {
+        original,
+        preview,
+        tempo,
+        asset,
+        prepared,
+    } = request;
+    if original.id() != preview.id() || original.asset() != preview.asset() {
+        return None;
+    }
+    if let Some(edit) = preview.audio_edit() {
+        if original
+            .audio_edit()
+            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
+        {
+            return super::waveform_stretch::stretch_waveform_view(
+                request,
+                visible_start,
+                visible_end,
+                cache,
+            );
+        }
+        let old = original.audio_edit()?;
+        // A crop shares the immutable full processing root. A changed root must
+        // supply its own validated preview projection, never raw-asset peaks.
+        if !Arc::ptr_eq(&old.domain, &edit.domain) {
+            return None;
+        }
+        let (old_origin, old_length, old_offset, _) = old.projected_domain(tempo).ok()?;
+        let (origin, length, offset, end) = edit.projected_domain(tempo).ok()?;
+        let prepared = prepared?;
+        if origin != old_origin
+            || length != old_length
+            || u64::try_from(prepared.waveform.source_frames).ok()? != length
+            || prepared.offset != old_offset
+            || prepared.length != original.duration()
+            || offset >= end
+            || end > length
+            || end - offset != preview.duration()
+        {
+            return None;
+        }
+        let cropped = hex_session::service::AudioClipWaveform {
+            waveform: Arc::clone(&prepared.waveform),
+            offset,
+            length: preview.duration(),
+        };
+        Some(prepared_waveform_view_cached(
+            &cropped,
+            preview,
+            visible_start,
+            visible_end,
+            cache,
+        ))
+    } else {
+        if original.audio_edit().is_some() {
+            return None;
+        }
+        Some(waveform_view_cached(
+            asset?,
+            preview,
+            visible_start,
+            visible_end,
+            cache,
+        ))
+    }
+}
+
 pub(super) fn prepared_waveform_view_cached(
     prepared: &hex_session::service::AudioClipWaveform,
     clip: &Clip,
@@ -111,7 +196,7 @@ pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
     waveform_source_segment_view(waveform, 0, 0, end)
 }
 
-fn waveform_canvas(
+pub(super) fn waveform_canvas(
     waveform: Arc<CachedWaveform>,
     mapping: WaveformMapping,
     visible_start: u64,
@@ -455,7 +540,12 @@ pub(super) fn timeline_source_ranges_at(
     ranges
 }
 
-fn push_source_range(ranges: &mut SourceRanges, start: u64, end: u64, available_frames: usize) {
+pub(super) fn push_source_range(
+    ranges: &mut SourceRanges,
+    start: u64,
+    end: u64,
+    available_frames: usize,
+) {
     let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
         return;
     };
@@ -853,3 +943,7 @@ mod tests {
         assert_eq!(peaks[1].max, 0.3);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "waveform_resize_ui_test.rs"]
+mod resize_tests;

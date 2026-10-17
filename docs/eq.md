@@ -32,6 +32,13 @@ cut/notch dragging edits frequency/Q. Selected-node controls expose enabled,
 shape, frequency, gain, Q and cut slope (12/24/36/48 db/octave). The channel-bank
 buttons choose the bank receiving new nodes; the global mode selects audible
 banks. Remove deletes the selected node and all its automation atomically.
+When the response graph owns keyboard focus, **Backspace** removes its selected
+node through that same atomic history command. An empty graph consumes the key;
+text/numeric editors retain their own Backspace behavior. Held gestures,
+creation previews, pending/stale work and old project generations cannot remove
+a node. Focused Escape cancels a held graph pointer before editor bindings.
+Automation point focus consumes Backspace without interpreting a lane
+index as a node identity; its explicit **− point** action remains available.
 Scalar gestures, opaque state edits, undo/redo and project/preset persistence use
 the existing canonical device path.
 
@@ -54,6 +61,22 @@ actual Q. Editing a legacy shelf's Q/shape explicitly switches it to the Q law;
 legacy S shelves require that edit before gain/Q/shape automation. Already invalid
 enabled legacy S/gain combinations fail preparation visibly; disabled authored
 values remain preserved.
+
+## Panel layout
+
+The forty-pixel top row contains mode/output controls, channel banks/count and
+analyzer/listen controls, separated by shared theme dividers. The forty-pixel
+footer keeps selected-node controls, automate and remove together. Frequency
+uses a reusable 74-pixel micro dial so full values and units fit; other controls
+keep the shared compact dial, selector and button presentations. The shared host
+[bindings](native-device-bindings.md) own their identity, gesture and retirement
+behavior; panel composition supplies presentation only. Control widths
+never shrink into neighboring labels or readouts. EQ text actions use intrinsic
+nonwrapping label widths plus padding, retaining the shared action paint and
+minimum size. The rendered regression shapes complete labels with the bundled
+font instead of checking only their containers. Automation adds a separate
+sixteen-pixel row containing its field/page controls and playhead readout, while
+the response/automation plot retains the remaining height.
 
 ## EQ-owned arrangement automation
 
@@ -84,6 +107,36 @@ and sample rate. It does not animate the automated response. The spectrum remain
 live; the selected automation value's **playhead** readout is display telemetry,
 not an exact delayed-callback timestamp. Transient listen selectors carry stable
 node IDs and fade over 256 frames, independently of authored state/history.
+
+## Live input and output spectra
+
+The **spectrum** action explicitly enables analysis for the selected device while
+audio runs. It replaces the easy-to-miss wave glyph; an inactive analyzer has no
+live trace. The flexible EQ shows two actual signal layers on identical
+frequency/dB axes. Input is sampled immediately before the entire native entry,
+including host input trim; output is sampled after processing and host output
+trim. The **input** action defaults on and hides only input. It does not disable
+output capture or replace input with an inferred response curve. Legacy EQ8
+continues to show its output layer. Silence, unavailable targets and inactive
+transport are not fabricated into animated traces.
+
+Each at-most-256-frame callback chunk stages both phases independently by exact
+offset and stable owner/device/type. Incomplete, overlapping, out-of-bounds or
+failed renders discard the entire pair. Final caller output validation, target
+epoch, generation, sample rate and activation revision must all agree before
+one paired packet is queued. Refusals consume a sequence, preventing the next
+FFT window from spanning a gap. Existing output-only observer/capture/reader
+APIs remain adapters; legacy output-only captures have no input result.
+
+The existing 32-packet queue, one-result channel and single worker/reaper remain.
+Each packet carries two fixed stereo arrays. The worker adds input rolling and
+ordered windows (two 4096-frame stereo boxes, 65,536 payload bytes total), reuses
+the existing FFT scratch sequentially and publishes both transforms together at
+at most 30 Hz. Native storage accounting includes these boxes and the enlarged
+actual queue payload. Both layers clear together after 100 ms of capture age;
+context/rate/generation changes and sequence gaps reset both windows. FFT work,
+allocation and final reclamation stay outside the callback. These bounded
+headless contracts do not establish native deadline or listening acceptance.
 
 ## Evidence and native checks
 

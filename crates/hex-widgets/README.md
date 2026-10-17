@@ -59,6 +59,11 @@ The owner maps that stream to its own provisional identity and transaction;
 asynchronous model publication cannot attach a released press to a new node.
 Click-only creation owners retain their existing behavior.
 
+`ResponseGraphModel` accepts separate normalized input and output analyzer
+curves. Both are bounded, validated and painted behind response curves/nodes;
+the owner controls visibility and injects semantic colors through
+`ResponseGraphAnalyzerStyle`. The widget owns no audio capture or FFT state.
+
 ### shared device composition
 
 Every device uses one `device_frame`/`device_header` geometry: 14px header,
@@ -207,3 +212,13 @@ numeric gesture and double-click reset lifecycle.
 Windowed generic bodies retain the shared surface and rounded corners while
 placing the standard inset inside their scroll content. The editor owns row
 visibility, offsets and gesture pins; the widget owns chrome and that inset.
+
+`WideMicroDial` retains shared micro-dial editing and height with a 74-pixel
+width for full frequency values and units. It does not change numeric codecs.
+
+ResponseGraph owners can opt into `set_backspace_removal`; install
+`bind_response_graph_keys` with application bindings. Its graph-scoped action
+consumes focused Backspace before editor actions and emits Remove for an idle
+selected node. Its scoped Escape action cancels a held pointer before ancestor
+application actions; idle Escape propagates. Owners retain canonical identity
+and removal/history semantics.
