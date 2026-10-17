@@ -17,4 +17,5 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-export = { path = "../hex-export" }
 
 [dev-dependencies]
+hex-tuning = { path = "../hex-tuning" }
 serde_json = "=1.0.151"

@@ -246,13 +246,23 @@ fn prepared_steps(
         return Err(Invalid("invalid fm sample rate or pitch"));
     }
     let frequency = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+    prepared_steps_frequency(sample_rate, frequency, ratios)
+}
+fn prepared_steps_frequency(
+    sample_rate: u32,
+    frequency: f64,
+    ratios: &[f64; OPERATORS],
+) -> Result<[u64; OPERATORS], Invalid> {
+    if !(8_000..=192_000).contains(&sample_rate) || !frequency.is_finite() || frequency <= 0.0 {
+        return Err(Invalid("invalid fm sample rate or frequency"));
+    }
     let mut steps = [0; OPERATORS];
     for (index, ratio) in ratios.iter().enumerate() {
         let frequency = frequency * ratio;
-        if frequency >= f64::from(sample_rate) * 0.5 {
+        if !frequency.is_finite() || frequency <= 0.0 || frequency >= f64::from(sample_rate) * 0.5 {
             return Err(Invalid("fm oscillator frequency must be below nyquist"));
         }
-        steps[index] = (frequency / f64::from(sample_rate) * PHASE_SCALE).round() as u64;
+        steps[index] = crate::quantized_phase_step(sample_rate, frequency)?;
     }
     Ok(steps)
 }
@@ -438,9 +448,29 @@ impl PreparedFm4 {
             return Err(Invalid("invalid fm sample rate, pitch or note-on velocity"));
         }
         let core = PreparedFmCore::new(sample_rate, pitch, oscillators, routing)?;
+        Ok(Self::from_core(sample_rate, velocity, core, envelope))
+    }
+    fn new_with_frequency(
+        sample_rate: u32,
+        frequency: f64,
+        velocity: u8,
+        oscillators: [Oscillator; OPERATORS],
+        routing: Routing,
+        envelope: Envelope,
+    ) -> Result<Self, Invalid> {
+        if !(1..=127).contains(&velocity) {
+            return Err(Invalid("invalid fm note-on velocity"));
+        }
+        let core = PreparedFmCore {
+            steps: prepared_steps_frequency(sample_rate, frequency, &oscillators.map(|o| o.ratio))?,
+            configuration: PreparedFmConfiguration::new(oscillators, routing),
+        };
+        Ok(Self::from_core(sample_rate, velocity, core, envelope))
+    }
+    fn from_core(sample_rate: u32, velocity: u8, core: PreparedFmCore, envelope: Envelope) -> Self {
         // Finite, validated times/rate guarantee bounded conversions and sums.
         let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as u64;
-        Ok(Self {
+        Self {
             core,
             envelope: PreparedEnvelope {
                 attack: frames(envelope.attack_seconds),
@@ -449,7 +479,7 @@ impl PreparedFm4 {
                 release: frames(envelope.release_seconds),
             },
             velocity: f64::from(velocity) / 127.0,
-        })
+        }
     }
 
     pub const fn release_frames(&self) -> u64 {
@@ -461,8 +491,8 @@ impl PreparedFm4 {
     /// initialized on this control-side
     /// call so the returned sampler never initializes it while rendering.
     /// Words are: 4 steps, 4 phases, 4 levels, 16 row-major modulation values,
-    /// 4 carrier values, 4 topological-order indices, attack, decay, sustain,
-    /// release and velocity. Integers stay integers; floating-point fields use
+    /// 4 carrier values, packed topological order, 4 continuation phase offsets,
+    /// attack, decay, sustain and velocity. Release lives only in the header. Integers stay integers; floating-point fields use
     /// their exact IEEE-754 bit patterns.
     pub fn into_analytic_note(self) -> PreparedAnalyticNote {
         let _ = crate::shared_sine_table();
@@ -487,18 +517,23 @@ impl PreparedFm4 {
         {
             *target = carrier.to_bits();
         }
-        for (target, order) in payload[32..36]
-            .iter_mut()
-            .zip(self.core.configuration.routing.order)
+        for (slot, order) in self
+            .core
+            .configuration
+            .routing
+            .order
+            .into_iter()
+            .enumerate()
         {
-            *target = order as u64;
+            payload[32] |= (order as u64) << (slot * 8);
         }
-        payload[36] = self.envelope.attack;
-        payload[37] = self.envelope.decay;
-        payload[38] = self.envelope.sustain.to_bits();
-        payload[39] = self.envelope.release;
+        // Words33..37 are per-occurrence phase offsets, initially zero.
+        payload[37] = self.envelope.attack;
+        payload[38] = self.envelope.decay;
+        payload[39] = self.envelope.sustain.to_bits();
         payload[40] = self.velocity.to_bits();
         PreparedAnalyticNote::new(payload, self.envelope.release, sample_fm4_note)
+            .with_continuation(&FM4_CONTINUATION)
     }
 
     /// No limiter, feedback or antialiasing: peak is bounded by the sum of
@@ -532,20 +567,66 @@ fn audible_operator_ancestors(levels: &[f64; OPERATORS], routing: &Routing) -> [
     audible
 }
 
+static FM4_CONTINUATION: hex_lattice::AnalyticNoteContinuation =
+    hex_lattice::AnalyticNoteContinuation::new(continue_fm4_note);
+pub(super) fn continue_fm4_note(
+    source: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+    target: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age: u64,
+) -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], hex_lattice_contract::DeviceContractError> {
+    if source
+        .iter()
+        .zip(target)
+        .enumerate()
+        .any(|(i, (a, b))| i >= 4 && !(33..37).contains(&i) && a != b)
+        || source[..4]
+            .iter()
+            .chain(&target[..4])
+            .any(|step| *step == 0 || *step >= (1u64 << 63))
+        || !valid_analytic_order(source[32])
+        || !valid_analytic_order(target[32])
+    {
+        return Err(hex_lattice_contract::DeviceContractError::InvalidParameterValue);
+    }
+    let mut next = *target;
+    for i in 0..4 {
+        next[33 + i] =
+            source[33 + i].wrapping_add(source[i].wrapping_sub(target[i]).wrapping_mul(age));
+    }
+    Ok(next)
+}
+fn valid_analytic_order(word: u64) -> bool {
+    if word >> 32 != 0 {
+        return false;
+    }
+    let mut seen = 0u8;
+    for i in 0..4 {
+        let index = (word >> (i * 8)) & 0xff;
+        if index >= 4 || seen & (1u8 << index) != 0 {
+            return false;
+        }
+        seen |= 1u8 << index;
+    }
+    seen == 15
+}
+
 fn sample_fm4_note(
     payload: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
     age_frames: u64,
     gate_frames: u64,
-    _release_frames: u64,
+    release_frames: u64,
 ) -> StereoFrame {
     let Some(table) = crate::shared_sine_table_if_prepared() else {
         return [0.0; 2];
     };
+    if !valid_analytic_order(payload[32]) {
+        return [0.0; 2];
+    }
     let envelope = PreparedEnvelope {
-        attack: payload[36],
-        decay: payload[37],
-        sustain: f64::from_bits(payload[38]),
-        release: payload[39],
+        attack: payload[37],
+        decay: payload[38],
+        sustain: f64::from_bits(payload[39]),
+        release: release_frames,
     };
     let amplitude = envelope.level(age_frames, gate_frames) * f64::from_bits(payload[40]);
     if amplitude == 0.0 {
@@ -553,9 +634,7 @@ fn sample_fm4_note(
     }
     let mut signals = [0.0; OPERATORS];
     for slot in 0..OPERATORS {
-        let Ok(target) = usize::try_from(payload[32 + slot]) else {
-            return [0.0; 2];
-        };
+        let target = ((payload[32] >> (slot * 8)) & 0xff) as usize;
         if target >= OPERATORS {
             return [0.0; 2];
         }
@@ -573,6 +652,7 @@ fn sample_fm4_note(
         let phase = payload[target]
             .wrapping_mul(age_frames)
             .wrapping_add(payload[4 + target])
+            .wrapping_add(payload[33 + target])
             .wrapping_add(phase_from_turns(modulation));
         signals[target] = f64::from(table.sample_phase(phase)) * level;
     }
