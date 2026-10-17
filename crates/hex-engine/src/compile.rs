@@ -287,9 +287,6 @@ fn compile_project_inner<'a>(
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
-    if snapshot.tuning().enabled() {
-        return Err(Invalid("project tuning playback is not implemented"));
-    }
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
@@ -326,6 +323,11 @@ fn compile_project_inner<'a>(
             None,
         )?,
     };
+    let device_context = hex_lattice::DevicePreparationContext {
+        sample_rate: snapshot.sample_rate(),
+        tuning: shared_contexts.tuning(),
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
     let mut audio_clip_views = Vec::new();
     let any_soloed = snapshot.tracks().iter().any(|track| track.soloed());
     let mut tracks = Vec::new();
@@ -350,7 +352,7 @@ fn compile_project_inner<'a>(
             .instrument()
             .map(|slot| {
                 instrument_registry
-                    .prepare_instrument(slot.state(), snapshot.sample_rate())
+                    .prepare_instrument(slot.state(), &device_context)
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
@@ -482,7 +484,7 @@ fn compile_project_inner<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let effect_plan = compile_device_effects(track, registry, snapshot.sample_rate())?;
+        let effect_plan = compile_device_effects(track, registry, &device_context)?;
         let device_chain = effect_plan.device_chain;
         for device in &device_chain {
             if let Some(definition) = &device.definition {
@@ -536,6 +538,7 @@ fn compile_project_inner<'a>(
             .with_track_id(track.id())
             .with_midi_source_index((source_index != track_index).then_some(source_index))
             .with_instrument_config(track.instrument())
+            .with_tuning_identity(shared_contexts.tuning_identity())
             .with_instrument_latency(instrument_latency, instrument_runtime_latency)
             .with_mutable_instrument(mutable_instrument, mutable_looping_source)
             .with_sends(sends)
@@ -556,7 +559,7 @@ fn compile_project_inner<'a>(
             return_track.devices(),
             hex_lattice::ProcessorChainOwner::Return(return_track.id().value()),
             0,
-            snapshot.sample_rate(),
+            &device_context,
             registry,
         )?;
         for device in &effect_plan.device_chain {
@@ -641,13 +644,13 @@ struct CompiledEffectPlan {
 fn compile_device_effects(
     track: &hex_project::Track,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
-    sample_rate: u32,
+    context: &hex_lattice::DevicePreparationContext<'_>,
 ) -> Result<CompiledEffectPlan, Invalid> {
     compile_effect_devices(
         track.devices(),
         hex_lattice::ProcessorChainOwner::Track(track.id().value()),
         track.instrument_position().unwrap_or(0),
-        sample_rate,
+        context,
         registry,
     )
 }
@@ -656,9 +659,10 @@ fn compile_effect_devices(
     source_devices: &[hex_project::Device],
     owner: hex_lattice::ProcessorChainOwner,
     _split: usize,
-    sample_rate: u32,
+    context: &hex_lattice::DevicePreparationContext<'_>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
 ) -> Result<CompiledEffectPlan, Invalid> {
+    let sample_rate = context.sample_rate;
     let mut devices = Vec::new();
     devices
         .try_reserve_exact(source_devices.len())
@@ -670,7 +674,7 @@ fn compile_effect_devices(
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
         let prepared_device = registry
-            .prepare_runtime_device(&migrated, sample_rate)
+            .prepare_runtime_device(&migrated, context)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
         let processor = prepared_device.processor;
 

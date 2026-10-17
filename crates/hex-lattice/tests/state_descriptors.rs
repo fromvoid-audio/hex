@@ -143,7 +143,7 @@ impl NativeDeviceDefinition for DynamicDefinition {
     fn prepare_processor(
         &self,
         _: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedNativeProcessor>>, DeviceContractError> {
         self.preparations.fetch_add(1, Ordering::Relaxed);
         Ok(None)
@@ -160,7 +160,7 @@ impl NativeInstrumentDefinition for DynamicDefinition {
     fn prepare_instrument(
         &self,
         _state: &NativeDeviceState,
-        _rate: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         self.preparations.fetch_add(1, Ordering::Relaxed);
         Err(DeviceContractError::UnsupportedProcessingClass)
@@ -269,17 +269,83 @@ fn device_asset_references_survive_codecs_but_refuse_before_any_preparation() {
     definition.preparations.store(0, Ordering::Relaxed);
     let refused = DeviceContractError::AssetResourcesUnavailable;
     assert_eq!(effects.prepare_matrix(&source).unwrap_err(), refused);
-    assert!(matches!(effects.prepare_processor(&source, 48000), Err(e) if e == refused));
-    assert!(matches!(effects.prepare_device(&source, 48000), Err(e) if e == refused));
-    assert!(matches!(effects.prepare_runtime_device(&source, 48000), Err(e) if e == refused));
-    assert!(matches!(instruments.prepare_instrument(&source, 48000), Err(e) if e == refused));
+    assert!(
+        matches!(effects.prepare_processor(&source, &hex_lattice::DevicePreparationContext {sample_rate: 48000, tuning: &hex_lattice::TuningTable::default(), resources: &hex_lattice::EMPTY_DEVICE_RESOURCES}), Err(e) if e == refused)
+    );
+    assert!(
+        matches!(effects.prepare_device(&source, &hex_lattice::DevicePreparationContext {sample_rate: 48000, tuning: &hex_lattice::TuningTable::default(), resources: &hex_lattice::EMPTY_DEVICE_RESOURCES}), Err(e) if e == refused)
+    );
+    assert!(
+        matches!(effects.prepare_runtime_device(&source, &hex_lattice::DevicePreparationContext {sample_rate: 48000, tuning: &hex_lattice::TuningTable::default(), resources: &hex_lattice::EMPTY_DEVICE_RESOURCES}), Err(e) if e == refused)
+    );
+    assert!(
+        matches!(instruments.prepare_instrument(&source, &hex_lattice::DevicePreparationContext {sample_rate: 48000, tuning: &hex_lattice::TuningTable::default(), resources: &hex_lattice::EMPTY_DEVICE_RESOURCES}), Err(e) if e == refused)
+    );
+    for tuning in [
+        hex_lattice::TuningTable::default(),
+        hex_lattice::TuningTable::new([333.0; 128]).unwrap(),
+    ] {
+        assert!(
+            matches!(instruments.prepare_instrument(&source, &hex_lattice::DevicePreparationContext {sample_rate: 48000, tuning: &tuning, resources: &hex_lattice::EMPTY_DEVICE_RESOURCES}), Err(e) if e == refused)
+        );
+    }
+    assert_eq!(definition.migrations.load(Ordering::Relaxed), 0);
+    assert_eq!(definition.preparations.load(Ordering::Relaxed), 0);
+    // A valid borrowed PCM view does not itself grant root/lease admission.
+    let pcm = [[0.25_f32, -0.5]; 8];
+    let views = [hex_lattice::DeviceResourceView {
+        slot: source.asset_references()[0].slot,
+        identity: hex_lattice::DeviceResourceIdentity {
+            asset: source.asset_references()[0].asset,
+            content: [7; 32],
+            derivation_version: 1,
+            derivation: [9; 32],
+        },
+        sample_rate: 44_100,
+        pcm: hex_lattice::DeviceResourcePcm::Stereo(&pcm),
+    }];
+    let resources = hex_lattice::BorrowedDeviceResources(&views);
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &resources,
+    };
+    context.validate_for(&source).unwrap();
+    assert!(matches!(instruments.prepare_instrument(&source, &context), Err(e) if e == refused));
+    assert!(matches!(effects.prepare_runtime_device(&source, &context), Err(e) if e == refused));
+    let empty = source.clone().with_asset_references(vec![]).unwrap();
+    // A stale inventory with extra slots also refuses before provider migration.
+    assert!(matches!(instruments.prepare_instrument(&empty, &context), Err(e) if e == refused));
+    assert!(matches!(effects.prepare_processor(&empty, &context), Err(e) if e == refused));
+    assert!(matches!(effects.prepare_device(&empty, &context), Err(e) if e == refused));
+    assert!(matches!(effects.prepare_runtime_device(&empty, &context), Err(e) if e == refused));
     assert_eq!(definition.migrations.load(Ordering::Relaxed), 0);
     assert_eq!(definition.preparations.load(Ordering::Relaxed), 0);
     // Calibrate that the fixture observes actual supported preparation calls.
-    let empty = source.clone().with_asset_references(vec![]).unwrap();
     effects.prepare_matrix(&empty).unwrap();
-    effects.prepare_processor(&empty, 48000).unwrap();
-    assert!(instruments.prepare_instrument(&empty, 48000).is_err());
+    effects
+        .prepare_processor(
+            &empty,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
+    assert!(
+        instruments
+            .prepare_instrument(
+                &empty,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                }
+            )
+            .is_err()
+    );
     assert_eq!(definition.preparations.load(Ordering::Relaxed), 3);
 }
 

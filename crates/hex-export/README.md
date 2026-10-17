@@ -17,7 +17,7 @@ wrap this linear export.
 hex-engine and the Rust standard library, plus pinned rustix 1.1.5 safe filesystem
 operations on Linux/macOS for exclusive directory publication and file exchange.
 Tests may use canonical
-project/lattice contracts and the non-default `instrument-test-support` feature
+project/lattice/tuning contracts and the non-default `instrument-test-support` feature
 to verify mutable prepared rendering; this does not add production dependencies.
 
 ## Does not own

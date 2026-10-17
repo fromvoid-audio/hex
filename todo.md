@@ -1,3 +1,39 @@
+## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
+
+Current integration now includes merged350/387 and exact published runtime351
+at e1d9d50f. Its new Operator tuning-admission fixture uses the unified context;
+all320 device tests pass (one existing ignore), all3 independent tuning playback
+tests and strict affected all-target Clippy pass. Runtime351 remains unmerged;
+final full current resource-candidate validation and dependency merge are pending.
+
+Cloud4 accepted integrated tuning runtimeffb42158 and owns the next shared seam.
+Typed borrowed mono/stereo resource views and one rate/tuning/resource context now
+serve instrument and effect preparation, providers, Arrangement/Session/keyboard
+hosts and conformance callers. Old with_tuning overloads are removed. Arrangement
+instruments and track/return effects borrow the same effective project table.
+All319 device and54 lattice library tests pass (one existing device test ignored),
+strict affected all-target Clippy and audio/export/allocation-feature compilation
+pass. Actual registry tests prove a valid borrowed PCM view alone cannot bypass
+root admission, and stale extra views refuse before provider migration.
+Analytic inline/shared/continuation callbacks now borrow the resource inventory
+through their actual sample ABI. A real mono/stereo PCM conformance callback and
+actual callback allocation probe pass with zero allocations/frees. All319 device
+and55 lattice library tests pass, including one existing device ignore; strict
+all-target Clippy and audio allocation-feature tests pass. Existing asset-free
+hosts pass an explicit empty inventory and registries continue refusing assets;
+Lower mutable-instrument preflight/processing and owned/native effect callbacks
+now require and forward the actual borrowed inventory. The synthetic effect
+consumes real mono/stereo PCM, including bypass cursor advancement; measured
+analytic and effect callbacks have zero total/net allocations and frees.
+Per-configuration host root leases, coexistence-union accounting and retirement
+admission remain unfinished. Mutable twin actual mono/stereo PCM, stale-content
+refusal before mutation, rollback/retry and continuation probes pass; measured
+analytic/effect/mutable callbacks all retain zero total/net allocations/frees.
+This synthetic free-running source is not a registered MIDI sampler. No cap or
+note layout increase.
+No sampler registration, full-CI or native acceptance claim. Beats clip stretching
+2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
+
 ## tuning review precision and cyclic gaps — #2739 / PR350, 17 october 2026
 
 Review found preset float rounding and a missing period-seam gap check. Four
@@ -103,6 +139,43 @@ compiled the example without its gated provider. The same command now passes
 independent PCM oracle at all four documented rates. Runtime code, features,
 dependencies and admission limits are unchanged. Full final-source CI remains
 pending; retained failure/success logs are separate from native acceptance.
+
+## project tuning runtime continuation — #2740 / PR351, 17 october 2026
+
+Cloud takeover repairs the invalid Operator event-preflight fixture and stale
+sampler/table footprint accounting without increasing scoped memory ceilings.
+Ordinary worker edits invalidate tuning-family inheritance while audible keyboard
+cancellation remains at publication; a prepared/refused candidate cannot silence
+the installed lease. Focused native DSP/engine/Session, non-octave mapping,
+Operator PCM16 export and actual callback total/net-zero allocation checks pass.
+The optional combined feature/all-target matrix still exposes existing2722/PR338;
+required scoped Clippy passes. Release copy-cost evidence and full exact-source
+local CI remain pending at this checkpoint. See
+[runtime contract](docs/project-tuning-runtime.md). Full native editor/audition,
+MTS, coordinated current combined schema and Mac/user acceptance remain required
+goal4 work; no complete tuning delivery or merge is claimed.
+
+Full workspace verification exposed a real neutral-path regression in the paused
+runtime: a table inside every Operator configuration grew legacy feedback/LFO
+twins beyond their8KiB contract. The repair keeps small configurations free of
+tables/heap owners and passes an optional borrowed table to note preparation;
+only the already-wide custom mutable factory/runtime retains that fixed data.
+Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
+are restored, without raising limits or adding callback table construction.
+All313 device tests, packing proof and volume/history proof pass; renewed full
+workspace/final CI remains required. Earlier failed runner evidence is retained.
+## combined current project format — #2739 / PR350, 17 october 2026
+
+After asset PR297 landed, cloud5 integrates both active capabilities in one
+schema31: required complete tuning and device-asset manifest for every project,
+including empty/default values. Prior alpha30 refuses explicitly without
+conversion, rewriting or deletion. The manifest is a reusable bounded current
+payload, not a historical30 dispatch reader. Existing older readers stay intact;
+legacy writers continue to refuse data loss. Combined non-octave tuning/assets,
+Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
+covered by the owning storage fixtures. All storage/project/tuning tests and
+strict affected all-target Clippy pass; final complete integrated checks remain
+required. No historical30 reader or automatic user-file conversion was added.
 
 ## device asset state storage proof — pulse2681 / PR297, 17 october 2026
 
