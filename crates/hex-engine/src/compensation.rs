@@ -126,6 +126,8 @@ pub struct TransportStamp {
     pub arrangement_frame: u64,
     pub loop_pass: u64,
     pub performance_beat_raw: u64,
+    /// Loop-normalized Arrangement beat at the original content frame.
+    pub arrangement_beat_raw: u64,
 }
 
 /// One fixed prepared graph. Every edge uses the plan's stable-key sorted index.

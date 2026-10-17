@@ -1,0 +1,203 @@
+use super::*;
+use hex_engine::eq::{EQ_TYPE_ID, EqState};
+fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
+    let service = Service::new(48000, 16, 8000000).unwrap();
+    let _ = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "eq source".into(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::Track(track) = event.created.unwrap() else {
+        panic!()
+    };
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(if legacy {
+                hex_lattice_contract::DeviceTypeId::from_static("hex.eq8")
+            } else {
+                EQ_TYPE_ID
+            }),
+            before: None,
+        })
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let device = state.project.track(track).unwrap().devices()[0].id();
+    (service, state, track, device)
+}
+fn read(view: &EditorView, device: DeviceId) -> EqState {
+    EqState::decode(
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state(),
+    )
+    .unwrap()
+}
+fn settled(view: &EditorView) -> bool {
+    view.worker_requests_pending == 0
+        && view.pending_requests.is_empty()
+        && view.device_gesture_barriers.is_empty()
+        && view.device_gesture.snapshot().is_none()
+}
+fn selector(prefix: &str, device: DeviceId) -> &'static str {
+    Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str())
+}
+fn plot(
+    visual: &mut VisualTestContext,
+    device: DeviceId,
+    x: f32,
+    y: f32,
+) -> gpui::Point<gpui::Pixels> {
+    let bounds = visual
+        .debug_bounds(selector("eq-response", device))
+        .expect("rendered eq graph");
+    point(
+        bounds.origin.x + px(7.0) + (bounds.size.width - px(14.0)) * x,
+        bounds.origin.y + px(7.0) + (bounds.size.height - px(14.0)) * (1.0 - y),
+    )
+}
+#[gpui::test]
+fn eq_rendered_creation_drag_automation_point_edit_and_history(cx: &mut TestAppContext) {
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1100.0), px(650.0)));
+    visual.run_until_parked();
+    let location = plot(&mut visual, device, 0.4, 0.5);
+    visual.simulate_click(location, Modifiers::default());
+    // The second press can arrive before the worker publishes the first node.
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: location,
+        modifiers: Modifiers::default(),
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_event(gpui::MouseUpEvent {
+        position: location,
+        modifiers: Modifiers::default(),
+        button: MouseButton::Left,
+        click_count: 2,
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    let initial = editor.read_with(cx, |v, _| read(v, device));
+    let id = initial.nodes[0].id;
+    let moved = plot(&mut visual, device, 0.7, 0.7);
+    visual.simulate_mouse_down(location, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes[0].frequency_hz > initial.nodes[0].frequency_hz * 2.0
+    });
+    visual.run_until_parked();
+    assert_eq!(editor.read_with(cx, |v, _| read(v, device).nodes[0].id), id);
+    let button = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let point = plot(&mut visual, device, 0.3, 0.75);
+    visual.simulate_click(point, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes.len() == 1
+    });
+    visual.run_until_parked();
+    let destination = plot(&mut visual, device, 0.65, 0.25);
+    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(destination, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes[0].points[0].normalized < 0.3
+    });
+    visual.run_until_parked();
+    visual.simulate_click(destination, Modifiers::default());
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds(selector("eq-auto-delete", device))
+        .unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes.is_empty()
+    });
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).lanes.len() == 1
+    });
+    visual.run_until_parked();
+    let button = visual.debug_bounds(selector("eq-remove", device)).unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.is_empty()
+    });
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v) && read(v, device).nodes.len() == 1
+    });
+    editor.read_with(cx, |v, _| {
+        let state = read(v, device);
+        assert_eq!(state.nodes[0].id, id);
+        assert_eq!(state.lanes.len(), 1);
+        assert_eq!(state.lanes[0].node, id);
+    });
+}
+#[gpui::test]
+fn legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction(cx: &mut TestAppContext) {
+    let (service, state, track, device) = fixture(true);
+    let original = state.project.device(device).unwrap().state().clone();
+    let cursor = state.project.next_identity();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1100.0), px(650.0)));
+    visual.run_until_parked();
+    let upgrade = visual.debug_bounds(selector("eq-upgrade", device)).unwrap();
+    visual.simulate_click(upgrade.center(), Modifiers::default());
+    pump_until(&editor, cx, |v| {
+        settled(v)
+            && v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                .type_id()
+                == EQ_TYPE_ID
+    });
+    editor.read_with(cx, |v, _| {
+        assert_eq!(read(v, device).nodes.len(), 40);
+        assert_eq!(
+            v.state.as_ref().unwrap().project.next_identity(),
+            cursor + 40
+        );
+    });
+    editor.update(cx, |v, _| {
+        assert!(v.enqueue(Request::Undo));
+    });
+    pump_until(&editor, cx, |v| {
+        settled(v)
+            && v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state()
+                == &original
+    });
+    assert_eq!(
+        editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.next_identity()),
+        cursor + 40
+    );
+}

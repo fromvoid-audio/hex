@@ -14,6 +14,9 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created, Editor};
 use std::any::Any;
 
+#[path = "tests/eq_automation.rs"]
+mod eq_automation;
+
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
 struct Definition;
 impl NativeDeviceMetadata for Definition {
@@ -855,12 +858,14 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         arrangement_frame: 12,
         loop_pass: 7,
         performance_beat_raw: 5 << 32,
+        arrangement_beat_raw: 1 << 32,
     };
     let clock = OriginClock(Some(source));
     assert_eq!(clock.performance_frame_at_offset(0), Some(900));
     assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(clock.loop_pass_at_offset(0), Some(7));
     assert_eq!(clock.beat_at_offset(0), Some(5 << 32));
+    assert_eq!(clock.arrangement_beat_at_offset(0), Some(1 << 32));
     assert_eq!(clock.transport_is_running(), Some(true));
     assert_eq!(clock.performance_frame_at_offset(1), None);
     let stopped = OriginClock(Some(TransportStamp {

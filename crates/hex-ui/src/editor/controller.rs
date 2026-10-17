@@ -1155,7 +1155,10 @@ impl EditorView {
         if !self.clip_view_open
             || !self.device_panel_active
             || self.project_generation != target.project_generation
-            || target.identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8")
+            || !matches!(
+                target.identity.device_type.as_str(),
+                Ok("hex.eq8" | "hex.eq")
+            )
         {
             return false;
         }
@@ -1232,7 +1235,10 @@ impl EditorView {
         if !self.clip_view_open
             || !self.device_panel_active
             || self.project_generation != target.project_generation
-            || target.identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8")
+            || !matches!(
+                target.identity.device_type.as_str(),
+                Ok("hex.eq8" | "hex.eq")
+            )
         {
             return false;
         }

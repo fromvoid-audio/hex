@@ -3835,3 +3835,18 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   and empty-source seals, alias refusal, cancellation/pool conservation, changed
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
+
+
+## 17 October 2026 — sparse eq (Pulse #2654 / PR #270)
+
+- New-insert `eq` supports 64 stable-ID nodes, direct graph creation/drag,
+  shape/Q/12–48 db/oct controls and EQ-owned beat-curve automation. Existing EQ8
+  panels and codec remain supported, with an explicit five-bank lossless upgrade.
+- Atomic source-state/allocator reservation and preset node high-water marks
+  preserve targeting through delete/undo/new additions. EQ automation travels in
+  strict bounded opaque state; no general automation storage schema was added.
+- Focused codec/DSP/legacy PCM, canonical reservation, rendered gesture/automation/
+  upgrade and real renderer clock tests passed during implementation; exact final
+  full local CI and optimized/native delivery are coordinator-owned and pending
+  until their candidate evidence is recorded. See docs/eq.md for limitations and
+  the finite native checklist. Headless evidence is not native/listening acceptance.

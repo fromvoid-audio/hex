@@ -106,6 +106,16 @@ pub enum Command {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Atomically replace opaque device state and reserve fresh identities.
+    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// another edit; history preserves the allocator high-water mark on undo.
+    ReplaceDeviceStateWithIdentityReservation {
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        state: hex_lattice_contract::NativeDeviceState,
+        expected_next_id: u64,
+        reserved_ids: u64,
+    },
     SetDeviceBypass {
         device: DeviceId,
         bypassed: bool,
@@ -1251,6 +1261,7 @@ impl Project {
             | Command::MoveDevice { .. }
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
+            | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
