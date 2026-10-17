@@ -1,3 +1,15 @@
+## track header width and row height — pulse2714 / PR330
+
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
@@ -4604,7 +4616,6 @@ callback allocation, locks or final PCM disposal. Browser layout and transport
 integration remain canonical Pulse2664 / PR280. Source does not establish that
 the reported endless audition is a backend loop; native listening remains open.
 
-
 ## compact browser audition — pulse2664 / PR280, 17 october 2026
 
 Replace the overflowing bottom preview column with one 22 px auto/Play-Stop/mini
@@ -4618,3 +4629,23 @@ cover width bounds, focus, toggle/manual semantics, completion, cancellation,
 actual Client-to-callback silence and list-boundary retrigger prevention. Native
 layout/listening and broader historical scrub/playhead wishlist remain open;
 Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
+
+
+## browser waveform cache stability — pulse2778 / PR384
+
+Visible row composition no longer mutates the16-entry metadata cache. Selected
+waveform, in-flight and pending keys stay protected; failed hover previews do not
+retry automatically. Reproduced selected-cache loss before repair; real pointer
+hover/selection regression checks no repeated preparation/audition, stable metadata,
+unchanged project state and surrounding lane geometry/style. Native flicker
+acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## deliberate sample insertion — pulse2780 / PR386
+
+Sample-result double-click no longer imports; consume its bubble after ordinary
+selection/automatic audition. Actual second-mouse-down regression with a valid
+target track failed before repair, and verifies no import/canonical mutation with
+auto on/off while retaining manual Right/search focus and explicit Enter import.
+Existing deliberate drag/drop coverage remains required. Other file/device
+handlers unchanged. Native double-click behavior remains coordinator-serial.
