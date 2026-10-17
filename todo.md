@@ -8,6 +8,16 @@ See [authoring](docs/native-device-authoring.md). Full final-source local CI is
 required for this Rust slice; native/reference acceptance and two-new-device/UI
 adapter production proofs remain open. No device DSP or host budget changes.
 
+## native device installed inventory — #2668 / PR284, 17 october 2026
+
+Read-only bounded metadata inventory and machine-readable coverage ledger retain
+85 manual seeds, all 67 discovered Max files and eight legacy preset families
+as 142 accountable identities. Reference executable matches the pinned hash.
+Seven current effects, Vector v15 and the unregistered sampler kernel are
+reconciled against source. See [catalog](docs/native-device-catalog.md).
+Inventory fixture tests pass. Full per-feature/browser/native/reference acceptance
+remains open; this is the W02 bootstrap, not W01 or goal completion.
+
 ## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
 
 Ten shared theme colors replace custom per-clip colors. Track-header menus choose
