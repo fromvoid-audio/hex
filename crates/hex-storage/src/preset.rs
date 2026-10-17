@@ -101,6 +101,11 @@ impl From<serde_json::Error> for Error {
 }
 
 pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
+    if !preset.state.asset_references().is_empty() {
+        return Err(Error::Invalid(
+            "device asset presets require a portable asset manifest",
+        ));
+    }
     let bytes = serde_json::to_vec(&Envelope {
         format: "hex-device-preset".into(),
         schema: 1,

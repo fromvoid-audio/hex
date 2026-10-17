@@ -11,6 +11,74 @@ use hex_lattice::{
 use hex_lattice_contract::NativeDeviceMetadata;
 use std::sync::Arc;
 
+#[cfg(test)]
+mod asset_refusal_tests {
+    use super::*;
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    use hex_project::{Command, Created, Editor, Project};
+
+    #[test]
+    fn closed_utility_paths_refuse_asset_metadata_before_constructor_or_migration() {
+        for bypassed in [false, true] {
+            let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: "audio".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: "Original.WAV".into(),
+                    sample_rate: 48000,
+                    frames: 8,
+                })
+                .unwrap()
+            else {
+                panic!("asset")
+            };
+            let state = hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap()
+                .with_asset_references(vec![DeviceAssetReference {
+                    slot: DeviceAssetSlot::new(1).unwrap(),
+                    asset: DeviceAssetKey::new(asset.value()).unwrap(),
+                }])
+                .unwrap();
+            let Created::Device(device) = editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state,
+                })
+                .unwrap()
+            else {
+                panic!("device")
+            };
+            editor
+                .execute(Command::SetDeviceBypass { device, bypassed })
+                .unwrap();
+            assert_eq!(
+                crate::audio_preparation::validate_constructor_project(editor.project()),
+                Err(AudioStorageError::UnsupportedGraph)
+            );
+            let mut custody = UtilityCustody::default();
+            assert!(matches!(
+                custody.prepare(
+                    editor.project().track(track).unwrap().devices(),
+                    track,
+                    48000
+                ),
+                Err(AudioStorageError::UnsupportedGraph)
+            ));
+            assert!(custody.entries.is_empty());
+        }
+    }
+}
+
 struct Entry {
     device_id: u64,
     state: SharedDeclaration,
@@ -47,6 +115,10 @@ impl UtilityCustody {
             .ok_or(AudioStorageError::Overflow)?;
         let mut admission = StereoMatrix::identity();
         for device in devices {
+            device
+                .state()
+                .require_asset_free_processing()
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             if device.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
@@ -141,6 +213,9 @@ impl UtilityCustody {
                 .configuration
                 .as_ref()
                 .ok_or(AudioStorageError::UnknownStorage)?;
+            state
+                .require_asset_free_processing()
+                .map_err(|_| AudioStorageError::UnknownStorage)?;
             let (len, strong, weak) = state.payload_storage_observation();
             if len != pair.payload.0 || strong != 1 || weak != 0 {
                 return Err(AudioStorageError::UnknownStorage);

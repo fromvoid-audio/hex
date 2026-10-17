@@ -20,6 +20,12 @@ control-side and does not add callback allocation or device automation. Existing
 IDs stay unchanged; devices deriving IDs from stable object identities must use
 checked arithmetic and explicitly refuse namespace exhaustion.
 
+Host-owned device asset references form a separate bounded metadata list, not
+PCM in the4KiB payload. Empty lists allocate no reference owner. Codecs preserve
+them through the host metadata helper; processing identity includes them.
+Supported processing currently refuses nonempty references until resource leases
+exist. See [device assets](../../docs/device-assets.md).
+
 ## Dependencies
 
 Rust standard library only.

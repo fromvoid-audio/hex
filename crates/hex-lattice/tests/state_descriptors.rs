@@ -21,8 +21,11 @@ const DESCRIPTOR: ParameterDescriptor = ParameterDescriptor {
     default: ParameterValue::Float(0.0),
     presentation: ParameterPresentation::Linear,
 };
+#[derive(Default)]
 struct DynamicDefinition {
     patches: AtomicUsize,
+    migrations: AtomicUsize,
+    preparations: AtomicUsize,
 }
 impl NativeDeviceMetadata for DynamicDefinition {
     fn type_id(&self) -> DeviceTypeId {
@@ -74,7 +77,12 @@ impl NativeDeviceMetadata for DynamicDefinition {
         {
             return Err(DeviceContractError::MalformedState);
         }
-        Ok(state.clone())
+        self.migrations.fetch_add(1, Ordering::Relaxed);
+        NativeDeviceState::new(
+            self.type_id(),
+            state.state_version(),
+            state.payload().to_vec(),
+        )
     }
     fn read_parameter(
         &self,
@@ -104,10 +112,19 @@ impl NativeDeviceMetadata for DynamicDefinition {
     }
 }
 impl NativeDeviceDefinition for DynamicDefinition {
+    fn prepare_processor(
+        &self,
+        _: &NativeDeviceState,
+        _: u32,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedNativeProcessor>>, DeviceContractError> {
+        self.preparations.fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }
     fn prepare_matrix(
         &self,
         _state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
+        self.preparations.fetch_add(1, Ordering::Relaxed);
         Ok(StereoMatrix::identity())
     }
 }
@@ -117,6 +134,7 @@ impl NativeInstrumentDefinition for DynamicDefinition {
         _state: &NativeDeviceState,
         _rate: u32,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.preparations.fetch_add(1, Ordering::Relaxed);
         Err(DeviceContractError::UnsupportedProcessingClass)
     }
 }
@@ -124,6 +142,7 @@ impl NativeInstrumentDefinition for DynamicDefinition {
 fn both_registries_use_current_dynamic_descriptors_for_validation_and_atomic_patches() {
     let definition = DynamicDefinition {
         patches: AtomicUsize::new(0),
+        ..Default::default()
     };
     let effects: [&dyn NativeDeviceDefinition; 1] = [&definition];
     let instruments: [&dyn NativeInstrumentDefinition; 1] = [&definition];
@@ -185,4 +204,89 @@ fn both_registries_use_current_dynamic_descriptors_for_validation_and_atomic_pat
     let malformed = NativeDeviceState::new(definition.type_id(), 1, vec![]).unwrap();
     assert!(effects.migrate_state(&malformed).is_err());
     assert!(instruments.migrate_state(&malformed).is_err());
+}
+
+#[test]
+fn device_asset_references_survive_codecs_but_refuse_before_any_preparation() {
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    let definition = DynamicDefinition::default();
+    let effects: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let instruments: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let effects = NativeDeviceRegistry::new(&effects).unwrap();
+    let instruments = NativeInstrumentRegistry::new(&instruments).unwrap();
+    let source = definition
+        .default_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(3).unwrap(),
+            asset: DeviceAssetKey::new(17).unwrap(),
+        }])
+        .unwrap();
+    let snapshot =
+        DeviceParameterSnapshot::new(&[(DYNAMIC_ID, ParameterValue::Float(0.5))]).unwrap();
+    for result in [
+        effects.migrate_state(&source),
+        instruments.migrate_state(&source),
+        effects.patch_parameter(&source, DYNAMIC_ID, ParameterValue::Float(0.5)),
+        instruments.patch_parameter(&source, DYNAMIC_ID, ParameterValue::Float(0.5)),
+        effects.patch_parameters(&source, &snapshot),
+        instruments.patch_parameters(&source, &snapshot),
+    ] {
+        assert_eq!(
+            result.unwrap().asset_references(),
+            source.asset_references()
+        );
+    }
+    definition.migrations.store(0, Ordering::Relaxed);
+    definition.preparations.store(0, Ordering::Relaxed);
+    let refused = DeviceContractError::AssetResourcesUnavailable;
+    assert_eq!(effects.prepare_matrix(&source).unwrap_err(), refused);
+    assert!(matches!(effects.prepare_processor(&source, 48000), Err(e) if e == refused));
+    assert!(matches!(effects.prepare_device(&source, 48000), Err(e) if e == refused));
+    assert!(matches!(effects.prepare_runtime_device(&source, 48000), Err(e) if e == refused));
+    assert!(matches!(instruments.prepare_instrument(&source, 48000), Err(e) if e == refused));
+    assert_eq!(definition.migrations.load(Ordering::Relaxed), 0);
+    assert_eq!(definition.preparations.load(Ordering::Relaxed), 0);
+    // Calibrate that the fixture observes actual supported preparation calls.
+    let empty = source.clone().with_asset_references(vec![]).unwrap();
+    effects.prepare_matrix(&empty).unwrap();
+    effects.prepare_processor(&empty, 48000).unwrap();
+    assert!(instruments.prepare_instrument(&empty, 48000).is_err());
+    assert_eq!(definition.preparations.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn manually_prepared_chains_refuse_asset_metadata_including_bypassed_instances() {
+    use hex_lattice::{NativeRuntimeChain, PreparedProcessorInstance, ProcessorChainOwner};
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    let definition = DynamicDefinition::default();
+    let state = definition
+        .default_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(42).unwrap(),
+        }])
+        .unwrap();
+    for bypassed in [false, true] {
+        let instance = PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 2,
+            device_type: state.type_id(),
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48000,
+            configuration: Some(std::sync::Arc::new(state.clone())),
+            definition: None,
+        };
+        assert!(matches!(
+            NativeRuntimeChain::new(vec![instance.clone()]),
+            Err(DeviceContractError::AssetResourcesUnavailable)
+        ));
+        assert!(matches!(
+            NativeRuntimeChain::new_prepared(vec![instance.into()]),
+            Err(DeviceContractError::AssetResourcesUnavailable)
+        ));
+    }
 }

@@ -4320,3 +4320,13 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+## device asset reference persistence — #2681 / PR297, 17 october 2026
+
+First W10 slice adds bounded neutral asset-slot identities outside the unchanged
+DSP payload, registry/codec metadata preservation, canonical catalog/history
+validation and strict schema30 persistence when references exist. Asset-free
+projects keep schema29. Older encoders/presets and all supported native processing
+paths refuse references they cannot preserve or admit. Focused checks and source
+review are underway; final full CI remains required. No sampler registration,
+PCM leases, live assignment or complete asset-platform acceptance is claimed.
+See [contract and next slices](docs/device-assets.md). Sampler2679 remains first.
