@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
@@ -210,6 +211,7 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
                 .iter()
@@ -444,6 +446,7 @@ impl Project {
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.tuning = snapshot.tuning;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
         project.meter_map = crate::MeterMap::new(snapshot.meter_points)?;

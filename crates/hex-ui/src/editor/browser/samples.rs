@@ -285,7 +285,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
                             view.browser.samples.source = source.clone();
-                            view.browser.reset_results();
+                            view.reset_browser_results();
                             cx.notify();
                         }),
                     )

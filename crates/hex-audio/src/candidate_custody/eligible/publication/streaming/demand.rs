@@ -384,7 +384,7 @@ impl Active {
         pending_play: bool,
         command_prefix: u64,
         output: &mut [hex_engine::Frame],
-        mut observer: Option<&mut hex_engine::PostNodeObserver<'_>>,
+        mut observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
     ) -> StreamOutcome {
         let mut request = StreamInstall {
             domains,
@@ -512,12 +512,12 @@ impl Active {
                     right: right[0].as_mut().map(|p| p.pages()),
                 };
                 let observed = observer.is_some();
-                let mut observe = |identity, offset, frames: &[hex_engine::Frame]| {
+                let mut observe = |identity, phase, offset, frames: &[hex_engine::Frame]| {
                     if let Some(observer) = observer.as_deref_mut() {
-                        observer(identity, committed + offset, frames);
+                        observer(identity, phase, committed + offset, frames);
                     }
                 };
-                let observer: Option<&mut hex_engine::PostNodeObserver<'_>> =
+                let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
                     if observed { Some(&mut observe) } else { None };
                 let rendered = self
                     .state
@@ -525,7 +525,7 @@ impl Active {
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
-                        runtime.render_with_pages_and_post_node_observer(
+                        runtime.render_with_pages_and_node_signal_observer(
                             &mut output[committed..committed + window.frames],
                             &mut pages,
                             observer,

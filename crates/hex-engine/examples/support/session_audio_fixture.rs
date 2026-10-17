@@ -134,6 +134,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

@@ -39,7 +39,7 @@ impl EditorView {
         let bounds = self
             .arrangement_bounds
             .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
-        let width = bounds.width - super::tracks::TRACK_HEADER_WIDTH;
+        let width = bounds.width - self.track_header_width();
         (width.is_finite() && width > 0.0).then_some((grid, viewport, width))
     }
 
@@ -333,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
         self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
@@ -534,6 +535,10 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
+                if view.cancel_track_resize(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
@@ -578,6 +583,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                if view.cancel_track_resize(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();

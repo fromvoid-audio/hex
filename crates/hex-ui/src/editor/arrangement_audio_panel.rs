@@ -98,6 +98,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(title)),
     );
+    controls = controls.child(super::musical_audio_controls::warp_header(
+        view, clip_id, cx,
+    ));
     controls = controls
         .child(field_row(
             cx,

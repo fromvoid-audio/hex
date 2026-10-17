@@ -458,6 +458,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
@@ -479,6 +480,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -495,6 +497,11 @@ impl Project {
             meter_map: MeterMap::common_time(),
         })
     }
+    /// Project-saved tuning and audition settings; no local library identity.
+    pub fn tuning(&self) -> hex_tuning::ProjectTuning {
+        self.tuning
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
