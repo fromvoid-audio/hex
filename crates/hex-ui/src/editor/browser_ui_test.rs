@@ -429,14 +429,10 @@ fn browser_right_edge_drag_resizes_and_release_stops_resizing(cx: &mut TestAppCo
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     // Grab the actual separator; the browser may use a compact or expanded width.
-    visual.simulate_mouse_down(
-        visual
-            .debug_bounds("browser-resize-handle")
-            .expect("browser separator")
-            .center(),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    let separator = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("browser separator");
+    visual.simulate_mouse_down(separator.center(), MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(view.browser.resizing, "separator must receive mouse down")
     });

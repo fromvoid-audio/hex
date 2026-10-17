@@ -3854,3 +3854,14 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
 see docs/browser-layout.md for scope and native review checklist. Full functional
 follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
 Command-F. Tag assignment/filtering, collections and history remain pending.
+
+## 17 october 2026 — track header hover
+
+Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
+headers and demo Arrangement headers. Existing selection and control behavior is
+preserved. UI style and GPUI patch guards pass; architecture/build/format checks
+are blocked because this cloud environment has no Rust toolchain. Native visual
+acceptance remains open: hover selected/unselected headers and nested controls,
+then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
+The connected GitHub app provides repository access. The user explicitly requested
+merge after the missing Rust/native validation was disclosed.

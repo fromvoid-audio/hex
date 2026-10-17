@@ -79,6 +79,13 @@ extrema follow visible source ranges, including loop wraps and exhausted tails.
 They do not provide sample-level accuracy at extreme zoom. Native checks passed
 name visibility, zoom button, keyboard pan/fit and seek/split.
 
+Arrangement track headers (including main), Session track headers and demo
+Arrangement headers use the theme's `Hover` background while the pointer is
+inside the header. Leaving restores the normal background; selection borders,
+name highlights and control actions remain unchanged. Native hover acceptance
+remains open: check selected/unselected headers, move across nested controls,
+then leave the header and confirm the original background returns.
+
 Frame r61 uses the supplied Yield reference colors: deeper charcoal, off-white
 waveforms/text and red-orange controls. Secondary accents are quiet.
 
