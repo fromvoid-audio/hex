@@ -1,0 +1,44 @@
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex-eq-backspace/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex-eq-backspace/crates/hex-dsp)
+   Compiling hex-engine v0.1.0 (/workspace/hex-eq-backspace/crates/hex-engine)
+   Compiling hex-lattice v0.1.0 (/workspace/hex-eq-backspace/crates/hex-lattice)
+   Compiling hex-project v0.1.0 (/workspace/hex-eq-backspace/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex-eq-backspace/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex-eq-backspace/crates/hex-warp)
+   Compiling proc-macro-error2 v2.0.1 (/workspace/hex-eq-backspace/third_party/proc-macro-error2)
+   Compiling xattr v0.2.3 (/workspace/hex-eq-backspace/third_party/xattr)
+   Compiling zed-async-tar v0.5.0-zed
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-backspace/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex-eq-backspace/crates/hex-media)
+   Compiling stacksafe-macro v0.1.4
+   Compiling gpui v0.2.2 (/workspace/hex-eq-backspace/third_party/gpui)
+   Compiling stacksafe v0.1.4
+   Compiling gpui_http_client v0.2.2
+   Compiling hex-storage v0.1.0 (/workspace/hex-eq-backspace/crates/hex-storage)
+   Compiling hex-export v0.1.0 (/workspace/hex-eq-backspace/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-backspace/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex-eq-backspace/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-backspace/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-eq-backspace/crates/hex-widgets)
+   Compiling hex-preferences v0.1.0 (/workspace/hex-eq-backspace/crates/hex-preferences)
+   Compiling hex-midi v0.1.0 (/workspace/hex-eq-backspace/crates/hex-midi)
+   Compiling hex-diagnostics v0.1.0 (/workspace/hex-eq-backspace/crates/hex-diagnostics)
+   Compiling hex-library v0.1.0 (/workspace/hex-eq-backspace/crates/hex-library)
+    Finished `test` profile [unoptimized] target(s) in 1m 56s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 1 test
+
+thread 'editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history' (78974) panicked at crates/hex-ui/src/editor/device_panel/tests.rs:205:9:
+worker-backed device action did not complete: worker=0 queued=0 gesture=None barriers=0 error=None revision=Some(4)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 632 filtered out; finished in 6.62s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

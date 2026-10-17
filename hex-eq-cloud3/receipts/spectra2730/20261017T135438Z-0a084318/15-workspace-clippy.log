@@ -1,0 +1,16 @@
+    Checking hex-lattice-contract v0.1.0 (/workspace/hex-eq-spectra/crates/hex-lattice-contract)
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-spectra/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-spectra/crates/hex-ui)
+    Checking hex-project v0.1.0 (/workspace/hex-eq-spectra/crates/hex-project)
+    Checking hex-lattice v0.1.0 (/workspace/hex-eq-spectra/crates/hex-lattice)
+    Checking hex-devices v0.1.0 (/workspace/hex-eq-spectra/crates/hex-devices)
+    Checking hex-storage v0.1.0 (/workspace/hex-eq-spectra/crates/hex-storage)
+    Checking hex-engine v0.1.0 (/workspace/hex-eq-spectra/crates/hex-engine)
+    Checking hex-media v0.1.0 (/workspace/hex-eq-spectra/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex-eq-spectra/crates/hex-export)
+    Checking hex-session v0.1.0 (/workspace/hex-eq-spectra/crates/hex-session)
+    Checking hex-cli v0.1.0 (/workspace/hex-eq-spectra/crates/hex-cli)
+    Checking hex-audio v0.1.0 (/workspace/hex-eq-spectra/crates/hex-audio)
+    Checking hex-desktop v0.1.0 (/workspace/hex-eq-spectra/crates/hex-desktop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.77s

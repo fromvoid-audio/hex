@@ -1,0 +1,174 @@
+{
+  "commit": "a9029287c3934915839068bb559d64e5b1361472",
+  "dirty": false,
+  "dirty_files": [],
+  "disk_headroom": {
+    "checked_at": "2026-10-17T13:47:01Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 6338719744,
+        "probed_path": "/workspace/hex-eq-layout",
+        "requested_path": "/workspace/hex-eq-layout",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 6338719744,
+        "probed_path": "/workspace/hex-eq-layout",
+        "requested_path": "/workspace/hex-eq-layout/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "workspace default"
+  },
+  "duration_seconds": 41.574,
+  "end_tree": {
+    "commit": "a9029287c3934915839068bb559d64e5b1361472",
+    "content_sha256": "3d817cc675ee2233b9bfbfbaba99d12aed3ba8163d766843e474f0d9d76c1cf6",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "ended_at": "2026-10-17T13:47:40Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "scripts/local-ci.py",
+    "--quick"
+  ],
+  "mode": "quick",
+  "repo_root": "/workspace/hex-eq-layout",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261017T134658Z-42aa8a54",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "a9029287c3934915839068bb559d64e5b1361472",
+    "content_sha256": "3d817cc675ee2233b9bfbfbaba99d12aed3ba8163d766843e474f0d9d76c1cf6",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-eq-layout"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "a9029287c3934915839068bb559d64e5b1361472",
+    "content_sha256": "3d817cc675ee2233b9bfbfbaba99d12aed3ba8163d766843e474f0d9d76c1cf6",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "started_at": "2026-10-17T13:46:58Z",
+  "status": "partial",
+  "steps": [
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-17T13:47:01Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T134658Z-42aa8a54/01-architecture.log",
+      "started_at": "2026-10-17T13:47:01Z",
+      "status": "passed",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-17T13:47:02Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T134658Z-42aa8a54/02-gpui-patch.log",
+      "started_at": "2026-10-17T13:47:01Z",
+      "status": "passed",
+      "step_id": "gpui-patch"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-17T13:47:02Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T134658Z-42aa8a54/03-dependency-patches.log",
+      "started_at": "2026-10-17T13:47:02Z",
+      "status": "passed",
+      "step_id": "dependency-patches"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-17T13:47:03Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T134658Z-42aa8a54/04-ui-style.log",
+      "started_at": "2026-10-17T13:47:02Z",
+      "status": "passed",
+      "step_id": "ui-style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-17T13:47:05Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T134658Z-42aa8a54/05-device-layout.log",
+      "started_at": "2026-10-17T13:47:03Z",
+      "status": "passed",
+      "step_id": "device-layout"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-17T13:47:40Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T134658Z-42aa8a54/06-format.log",
+      "started_at": "2026-10-17T13:47:05Z",
+      "status": "passed",
+      "step_id": "format"
+    }
+  ],
+  "verification_status": "partial"
+}

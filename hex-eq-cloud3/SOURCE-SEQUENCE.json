@@ -1,0 +1,123 @@
+{
+  "status": "Source assignment complete: all six canonical PRs merged; source checks pass; later native cohort owned by coordinator",
+  "candidate": "92ecd8d2137c5d270d5d0c77a11dad58b50daf15",
+  "qualified_first_five": [
+    {
+      "ticket": 2729,
+      "pr": "https://github.com/PORTALSURFER/hex/pull/342",
+      "head": "023592e02b297c8c50839a5fe123674ca57831b0",
+      "merge": "dc53b8d36a1689d8faf8868e0b04ac7da14f4987",
+      "source_sha256": "9773e81940d2b8a925148069415d4c8e1ea17bf7e47afa4056ef6f2d9467ab9a",
+      "report": "/workspace/hex/artifacts/local-ci/20261017T124835Z-b6df1709/summary.json",
+      "report_sha256": "e025730959f31170b1949a737bbeb16a693770a4c0a6a072dc5569c4e91f9858",
+      "required_checks": 20,
+      "native_acceptance": "user accepted gestures; preserve signoff",
+      "original_requested_head": "23732ba00d811559a7370a5c95ee4342f2eb7131"
+    },
+    {
+      "ticket": 2730,
+      "pr": "https://github.com/PORTALSURFER/hex/pull/343",
+      "head": "1146cd61d186420660823d5b7a7e27ad6f83fc2d",
+      "merge": "5b0c04144bce15377fa0653fb235986fc758f840",
+      "source_sha256": "66507923b77faa86c3904520e51ee72b89dff7300371bca9529f123f1f9fc401",
+      "report": "/workspace/hex-eq-spectra/artifacts/local-ci/20261017T150441Z-1cdde3f1/summary.json",
+      "report_sha256": "7e3d48994f214cab1205c3c8816eb9bb54fc3ecc8fa8c15866abcd631df31b6f",
+      "required_checks": 20,
+      "native_acceptance": "pending later coordinator cohort",
+      "original_requested_head": "af73712ba76dd1a4b82662bdf46d5b45c858657f"
+    },
+    {
+      "ticket": 2736,
+      "pr": "https://github.com/PORTALSURFER/hex/pull/347",
+      "head": "942d77399ffc53fc1b6f4d7e4713771c594faecb",
+      "merge": "1879e01890e0ffd469ab2a6704da0dadec7100f8",
+      "source_sha256": "4285a1c958d05991e308510aed9c29e40e5cfbf4207d45bd52a878a0c1f79607",
+      "report": "/workspace/hex-eq-quality/artifacts/local-ci/20261017T151002Z-1144c1e2/summary.json",
+      "report_sha256": "3bfdd07c6eb70cab64b50b2521883b727f3afd86ec9f8cfc4595f7046688b017",
+      "required_checks": 20,
+      "native_acceptance": "pending later coordinator cohort"
+    },
+    {
+      "ticket": 2731,
+      "pr": "https://github.com/PORTALSURFER/hex/pull/344",
+      "head": "7cf0128cadc129b47b3490098691c62f062b7499",
+      "merge": "250d357c67c7e5a78100d700cbfde2dbf567ac64",
+      "source_sha256": "1b60851e190dd3b178d845b444555ed9f28810fdcc034fbb5a9bc4baa56d7966",
+      "report": "/workspace/hex-eq-layout/artifacts/local-ci/20261017T160616Z-b21194a7/summary.json",
+      "report_sha256": "65c4e4f68bbe451ef1246ea4d46751d77a16ea9443e6169c262ef929be87dd07",
+      "required_checks": 20,
+      "native_acceptance": "pending later coordinator cohort"
+    },
+    {
+      "ticket": 2737,
+      "pr": "https://github.com/PORTALSURFER/hex/pull/348",
+      "head": "1248960969b843413c350bbd27b310326c9e9443",
+      "merge": "f74199c6d364e2e07585a6dffbc76807788b3ac9",
+      "source_sha256": "cf72366f28e3b06619e31d1e0a056f6aa5201cc650a63a0e72da80791b11c394",
+      "report": "/workspace/hex-eq-backspace/artifacts/local-ci/20261017T161850Z-dcbc7cd5/summary.json",
+      "report_sha256": "9e363ba9d2a7acf9639632c3aa4234c4241417ec46f6662dbf4d0783ec9e1110",
+      "required_checks": 20,
+      "native_acceptance": "pending later coordinator cohort"
+    }
+  ],
+  "project349_report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T173807Z-bd574ca8/summary.json",
+  "project349_status": "passed",
+  "native_status": "2729 user accepted; remaining native acceptance/delivery belongs to coordinator later cohort",
+  "stopped_prior_report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T164705Z-d6a1bdfa/summary.json",
+  "stopped_inspection_report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T170916Z-e9c309f5/summary.json",
+  "qualified_pre_tuning": {
+    "head": "f575d53630440d8d9dd3f5104fd98de9cecced70",
+    "source_sha256": "2fa863d64a181933570e39afc26009e6c1d0f7061bf37b01a15515963bbfc08f",
+    "report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T171612Z-3d09fb9c/summary.json",
+    "report_sha256": "75edbd255d675d39973bc808a1e02214b800611f8eb71af0c36f244587e9ac6c",
+    "required_checks": 20,
+    "native_acceptance": "pending",
+    "qualification": "pre-integration with published tuning351/waveform372"
+  },
+  "qualified_pre_resources": {
+    "head": "9e0d736eaa7fbaa79e9dc8111207559d61dd0301",
+    "source_sha256": "a6fabbae229466541857cd1880ff593901fa73fc440d4af3cfcd8d834ed2dac0",
+    "report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T172526Z-f91eaf32/summary.json",
+    "report_sha256": "0c30185cdc85a5aa20faa8185e2d59acb6727a567f3a57df7c94e1fcb8df860b",
+    "required_checks": 20,
+    "native_acceptance": "pending",
+    "qualification": "includes published351/372, before published373 resource API"
+  },
+  "qualified_project349": {
+    "head": "b63424fde3e88915f747f8223bb2c9ea183403c3",
+    "source_sha256": "ef0d9e227138b9b9942f430633ee964dd044fd369ea84ba013a10c38ebcb2a79",
+    "report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T173807Z-bd574ca8/summary.json",
+    "report_sha256": "b5863b7cb75efe50493197a4f90554afd74c9edd93a59069fd7f261bee53b54e",
+    "required_checks": 20,
+    "native_acceptance": "pending later coordinator cohort",
+    "ticket": 2738,
+    "pr": "https://github.com/PORTALSURFER/hex/pull/349",
+    "merge": "92ecd8d2137c5d270d5d0c77a11dad58b50daf15"
+  },
+  "combined_report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T175136Z-f4235a03/summary.json",
+  "combined_status": "passed",
+  "merge_proof": {
+    "merge": "92ecd8d2137c5d270d5d0c77a11dad58b50daf15",
+    "parents": [
+      "642df957bf228b40c0467adf70980fc9ddc762cf",
+      "b63424fde3e88915f747f8223bb2c9ea183403c3"
+    ],
+    "actual_tree": "d0ed350292177aa1cdfd63e71de21431fc8ed93f",
+    "recomputed_tree": "d0ed350292177aa1cdfd63e71de21431fc8ed93f",
+    "head": "b63424fde3e88915f747f8223bb2c9ea183403c3",
+    "head_ancestor": true,
+    "head_ci_qualifies_complete_merge_tree": false,
+    "combined_post_merge_ci": "pending pinned merge; no moving-main chase"
+  },
+  "combined_source_sha256": "26eb0e6bd73d299c11f9bac3081f9e0d92882aa0f8c5fcca0cfd1ff76e8e56fd",
+  "combined_report_sha256": "35c5a1121499813b96f0e2568c148df91400943a012f4849ee617e30bc319ce5",
+  "combined_required_checks": 20,
+  "frozen_mac_cohort": {
+    "reported_by": "coordinator",
+    "source": "dfa21f5a",
+    "source_build": "3751944026",
+    "signed_executable_sha256": "219bb79505abbcff085a5643cb04e3cd317e2be01255c6450c1368e79ce30ae3",
+    "path": "/Users/portalsurfer/dev/hex/artifacts/hex.app",
+    "state": "closed; not launched/native accepted; excludes349/373; leave untouched"
+  }
+}

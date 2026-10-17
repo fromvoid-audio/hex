@@ -1,0 +1,30 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 45.91s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 1 test
+project-spectrum: Some(Bounds { origin: Point { x: 0px, y: 48px }, size: Size { 880px × 120px } })
+clip-view: Some(Bounds { origin: Point { x: 320px, y: 242px }, size: Size { 560px × 250px } })
+clip-view-toggle-row: Some(Bounds { origin: Point { x: 320px, y: 242px }, size: Size { 560px × 22px } })
+clip-detail-empty: Some(Bounds { origin: Point { x: 320px, y: 264px }, size: Size { 560px × 228px } })
+device-panel: None
+pinned-main-track: Some(Bounds { origin: Point { x: 320px, y: 198px }, size: Size { 560px × 44px } })
+arrangement-overview: Some(Bounds { origin: Point { x: 320px, y: 168px }, size: Size { 560px × 24px } })
+editor-status-bar: Some(Bounds { origin: Point { x: 0px, y: 518px }, size: Size { 880px × 22px } })
+collapsed arrangement: Some(Bounds { origin: Point { x: 320px, y: 136px }, size: Size { 560px × 41px } })
+
+thread 'editor::project_spectrum::tests::project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history' (319829) panicked at crates/hex-ui/src/editor/project_spectrum/tests.rs:178:9:
+workspace remains usable: Bounds { origin: Point { x: 320px, y: 234px }, size: Size { 560px × 0px } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::project_spectrum::tests::project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history ... FAILED
+
+failures:
+
+failures:
+    editor::project_spectrum::tests::project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 643 filtered out; finished in 0.32s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

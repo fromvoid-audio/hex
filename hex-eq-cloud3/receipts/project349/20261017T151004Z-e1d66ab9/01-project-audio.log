@@ -1,0 +1,29 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+warning: method `render_with_node_signal_observer` is never used
+   --> crates/hex-audio/src/prepared/runtime_view.rs:192:19
+    |
+147 | impl RuntimeMut<'_> {
+    | ------------------- method in this implementation
+...
+192 |     pub(super) fn render_with_node_signal_observer(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `hex-audio` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 18.84s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_audio-9093dbbd033c2154)
+
+running 8 tests
+test lifecycle::tests::initial_open_passes_no_assumed_project_rate ... ok
+test sample_preview::tests::preview_mixes_while_stopped_playing_paused_and_after_project_stop ... ok
+test prepared::tests::selected_target_is_rejected_when_project_switches_at_block_boundary ... ok
+test spectrum_worker::project::tests::full_packet_pool_recovers_without_joining_windows_across_loss ... ok
+test spectrum_worker::project::tests::selection_preserves_every_identity_and_refuses_partial_or_wrapped_snapshots ... ok
+test prepared::project_spectrum_tests::actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validation ... ok
+test spectrum_worker::project::tests::real_independent_tones_keep_stereo_power_and_master_on_one_window ... ok
+test spectrum_worker::project::tests::maximum_selection_capture_and_queue_pressure_allocate_and_free_nothing ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 196 filtered out; finished in 1.33s
+

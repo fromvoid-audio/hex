@@ -1,0 +1,27 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 1m 12s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 4 tests
+test editor::project_spectrum::tests::project_spectrum_keeps_workspace_with_populated_details_and_returns ... ok
+test editor::project_spectrum::tests::project_spectrum_compact_live_header_restores_height_and_keeps_device_details ... FAILED
+test editor::project_spectrum::tests::project_spectrum_collapse_resize_and_cancel_preserve_layout_and_history ... ok
+test editor::project_spectrum::tests::project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_context ... ok
+
+failures:
+
+---- editor::project_spectrum::tests::project_spectrum_compact_live_header_restores_height_and_keeps_device_details stdout ----
+
+thread 'editor::project_spectrum::tests::project_spectrum_compact_live_header_restores_height_and_keeps_device_details' (353000) panicked at crates/hex-ui/src/editor/project_spectrum/tests.rs:317:5:
+assertion failed: visual.debug_bounds("arrangement-content").unwrap().size.height >= px(44.0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    editor::project_spectrum::tests::project_spectrum_compact_live_header_restores_height_and_keeps_device_details
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 660 filtered out; finished in 3.79s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

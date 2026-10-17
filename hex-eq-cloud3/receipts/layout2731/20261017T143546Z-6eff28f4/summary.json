@@ -1,0 +1,313 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/workspace/hex-eq-quality/target",
+    "lock_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.lock",
+    "manifest_path": "/workspace/hex-eq-layout/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex-eq-layout/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.owner.json",
+    "target_directory": "/workspace/hex-eq-quality/target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex-eq-layout"
+  },
+  "commit": "1a5b33507cf67cadbcee2a5dc82f406f774cb5b9",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/hex-audio/src/spectrum_worker/native.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-17T14:35:47Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 11771633664,
+        "probed_path": "/workspace/hex-eq-layout",
+        "requested_path": "/workspace/hex-eq-layout",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 11771633664,
+        "probed_path": "/workspace/hex-eq-quality/target",
+        "requested_path": "/workspace/hex-eq-quality/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 7.342,
+  "end_tree": {
+    "commit": "1a5b33507cf67cadbcee2a5dc82f406f774cb5b9",
+    "content_sha256": "b52323c91f0aeccf84a995660277fa0cb5402474d9b5aa53a907f7b0f0a16463",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-audio/src/spectrum_worker/native.rs"
+    ]
+  },
+  "ended_at": "2026-10-17T14:35:53Z",
+  "exit_code": 1,
+  "invocation_argv": [
+    "-"
+  ],
+  "mode": "quick",
+  "repo_root": "/workspace/hex-eq-layout",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261017T143546Z-6eff28f4",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "1a5b33507cf67cadbcee2a5dc82f406f774cb5b9",
+    "content_sha256": "b52323c91f0aeccf84a995660277fa0cb5402474d9b5aa53a907f7b0f0a16463",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-audio/src/spectrum_worker/native.rs"
+    ],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-eq-layout"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "1a5b33507cf67cadbcee2a5dc82f406f774cb5b9",
+    "content_sha256": "b52323c91f0aeccf84a995660277fa0cb5402474d9b5aa53a907f7b0f0a16463",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-audio/src/spectrum_worker/native.rs"
+    ]
+  },
+  "started_at": "2026-10-17T14:35:46Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-audio",
+        "spectrum_worker::native::tests::fixed_factory",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T14:35:53Z",
+      "error": null,
+      "exit_code": 101,
+      "log": "artifacts/local-ci/20261017T143546Z-6eff28f4/01-native-spectrum-factory.log",
+      "started_at": "2026-10-17T14:35:47Z",
+      "status": "failed",
+      "step_id": "native-spectrum-factory"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-audio",
+        "reader_drops_worker_result_by_capture_age",
+        "--locked"
+      ],
+      "ended_at": null,
+      "error": "pipeline stopped before this step",
+      "exit_code": null,
+      "log": null,
+      "started_at": null,
+      "status": "not_run",
+      "step_id": "reader-freshness"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-eq-layout"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-eq-layout"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 1311045
+    }
+  },
+  "verification_status": "failed"
+}

@@ -1,0 +1,9 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 22.54s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_engine-79f3f3dc32a118db)
+
+running 1 test
+test session_playback::tests::capture_tests::owned_stopped_monitor_drains_private_history_and_closes_transactions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 525 filtered out; finished in 0.01s
+

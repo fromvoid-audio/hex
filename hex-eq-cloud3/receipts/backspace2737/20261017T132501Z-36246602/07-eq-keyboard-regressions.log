@@ -1,0 +1,31 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-backspace/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-backspace/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-eq-backspace/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-backspace/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 39.44s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 8 tests
+
+thread 'editor::device_panel::tests::eq_ui_tests::eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local' (83370) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs:239:36:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local ... FAILED
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_creation_escape_and_changed_source_cancel_without_reserving_identity ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels ... ok
+test editor::device_panel::tests::eq_ui_tests::legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_rendered_creation_drag_automation_point_edit_and_history ... ok
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 626 filtered out; finished in 5.08s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

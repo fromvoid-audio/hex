@@ -1,0 +1,58 @@
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+    Checking linux-raw-sys v0.12.1
+    Checking hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+    Checking rustix v1.1.5
+    Checking bytemuck v1.25.2
+    Checking ring v0.17.14
+    Checking rustls-webpki v0.103.15
+    Checking polling v3.11.0
+    Checking num-complex v0.4.6
+    Checking async-io v2.6.0
+    Checking rustls v0.23.45
+    Checking async-signal v0.2.14
+    Checking async-process v2.5.0
+    Checking async-net v2.0.0
+    Checking tiny-skia-path v0.11.4
+    Checking async-global-executor v2.4.1
+    Checking rgb v0.8.53
+    Checking rustybuzz v0.20.1
+    Checking tokio-rustls v0.26.6
+    Checking hyper-rustls v0.27.10
+    Checking async-std v1.13.2
+    Checking pulp v0.22.3
+    Checking gpui_collections v0.2.2
+    Checking zbus v5.13.2
+    Checking rust-embed v8.13.0
+    Checking rand v0.9.5
+    Checking psm v0.1.31
+    Checking smol v2.0.2
+    Checking tempfile v3.27.0
+    Checking exr v1.74.2
+    Checking usvg v0.45.1
+    Checking ashpd v0.12.3
+    Checking blade-graphics v0.7.1
+    Checking gpui_util v0.2.2
+    Checking zed-reqwest v0.12.15-zed
+    Checking zed-async-tar v0.5.0-zed
+    Checking ravif v0.12.0
+    Checking stacker v0.1.25
+    Checking tiny-skia v0.11.4
+    Checking num v0.4.3
+    Checking freetype-sys v0.20.1
+    Checking qoi v0.4.1
+    Checking zed-font-kit v0.14.1-zed
+    Checking resvg v0.45.1
+    Checking oo7 v0.5.0
+    Checking image v0.25.9
+    Checking gpui_http_client v0.2.2
+    Checking stacksafe v0.1.4
+    Checking blade-util v0.3.0
+    Checking calloop v0.13.0
+    Checking hex-export v0.1.0 (/workspace/hex-project-spectrum/crates/hex-export)
+    Checking gpui v0.2.2 (/workspace/hex-project-spectrum/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+    Checking hex-session v0.1.0 (/workspace/hex-project-spectrum/crates/hex-session)
+    Checking hex-widgets v0.1.0 (/workspace/hex-project-spectrum/crates/hex-widgets)
+    Checking hex-desktop v0.1.0 (/workspace/hex-project-spectrum/crates/hex-desktop)
+    Finished `dev` profile [unoptimized] target(s) in 39.69s

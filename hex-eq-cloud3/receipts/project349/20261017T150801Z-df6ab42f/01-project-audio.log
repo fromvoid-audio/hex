@@ -1,0 +1,62 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex-project-spectrum/crates/hex-media)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+error[E0308]: mismatched types
+   --> crates/hex-audio/src/candidate_custody/eligible/publication/streaming/demand.rs:570:29
+    |
+566 |                         runtime.render_with_pages_and_signal_observers(
+    |                                 -------------------------------------- arguments to this method are incorrect
+...
+570 |                             project_tap,
+    |                             ^^^^^^^^^^^ expected `Option<&mut ProjectOutputTap<'_, '_>>`, found `Option<ProjectOutputTap<'_, '_>>`
+    |
+    = note: expected enum `Option<&mut ProjectOutputTap<'_, '_>>`
+               found enum `Option<ProjectOutputTap<'_, '_>>`
+note: method defined here
+   --> crates/hex-engine/src/audio_candidate/claimed/playback.rs:101:12
+    |
+101 |     pub fn render_with_pages_and_signal_observers<P: crate::MediaPages + ?Sized>(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0308]: mismatched types
+    --> crates/hex-audio/src/prepared.rs:2353:17
+     |
+2347 |             let outcome = active.render_streamed_with_project(
+     |                                  ---------------------------- arguments to this method are incorrect
+...
+2353 |                 project,
+     |                 ^^^^^^^ expected `Option<&mut ProjectOutputTap<'_, '_>>`, found `Option<ProjectOutputTap<'_, '_>>`
+     |
+     = note: expected enum `Option<&mut ProjectOutputTap<'_, '_>>`
+                found enum `Option<ProjectOutputTap<'_, '_>>`
+note: method defined here
+    --> crates/hex-audio/src/candidate_custody/eligible/publication/streaming/demand.rs:398:19
+     |
+ 398 |     pub(crate) fn render_streamed_with_project(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 405 |         mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+     |         --------------------------------------------------------------
+
+error[E0308]: mismatched types
+    --> crates/hex-audio/src/prepared.rs:2369:61
+     |
+2369 |                 .render_with_signal_observers(output, node, project)?;
+     |                  ----------------------------               ^^^^^^^ expected `Option<&mut ProjectOutputTap<'_, '_>>`, found `Option<ProjectOutputTap<'_, '_>>`
+     |                  |
+     |                  arguments to this method are incorrect
+     |
+     = note: expected enum `Option<&mut ProjectOutputTap<'_, '_>>`
+                found enum `Option<ProjectOutputTap<'_, '_>>`
+note: method defined here
+    --> crates/hex-audio/src/prepared/runtime_view.rs:202:19
+     |
+ 202 |     pub(super) fn render_with_signal_observers(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 206 |         project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+     |         ----------------------------------------------------------
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `hex-audio` (lib test) due to 3 previous errors

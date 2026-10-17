@@ -1,0 +1,10 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 9.45s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_audio-9093dbbd033c2154)
+
+running 1 test
+test spectrum_worker::project::tests::rates_silence_nonfinite_and_wrong_publication_reset_every_layer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 208 filtered out; finished in 0.17s
+

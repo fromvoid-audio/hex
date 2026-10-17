@@ -1,0 +1,410 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/workspace/hex-project-spectrum/artifacts/portable-target",
+    "lock_path": "/tmp/hex-local-ci-targets/3c068b25c7d1c753c366f96a33d7f5a3aa8a65fb5fd25921412c6d0d264c3960.lock",
+    "manifest_path": "/workspace/hex-project-spectrum/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex-project-spectrum/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/3c068b25c7d1c753c366f96a33d7f5a3aa8a65fb5fd25921412c6d0d264c3960.owner.json",
+    "target_directory": "/workspace/hex-project-spectrum/artifacts/portable-target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-tuning#0.1.0",
+        "name": "hex-tuning",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-tuning#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-project-spectrum/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex-project-spectrum/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex-project-spectrum"
+  },
+  "commit": "84fa786ee031a627bf3828ef9603d7fe041e73ae",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+    " M crates/hex-engine/src/lib.rs",
+    " M crates/hex-engine/src/playback.rs",
+    " M crates/hex-engine/src/playback/candidate_storage.rs",
+    " D crates/hex-engine/src/playback/project_output.rs",
+    " M docs/project-spectrum.md",
+    "?? crates/hex-engine/src/project_output.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-17T17:07:28Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 17894211584,
+        "probed_path": "/workspace/hex-project-spectrum",
+        "requested_path": "/workspace/hex-project-spectrum",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 17894211584,
+        "probed_path": "/workspace/hex-project-spectrum/artifacts/portable-target",
+        "requested_path": "/workspace/hex-project-spectrum/artifacts/portable-target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 97.757,
+  "end_tree": {
+    "commit": "84fa786ee031a627bf3828ef9603d7fe041e73ae",
+    "content_sha256": "d5386fa2a2d65e96fa1e7b225b0bec0977d022e808b18baaf5d760c248116d98",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      " M crates/hex-engine/src/lib.rs",
+      " M crates/hex-engine/src/playback.rs",
+      " M crates/hex-engine/src/playback/candidate_storage.rs",
+      " D crates/hex-engine/src/playback/project_output.rs",
+      " M docs/project-spectrum.md",
+      "?? crates/hex-engine/src/project_output.rs"
+    ]
+  },
+  "ended_at": "2026-10-17T17:09:06Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "-"
+  ],
+  "mode": "quick",
+  "repo_root": "/workspace/hex-project-spectrum",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261017T170728Z-9c7e290e",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "84fa786ee031a627bf3828ef9603d7fe041e73ae",
+    "content_sha256": "d5386fa2a2d65e96fa1e7b225b0bec0977d022e808b18baaf5d760c248116d98",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      " M crates/hex-engine/src/lib.rs",
+      " M crates/hex-engine/src/playback.rs",
+      " M crates/hex-engine/src/playback/candidate_storage.rs",
+      " D crates/hex-engine/src/playback/project_output.rs",
+      " M docs/project-spectrum.md",
+      "?? crates/hex-engine/src/project_output.rs"
+    ],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-project-spectrum"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "84fa786ee031a627bf3828ef9603d7fe041e73ae",
+    "content_sha256": "d5386fa2a2d65e96fa1e7b225b0bec0977d022e808b18baaf5d760c248116d98",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      " M crates/hex-engine/src/lib.rs",
+      " M crates/hex-engine/src/playback.rs",
+      " M crates/hex-engine/src/playback/candidate_storage.rs",
+      " D crates/hex-engine/src/playback/project_output.rs",
+      " M docs/project-spectrum.md",
+      "?? crates/hex-engine/src/project_output.rs"
+    ]
+  },
+  "started_at": "2026-10-17T17:07:28Z",
+  "status": "partial",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T17:08:07Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T170728Z-9c7e290e/01-workspace-clippy.log",
+      "started_at": "2026-10-17T17:07:28Z",
+      "status": "passed",
+      "step_id": "workspace-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T17:08:33Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T170728Z-9c7e290e/02-ui-feature-clippy.log",
+      "started_at": "2026-10-17T17:08:07Z",
+      "status": "passed",
+      "step_id": "ui-feature-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-audio",
+        "-p",
+        "hex-desktop",
+        "--all-targets",
+        "--features",
+        "allocation-probe",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T17:08:51Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T170728Z-9c7e290e/03-audio-feature-clippy.log",
+      "started_at": "2026-10-17T17:08:33Z",
+      "status": "passed",
+      "step_id": "audio-feature-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-engine",
+        "--lib",
+        "project_owner_validation",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T17:09:05Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T170728Z-9c7e290e/04-project-owner-scaling.log",
+      "started_at": "2026-10-17T17:08:51Z",
+      "status": "passed",
+      "step_id": "project-owner-scaling"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-engine",
+        "--lib",
+        "live_project_taps",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T17:09:06Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T170728Z-9c7e290e/05-project-tap-real-owners.log",
+      "started_at": "2026-10-17T17:09:05Z",
+      "status": "passed",
+      "step_id": "project-tap-real-owners"
+    }
+  ],
+  "target_cache": {
+    "action": "reuse",
+    "cleanup_argv": null,
+    "cleanup_status": "not_needed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-project-spectrum"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/3c068b25c7d1c753c366f96a33d7f5a3aa8a65fb5fd25921412c6d0d264c3960.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-project-spectrum"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 538477
+    }
+  },
+  "verification_status": "partial"
+}

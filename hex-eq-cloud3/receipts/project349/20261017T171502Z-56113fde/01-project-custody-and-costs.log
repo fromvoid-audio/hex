@@ -1,0 +1,22 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex-project-spectrum/crates/hex-media)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 12.90s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_audio-e0c7e9bfa6816d72)
+
+running 11 tests
+test spectrum_worker::project::tests::insufficient_constructor_return_capacity_refuses_without_panicking ... ok
+test spectrum_worker::project::tests::mailbox_reads_only_selected_prefix_and_refuses_concurrent_publication ... ok
+test spectrum_worker::project::tests::contribution_budget_rejects_a_whole_window_instead_of_partial_track_layers ... ok
+test spectrum_worker::project::tests::profile_project_spectrum_maximum ... ignored, optimized source profile; run explicitly, not a timing correctness gate
+test spectrum_worker::project::tests::full_packet_pool_recovers_without_joining_windows_across_loss ... ok
+test spectrum_worker::project::tests::maximum_selection_capture_and_queue_pressure_allocate_and_free_nothing ... ok
+test spectrum_worker::project::tests::real_independent_tones_keep_stereo_power_and_master_on_one_window ... ok
+test spectrum_worker::project::tests::selection_preserves_every_identity_and_refuses_partial_or_wrapped_snapshots ... ok
+test spectrum_worker::project::tests::return_backpressure_retains_exact_owner_and_resumes_without_allocating_or_dropping ... ok
+test spectrum_worker::project::tests::rates_silence_nonfinite_and_wrong_publication_reset_every_layer ... ok
+test spectrum_worker::project::tests::incremental_maximum_analysis_freezes_one_window_and_bounds_each_worker_turn ... ok
+
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 205 filtered out; finished in 0.57s
+

@@ -1,0 +1,9 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 21.48s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_engine-79f3f3dc32a118db)
+
+running 1 test
+test session_playback::tests::stream_action_tests::streamed_paired_observation_covers_each_phase_at_exact_loop_offsets ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 525 filtered out; finished in 0.01s
+

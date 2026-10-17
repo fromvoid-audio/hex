@@ -1,0 +1,11 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-layout/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-layout/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-layout/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 27.37s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 1 test
+test editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 631 filtered out; finished in 0.85s
+

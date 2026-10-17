@@ -1,0 +1,42 @@
+   Compiling alsa-sys v0.4.0
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-layout/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex-eq-layout/crates/hex-media)
+   Compiling alsa v0.11.0
+   Compiling cpal v0.17.3
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-layout/crates/hex-audio)
+error[E0027]: pattern does not mention fields `output_envelope`, `input_envelope`, `envelope_at`
+   --> crates/hex-audio/src/spectrum_worker/native.rs:87:13
+    |
+ 87 |           let Self {
+    |  _____________^
+ 88 | |             context: _,
+ 89 | |             kernel,
+ 90 | |             kernel_rate: _,
+...   |
+101 | |             dirty_since_analysis: _,
+102 | |         } = self;
+    | |_________^ missing fields `output_envelope`, `input_envelope`, `envelope_at`
+    |
+help: include the missing fields in the pattern
+    |
+101 -             dirty_since_analysis: _,
+102 -         } = self;
+101 +             dirty_since_analysis: _, output_envelope, input_envelope, envelope_at } = self;
+    |
+help: if you don't care about these missing fields, you can explicitly ignore them
+    |
+101 -             dirty_since_analysis: _,
+102 -         } = self;
+101 +             dirty_since_analysis: _, output_envelope: _, input_envelope: _, envelope_at: _ } = self;
+    |
+help: or always ignore missing fields here
+    |
+101 -             dirty_since_analysis: _,
+102 -         } = self;
+101 +             dirty_since_analysis: _, .. } = self;
+    |
+
+For more information about this error, try `rustc --explain E0027`.
+error: could not compile `hex-audio` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `hex-audio` (lib test) due to 1 previous error

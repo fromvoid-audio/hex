@@ -1,0 +1,8 @@
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:277: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:307: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:327: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:373: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:400: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:436: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:455: route text through theme::text or add an explicit view component
+crates/hex-ui/src/editor/device_panel/eq_panel.rs:479: route text through theme::text or add an explicit view component

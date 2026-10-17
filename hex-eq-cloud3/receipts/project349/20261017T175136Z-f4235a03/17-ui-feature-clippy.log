@@ -1,0 +1,5 @@
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+    Checking hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+    Finished `dev` profile [unoptimized] target(s) in 20.86s

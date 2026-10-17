@@ -1,0 +1,19 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+error[E0433]: failed to resolve: could not find `Playback` in the crate root
+    --> crates/hex-engine/src/session_playback/capture_tests.rs:1148:31
+     |
+1148 |         let playback = crate::Playback::from_prepared(Arc::clone(&prepared));
+     |                               ^^^^^^^^ could not find `Playback` in the crate root
+     |
+help: consider importing this struct
+     |
+   1 + use crate::playback::Playback;
+     |
+help: if you import `Playback`, refer to it directly
+     |
+1148 -         let playback = crate::Playback::from_prepared(Arc::clone(&prepared));
+1148 +         let playback = Playback::from_prepared(Arc::clone(&prepared));
+     |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `hex-engine` (lib test) due to 1 previous error

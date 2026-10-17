@@ -1,0 +1,423 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-eq-spectra/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-spectra/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-spectra/crates/hex-ui)
+   Compiling hex-media v0.1.0 (/workspace/hex-eq-spectra/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex-eq-spectra/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex-eq-spectra/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-spectra/crates/hex-audio)
+   Compiling hex-desktop v0.1.0 (/workspace/hex-eq-spectra/crates/hex-desktop)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.63s
+     Running unittests src/lib.rs (/workspace/hex/target/debug/deps/hex_audio-9dfe56959726abba)
+
+running 198 tests
+test candidate_custody::eligible::preparation::tests::refused_pre_spawn_reservation_never_occupies_or_starts_a_pair ... ok
+test candidate_custody::eligible::pages::tests::closing_during_seal_retains_exact_accepted_loan_for_normal_cleanup ... ok
+test candidate_custody::eligible::publication::preparation::tests::actual_preparation_refusal_remains_distinct_from_retiring_until_cleanup ... ok
+test candidate_custody::eligible::pages::tests::exact_loan_returns_before_join_and_report_reuse_not_just_retirement_request ... ok
+test candidate_custody::eligible::publication::preparation::tests::cancellation_and_pressure_preserve_slot_until_partial_sources_and_wrappers_are_destroyed ... ok
+test candidate_custody::eligible::publication::preparation::tests::partial_construction_unwind_keeps_actual_cell_charge_and_first_payload_without_retry ... ok
+test candidate_custody::eligible::preparation::tests::starting_close_keeps_occupied_charge_then_parks_actual_success_for_cleanup ... ok
+test candidate_custody::eligible::publication::preparation::tests::graph_reservation_precedes_source_start_and_one_shot_binding_holds_pair_until_cleanup ... ok
+test candidate_custody::eligible::publication::preparation::tests::reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup ... ok
+test candidate_custody::eligible::publication::streaming::tests::finite_actual_workspace_moves_with_runtime_and_returns_before_report_slot_reuse ... ok
+test candidate_custody::eligible::publication::tests::excessive_metadata_request_refuses_before_reserving_per_cell_payloads ... ok
+test candidate_custody::eligible::publication::tests::member_pressure_and_foreign_return_refuse_original_ownership_before_release ... ok
+test candidate_custody::eligible::publication::tests::reserved_actual_split_retains_anchors_until_runtime_and_metadata_drop_then_bank_report ... ok
+test candidate_custody::eligible::tests::actual_construction_cap_refusal_returns_original_pair_and_releases_only_reservation ... ok
+test candidate_custody::eligible::tests::closing_after_reservation_keeps_successful_pair_in_accepted_persistent_cleanup ... ok
+test candidate_custody::eligible::preparation::tests::pending_root_uses_same_n2_slot_until_loan_and_actual_report_complete ... ok
+test candidate_custody::eligible::publication::tests::abandoned_return_destroys_original_bank_and_consumes_charge_on_worker_without_ui_poll ... ok
+test candidate_custody::tests::exact_root_runtime_slot_incarnation_and_duplicate_return_refusals_preserve_real_owner ... ok
+test candidate_custody::tests::pressured_job_idle_ingest_and_retirement_order_keep_owners_and_ui_poll_moves_only_ready ... ok
+test device::tests::finite_mono_extrema_have_representable_symmetric_means ... ok
+test device::tests::invalid_host_shape_is_refused_before_copy ... ok
+test device::tests::invalid_late_sample_silences_only_its_chunk_in_every_host_format ... ok
+test device::tests::ordinary_host_layout_and_sample_formats_retain_previous_values ... ok
+test device::tests::recovery_rate_mismatch_is_rejected_before_stream_construction ... ok
+test device::tests::successful_and_failed_host_conversion_allocate_nothing ... ok
+test candidate_custody::eligible::tests::two_actual_pair_cells_hold_pressure_and_charges_through_join_and_report_consumption ... ok
+test gain_recording::tests::abort_drains_late_old_commands_before_admitting_a_new_take ... ok
+test gain_recording::tests::delivery_clock_overflow_releases_the_in_hand_value_credit_before_abort ... ok
+test gain_recording::tests::latest_boundary_value_wins_and_unwritten_or_cancelled_takes_never_commit ... ok
+test gain_recording::tests::only_written_compensated_samples_ack_values_and_release ... ok
+test gain_recording::tests::reset_discards_in_flight_delivery_markers_without_acknowledging_them ... ok
+test gain_recording::tests::split_admission_rolls_back_enqueue_failure_and_stale_terminal_cannot_release_new_take ... ok
+test gain_recording::tests::terminal_reservation_survives_full_undrained_normal_prefix ... ok
+test lifecycle::candidate_retirement_tests::bounded_open_cleanup_retire_order_adopts_old_job_before_next_open ... ok
+test lifecycle::candidate_retirement_tests::pre_exposure_build_failure_and_exposed_missing_handle_have_distinct_custody ... ok
+test eq_allocation::max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_nothing ... ok
+test lifecycle::candidate_retirement_tests::returned_stream_play_failure_pause_pressure_and_release_orders_keep_real_queued_owner ... ok
+test lifecycle::candidate_retirement_tests::stream_destructor_unwind_marks_pending_before_take_and_never_retries ... ok
+test lifecycle::candidate_retirement_tests::worker_open_uses_same_lane_and_preserves_negotiated_completion_and_abandonment ... ok
+test lifecycle::tests::exclusive_lease_prevents_accumulating_live_or_retained_streams ... ok
+test lifecycle::tests::abandoned_late_output_retires_on_worker_before_reservation_releases ... ok
+test lifecycle::tests::full_open_queue_rolls_back_reservation ... ok
+test lifecycle::tests::failed_stop_retains_owner_and_disposal_runs_on_worker ... ok
+test lifecycle::tests::initial_open_passes_no_assumed_project_rate ... ok
+test lifecycle::tests::spectrum_retirement_drops_callback_before_join_and_lease ... ok
+test lifecycle::tests::recovery_open_waits_until_failed_retirement_releases_exclusive_lease ... ok
+test device::tests::actual_host_finish_commits_extrema_but_refused_chunks_never_acknowledge_gain ... ok
+test candidate_custody::tests::actual_failed_metadata_disposal_closes_new_staging_and_preserves_refused_inputs ... ok
+test native_callback_owner::endpoint_tests::actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease_until_client_drop ... ok
+test native_callback_owner::endpoint_tests::exposed_resident_client_permanently_refuses_later_constructor_conversion ... ok
+test native_callback_owner::endpoint_tests::publication_destructor_failure_keeps_other_actual_endpoint_and_first_payload_without_retry ... ok
+test native_callback_owner::tests::both_guards_must_fully_release_after_publication_and_exact_boxes_drop_only_on_control ... ok
+test native_callback_owner::tests::explicit_endpoint_close_is_inert_and_only_terminal_control_destroys_actual_box ... ok
+test owned_effect_allocation::owned_effect_active_abort_bypass_inherit_and_reset_allocate_and_free_nothing ... ok
+test prepared::applied_source::tests::missing_unacked_contended_or_legacy_source_is_never_reported_as_applied ... ok
+test native_callback_owner::endpoint_tests::worker_and_client_endpoints_return_in_either_order_and_unexposed_open_abandonment_is_inert ... ok
+test prepared::candidate_tests::actual_catalog_lease_busy_keeps_slot_and_original_pair_until_normal_cleanup ... ok
+test prepared::candidate_tests::actual_domain_pressure_and_mismatched_pairs_refuse_without_replacing_inputs ... ok
+test prepared::candidate_tests::candidate_rejection_held_return_and_guard_release_have_zero_total_and_net_callback_allocations ... ok
+test prepared::candidate_tests::candidate_rejection_consumes_priority_stop_under_full_command_pressure_in_the_same_block ... ok
+test native_callback_owner::tests::actual_data_destructor_panic_keeps_error_owner_and_first_control_payload_without_retry ... ok
+test prepared::candidate_tests::constructor_domain_opt_in_requires_vacancy_and_preserves_legacy_refusal_owner ... ok
+test native_callback_owner::endpoint_tests::unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_constructor ... ok
+test prepared::candidate_tests::full_return_queue_holds_actual_candidate_and_shutdown_ack_is_not_disposal ... ok
+test prepared::candidate_tests::live_control_abandonment_finishes_busy_multiphase_cleanup_without_another_ui_poll ... ok
+test prepared::candidate_tests::naked_channel_and_full_queue_refuse_original_owner_then_control_first_drop_preserves_queued_custody ... ok
+test prepared::candidate_tests::real_candidate_queue_rejects_before_render_preserves_applied_revision_and_recovers_original_bank ... ok
+test prepared::eligible_publication::tests::actions::original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_pressure ... ok
+test prepared::eligible_publication::tests::actions::real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip ... ok
+test prepared::eligible_publication::tests::actions::real_seek_waits_without_commit_busy_and_pause_cancel_then_playfrom_reads_exact_page ... ok
+test prepared::eligible_publication::tests::actual_eligible_active_slot_installs_then_acks_renders_commands_and_returns_after_real_handle ... ok
+test prepared::eligible_publication::tests::actual_queue_rejection_and_return_pressure_recover_original_owners_without_install_ack ... ok
+test prepared::eligible_publication::tests::native_resources::actual_eligible_owner_remains_pinned_after_carrier_destructor_panic_without_retry_or_ready ... ok
+test prepared::eligible_publication::tests::native_resources::all_constructor_channel_handles_need_caller_capacity_before_original_owner_can_move ... ok
+test prepared::eligible_publication::tests::fanout::actual_native_abc_moves_independent_utility_subsets_and_reclaims_each_original_bank ... ok
+test prepared::eligible_publication::tests::actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pair_until_reports ... ok
+test prepared::eligible_publication::tests::cancellation_is_exact_to_pending_incarnation_and_fresh_policy_refuses_original_owner ... ok
+test prepared::eligible_publication::tests::native_resources::an_already_used_preview_lane_cannot_be_relabelled_as_closed_constructor_custody ... ok
+test prepared::eligible_publication::tests::native_resources::both_final_guard_orders_and_completed_backend_gate_actual_eligible_return ... ok
+test prepared::eligible_publication::tests::native_resources::closed_root_revokes_already_queued_claim_without_install_or_ack ... ok
+test prepared::eligible_publication::tests::native_resources::native_flag_without_actual_carriers_and_resource_pressure_refuse_before_consuming_inputs ... ok
+test prepared::eligible_publication::tests::native_resources::rooted_preparation_retries_actual_publication_pressure_then_installs_and_recovers_same_owner ... ok
+test prepared::eligible_publication::tests::native_resources::sentinel_preview_publication_returns_pcm_before_successful_constructor_seal ... ok
+test prepared::eligible_publication::tests::pages::extracted_page_loan_survives_carrier_destructor_panic_without_join_or_retry ... ok
+test prepared::eligible_publication::tests::pages::final_page_loans_wait_for_both_guard_orders_completed_handle_and_normal_carrier_drop ... ok
+test prepared::eligible_publication::tests::pages::one_actual_page_loan_uses_real_rings_and_retires_without_callback_allocation_or_join ... ok
+test prepared::eligible_publication::tests::readiness::changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_report ... ok
+test prepared::eligible_publication::tests::readiness::later_missing_chunk_keeps_committed_pcm_and_clocks_then_pause_passes_pending_play ... ok
+test prepared::eligible_publication::tests::readiness::ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_cancellable ... ok
+test prepared::eligible_publication::tests::readiness::real_first_play_buffers_without_ack_clock_or_samples_then_installs_exact_worker_pages ... ok
+test prepared::eligible_publication::tests::readiness::two_source_small_pool_refusal_after_commit_preserves_pcm_clock_and_applied_prefix ... ok
+test prepared::eligible_publication::tests::real_utility_transfer_pressure_retry_restores_cancellation_without_changing_active_ack ... ok
+test prepared::eligible_publication::tests::terminal_drain_returns_actual_eligible_owner_after_control_first_drop ... ok
+test prepared::final_active_tests::actual_active_session_audio_dormancy_requires_completed_handle_and_both_final_guard_releases ... ok
+test prepared::final_active_tests::carrier_destructor_panic_after_actual_extraction_keeps_original_owner_and_never_publishes_ready ... ok
+test prepared::resident_forwarding::tests::contended_client_access_is_nonblocking_and_keeps_original_playback ... ok
+test prepared::final_active_tests::control_first_abandonment_finishes_actual_active_owner_after_busy_dependency_without_ui_poll ... ok
+test prepared::final_active_tests::exposed_missing_handle_cannot_return_an_actual_active_owner_even_after_both_guards_release ... ok
+test prepared::final_active_tests::foreign_terminal_root_refuses_without_taking_the_actual_active_constructor_owner ... ok
+test prepared::resident_forwarding::tests::one_request_preserves_refusal_owner_and_separates_request_submission_and_apply ... ok
+test prepared::tests::a_fresh_audition_admitted_after_priority_stop_survives_same_block_consumption ... ok
+test prepared::tests::cancelled_fresh_publication_returns_candidate_and_allows_successor ... ok
+test prepared::tests::cancellation_and_final_apply_cas_have_one_winner ... ok
+test prepared::tests::clip_gain_with_shaped_fades_and_replacement_allocates_and_frees_nothing_in_callback ... ok
+test prepared::tests::command_cut_distinguishes_captured_prefix_and_stop_boundary ... ok
+test prepared::tests::command_admitted_after_fresh_fence_validation_applies_to_new_runtime ... ok
+test prepared::tests::compressor_track_and_return_revision_admission_and_render_allocate_nothing ... ok
+test prepared::tests::audition_waits_for_actual_generation_and_revision_floor_then_activates ... ok
+test prepared::tests::analyzer_waits_for_exact_publication_generation_and_activation_floor ... ok
+test prepared::tests::deferred_route_candidate_keeps_active_snapshot_until_acceptance ... ok
+test prepared::tests::compatible_parameter_publications_preserve_the_held_audition ... ok
+test prepared::tests::existing_publication_methods_use_control_context_generation_zero ... ok
+test prepared::tests::failed_enqueue_does_not_leave_a_cancellable_revision_or_block_next_publish ... ok
+test prepared::tests::first_render_cause_is_latched_before_stop_and_new_admission_clears_it ... ok
+test prepared::tests::fresh_runtime_fence_accepts_empty_and_exact_active_snapshots ... ok
+test prepared::tests::fresh_runtime_fence_rejects_pending_stop_and_stops_the_old_graph ... ok
+test prepared::tests::fresh_runtime_fence_rejects_stale_active_revision ... ok
+test prepared::tests::fresh_runtime_fence_rejects_stale_command_ticket_and_applies_prefix_to_old_graph ... ok
+test prepared::tests::derived_pcm_render_replace_and_retire_never_allocate_or_drop_on_callback ... ok
+test prepared::tests::fresh_runtime_fence_rejects_stale_route_generation_independently ... ok
+test prepared::tests::concurrent_route_reader_never_observes_mixed_revision_or_track_list ... ok
+test prepared::tests::full_queue_does_not_advance_admitted_ticket_and_stop_never_wraps ... ok
+test prepared::tests::fresh_runtime_waits_for_retirement_space_without_delaying_stop ... ok
+test prepared::tests::held_retirement_does_not_block_stop_or_drop_ownership ... ok
+test prepared::tests::gate_track_and_return_initial_and_edited_callback_render_allocate_nothing ... ok
+test prepared::tests::metronome_admission_is_reported_and_priority_stop_discards_older_toggle ... ok
+test prepared::tests::metronome_commands_loops_and_handoff_allocate_and_free_nothing_in_callback ... ok
+test prepared::tests::generation_context_survives_full_queue_retry_and_deferred_handoff ... ok
+test prepared::tests::metronome_rejected_fresh_seek_keeps_active_toggle_and_position ... ok
+test prepared::tests::ordinary_inherited_publications_have_no_fresh_cancellation_decision ... ok
+test prepared::tests::play_from_uses_one_ticket_and_priority_stop_cuts_it_off_under_full_queue ... ok
+test prepared::tests::mode_change_invalidates_the_old_audition_epoch_and_needs_a_fresh_press ... ok
+test prepared::tests::post_cut_admissions_remain_queued_until_the_next_actual_block ... ok
+test prepared::tests::playback_audition_routes_to_arrangement_session_runtime_and_return_owner ... ok
+test prepared::tests::rejected_candidate_is_held_until_control_reclaims_retirement_space ... ok
+test prepared::tests::rejection_snapshots_never_pair_a_new_reason_with_an_old_ticket ... ok
+test prepared::tests::prepared_eq_captures_actual_input_and_processed_output_without_changing_pcm ... ok
+test prepared::tests::reset_publication_drops_same_id_session_owner_after_stop_and_reclaim ... ok
+test prepared::tests::retired_session_audio_pcm_stays_owned_until_control_reclaims_publication ... ok
+test prepared::tests::metronome_fresh_seek_preserves_only_monitoring_after_accepted_exact_source_fence ... ok
+test prepared::tests::saturator_track_and_return_revision_admission_and_render_allocate_nothing ... ok
+test prepared::tests::render_fault_fences_a_waiting_begin_before_a_future_graph_is_published ... ok
+test prepared::tests::shutdown_returns_active_deferred_and_queued_graphs_for_control_drops ... ok
+test prepared::tests::seek_cancels_a_waiting_begin_without_blocking_a_later_fresh_press ... ok
+test prepared::tests::spectrum_stage_requires_independent_exact_phase_coverage ... ok
+test prepared::tests::split_gain_and_publication_each_reserve_before_the_other_actor_mutates ... ok
+test prepared::tests::stale_fresh_runtime_fence_is_rechecked_after_retirement_backpressure ... ok
+test prepared::tests::stop_admitted_after_fresh_fence_validation_stops_new_runtime ... ok
+test prepared::tests::stop_cut_suppresses_tickets_at_or_before_boundary_only ... ok
+test prepared::tests::transient_handoff_keeps_candidate_gated_retries_and_old_graph_renders ... ok
+test prepared::tests::selected_target_is_rejected_when_project_switches_at_block_boundary ... ok
+test prepared::tests::unsplit_legacy_control_keeps_publish_then_begin_ordering ... ok
+test prepared::tests::unchanged_blocks_do_not_rescan_or_rewrite_route_slots ... ok
+test processor_audition::tests::full_queue_release_invalidates_queued_begins_and_retries_latest_clear ... ok
+test processor_audition::tests::hard_cancel_survives_a_new_begin_before_the_callback_boundary ... ok
+test processor_audition::tests::idle_blocks_and_observed_hard_cancel_do_not_emit_repeated_boundaries ... ok
+test processor_audition::tests::later_hard_cancel_clears_a_smoothly_released_fade_even_with_new_target ... ok
+test render_fault::tests::callback_fault_publication_and_clear_have_zero_total_and_net_allocations ... ok
+test render_fault::tests::exact_cause_context_utf8_truncation_and_recovery_are_preserved ... ok
+test sample_preview::tests::full_incoming_coalesces_pending_to_latest_and_shutdown_returns_both_owners ... ok
+test sample_preview::tests::mismatched_rate_and_cancelled_completions_do_not_play ... ok
+test sample_preview::tests::one_shot_restarts_newest_request_and_retires_finished_pcm ... ok
+test sample_preview::tests::output_faults_override_playback_status_and_shutdown_stays_unavailable ... ok
+test sample_preview::tests::preview_mixes_while_stopped_playing_paused_and_after_project_stop ... ok
+test sample_preview::tests::sample_replacement_completion_and_shutdown_allocate_and_free_nothing ... ok
+test sample_preview::tests::saturated_retirement_preserves_pcm_until_control_reclaims_and_latest_wins ... ok
+test sample_preview::tests::status_follows_actual_pcm_end_stop_and_stale_decode_without_replay ... ok
+test spectrum::tests::malformed_windows_and_rates_are_refused_without_corrupting_the_next_result ... ok
+test spectrum::tests::spectrum_tone_frequency_and_hann_gain_are_calibrated ... ok
+test prepared::tests::wrong_sample_rate_target_is_rejected_without_replaying ... ok
+test spectrum::tests::stereo_power_avoids_antiphase_cancellation_and_silence_has_a_floor ... ok
+test spectrum_target::tests::command_enqueued_after_epoch_load_is_retained_for_next_block ... ok
+test spectrum_target::tests::epoch_exhaustion_fails_closed_and_invalidates_callback_target ... ok
+test spectrum_target::tests::queue_full_invalidates_audio_tap_and_retains_latest_command_for_retry ... ok
+test spectrum_target::tests::same_device_id_under_a_different_owner_gets_a_new_capture_token ... ok
+test spectrum_target::tests::target_switch_is_stable_and_invalidates_stale_selection ... ok
+test spectrum_target::tests::token_exhaustion_invalidates_the_previous_selection ... ok
+test spectrum_target::tests::unsupported_rate_and_identity_are_refused_without_mutating_selection ... ok
+test spectrum_worker::native::tests::actual_factory_worker_join_retains_first_payload_and_never_retries ... ok
+test spectrum::tests::supported_rates_have_finite_frequency_geometry_and_reset_discards_scratch ... ok
+test spectrum_worker::native::tests::fixed_factory_declares_actual_eight_boxes_and_rejects_wrong_rate_without_queue_admission ... ok
+test spectrum_worker::tests::context_reset_keeps_global_cadence_and_idle_windows_are_not_republished ... ok
+test prepared::tests::sparse_eq_callback_publication_held_stable_audition_release_and_retirement_allocate_nothing ... ok
+test spectrum_worker::tests::cadence_freshness_and_window_publication_are_deterministic ... ok
+test spectrum_worker::tests::delayed_capture_is_fresh_by_capture_age_not_fixture_start ... ok
+test spectrum_worker::tests::invalid_capture_is_refused_and_consumes_a_sequence ... ok
+test spectrum_worker::tests::malformed_batches_clear_window_without_partial_ingest ... ok
+test spectrum_worker::tests::ordinary_revisions_continue_but_target_generation_and_rate_reset_window ... ok
+test spectrum_worker::tests::paired_capture_refuses_mismatched_or_nonfinite_input_and_preserves_sequence_gaps ... ok
+test spectrum_worker::tests::full_queue_drops_only_capture_and_next_sequence_exposes_gap ... ok
+test spectrum_worker::tests::reader_drops_worker_result_by_capture_age_not_processing_or_receipt_time ... ok
+test spectrum_worker::tests::sequence_exhaustion_requires_a_new_capture_generation ... ok
+test spectrum_worker::tests::unsupported_initial_rate_is_rejected_before_worker_creation ... ok
+test spectrum_worker::tests::worker_lifecycle_returns_capture_to_control_before_join ... ok
+test worker_fixture::tests::actual_worker_endpoints_keep_lease_until_client_and_both_callback_carriers_close ... ok
+test spectrum_worker::tests::paired_windows_keep_real_levels_stereo_energy_and_reset_together ... ok
+test tests::stop_wins_when_command_queue_is_full ... ok
+test prepared::tests::computer_keyboard_callback_publication_polyphony_release_pressure_stop_and_retirement_allocate_nothing ... ok
+
+test result: ok. 198 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.87s
+
+     Running tests/allocation_probe_calibration.rs (/workspace/hex/target/debug/deps/allocation_probe_calibration-0cd2d01c6382a97e)
+
+running 2 tests
+test probe_detects_allocation_even_when_freed_in_the_same_scope ... ok
+test probe_detects_freeing_memory_allocated_before_the_scope ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/callback_allocations.rs (/workspace/hex/target/debug/deps/callback_allocations-58daf0436f4d77b4)
+
+running 26 tests
+test builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free ... ok
+test auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free ... ok
+test conditional_fresh_runtime_publication_paths_are_callback_allocation_free ... ok
+test hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact ... ok
+test fresh_project_and_shutdown_reclaim_graph_and_pcm_only_on_control ... ok
+test arrangement_instrument_bypass_and_reenable_are_callback_allocation_free ... ok
+test legacy_fallback_owns_persistent_stateful_renderer_off_callback ... ok
+test injected_mutable_instrument_process_handoff_and_retirement_are_allocation_free ... ok
+test mutable_arrangement_transport_loop_callback_is_allocation_and_deallocation_free ... ok
+test mutable_session_source_loop_callback_is_allocation_and_deallocation_free ... ok
+test mutable_arrangement_source_and_transport_loops_are_callback_allocation_free ... ok
+test output_capture::actual_deleted_instrument_effect_and_return_tails_capture_without_callback_drops ... ok
+test output_capture::capture_success_preflight_and_late_refusal_allocate_and_free_nothing ... ok
+test play_from_callback_is_allocation_free_and_renders_from_requested_frame ... ok
+test prepared_edits_inherit_through_a_full_retirement_ring_without_callback_allocation ... ok
+test reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph ... ok
+test priority_stop_is_allocation_free_while_retirement_ring_is_full ... ok
+test shared_analytic_context_release_survives_handoff_and_drops_on_control ... ok
+test sounding_midi_scene_switches_use_the_prepared_release_bank_without_allocations ... ok
+test stateful_eq8_return_parameter_handoffs_are_callback_allocation_free ... ok
+test stateful_utility_processing_and_revision_handoff_are_callback_allocation_free ... ok
+test stateful_utility_return_render_and_retirement_are_callback_allocation_free ... ok
+test unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_free ... ok
+test mixed_wave_operator_handoff_and_retirement_are_callback_allocation_free ... ok
+test builtin_operator_render_state_handoff_and_retirement_are_callback_allocation_free ... ok
+test shared_and_distinct_session_audio_callback_blocks_are_allocation_free ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.95s
+
+     Running tests/controller_keyboard_allocations.rs (/workspace/hex/target/debug/deps/controller_keyboard_allocations-ee8d4adb67d0db58)
+
+running 1 test
+test held_keyboard_controller_publication_note_off_and_retirement_have_zero_callback_allocations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+     Running tests/eq8_audition_allocations.rs (/workspace/hex/target/debug/deps/eq8_audition_allocations-3780d68accae3f29)
+
+running 2 tests
+test eq8_return_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocation_free ... ok
+test eq8_audition_begin_edit_release_hard_cancel_and_shutdown_are_callback_allocation_free ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+
+     Running tests/eq8_oversampling_study.rs (/workspace/hex/target/debug/deps/eq8_oversampling_study-847acecaebc5edb6)
+
+running 8 tests
+test response::identity_pair_phase_delay_and_nyquist_rolloff_have_independent_impulse_oracle ... ok
+test tests::constructor_processing_reset_and_refusal_have_zero_total_and_signed_net_allocations ... ok
+test tests::impulse_dc_reset_and_arbitrary_partitions_preserve_exact_history ... ok
+test response::independent_math_coefficients_and_continuous_response_bounds ... ok
+test tests::malformed_rates_nonfinite_maps_and_refused_retry_leave_all_histories_unchanged ... ok
+test tests::interpolation_images_and_decimation_aliases_are_real_filtered_signals ... ok
+test tests::direct_convolution_matches_polyphase_identity_and_nonidentity_transform_at_all_rates ... ok
+test tests::every_allowed_internal_rate_and_signed_zero_history_refusal_is_preserved ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/fresh_publication_cancellation.rs (/workspace/hex/target/debug/deps/fresh_publication_cancellation-8120d8a0600746bb)
+
+running 2 tests
+test accepted_stale_backpressured_and_shutdown_candidates_remain_callback_bounded ... ok
+test cancelled_conditional_candidate_retires_without_callback_allocation_or_drop ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/gain_recording_native.rs (/workspace/hex/target/debug/deps/gain_recording_native-33f876e8f4267943)
+
+running 3 tests
+test compensated_touch_waits_for_the_main_sample_and_preserves_release_to_read ... ok
+test delivered_touch_quantums_record_absolute_gain_and_release_returns_to_saved_read ... ok
+test failed_sink_discards_take_and_priority_stop_works_with_a_full_transport_queue ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/operator_filter_proof_allocations.rs (/workspace/hex/target/debug/deps/operator_filter_proof_allocations-361e90fc7084cc45)
+
+running 1 test
+test standalone_process_copy_reset_and_refusal_have_zero_total_and_net_allocations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operator_fixed_allocations.rs (/workspace/hex/target/debug/deps/operator_fixed_allocations-b0f29016a2849606)
+
+running 9 tests
+test fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_callback ... ok
+test registered_eq8_effect_callback_allocates_and_deallocates_nothing ... ok
+test registered_operator_analytic_enable_reversals_allocate_nothing_on_callback ... ok
+test registered_operator_feedback_voice_and_release_allocate_nothing_on_callback ... ok
+test operator_filter_first_activation_import_allocates_and_deallocates_nothing ... ok
+test registered_operator_filter_render_retarget_and_shutdown_allocate_nothing_on_callback ... ok
+test registered_operator_lfo_free_sync_and_feedback_allocate_nothing_on_callback ... ok
+test harmonic_first_paint_range_cache_builtin_reversal_and_release_allocate_nothing ... ok
+test advanced_operator_companions_keep_sixty_four_voice_callbacks_allocation_free ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.65s
+
+     Running tests/pitch_multiplier_allocations.rs (/workspace/hex/target/debug/deps/pitch_multiplier_allocations-dc0015c31190a90f)
+
+running 1 test
+test multiplier_prepare_frequency_copy_and_refusal_have_zero_total_and_net_allocations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prepared.rs (/workspace/hex/target/debug/deps/prepared-9f965599a08ba516)
+
+running 16 tests
+test command_tickets_acknowledge_consumption_after_transport_and_stop_discard ... ok
+test commands_admitted_after_stop_follow_it_in_callback_order ... ok
+test full_retirement_queue_backpressures_replacement_without_losing_graphs ... ok
+test launch_and_play_is_atomic_for_unknown_clip_and_nonlaunch_payloads ... ok
+test accepted_reorder_publishes_route_entries_in_new_project_order_by_stable_id ... ok
+test ordinary_prepared_replacement_preserves_active_session_state_and_pcm ... ok
+test rate_rejection_and_priority_stop_preserve_ordering ... ok
+test replacement_preserves_transport_and_returns_old_graph_off_callback ... ok
+test route_snapshot_tracks_launch_pending_cancel_stop_and_revision_capability ... ok
+test shutdown_drains_active_and_pending_despite_full_retirement_queue ... ok
+test stop_discards_prior_session_route_then_accepts_atomic_launch_and_play ... ok
+test transport_before_initial_publication_is_rejected_not_silently_lost ... ok
+test unavailable_capability_and_failed_session_action_have_truthful_acknowledgments ... ok
+test callback_applies_queued_session_actions_and_reports_dual_cursors ... ok
+test queued_scene_stop_and_arrangement_return_match_headless_pcm ... ok
+test callback_revision_transfer_matches_kernel_after_tempo_and_source_edits ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/return_feed_allocations.rs (/workspace/hex/target/debug/deps/return_feed_allocations-931000e60ff252a5)
+
+running 2 tests
+test authored_feed_render_observation_handoff_and_retirement_have_no_callback_allocation_or_drop ... ok
+test gain_automation_feed_render_observation_handoff_and_retirement_have_no_callback_allocation_or_drop ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/routed_midi_allocations.rs (/workspace/hex/target/debug/deps/routed_midi_allocations-84f584838f849529)
+
+running 1 test
+test source_only_midi_fanout_launch_release_relaunch_and_handoff_have_no_callback_allocations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/session_silence_effect_allocations.rs (/workspace/hex/target/debug/deps/session_silence_effect_allocations-8a4042b1ddeeb0fd)
+
+running 1 test
+test stopped_session_audio_drains_live_filter_without_callback_allocation_or_drop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/signed_envelope_allocations.rs (/workspace/hex/target/debug/deps/signed_envelope_allocations-44db323840f2f23d)
+
+running 1 test
+test signed_envelope_prepare_sample_copy_and_errors_allocate_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/spectrum_capture_allocations.rs (/workspace/hex/target/debug/deps/spectrum_capture_allocations-74f38c78eab9d078)
+
+running 1 test
+test bounded_spectrum_capture_push_is_allocation_and_deallocation_free ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stream_publication.rs (/workspace/hex/target/debug/deps/stream_publication-96efb291394a4663)
+
+running 1 test
+test streamed_candidates_are_returned_before_publication_or_revision_admission ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/vector_global_allocations.rs (/workspace/hex/target/debug/deps/vector_global_allocations-af0a82b2c2c15bc8)
+
+running 1 test
+test controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_deallocate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s
+
+     Running unittests src/main.rs (/workspace/hex/target/debug/deps/hex_desktop-2b8cad4c8425ce32)
+
+running 11 tests
+test native_audio::tests::failed_output_setup_keeps_canonical_editing_and_saving_available ... ok
+test native_audio::tests::generated_100_track_project_uses_actual_verified_service_and_callback ... ignored, requires create-new generated workload and HEX_STREAMING_WORKLOAD_PROJECT
+test native_audio::tests::controller_input_tests::resident_controller_and_keyboard_publications_keep_source_identity_through_worker_bridge ... ok
+test native_audio::tests::canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_lost_submitted ... ok
+test native_audio::tests::exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reuse ... ok
+test native_sources::tests::actual_worker_projection_reuses_undo_subset_but_never_relabels_new_generation_or_changed_bytes ... ok
+test time_selection_profile::tests::failed_run_preserves_partial_report_and_never_acknowledges_success ... ok
+test time_selection_profile::tests::success_requires_complete_csv_and_flush_before_acknowledgement ... ok
+test native_audio::tests::native_verified_downsample_uses_source_window_and_applies_decoded_pcm ... ok
+test native_audio::tests::rapid_new_verified_import_supersession_applies_decoded_pcm ... ok
+test native_audio::tests::verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_domain ... ok
+
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 15.38s
+
+   Doc-tests hex_audio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

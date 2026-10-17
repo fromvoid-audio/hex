@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.18s
+     Running unittests examples/layout_review.rs (target/debug/examples/layout_review-f42a1f2f38fc044e)
+
+running 12 tests
+test gallery::tests::disabled_controls_refuse_input_without_losing_selection_geometry_or_local_state ... ok
+test gallery::tests::selection_focus_hover_and_bypass_preserve_body_paint_and_real_control_footprints ... ok
+test gallery::tests::production_vector_tabs_keep_one_page_and_stable_graph_slots_through_mixed_input ... ok
+test gallery::tests::selector_popup_is_real_retained_foreground_and_theme_refresh_keeps_focus ... ok
+test theme::device::action_tests::header_and_segment_actions_remain_readable_on_selected_and_hover_surfaces ... ok
+test theme::device::tests::device_roles_follow_contrasting_palettes_and_keep_readable_foregrounds ... ok
+test theme::element_palette_tests::both_flavors_keep_ink_legible_and_identities_distinct ... ok
+test theme::tests::default_palette_keeps_the_four_shipped_roles_and_readable_derived_tokens ... ok
+test theme::tests::illegible_draft_is_rejected_without_replacing_any_saved_color_role ... ok
+test gallery::tests::long_active_numeric_draft_keeps_entity_focus_bounds_and_text_across_theme_selection ... ok
+test gallery::tests::catalog_fixture_track_return_labels_reuse_production_geometry_in_bounded_viewports ... ok
+test gallery::tests::vector_section_focus_is_independent_and_invalid_drafts_refuse_tab_without_resetting_header ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.17s
+

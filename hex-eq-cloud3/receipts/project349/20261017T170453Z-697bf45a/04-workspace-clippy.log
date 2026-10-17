@@ -1,0 +1,51 @@
+    Checking hex-project v0.1.0 (/workspace/hex-project-spectrum/crates/hex-project)
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+    Checking hex-widgets v0.1.0 (/workspace/hex-project-spectrum/crates/hex-widgets)
+    Checking hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+    Checking hex-storage v0.1.0 (/workspace/hex-project-spectrum/crates/hex-storage)
+    Checking hex-media v0.1.0 (/workspace/hex-project-spectrum/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex-project-spectrum/crates/hex-export)
+    Checking hex-session v0.1.0 (/workspace/hex-project-spectrum/crates/hex-session)
+    Checking hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+error: the `Err`-variant returned from this function is very large
+  --> crates/hex-audio/src/prepared/resident_forwarding.rs:81:10
+   |
+81 |     ) -> Result<ResidentPublicationToken, PublishError> {
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 2176 bytes
+   |
+   = help: try reducing the size of `prepared::PublishError`, for example by boxing large elements or replacing it with `Box<prepared::PublishError>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+   = note: `-D clippy::result-large-err` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/hex-audio/src/prepared.rs:1103:54
+     |
+1103 |     pub fn publish(&mut self, playback: Playback) -> Result<u64, PublishError> {
+     |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 2176 bytes
+     |
+     = help: try reducing the size of `prepared::PublishError`, for example by boxing large elements or replacing it with `Box<prepared::PublishError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/hex-audio/src/prepared.rs:1111:10
+     |
+1111 |     ) -> Result<u64, PublishError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 2176 bytes
+     |
+     = help: try reducing the size of `prepared::PublishError`, for example by boxing large elements or replacing it with `Box<prepared::PublishError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/hex-audio/src/prepared.rs:1123:10
+     |
+1123 |     ) -> Result<u64, PublishError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 2176 bytes
+     |
+     = help: try reducing the size of `prepared::PublishError`, for example by boxing large elements or replacing it with `Box<prepared::PublishError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+error: could not compile `hex-audio` (lib) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...

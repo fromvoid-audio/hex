@@ -1,0 +1,12 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-backspace/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-backspace/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-eq-backspace/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-backspace/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 59.44s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 1 test
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 632 filtered out; finished in 2.03s
+

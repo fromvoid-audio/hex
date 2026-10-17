@@ -1,0 +1,130 @@
+.............................................ssbuilding optimized hex...
+building optimized hex...
+building optimized hex...
+building optimized hex...
+building optimized hex...
+real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified
+.fetching latest main...
+..fetching latest main...
+.fetching latest main...
+..verifying installed hex...
+.fetching latest main...
+verifying installed hex...
+.verifying installed hex...
+verifying installed hex...
+verifying installed hex...
+verifying installed hex...
+.fetching latest main...
+.fetching latest main...
+.fetching latest main...
+.fetching latest main...
+fetching latest main...
+fetching latest main...
+..fetching latest main...
+..fetching latest main...
+verifying installed hex...
+.fetching latest main...
+verifying installed hex...
+.fetching latest main...
+.opened /tmp/tmpnr9of7wq/artifacts/hex.app
+opened /tmp/tmp4cf5tzrj/artifacts/hex.app
+opened /tmp/tmptdmp2tyf/artifacts/hex.app
+[1/1] build: running
+[1/1] build: passed
+..could not inspect disk headroom for workspace: unavailable volume
+.[1/1] build: running
+[1/1] build: passed
+.target has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/1] build: running
+[1/1] build: passed
+workspace dev-artifact cleanup failed; previous owner was preserved
+.[1/2] bad: running
+[1/2] bad: failed
+.[1/20] runner-tests: running
+[1/20] runner-tests: passed
+[2/20] architecture: running
+[2/20] architecture: passed
+[3/20] gpui-patch: running
+[3/20] gpui-patch: passed
+[4/20] dependency-patches: running
+[4/20] dependency-patches: passed
+[5/20] ui-style: running
+[5/20] ui-style: passed
+[6/20] device-layout: running
+[6/20] device-layout: passed
+[7/20] format: running
+[7/20] format: passed
+[8/20] dependency-future-lints: running
+[8/20] dependency-future-lints: passed
+[9/20] workspace-tests: running
+[9/20] workspace-tests: passed
+[10/20] prepared-export-instrument-tests: running
+[10/20] prepared-export-instrument-tests: passed
+[11/20] ui-feature-tests: running
+[11/20] ui-feature-tests: passed
+[12/20] device-gallery-tests: running
+[12/20] device-gallery-tests: passed
+[13/20] audio-allocation-probe: running
+[13/20] audio-allocation-probe: passed
+[14/20] stream-allocation-probe: running
+[14/20] stream-allocation-probe: passed
+[15/20] workspace-clippy: running
+[15/20] workspace-clippy: passed
+[16/20] prepared-export-instrument-clippy: running
+[16/20] prepared-export-instrument-clippy: passed
+[17/20] ui-feature-clippy: running
+[17/20] ui-feature-clippy: passed
+[18/20] audio-feature-clippy: running
+[18/20] audio-feature-clippy: passed
+[19/20] stream-feature-clippy: running
+[19/20] stream-feature-clippy: passed
+[20/20] desktop-build: running
+[20/20] desktop-build: passed
+.[1/2] first: running
+[1/2] first: passed
+workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.[1/2] interrupt: running
+.could not record Cargo target lock holder: runner holder write denied
+[1/1] build: running
+[1/1] build: passed
+.workspace has 0.00 GiB free; checks require the configured floor of 2.00 GiB. Inspect inactive generated caches manually; preserve active/shared builds, source/media and accepted artifacts. No files were removed. See docs/local-ci.md.
+.Cargo target ownership marker is malformed at /tmp/tmpamxlk63h/target-ownership/4be4a148c52342eed9ab8e44042a852303a8617893d562aef7ffc7a8318996fe.owner.json; use a fresh target or explicitly adopt it after checking ownership
+.{'exit_code': 9, 'stderr': 'metadata unavailable'}
+.[1/1] missing: running
+[1/1] missing: failed
+.[1/1] format: running
+[1/1] format: passed
+.[1/1] first: running
+[1/1] first: passed
+.[1/2] first: running
+[1/2] first: passed
+[2/2] second: running
+[2/2] second: passed
+.[1/2] debug-build: running
+[1/2] debug-build: passed
+[2/2] release-build: running
+[2/2] release-build: passed
+[1/1] debug-build: running
+[1/1] debug-build: passed
+real cargo handoff: workspace dev outputs rebuilt; external path dependency and release binary preserved (target=/tmp/tmpgtrrwhn5/isolated-cargo-target)
+..Cargo target is already in use by another local CI run; current holder: {"active_holder": {"commit": "deadbeef", "profile": "release", "run_id": "holder", "target_directory": "/tmp/tmpbxl17n36/repo/cargo-target", "workspace_root": "/tmp/tmpbxl17n36/repo"}}
+......[1/1] build: running
+[1/1] build: passed
+Cargo target directory identity changed; choose a fresh target or pass --adopt-target
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.[1/1] mutate: running
+[1/1] mutate: passed
+.Cargo target is already in use by another local CI run; current holder: {"active_holder": {"run_id": "holder", "target_directory": "/tmp/tmplh0gbp09/repo/cargo-target", "workspace_root": "/tmp/tmplh0gbp09/repo"}}
+.Cargo target ownership is unknown at /tmp/tmpso1gqmj9/repo/cargo-target; choose an empty target or pass --adopt-target
+.[1/1] build: running
+[1/1] build: passed
+[1/1] build: running
+[1/1] build: passed
+.......
+----------------------------------------------------------------------
+Ran 104 tests in 25.298s
+
+OK (skipped=2)

@@ -1,0 +1,77 @@
+    Blocking waiting for file lock on package cache
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex-project-spectrum/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex-project-spectrum/crates/hex-dsp)
+   Compiling hex-lattice v0.1.0 (/workspace/hex-project-spectrum/crates/hex-lattice)
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex-project-spectrum/crates/hex-devices)
+   Compiling hex-project v0.1.0 (/workspace/hex-project-spectrum/crates/hex-project)
+   Compiling hex-warp v0.1.0 (/workspace/hex-project-spectrum/crates/hex-warp)
+error[E0308]: mismatched types
+   --> crates/hex-engine/src/session_playback/render/compensated.rs:283:53
+    |
+283 |                 .render_chunk(output, frame_offset, capture)?;
+    |                  ------------                       ^^^^^^^ expected `&mut Option<&mut OutputCapture<'_, '_>>`, found `&mut Option<&mut dyn CaptureSink>`
+    |                  |
+    |                  arguments to this method are incorrect
+    |
+    = note: expected mutable reference `&mut Option<&mut capture::OutputCapture<'_, '_>>`
+               found mutable reference `&mut Option<&mut dyn capture::CaptureSink>`
+    = help: `capture::OutputCapture<'_, '_>` implements `CaptureSink` so you could change the expected type to `Box<dyn CaptureSink>`
+note: method defined here
+   --> crates/hex-engine/src/session_playback/return_effect_tails.rs:126:19
+    |
+126 |     pub(super) fn render_chunk(
+    |                   ^^^^^^^^^^^^
+...
+130 |         capture: &mut Option<&mut super::OutputCapture<'_, '_>>,
+    |         -------------------------------------------------------
+
+error[E0308]: mismatched types
+    --> crates/hex-engine/src/session_playback/render.rs:1173:57
+     |
+1173 |                     .render_chunk(output, frame_offset, capture)?;
+     |                      ------------                       ^^^^^^^ expected `&mut Option<&mut OutputCapture<'_, '_>>`, found `&mut Option<&mut dyn CaptureSink>`
+     |                      |
+     |                      arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Option<&mut capture::OutputCapture<'_, '_>>`
+                found mutable reference `&mut Option<&mut dyn capture::CaptureSink>`
+     = help: `capture::OutputCapture<'_, '_>` implements `CaptureSink` so you could change the expected type to `Box<dyn CaptureSink>`
+note: method defined here
+    --> crates/hex-engine/src/session_playback/return_effect_tails.rs:126:19
+     |
+ 126 |     pub(super) fn render_chunk(
+     |                   ^^^^^^^^^^^^
+...
+ 130 |         capture: &mut Option<&mut super::OutputCapture<'_, '_>>,
+     |         -------------------------------------------------------
+
+error[E0308]: mismatched types
+    --> crates/hex-engine/src/session_playback/render.rs:1243:53
+     |
+1243 |                 .render_chunk(output, frame_offset, capture)?;
+     |                  ------------                       ^^^^^^^ expected `&mut Option<&mut OutputCapture<'_, '_>>`, found `&mut Option<&mut dyn CaptureSink>`
+     |                  |
+     |                  arguments to this method are incorrect
+     |
+     = note: expected mutable reference `&mut Option<&mut capture::OutputCapture<'_, '_>>`
+                found mutable reference `&mut Option<&mut dyn capture::CaptureSink>`
+     = help: `capture::OutputCapture<'_, '_>` implements `CaptureSink` so you could change the expected type to `Box<dyn CaptureSink>`
+note: method defined here
+    --> crates/hex-engine/src/session_playback/return_effect_tails.rs:126:19
+     |
+ 126 |     pub(super) fn render_chunk(
+     |                   ^^^^^^^^^^^^
+...
+ 130 |         capture: &mut Option<&mut super::OutputCapture<'_, '_>>,
+     |         -------------------------------------------------------
+
+error[E0599]: no method named `id` found for reference `&Track` in the current scope
+    --> crates/hex-engine/src/playback.rs:1387:40
+     |
+1387 |                     .any(|track| track.id().value() == *id)
+     |                                        ^^ method not found in `&Track`
+
+Some errors have detailed explanations: E0308, E0599.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `hex-engine` (lib) due to 4 previous errors

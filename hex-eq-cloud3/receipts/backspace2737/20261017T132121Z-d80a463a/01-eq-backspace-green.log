@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-backspace/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-backspace/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-eq-backspace/crates/hex-widgets)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-backspace/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 38.42s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 1 test
+
+thread 'editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history' (80215) panicked at crates/hex-ui/src/editor/device_panel/tests.rs:205:9:
+worker-backed device action did not complete: worker=0 queued=0 gesture=None barriers=0 error=None revision=Some(4)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 632 filtered out; finished in 6.52s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

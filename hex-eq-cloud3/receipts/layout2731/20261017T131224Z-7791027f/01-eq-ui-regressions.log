@@ -1,0 +1,26 @@
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex-eq-layout/crates/hex-lattice-contract)
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-layout/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-layout/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-eq-layout/crates/hex-widgets)
+   Compiling hex-project v0.1.0 (/workspace/hex-eq-layout/crates/hex-project)
+   Compiling hex-lattice v0.1.0 (/workspace/hex-eq-layout/crates/hex-lattice)
+   Compiling hex-storage v0.1.0 (/workspace/hex-eq-layout/crates/hex-storage)
+   Compiling hex-devices v0.1.0 (/workspace/hex-eq-layout/crates/hex-devices)
+   Compiling hex-engine v0.1.0 (/workspace/hex-eq-layout/crates/hex-engine)
+   Compiling hex-media v0.1.0 (/workspace/hex-eq-layout/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex-eq-layout/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex-eq-layout/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-layout/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 1m 37s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_ui-3379d1c04de585eb)
+
+running 6 tests
+test editor::device_panel::tests::eq_ui_tests::eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_creation_escape_and_changed_source_cancel_without_reserving_identity ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths ... ok
+test editor::device_panel::tests::eq_ui_tests::legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit ... ok
+test editor::device_panel::tests::eq_ui_tests::eq_rendered_creation_drag_automation_point_edit_and_history ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 626 filtered out; finished in 12.07s
+

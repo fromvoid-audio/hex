@@ -1,0 +1,21 @@
+{
+  "merge": "92ecd8d2137c5d270d5d0c77a11dad58b50daf15",
+  "parents": [
+    "642df957bf228b40c0467adf70980fc9ddc762cf",
+    "b63424fde3e88915f747f8223bb2c9ea183403c3"
+  ],
+  "actual_tree": "d0ed350292177aa1cdfd63e71de21431fc8ed93f",
+  "recomputed_tree": "d0ed350292177aa1cdfd63e71de21431fc8ed93f",
+  "head": "b63424fde3e88915f747f8223bb2c9ea183403c3",
+  "head_ancestor": true,
+  "head_ci_qualifies_complete_merge_tree": false,
+  "combined_post_merge_ci": {
+    "commit": "92ecd8d2137c5d270d5d0c77a11dad58b50daf15",
+    "report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T175136Z-f4235a03/summary.json",
+    "report_sha256": "35c5a1121499813b96f0e2568c148df91400943a012f4849ee617e30bc319ce5",
+    "source_sha256": "26eb0e6bd73d299c11f9bac3081f9e0d92882aa0f8c5fcca0cfd1ff76e8e56fd",
+    "required_checks": 20,
+    "status": "passed",
+    "scope": "This exact pinned merge only; does not qualify a different later cohort"
+  }
+}

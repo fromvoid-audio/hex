@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-layout/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-layout/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-layout/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 49.30s
+     Running unittests src/lib.rs (/workspace/hex/target/debug/deps/hex_ui-701d36ba81c1df0b)
+
+running 1 test
+test editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths ... FAILED
+
+failures:
+
+---- editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths stdout ----
+
+thread 'editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths' (318409) panicked at crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs:80:5:
+full rendered "automate" (38.399998px) plus padding must fit its action Bounds { origin: Point { x: 989px, y: 571px }, size: Size { 12px × 12px } }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 639 filtered out; finished in 0.98s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,23 @@
+    Checking hex-lattice-contract v0.1.0 (/workspace/hex-eq-backspace/crates/hex-lattice-contract)
+    Checking hex-dsp v0.1.0 (/workspace/hex-eq-backspace/crates/hex-dsp)
+   Compiling hex-engine v0.1.0 (/workspace/hex-eq-backspace/crates/hex-engine)
+    Checking hex-lattice v0.1.0 (/workspace/hex-eq-backspace/crates/hex-lattice)
+    Checking hex-project v0.1.0 (/workspace/hex-eq-backspace/crates/hex-project)
+    Checking hex-devices v0.1.0 (/workspace/hex-eq-backspace/crates/hex-devices)
+    Checking hex-warp v0.1.0 (/workspace/hex-eq-backspace/crates/hex-warp)
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-backspace/crates/hex-stream)
+    Checking stacksafe v0.1.4
+    Checking gpui v0.2.2 (/workspace/hex-eq-backspace/third_party/gpui)
+    Checking hex-media v0.1.0 (/workspace/hex-eq-backspace/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex-eq-backspace/crates/hex-export)
+    Checking hex-storage v0.1.0 (/workspace/hex-eq-backspace/crates/hex-storage)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-backspace/crates/hex-ui)
+    Checking hex-session v0.1.0 (/workspace/hex-eq-backspace/crates/hex-session)
+    Checking hex-audio v0.1.0 (/workspace/hex-eq-backspace/crates/hex-audio)
+    Checking hex-widgets v0.1.0 (/workspace/hex-eq-backspace/crates/hex-widgets)
+    Checking hex-preferences v0.1.0 (/workspace/hex-eq-backspace/crates/hex-preferences)
+    Checking hex-diagnostics v0.1.0 (/workspace/hex-eq-backspace/crates/hex-diagnostics)
+    Checking hex-midi v0.1.0 (/workspace/hex-eq-backspace/crates/hex-midi)
+    Checking hex-library v0.1.0 (/workspace/hex-eq-backspace/crates/hex-library)
+    Finished `dev` profile [unoptimized] target(s) in 51.43s

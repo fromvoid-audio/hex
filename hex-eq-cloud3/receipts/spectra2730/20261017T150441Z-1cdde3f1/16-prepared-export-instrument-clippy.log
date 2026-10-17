@@ -1,0 +1,4 @@
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+    Checking hex-engine v0.1.0 (/workspace/hex-eq-spectra/crates/hex-engine)
+    Checking hex-export v0.1.0 (/workspace/hex-eq-spectra/crates/hex-export)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.88s

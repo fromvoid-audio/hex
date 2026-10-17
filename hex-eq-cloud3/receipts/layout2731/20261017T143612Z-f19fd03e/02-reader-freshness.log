@@ -1,0 +1,118 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-layout/crates/hex-stream)
+   Compiling hex-audio v0.1.0 (/workspace/hex-eq-layout/crates/hex-audio)
+    Finished `test` profile [unoptimized] target(s) in 10.46s
+     Running unittests src/lib.rs (/workspace/hex-eq-quality/target/debug/deps/hex_audio-669909e5d299c1a7)
+
+running 1 test
+test spectrum_worker::tests::reader_drops_worker_result_by_capture_age_not_processing_or_receipt_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 148 filtered out; finished in 0.03s
+
+     Running tests/allocation_probe_calibration.rs (/workspace/hex-eq-quality/target/debug/deps/allocation_probe_calibration-2260f67683c37134)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/callback_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/callback_allocations-5f9760d64f43498e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/controller_keyboard_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/controller_keyboard_allocations-2631671178c137e5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/eq8_audition_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/eq8_audition_allocations-fdffcb5730954ffd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/eq8_oversampling_study.rs (/workspace/hex-eq-quality/target/debug/deps/eq8_oversampling_study-44b4afa01a6309a6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fresh_publication_cancellation.rs (/workspace/hex-eq-quality/target/debug/deps/fresh_publication_cancellation-a7ea14c313d2f055)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gain_recording_native.rs (/workspace/hex-eq-quality/target/debug/deps/gain_recording_native-92ae30ce4cbef957)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/operator_filter_proof_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/operator_filter_proof_allocations-20935a892bdbbeab)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operator_fixed_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/operator_fixed_allocations-0c28748f895e13e1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pitch_multiplier_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/pitch_multiplier_allocations-d6cbcd9836addf11)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prepared.rs (/workspace/hex-eq-quality/target/debug/deps/prepared-5e67b2cd13e362b2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/return_feed_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/return_feed_allocations-9990d562044c2c88)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/routed_midi_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/routed_midi_allocations-1888203767882159)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/session_silence_effect_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/session_silence_effect_allocations-274c3144347eae74)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/signed_envelope_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/signed_envelope_allocations-0c450be252df34c8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/spectrum_capture_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/spectrum_capture_allocations-4f05a5248e0e1fc6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stream_publication.rs (/workspace/hex-eq-quality/target/debug/deps/stream_publication-bb185df3e65e6139)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/vector_global_allocations.rs (/workspace/hex-eq-quality/target/debug/deps/vector_global_allocations-65cf9ac70d52ec1f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

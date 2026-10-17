@@ -1,0 +1,68 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-spectra/crates/hex-stream)
+   Compiling hex-media v0.1.0 (/workspace/hex-eq-spectra/crates/hex-media)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.41s
+     Running unittests src/lib.rs (/workspace/hex/target/debug/deps/hex_stream-91327787453fe0fb)
+
+running 31 tests
+test endpoint::tests::cache_open_addressing_preserves_colliding_pages ... ok
+test endpoint::tests::exact_extent_and_role_checks_refuse_short_wrong_pages_without_replacing_protected_pcm ... ok
+test endpoint::tests::pinned_pages_refuse_replacement_and_full_return_ring_uses_held_slot ... ok
+test footprint::checked_data_tests::overflow_and_unknown_constructor_cannot_produce_a_data_bound ... ok
+test footprint::constructor_tests::all_four_actual_queue_message_constructors_match_pinned_requested_allocations ... ok
+test runtime::disposal::tests::actual_factory_worker_panic_payload_is_retained_without_drop_under_worker_mutex ... ok
+test endpoint::tests::backward_shift_preserves_pending_coalescing_and_full_request_queue_can_retry ... ok
+test endpoint::tests::endpoint_request_failure_retry_install_eviction_and_pins_are_allocation_free ... ok
+test runtime::disposal::tests::missing_actual_page_retains_all_remaining_owners_and_never_rejoins_or_reports_success ... ok
+test runtime::native_custody::tests::actual_extra_lease_and_weak_alias_refuse_original_pair_then_normal_domain_join_closes_once ... ok
+test runtime::disposal::tests::wrong_actual_pair_refuses_before_owner_moves ... ok
+test runtime::native_custody::tests::mismatched_factory_halves_and_unaccepted_registration_preserve_exact_pairs ... ok
+test runtime::pending::tests::empty_source_successor_seals_with_only_its_original_quoted_allowance ... ok
+test endpoint::tests::cache_backward_shift_survives_wraparound_turnover_without_dead_entries ... ok
+test runtime::pending::tests::insufficient_allowance_refuses_before_constructor_allocation_and_actual_worker_panic_is_retained ... ok
+test runtime::pending::tests::changed_source_refuses_catalog_but_normal_cleanup_still_conserves_original_pool ... ok
+test runtime::pending::tests::prebound_exact_pair_survives_verification_and_cancellation_with_full_pool_conservation ... ok
+test runtime::pending::tests::ready_seal_moves_original_pair_and_disposal_backing_without_reconstruction ... ok
+test runtime::disposal::tests::real_pair_busy_is_nonmutating_then_normal_conservation_and_completion_are_once_only ... ok
+test runtime::storage::tests::actual_domain_data_and_opaque_obligations_are_distinct_from_complete_admission ... ok
+test runtime::storage::tests::equal_metadata_distinct_domains_and_allocations_never_collapse_into_identity ... ok
+test runtime::readiness::tests::real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_join ... ok
+test runtime::storage::tests::unsampled_worker_stays_unknown_and_shared_kernel_data_is_charged_once ... ok
+test runtime::tests::final_catalog_lease_joins_worker_on_its_control_reclamation_thread ... ok
+test runtime::storage::tests::mismatched_pairs_missing_catalog_coverage_and_pressure_refuse_without_owner_effects ... ok
+test worker::tests::cancelled_page_read_returns_a_typed_failure_without_marking_the_page_ready ... ok
+test worker::tests::full_failure_queue_retains_copy_events_until_drain ... ok
+test worker::tests::full_ready_queue_retains_page_ownership_until_drain ... ok
+test runtime::readiness::tests::readiness_reservation_and_wrong_pair_refusals_preserve_actual_owners ... ok
+test runtime::tests::shutdown_reclaims_undrained_ready_queue_and_worker_held_pages ... ok
+test runtime::tests::delayed_worker_exposes_the_fixed_delay_readiness_assumption ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/callback_allocations.rs (/workspace/hex/target/debug/deps/callback_allocations-8ef0fe73fd0dd9b8)
+
+running 1 test
+test warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/worker_runtime.rs (/workspace/hex/target/debug/deps/worker_runtime-86875a932636444e)
+
+running 8 tests
+test busy_shutdown_preserves_a_warmed_cache_for_retry ... ok
+test busy_shutdown_recovers_unchanged_pair_until_all_catalog_leases_are_released ... ok
+test catalog_lease_requires_readiness_and_matches_full_metadata_and_catalog_identity ... ok
+test split_runtime_preserves_pairing_and_rejects_cross_runtime_shutdown_without_mutation ... ok
+test dropping_control_keeps_real_worker_available_until_page_and_lease_release ... ok
+test wrong_generation_is_rejected_and_mutated_sources_fail_without_publishing_a_page ... ok
+test catalog_rejects_nonfinite_float_samples_outside_the_first_page ... ok
+test actual_worker_converts_and_recovers_after_a_full_unpinned_cache ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+   Doc-tests hex_stream
+
+running 1 test
+test crates/hex-stream/src/runtime/storage.rs - runtime::storage::AudioStreamStorageLedger<'a>::borrow_domain_on_control (line 353) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+

@@ -1,0 +1,71 @@
+   Compiling hex-lattice v0.1.0 (/workspace/hex-eq-quality/crates/hex-lattice)
+   Compiling hex-engine v0.1.0 (/workspace/hex-eq-quality/crates/hex-engine)
+   Compiling hex-devices v0.1.0 (/workspace/hex-eq-quality/crates/hex-devices)
+   Compiling hex-export v0.1.0 (/workspace/hex-eq-quality/crates/hex-export)
+    Finished `test` profile [unoptimized] target(s) in 12.59s
+     Running unittests src/lib.rs (target/debug/deps/hex_export-852ed526faf58d1f)
+
+running 14 tests
+test tests::confirmed_replacement_removes_prior_file_but_preserves_unexpected_external_race ... ok
+test tests::cancellation_after_staging_cleans_temporary_and_late_collision_preserves_new_destination ... ok
+test tests::destination_write_errors_explain_read_only_and_permission_failures ... ok
+test tests::exclusive_directory_publication_refuses_even_empty_existing_directory_and_links ... ok
+test tests::exports_to_a_long_valid_filename_without_expanding_its_temporary_name ... ok
+test tests::exports_empty_range_as_a_valid_header_only_wav ... ok
+test tests::preserves_existing_destination_on_collision ... ok
+test tests::preserves_existing_pcm_rounding_and_clipping ... ok
+test tests::rejects_non_finite_mix_and_removes_incomplete_temporary_file ... ok
+test tests::rejects_unrepresentable_sample_byte_rate_before_creating_output ... ok
+test tests::rejects_range_and_riff_overflow_before_creating_temporary_or_target ... ok
+test tests::writes_exact_pcm16_header_samples_and_requested_range ... ok
+test stems::tests::cancelled_complete_staging_and_late_batch_collision_leave_no_partial_output ... ok
+test controlled::tests::preroll_progress_cancel_and_budget_refusal_never_return_partial_history ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/compensated.rs (target/debug/deps/compensated-c710d9700b5eb206)
+
+running 1 test
+test compensated_export_skips_startup_and_publishes_exact_first_and_final_source_frames ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operator_native.rs (target/debug/deps/operator_native-64627a971095c394)
+
+running 5 tests
+test legacy_operator_export_matches_independent_pcm16_oracle_across_blocks_and_release ... ok
+test feedback_operator_full_prepared_export_matches_registered_playback ... ok
+test mixed_waveform_operator_export_matches_partitioned_prepared_playback ... ok
+test filter_modes_export_match_registered_playback_across_blocks_and_release ... ok
+test lfo_free_sync_and_feedback_export_match_registered_partitioned_playback ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.88s
+
+     Running tests/prepared_mutable.rs (target/debug/deps/prepared_mutable-f4bdc1eff3c8e319)
+
+running 6 tests
+test export_nonzero_mutable_range_refuses_before_sounding_destination_seek ... ok
+test mutable_arrangement_export_refuses_nonzero_range_even_after_release ... ok
+test linear_export_owner_rejects_session_routes_and_state_inheritance_both_ways ... ok
+test nonmutable_prepared_export_keeps_nonzero_range_support ... ok
+test linear_export_ignores_transport_and_unused_session_loops_but_refuses_arrangement_loop ... ok
+test prepared_mutable_hybrid_export_matches_independent_ordered_pcm_oracle ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/return_routes.rs (target/debug/deps/return_routes-b04d73ff562f9a16)
+
+running 4 tests
+test prepared_export_applies_gain_automation_with_return_feed_and_zero_base_once ... ok
+test prepared_export_includes_authored_additive_return_feed_before_master_once ... ok
+test prepared_export_renders_effectful_return_before_master_once ... ok
+test transformed_warp_root_gain_lane_and_playable_routing_match_native_linear_and_export ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+   Doc-tests hex_export
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

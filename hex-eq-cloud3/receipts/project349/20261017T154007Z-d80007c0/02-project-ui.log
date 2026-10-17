@@ -1,0 +1,170 @@
+   Compiling zune-jpeg v0.5.15
+   Compiling usvg v0.45.1
+   Compiling gpui_util v0.2.2
+   Compiling dtor v0.0.6
+   Compiling zed-font-kit v0.14.1-zed
+   Compiling exr v1.74.2
+   Compiling moxcms v0.7.11
+   Compiling derive_more v0.99.20
+   Compiling addr2line v0.25.1
+   Compiling fontdb v0.16.2
+   Compiling zed-reqwest v0.12.15-zed
+   Compiling blade-graphics v0.7.1
+   Compiling image-webp v0.2.4
+   Compiling gif v0.14.2
+   Compiling zed-async-tar v0.5.0-zed
+   Compiling is-wsl v0.4.0
+   Compiling ravif v0.12.0
+   Compiling ahash v0.8.12
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling pathfinder_geometry v0.5.1
+   Compiling stacker v0.1.25
+   Compiling num-bigint-dig v0.8.6
+   Compiling alsa-sys v0.4.0
+   Compiling stacksafe-macro v0.1.4
+   Compiling xim-parser v0.2.2
+   Compiling tiny-skia v0.11.4
+   Compiling dirs v5.0.1
+   Compiling gpui v0.2.2 (/workspace/hex-project-spectrum/third_party/gpui)
+   Compiling object v0.37.3
+   Compiling pbkdf2 v0.12.2
+   Compiling hkdf v0.12.4
+   Compiling num v0.4.3
+   Compiling cbc v0.1.2
+   Compiling aes v0.8.4
+   Compiling lyon_algorithms v1.0.21
+   Compiling freetype-sys v0.20.1
+   Compiling yeslogic-fontconfig-sys v6.0.1
+   Compiling hex-media v0.1.0 (/workspace/hex-project-spectrum/crates/hex-media)
+   Compiling ashpd v0.12.3
+   Compiling xim-ctext v0.3.0
+   Compiling png v0.18.1
+   Compiling calloop v0.13.0
+   Compiling wayland-protocols v0.31.2
+   Compiling wayland-protocols v0.32.12
+   Compiling strum_macros v0.27.2
+   Compiling md-5 v0.10.6
+   Compiling qoi v0.4.1
+   Compiling nanorand v0.7.0
+   Compiling crossbeam-queue v0.3.14
+   Compiling gpui_derive_refineable v0.2.2
+   Compiling float-ord v0.3.2
+   Compiling grid v0.18.0
+   Compiling hashbrown v0.14.5
+   Compiling svg_fmt v0.4.5
+   Compiling unicode-linebreak v0.1.5
+   Compiling sys-locale v0.3.2
+   Compiling self_cell v1.3.0
+   Compiling smol_str v0.2.2
+   Compiling byteorder v1.5.0
+   Compiling ctor-proc-macro v0.0.6
+   Compiling xkeysym v0.2.1
+   Compiling rangemap v1.8.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling rustc-demangle v0.1.28
+   Compiling static_assertions v1.1.0
+   Compiling atomic v0.5.3
+   Compiling pollster v0.2.5
+   Compiling postage v0.5.0
+   Compiling backtrace v0.3.76
+   Compiling cosmic-text v0.14.2
+   Compiling xkbcommon v0.8.0
+   Compiling ctor v0.4.3
+   Compiling etagere v0.2.15
+   Compiling zed-xim v0.4.0-zed
+   Compiling taffy v0.9.0
+   Compiling gpui_refineable v0.2.2
+   Compiling flume v0.11.1
+   Compiling image v0.25.9
+   Compiling oo7 v0.5.0
+   Compiling strum v0.27.2
+   Compiling ashpd v0.11.1
+   Compiling wayland-protocols-plasma v0.2.0
+   Compiling calloop-wayland-source v0.3.0
+   Compiling lyon v1.0.19
+   Compiling resvg v0.45.1
+   Compiling stacksafe v0.1.4
+   Compiling alsa v0.11.0
+   Compiling open v5.4.4
+   Compiling gpui_http_client v0.2.2
+   Compiling blade-util v0.3.0
+   Compiling x11-clipboard v0.9.3
+   Compiling wayland-cursor v0.31.14
+   Compiling gpui_sum_tree v0.2.2
+   Compiling gpui_semantic_version v0.2.2
+   Compiling filedescriptor v0.8.3
+   Compiling gpui-macros v0.2.2
+   Compiling blade-macros v0.3.0
+   Compiling fs2 v0.4.3
+   Compiling num_cpus v1.17.0
+   Compiling seahash v4.1.0
+   Compiling inventory v0.3.25
+   Compiling cpal v0.17.3
+   Compiling hex-storage v0.1.0 (/workspace/hex-project-spectrum/crates/hex-storage)
+   Compiling hex-export v0.1.0 (/workspace/hex-project-spectrum/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex-project-spectrum/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-project-spectrum/crates/hex-widgets)
+   Compiling hex-preferences v0.1.0 (/workspace/hex-project-spectrum/crates/hex-preferences)
+   Compiling hex-diagnostics v0.1.0 (/workspace/hex-project-spectrum/crates/hex-diagnostics)
+   Compiling hex-library v0.1.0 (/workspace/hex-project-spectrum/crates/hex-library)
+   Compiling hex-midi v0.1.0 (/workspace/hex-project-spectrum/crates/hex-midi)
+error[E0499]: cannot borrow `visual` as mutable more than once at a time
+   --> crates/hex-ui/src/editor/project_spectrum/tests.rs:236:13
+    |
+235 |         visual.simulate_click(
+    |         ------ -------------- first borrow later used by call
+    |         |
+    |         first mutable borrow occurs here
+236 |             visual
+    |             ^^^^^^ second mutable borrow occurs here
+    |
+help: try adding a local storing this argument...
+   --> crates/hex-ui/src/editor/project_spectrum/tests.rs:236:13
+    |
+236 | /             visual
+237 | |                 .debug_bounds("project-spectrum-toggle")
+    | |________________________________________________________^
+help: ...and then using that local as the argument to this call
+   --> crates/hex-ui/src/editor/project_spectrum/tests.rs:235:9
+    |
+235 | /         visual.simulate_click(
+236 | |             visual
+237 | |                 .debug_bounds("project-spectrum-toggle")
+238 | |                 .unwrap()
+239 | |                 .center(),
+240 | |             Modifiers::default(),
+241 | |         );
+    | |_________^
+
+error[E0499]: cannot borrow `visual` as mutable more than once at a time
+   --> crates/hex-ui/src/editor/project_spectrum/tests.rs:249:13
+    |
+248 |         visual.simulate_click(
+    |         ------ -------------- first borrow later used by call
+    |         |
+    |         first mutable borrow occurs here
+249 |             visual
+    |             ^^^^^^ second mutable borrow occurs here
+    |
+help: try adding a local storing this argument...
+   --> crates/hex-ui/src/editor/project_spectrum/tests.rs:249:13
+    |
+249 | /             visual
+250 | |                 .debug_bounds("project-spectrum-toggle")
+    | |________________________________________________________^
+help: ...and then using that local as the argument to this call
+   --> crates/hex-ui/src/editor/project_spectrum/tests.rs:248:9
+    |
+248 | /         visual.simulate_click(
+249 | |             visual
+250 | |                 .debug_bounds("project-spectrum-toggle")
+251 | |                 .unwrap()
+252 | |                 .center(),
+253 | |             Modifiers::default(),
+254 | |         );
+    | |_________^
+
+For more information about this error, try `rustc --explain E0499`.
+error: could not compile `hex-ui` (lib test) due to 2 previous errors

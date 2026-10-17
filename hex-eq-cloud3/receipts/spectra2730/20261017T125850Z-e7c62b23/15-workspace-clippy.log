@@ -1,0 +1,36 @@
+    Checking hex-lattice-contract v0.1.0 (/workspace/hex-eq-spectra/crates/hex-lattice-contract)
+    Checking hex-dsp v0.1.0 (/workspace/hex-eq-spectra/crates/hex-dsp)
+    Checking hex-warp v0.1.0 (/workspace/hex-eq-spectra/crates/hex-warp)
+   Compiling hex-engine v0.1.0 (/workspace/hex-eq-spectra/crates/hex-engine)
+   Compiling hex-stream v0.1.0 (/workspace/hex-eq-spectra/crates/hex-stream)
+    Checking hex-project v0.1.0 (/workspace/hex-eq-spectra/crates/hex-project)
+    Checking hex-lattice v0.1.0 (/workspace/hex-eq-spectra/crates/hex-lattice)
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+    Checking hex-clap-scan v0.1.0 (/workspace/hex-eq-spectra/crates/hex-clap-scan)
+    Checking hex-plugin-scan v0.1.0 (/workspace/hex-eq-spectra/crates/hex-plugin-scan)
+    Checking hex-devices v0.1.0 (/workspace/hex-eq-spectra/crates/hex-devices)
+   Compiling hex-ui v0.1.0 (/workspace/hex-eq-spectra/crates/hex-ui)
+    Checking hex-widgets v0.1.0 (/workspace/hex-eq-spectra/crates/hex-widgets)
+    Checking hex-preferences v0.1.0 (/workspace/hex-eq-spectra/crates/hex-preferences)
+    Checking hex-library v0.1.0 (/workspace/hex-eq-spectra/crates/hex-library)
+    Checking hex-midi v0.1.0 (/workspace/hex-eq-spectra/crates/hex-midi)
+    Checking hex-diagnostics v0.1.0 (/workspace/hex-eq-spectra/crates/hex-diagnostics)
+    Checking hex-storage v0.1.0 (/workspace/hex-eq-spectra/crates/hex-storage)
+    Checking hex-media v0.1.0 (/workspace/hex-eq-spectra/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex-eq-spectra/crates/hex-export)
+    Checking hex-session v0.1.0 (/workspace/hex-eq-spectra/crates/hex-session)
+    Checking hex-audio v0.1.0 (/workspace/hex-eq-spectra/crates/hex-audio)
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:847:6
+    |
+847 | ) -> (Option<Vec<[f32; 2]>>, Option<Vec<[f32; 2]>>) {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+    = note: `-D clippy::type-complexity` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+    Checking hex-cli v0.1.0 (/workspace/hex-eq-spectra/crates/hex-cli)
+error: could not compile `hex-ui` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `hex-ui` (lib test) due to 1 previous error

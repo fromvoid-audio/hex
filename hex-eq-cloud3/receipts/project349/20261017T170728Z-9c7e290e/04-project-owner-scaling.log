@@ -1,0 +1,9 @@
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+    Finished `test` profile [unoptimized] target(s) in 14.47s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_engine-e607333478c417fa)
+
+running 1 test
+test project_output::project_owner_index_tests::project_owner_validation_is_linear_at_maximum_and_refuses_stale_or_unsorted_ids ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.00s
+

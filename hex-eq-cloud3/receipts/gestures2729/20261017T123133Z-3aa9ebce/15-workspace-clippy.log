@@ -1,0 +1,224 @@
+    Checking hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+    Checking hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+    Checking hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+    Checking linux-raw-sys v0.12.1
+    Checking hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+    Checking hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+    Checking fs2 v0.4.3
+   Compiling generic-array v0.14.7
+    Checking hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling crypto-common v0.1.7
+    Checking rustix v1.1.5
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+    Checking hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling memchr v2.8.3
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+    Checking bytemuck v1.25.2
+    Checking alsa-sys v0.4.0
+    Checking alsa v0.11.0
+    Checking dasp_sample v0.11.0
+    Checking cpal v0.17.3
+    Checking signal-hook v0.3.18
+    Checking wayland-sys v0.31.11
+   Compiling quick-xml v0.41.0
+    Checking polling v3.11.0
+    Checking async-io v2.6.0
+    Checking async-signal v0.2.14
+    Checking async-process v2.5.0
+    Checking scoped-tls v1.0.1
+    Checking downcast-rs v1.2.1
+    Checking wayland-backend v0.3.17
+   Compiling wayland-scanner v0.31.11
+   Compiling aho-corasick v1.1.5
+    Checking ring v0.17.14
+   Compiling regex-automata v0.4.18
+    Checking wayland-client v0.31.15
+   Compiling object v0.37.3
+    Checking async-net v2.0.0
+   Compiling bstr v1.13.1
+    Checking rand v0.9.5
+    Checking rustls-webpki v0.103.15
+   Compiling globset v0.4.19
+   Compiling ar_archive_writer v0.5.1
+    Checking num-complex v0.4.6
+   Compiling serde_json v1.0.151
+   Compiling rust-embed-utils v8.13.0
+    Checking hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+    Checking hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling psm v0.1.31
+    Checking rustls v0.23.45
+    Checking hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+    Checking hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Checking libz-sys v1.1.29
+    Checking font-types v0.12.6
+   Compiling getrandom v0.2.17
+    Checking xcursor v0.3.11
+    Checking as-raw-xcb-connection v1.0.1
+    Checking tiny-skia-path v0.11.4
+    Checking zbus v5.13.2
+   Compiling const-random-macro v0.1.16
+    Checking read-fonts v0.41.0
+    Checking libgit2-sys v0.18.8+1.9.7
+   Compiling gpui_perf v0.2.2
+    Checking tokio-rustls v0.26.6
+   Compiling rust-embed-impl v8.13.0
+    Checking async-global-executor v2.4.1
+    Checking gethostname v1.1.0
+    Checking rgb v0.8.53
+    Checking unicode-bidi v0.3.18
+    Checking x11rb-protocol v0.13.2
+    Checking rustybuzz v0.20.1
+    Checking pulp v0.22.3
+    Checking async-std v1.13.2
+    Checking rust-embed v8.13.0
+    Checking gpui_collections v0.2.2
+   Compiling proc-macro-error2 v2.0.1 (/workspace/hex/third_party/proc-macro-error2)
+    Checking hyper-rustls v0.27.10
+   Compiling gpui_util_macros v0.2.2
+    Checking git2 v0.20.4
+    Checking skrifa v0.44.0
+    Checking const-random v0.1.18
+    Checking smol v2.0.2
+    Checking hex-clap-scan v0.1.0 (/workspace/hex/crates/hex-clap-scan)
+    Checking tempfile v3.27.0
+    Checking is-docker v0.2.0
+    Checking xattr v0.2.3 (/workspace/hex/third_party/xattr)
+    Checking unicode-ccc v0.2.0
+    Checking float_next_after v1.0.0
+    Checking bit_field v0.10.3
+    Checking byteorder-lite v0.1.0
+    Checking yazi v0.2.1
+    Checking zeno v0.3.3
+    Checking pico-args v0.5.0
+    Checking color_quant v1.1.0
+    Checking xmlwriter v0.1.0
+    Checking dunce v1.0.5
+    Checking gimli v0.32.3
+    Checking ttf-parser v0.20.0
+    Checking pxfm v0.1.30
+    Checking x11rb v0.13.2
+    Checking zune-core v0.5.3
+    Checking unicode-bidi-mirroring v0.2.0
+    Checking fax v0.2.7
+    Checking ttf-parser v0.21.1
+    Checking take-until v0.2.0
+    Checking ipnet v2.12.2
+    Checking mint v0.5.9
+    Checking data-url v0.3.2
+    Checking shlex v1.3.0
+    Checking unicode-vo v0.1.0
+    Checking imagesize v0.13.0
+    Checking lebe v0.5.3
+    Checking exr v1.74.2
+    Checking usvg v0.45.1
+    Checking moxcms v0.7.11
+    Checking rustybuzz v0.14.1
+    Checking blade-graphics v0.7.1
+   Compiling derive_more v0.99.20
+    Checking gpui_util v0.2.2
+    Checking zed-reqwest v0.12.15-zed
+    Checking fontdb v0.16.2
+    Checking tiff v0.10.3
+    Checking zune-jpeg v0.5.15
+    Checking addr2line v0.25.1
+    Checking swash v0.2.10
+    Checking gif v0.14.2
+    Checking image-webp v0.2.4
+    Checking dtor v0.0.6
+    Checking lyon_tessellation v1.0.22
+    Checking zed-async-tar v0.5.0-zed
+    Checking is-wsl v0.4.0
+    Checking ravif v0.12.0
+    Checking ahash v0.8.12
+    Checking pathfinder_geometry v0.5.1
+    Checking stacker v0.1.25
+    Checking num-bigint-dig v0.8.6
+   Compiling stacksafe-macro v0.1.4
+    Checking dirs v5.0.1
+    Checking xim-parser v0.2.2
+    Checking tiny-skia v0.11.4
+    Checking ashpd v0.12.3
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+    Checking hkdf v0.12.4
+    Checking pbkdf2 v0.12.2
+    Checking num v0.4.3
+    Checking cbc v0.1.2
+    Checking aes v0.8.4
+    Checking lyon_algorithms v1.0.21
+    Checking freetype-sys v0.20.1
+    Checking yeslogic-fontconfig-sys v6.0.1
+    Checking xim-ctext v0.3.0
+    Checking png v0.18.1
+    Checking calloop v0.13.0
+    Checking wayland-protocols v0.32.12
+    Checking wayland-protocols v0.31.2
+   Compiling strum_macros v0.27.2
+    Checking qoi v0.4.1
+    Checking crossbeam-queue v0.3.14
+    Checking md-5 v0.10.6
+   Compiling gpui_derive_refineable v0.2.2
+    Checking nanorand v0.7.0
+    Checking grid v0.18.0
+    Checking hashbrown v0.14.5
+    Checking xkeysym v0.2.1
+    Checking self_cell v1.3.0
+    Checking unicode-segmentation v1.13.3
+    Checking atomic v0.5.3
+    Checking float-ord v0.3.2
+    Checking rangemap v1.8.0
+    Checking static_assertions v1.1.0
+    Checking svg_fmt v0.4.5
+    Checking unicode-linebreak v0.1.5
+    Checking smol_str v0.2.2
+    Checking rustc-demangle v0.1.28
+    Checking byteorder v1.5.0
+    Checking sys-locale v0.3.2
+    Checking pollster v0.2.5
+    Checking cosmic-text v0.14.2
+    Checking postage v0.5.0
+    Checking backtrace v0.3.76
+    Checking zed-font-kit v0.14.1-zed
+    Checking etagere v0.2.15
+    Checking xkbcommon v0.8.0
+    Checking ctor v0.4.3
+    Checking zed-xim v0.4.0-zed
+    Checking ashpd v0.11.1
+    Checking wayland-protocols-plasma v0.2.0
+    Checking taffy v0.9.0
+    Checking gpui_refineable v0.2.2
+    Checking flume v0.11.1
+    Checking strum v0.27.2
+    Checking oo7 v0.5.0
+    Checking image v0.25.9
+    Checking calloop-wayland-source v0.3.0
+    Checking lyon v1.0.19
+    Checking resvg v0.45.1
+    Checking stacksafe v0.1.4
+    Checking gpui_http_client v0.2.2
+    Checking open v5.4.4
+    Checking blade-util v0.3.0
+    Checking x11-clipboard v0.9.3
+    Checking wayland-cursor v0.31.14
+    Checking gpui_sum_tree v0.2.2
+    Checking gpui_semantic_version v0.2.2
+    Checking filedescriptor v0.8.3
+   Compiling gpui-macros v0.2.2
+   Compiling blade-macros v0.3.0
+    Checking num_cpus v1.17.0
+    Checking inventory v0.3.25
+    Checking seahash v4.1.0
+    Checking hex-plugin-scan v0.1.0 (/workspace/hex/crates/hex-plugin-scan)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+    Checking hex-preferences v0.1.0 (/workspace/hex/crates/hex-preferences)
+    Checking hex-diagnostics v0.1.0 (/workspace/hex/crates/hex-diagnostics)
+    Checking hex-midi v0.1.0 (/workspace/hex/crates/hex-midi)
+    Checking hex-library v0.1.0 (/workspace/hex/crates/hex-library)
+    Checking hex-cli v0.1.0 (/workspace/hex/crates/hex-cli)
+    Checking hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Checking hex-desktop v0.1.0 (/workspace/hex/crates/hex-desktop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 10s

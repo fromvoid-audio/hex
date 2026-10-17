@@ -1,0 +1,675 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/workspace/hex-eq-quality/target",
+    "lock_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.lock",
+    "manifest_path": "/workspace/hex-eq-layout/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex-eq-layout/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.owner.json",
+    "target_directory": "/workspace/hex-eq-quality/target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-layout/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex-eq-layout/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex-eq-layout"
+  },
+  "commit": "7cf0128cadc129b47b3490098691c62f062b7499",
+  "dirty": false,
+  "dirty_files": [],
+  "disk_headroom": {
+    "checked_at": "2026-10-17T16:18:10Z",
+    "minimum_free_bytes": 2147483648,
+    "probes": [
+      {
+        "free_bytes": 21703860224,
+        "probed_path": "/workspace/hex-eq-layout",
+        "requested_path": "/workspace/hex-eq-layout",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 21703860224,
+        "probed_path": "/workspace/hex-eq-quality/target",
+        "requested_path": "/workspace/hex-eq-quality/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 734.612,
+  "end_tree": {
+    "commit": "7cf0128cadc129b47b3490098691c62f062b7499",
+    "content_sha256": "1b60851e190dd3b178d845b444555ed9f28810fdcc034fbb5a9bc4baa56d7966",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "ended_at": "2026-10-17T16:18:30Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "scripts/local-ci.py",
+    "--adopt-target"
+  ],
+  "mode": "full",
+  "repo_root": "/workspace/hex-eq-layout",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261017T160616Z-b21194a7",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "7cf0128cadc129b47b3490098691c62f062b7499",
+    "content_sha256": "1b60851e190dd3b178d845b444555ed9f28810fdcc034fbb5a9bc4baa56d7966",
+    "dirty": false,
+    "dirty_files": [],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-eq-layout"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "7cf0128cadc129b47b3490098691c62f062b7499",
+    "content_sha256": "1b60851e190dd3b178d845b444555ed9f28810fdcc034fbb5a9bc4baa56d7966",
+    "dirty": false,
+    "dirty_files": []
+  },
+  "started_at": "2026-10-17T16:06:16Z",
+  "status": "passed",
+  "steps": [
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "ended_at": "2026-10-17T16:06:24Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/01-runner-tests.log",
+      "started_at": "2026-10-17T16:06:16Z",
+      "status": "passed",
+      "step_id": "runner-tests"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-17T16:06:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/02-architecture.log",
+      "started_at": "2026-10-17T16:06:24Z",
+      "status": "passed",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-17T16:06:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/03-gpui-patch.log",
+      "started_at": "2026-10-17T16:06:25Z",
+      "status": "passed",
+      "step_id": "gpui-patch"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-17T16:06:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/04-dependency-patches.log",
+      "started_at": "2026-10-17T16:06:25Z",
+      "status": "passed",
+      "step_id": "dependency-patches"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-17T16:06:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/05-ui-style.log",
+      "started_at": "2026-10-17T16:06:25Z",
+      "status": "passed",
+      "step_id": "ui-style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-17T16:06:25Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/06-device-layout.log",
+      "started_at": "2026-10-17T16:06:25Z",
+      "status": "passed",
+      "step_id": "device-layout"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-17T16:06:32Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/07-format.log",
+      "started_at": "2026-10-17T16:06:25Z",
+      "status": "passed",
+      "step_id": "format"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-future-lints.py"
+      ],
+      "ended_at": "2026-10-17T16:06:34Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/08-dependency-future-lints.log",
+      "started_at": "2026-10-17T16:06:33Z",
+      "status": "passed",
+      "step_id": "dependency-future-lints"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:10:42Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/09-workspace-tests.log",
+      "started_at": "2026-10-17T16:06:34Z",
+      "status": "passed",
+      "step_id": "workspace-tests"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-export",
+        "--features",
+        "instrument-test-support",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:11:00Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/10-prepared-export-instrument-tests.log",
+      "started_at": "2026-10-17T16:10:42Z",
+      "status": "passed",
+      "step_id": "prepared-export-instrument-tests"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:14:37Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/11-ui-feature-tests.log",
+      "started_at": "2026-10-17T16:11:00Z",
+      "status": "passed",
+      "step_id": "ui-feature-tests"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--example",
+        "layout_review",
+        "--features",
+        "ui-test-support",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:14:58Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/12-device-gallery-tests.log",
+      "started_at": "2026-10-17T16:14:37Z",
+      "status": "passed",
+      "step_id": "device-gallery-tests"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-audio",
+        "-p",
+        "hex-desktop",
+        "--features",
+        "allocation-probe",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:16:10Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/13-audio-allocation-probe.log",
+      "started_at": "2026-10-17T16:14:58Z",
+      "status": "passed",
+      "step_id": "audio-allocation-probe"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-stream",
+        "--features",
+        "allocation-probe",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:16:14Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/14-stream-allocation-probe.log",
+      "started_at": "2026-10-17T16:16:10Z",
+      "status": "passed",
+      "step_id": "stream-allocation-probe"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T16:17:14Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/15-workspace-clippy.log",
+      "started_at": "2026-10-17T16:16:14Z",
+      "status": "passed",
+      "step_id": "workspace-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-export",
+        "--all-targets",
+        "--features",
+        "instrument-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T16:17:23Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/16-prepared-export-instrument-clippy.log",
+      "started_at": "2026-10-17T16:17:14Z",
+      "status": "passed",
+      "step_id": "prepared-export-instrument-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T16:17:47Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/17-ui-feature-clippy.log",
+      "started_at": "2026-10-17T16:17:23Z",
+      "status": "passed",
+      "step_id": "ui-feature-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-audio",
+        "-p",
+        "hex-desktop",
+        "--all-targets",
+        "--features",
+        "allocation-probe",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T16:18:08Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/18-audio-feature-clippy.log",
+      "started_at": "2026-10-17T16:17:47Z",
+      "status": "passed",
+      "step_id": "audio-feature-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-stream",
+        "--all-targets",
+        "--features",
+        "allocation-probe",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "ended_at": "2026-10-17T16:18:10Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/19-stream-feature-clippy.log",
+      "started_at": "2026-10-17T16:18:08Z",
+      "status": "passed",
+      "step_id": "stream-feature-clippy"
+    },
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "-p",
+        "hex-desktop",
+        "--locked"
+      ],
+      "ended_at": "2026-10-17T16:18:30Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T160616Z-b21194a7/20-desktop-build.log",
+      "started_at": "2026-10-17T16:18:10Z",
+      "status": "passed",
+      "step_id": "desktop-build"
+    }
+  ],
+  "target_cache": {
+    "action": "worktree-handoff",
+    "cleanup_argv": [
+      "cargo",
+      "clean",
+      "--profile",
+      "dev",
+      "--target-dir",
+      "/workspace/hex-eq-quality/target",
+      "--manifest-path",
+      "/workspace/hex-eq-layout/Cargo.toml",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-dsp#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-midi#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-clap-scan#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-plugin-scan#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-warp#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-diagnostics#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-session#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-engine#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-devices#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-lattice#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-lattice-contract#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-project#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-export#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-media#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-storage#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-stream#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-library#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-cli#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-desktop#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-audio#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-ui#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-preferences#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-layout/crates/hex-widgets#0.1.0"
+    ],
+    "cleanup_exit_code": 0,
+    "cleanup_log": "artifacts/local-ci/20261017T160616Z-b21194a7/target-handoff-clean.log",
+    "cleanup_status": "passed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-eq-layout"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-eq-backspace"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 1311045
+    }
+  },
+  "verification_status": "passed"
+}

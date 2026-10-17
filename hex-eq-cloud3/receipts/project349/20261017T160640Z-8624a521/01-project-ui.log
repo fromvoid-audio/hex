@@ -1,0 +1,75 @@
+   Compiling cc v1.6.0
+   Compiling rustix v1.1.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling memchr v2.8.3
+   Compiling bytemuck v1.25.2
+   Compiling polling v3.11.0
+   Compiling async-io v2.6.0
+   Compiling async-signal v0.2.14
+   Compiling ring v0.17.14
+   Compiling async-process v2.5.0
+   Compiling aho-corasick v1.1.5
+   Compiling regex-automata v0.4.18
+   Compiling object v0.37.3
+   Compiling bstr v1.13.1
+   Compiling rustls v0.23.45
+   Compiling globset v0.4.19
+   Compiling ar_archive_writer v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling async-net v2.0.0
+   Compiling num-complex v0.4.6
+   Compiling psm v0.1.31
+   Compiling rust-embed-utils v8.13.0
+   Compiling freetype-sys v0.20.1
+   Compiling tiny-skia-path v0.11.4
+   Compiling rust-embed-impl v8.13.0
+   Compiling tokio-rustls v0.26.6
+   Compiling async-global-executor v2.4.1
+   Compiling rgb v0.8.53
+   Compiling stacker v0.1.25
+   Compiling rustybuzz v0.20.1
+   Compiling pulp v0.22.3
+   Compiling async-std v1.13.2
+   Compiling zbus v5.13.2
+   Compiling rust-embed v8.13.0
+   Compiling hyper-rustls v0.27.10
+   Compiling rand v0.9.5
+   Compiling serde_json v1.0.151
+   Compiling smol v2.0.2
+   Compiling gpui_collections v0.2.2
+   Compiling tempfile v3.27.0
+   Compiling usvg v0.45.1
+   Compiling gpui_util v0.2.2
+   Compiling zed-reqwest v0.12.15-zed
+   Compiling blade-graphics v0.7.1
+   Compiling exr v1.74.2
+   Compiling zed-font-kit v0.14.1-zed
+   Compiling zed-async-tar v0.5.0-zed
+   Compiling ravif v0.12.0
+   Compiling gpui_perf v0.2.2
+   Compiling ashpd v0.12.3
+   Compiling gpui v0.2.2 (/workspace/hex-project-spectrum/third_party/gpui)
+   Compiling tiny-skia v0.11.4
+   Compiling num v0.4.3
+   Compiling qoi v0.4.1
+   Compiling image v0.25.9
+   Compiling oo7 v0.5.0
+   Compiling resvg v0.45.1
+   Compiling stacksafe v0.1.4
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling gpui_util_macros v0.2.2
+   Compiling gpui_http_client v0.2.2
+   Compiling blade-util v0.3.0
+   Compiling calloop v0.13.0
+   Compiling hex-export v0.1.0 (/workspace/hex-project-spectrum/crates/hex-export)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+   Compiling hex-session v0.1.0 (/workspace/hex-project-spectrum/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-project-spectrum/crates/hex-widgets)
+    Finished `test` profile [unoptimized] target(s) in 2m 51s
+     Running unittests src/lib.rs (artifacts/portable-target/debug/deps/hex_ui-de7ea1df8191cfef)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 294 filtered out; finished in 0.00s
+

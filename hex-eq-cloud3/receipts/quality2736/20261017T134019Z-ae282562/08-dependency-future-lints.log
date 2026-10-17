@@ -1,0 +1,480 @@
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:66:1
+   |
+66 | extern {
+   | ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+   |
+   = note: `#[warn(missing_abi)]` on by default
+
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+   |
+86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+   |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+97 | block_args_impl!();
+   | ------------------ in this macro invocation
+   |
+   = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+   |
+86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+   |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+98 | block_args_impl!(a: A);
+   | ---------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+   |
+86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+   |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+99 | block_args_impl!(a: A, b: B);
+   | ---------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+100 | block_args_impl!(a: A, b: B, c: C);
+    | ---------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+101 | block_args_impl!(a: A, b: B, c: C, d: D);
+    | ---------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+102 | block_args_impl!(a: A, b: B, c: C, d: D, e: E);
+    | ---------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+103 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F);
+    | ---------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+104 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G);
+    | ---------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+105 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+106 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+107 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+108 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K);
+    | ---------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+109 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L);
+    | ---------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:116:20
+    |
+116 |     invoke: unsafe extern fn(*mut Block<A, R>, ...) -> R,
+    |                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+223 | concrete_block_impl!(concrete_block_invoke_args0);
+    | ------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+223 | concrete_block_impl!(concrete_block_invoke_args0);
+    | ------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+224 | concrete_block_impl!(concrete_block_invoke_args1, a: A);
+    | ------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+224 | concrete_block_impl!(concrete_block_invoke_args1, a: A);
+    | ------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+225 | concrete_block_impl!(concrete_block_invoke_args2, a: A, b: B);
+    | ------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+225 | concrete_block_impl!(concrete_block_invoke_args2, a: A, b: B);
+    | ------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+226 | concrete_block_impl!(concrete_block_invoke_args3, a: A, b: B, c: C);
+    | ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+226 | concrete_block_impl!(concrete_block_invoke_args3, a: A, b: B, c: C);
+    | ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+227 | concrete_block_impl!(concrete_block_invoke_args4, a: A, b: B, c: C, d: D);
+    | ------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+227 | concrete_block_impl!(concrete_block_invoke_args4, a: A, b: B, c: C, d: D);
+    | ------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+228 | concrete_block_impl!(concrete_block_invoke_args5, a: A, b: B, c: C, d: D, e: E);
+    | ------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+228 | concrete_block_impl!(concrete_block_invoke_args5, a: A, b: B, c: C, d: D, e: E);
+    | ------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+229 | concrete_block_impl!(concrete_block_invoke_args6, a: A, b: B, c: C, d: D, e: E, f: F);
+    | ------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+229 | concrete_block_impl!(concrete_block_invoke_args6, a: A, b: B, c: C, d: D, e: E, f: F);
+    | ------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+230 | concrete_block_impl!(concrete_block_invoke_args7, a: A, b: B, c: C, d: D, e: E, f: F, g: G);
+    | ------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+230 | concrete_block_impl!(concrete_block_invoke_args7, a: A, b: B, c: C, d: D, e: E, f: F, g: G);
+    | ------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+231 | concrete_block_impl!(concrete_block_invoke_args8, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H);
+    | ------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+231 | concrete_block_impl!(concrete_block_invoke_args8, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H);
+    | ------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+232 | concrete_block_impl!(concrete_block_invoke_args9, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I);
+    | ------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+232 | concrete_block_impl!(concrete_block_invoke_args9, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I);
+    | ------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+233 | concrete_block_impl!(concrete_block_invoke_args10, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J);
+    | -------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+233 | concrete_block_impl!(concrete_block_invoke_args10, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J);
+    | -------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+234 | concrete_block_impl!(concrete_block_invoke_args11, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K);
+    | -------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+234 | concrete_block_impl!(concrete_block_invoke_args11, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K);
+    | -------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+235 | concrete_block_impl!(concrete_block_invoke_args12, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L);
+    | -------------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+235 | concrete_block_impl!(concrete_block_invoke_args12, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L);
+    | -------------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:260:42
+    |
+260 |     unsafe fn with_invoke(invoke: unsafe extern fn(*mut Self, ...) -> R,
+    |                                          ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:314:8
+    |
+314 | unsafe extern fn block_context_dispose<B>(block: &mut B) {
+    |        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:319:8
+    |
+319 | unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {
+    |        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:327:25
+    |
+327 |     copy_helper: unsafe extern fn(&mut B, &B),
+    |                         ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> /workspace/hex-eq-quality/third_party/block/src/lib.rs:328:28
+    |
+328 |     dispose_helper: unsafe extern fn(&mut B),
+    |                            ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: 46 warnings emitted
+
+    Finished `dev` profile [unoptimized] target(s) in 0.04s
+     Running `target/debug/hex-warning-consumer`
+    Finished `dev` profile [unoptimized] target(s) in 0.02s
+     Running `target/debug/hex-warning-consumer`
+dependency future lints passed: block declaration and downstream proc-macro consumer, default and no-default features

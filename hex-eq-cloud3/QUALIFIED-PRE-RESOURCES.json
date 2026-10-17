@@ -1,0 +1,9 @@
+{
+  "head": "9e0d736eaa7fbaa79e9dc8111207559d61dd0301",
+  "source_sha256": "a6fabbae229466541857cd1880ff593901fa73fc440d4af3cfcd8d834ed2dac0",
+  "report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T172526Z-f91eaf32/summary.json",
+  "report_sha256": "0c30185cdc85a5aa20faa8185e2d59acb6727a567f3a57df7c94e1fcb8df860b",
+  "required_checks": 20,
+  "native_acceptance": "pending",
+  "qualification": "includes published351/372, before published373 resource API"
+}

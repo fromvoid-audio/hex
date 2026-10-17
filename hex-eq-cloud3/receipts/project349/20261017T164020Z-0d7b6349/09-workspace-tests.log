@@ -1,0 +1,82 @@
+warning: output filename collision at /workspace/hex-project-spectrum/artifacts/portable-target/debug/examples/profile
+  |
+  = note: the example target `profile` in package `hex-warp v0.1.0 (/workspace/hex-project-spectrum/crates/hex-warp)` has the same output filename as the example target `profile` in package `hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)`
+  = note: this may become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/6313>
+  = help: consider changing their names to be unique or compiling them separately
+warning: output filename collision at /workspace/hex-project-spectrum/artifacts/portable-target/debug/examples/profile.dwp
+  |
+  = note: the example target `profile` in package `hex-warp v0.1.0 (/workspace/hex-project-spectrum/crates/hex-warp)` has the same output filename as the example target `profile` in package `hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)`
+  = note: this may become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/6313>
+  = help: consider changing their names to be unique or compiling them separately
+   Compiling hex-tuning v0.1.0 (/workspace/hex-project-spectrum/crates/hex-tuning)
+   Compiling serde_json v1.0.151
+   Compiling hex-project v0.1.0 (/workspace/hex-project-spectrum/crates/hex-project)
+   Compiling hex-stream v0.1.0 (/workspace/hex-project-spectrum/crates/hex-stream)
+   Compiling signal-hook v0.3.18
+   Compiling schemars v1.2.2
+   Compiling hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex-project-spectrum/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex-project-spectrum/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex-project-spectrum/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex-project-spectrum/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex-project-spectrum/crates/hex-audio)
+   Compiling hex-clap-scan v0.1.0 (/workspace/hex-project-spectrum/crates/hex-clap-scan)
+   Compiling gpui_util v0.2.2
+   Compiling hex-plugin-scan v0.1.0 (/workspace/hex-project-spectrum/crates/hex-plugin-scan)
+   Compiling gpui_http_client v0.2.2
+   Compiling hex-preferences v0.1.0 (/workspace/hex-project-spectrum/crates/hex-preferences)
+   Compiling gpui v0.2.2 (/workspace/hex-project-spectrum/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex-project-spectrum/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex-project-spectrum/crates/hex-widgets)
+   Compiling hex-desktop v0.1.0 (/workspace/hex-project-spectrum/crates/hex-desktop)
+error[E0599]: no function or associated item named `default` found for struct `style::ControlStyle` in the current scope
+  --> crates/hex-widgets/src/spectrum_plot.rs:92:31
+   |
+92 |                 ControlStyle::default()
+   |                               ^^^^^^^ function or associated item not found in `style::ControlStyle`
+   |
+  ::: crates/hex-widgets/src/style.rs:10:1
+   |
+10 | pub struct ControlStyle {
+   | ----------------------- function or associated item `default` not found for this struct
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `default`, perhaps you need to implement one of them:
+           candidate #1: `Default`
+           candidate #2: `tinyvec::array::Array`
+
+error[E0599]: no function or associated item named `default` found for struct `style::ControlStyle` in the current scope
+  --> crates/hex-widgets/src/spectrum_plot.rs:99:31
+   |
+99 |                 ControlStyle::default()
+   |                               ^^^^^^^ function or associated item not found in `style::ControlStyle`
+   |
+  ::: crates/hex-widgets/src/style.rs:10:1
+   |
+10 | pub struct ControlStyle {
+   | ----------------------- function or associated item `default` not found for this struct
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following traits define an item `default`, perhaps you need to implement one of them:
+           candidate #1: `Default`
+           candidate #2: `tinyvec::array::Array`
+
+error[E0599]: no function or associated item named `default` found for struct `style::ControlStyle` in the current scope
+   --> crates/hex-widgets/src/spectrum_plot.rs:107:68
+    |
+107 |         assert!(layered_spectrum_plot(vec![invalid], ControlStyle::default()).is_none());
+    |                                                                    ^^^^^^^ function or associated item not found in `style::ControlStyle`
+    |
+   ::: crates/hex-widgets/src/style.rs:10:1
+    |
+ 10 | pub struct ControlStyle {
+    | ----------------------- function or associated item `default` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `default`, perhaps you need to implement one of them:
+            candidate #1: `Default`
+            candidate #2: `tinyvec::array::Array`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `hex-widgets` (lib test) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...

@@ -1,0 +1,358 @@
+{
+  "cargo_identity": {
+    "configured_target_value": "/workspace/hex-eq-quality/target",
+    "lock_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.lock",
+    "manifest_path": "/workspace/hex-eq-backspace/Cargo.toml",
+    "metadata_command": [
+      "cargo",
+      "metadata",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--locked",
+      "--manifest-path",
+      "/workspace/hex-eq-backspace/Cargo.toml"
+    ],
+    "owner_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.owner.json",
+    "target_directory": "/workspace/hex-eq-quality/target",
+    "target_source": "environment",
+    "workspace_packages": [
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-dsp#0.1.0",
+        "name": "hex-dsp",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-dsp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-midi#0.1.0",
+        "name": "hex-midi",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-midi#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-clap-scan#0.1.0",
+        "name": "hex-clap-scan",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-clap-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-plugin-scan#0.1.0",
+        "name": "hex-plugin-scan",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-plugin-scan#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-warp#0.1.0",
+        "name": "hex-warp",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-warp#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-diagnostics#0.1.0",
+        "name": "hex-diagnostics",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-diagnostics#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-session#0.1.0",
+        "name": "hex-session",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-session#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-engine#0.1.0",
+        "name": "hex-engine",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-engine#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-devices#0.1.0",
+        "name": "hex-devices",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-devices#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-lattice#0.1.0",
+        "name": "hex-lattice",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-lattice#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-lattice-contract#0.1.0",
+        "name": "hex-lattice-contract",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-lattice-contract#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-project#0.1.0",
+        "name": "hex-project",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-project#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-export#0.1.0",
+        "name": "hex-export",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-export#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-media#0.1.0",
+        "name": "hex-media",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-media#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-storage#0.1.0",
+        "name": "hex-storage",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-storage#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-stream#0.1.0",
+        "name": "hex-stream",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-stream#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-library#0.1.0",
+        "name": "hex-library",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-library#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-cli#0.1.0",
+        "name": "hex-cli",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-cli#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-desktop#0.1.0",
+        "name": "hex-desktop",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-desktop#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-audio#0.1.0",
+        "name": "hex-audio",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-audio#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-ui#0.1.0",
+        "name": "hex-ui",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-ui#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-preferences#0.1.0",
+        "name": "hex-preferences",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-preferences#0.1.0",
+        "version": "0.1.0"
+      },
+      {
+        "id": "path+file:///workspace/hex-eq-backspace/crates/hex-widgets#0.1.0",
+        "name": "hex-widgets",
+        "spec": "path+file:///workspace/hex-eq-backspace/crates/hex-widgets#0.1.0",
+        "version": "0.1.0"
+      }
+    ],
+    "workspace_root": "/workspace/hex-eq-backspace"
+  },
+  "commit": "10852436be89e61551bada4b73644e356778cdd8",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-17T13:18:29Z",
+    "minimum_free_bytes": 3221225472,
+    "probes": [
+      {
+        "free_bytes": 9165185024,
+        "probed_path": "/workspace/hex-eq-backspace",
+        "requested_path": "/workspace/hex-eq-backspace",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 9165185024,
+        "probed_path": "/workspace/hex-eq-quality/target",
+        "requested_path": "/workspace/hex-eq-quality/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "CARGO_TARGET_DIR"
+  },
+  "duration_seconds": 125.302,
+  "end_tree": {
+    "commit": "10852436be89e61551bada4b73644e356778cdd8",
+    "content_sha256": "07cc7e7788e72114ccf57a984352358251997f5ec2d477a2665aac8a9ef711f5",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs"
+    ]
+  },
+  "ended_at": "2026-10-17T13:20:33Z",
+  "exit_code": 1,
+  "invocation_argv": [
+    "-"
+  ],
+  "mode": "quick",
+  "repo_root": "/workspace/hex-eq-backspace",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261017T131827Z-74f195ee",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "10852436be89e61551bada4b73644e356778cdd8",
+    "content_sha256": "07cc7e7788e72114ccf57a984352358251997f5ec2d477a2665aac8a9ef711f5",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs"
+    ],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-eq-backspace"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "10852436be89e61551bada4b73644e356778cdd8",
+    "content_sha256": "07cc7e7788e72114ccf57a984352358251997f5ec2d477a2665aac8a9ef711f5",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs"
+    ]
+  },
+  "started_at": "2026-10-17T13:18:27Z",
+  "status": "failed",
+  "steps": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--lib",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "eq_backspace_removes_only",
+        "--",
+        "--nocapture"
+      ],
+      "ended_at": "2026-10-17T13:20:33Z",
+      "error": null,
+      "exit_code": 101,
+      "log": "artifacts/local-ci/20261017T131827Z-74f195ee/01-eq-backspace-red.log",
+      "started_at": "2026-10-17T13:18:29Z",
+      "status": "failed",
+      "step_id": "eq-backspace-red"
+    }
+  ],
+  "target_cache": {
+    "action": "worktree-handoff",
+    "cleanup_argv": [
+      "cargo",
+      "clean",
+      "--profile",
+      "dev",
+      "--target-dir",
+      "/workspace/hex-eq-quality/target",
+      "--manifest-path",
+      "/workspace/hex-eq-backspace/Cargo.toml",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-dsp#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-midi#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-clap-scan#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-plugin-scan#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-warp#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-diagnostics#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-session#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-engine#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-devices#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-lattice#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-lattice-contract#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-project#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-export#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-media#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-storage#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-stream#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-library#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-cli#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-desktop#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-audio#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-ui#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-preferences#0.1.0",
+      "--package",
+      "path+file:///workspace/hex-eq-backspace/crates/hex-widgets#0.1.0"
+    ],
+    "cleanup_exit_code": 0,
+    "cleanup_log": "artifacts/local-ci/20261017T131827Z-74f195ee/target-handoff-clean.log",
+    "cleanup_status": "passed",
+    "current_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-eq-backspace"
+    },
+    "lock_acquired": true,
+    "lock_path": "/tmp/hex-local-ci-targets/5f3403da3edeb68e1924de8e85cf712962ede64c24cbda2f9591b46d53425bb7.lock",
+    "previous_workspace_owner": {
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-eq-layout"
+    },
+    "target_identity_before": {
+      "device": 27,
+      "inode": 1311045
+    }
+  },
+  "verification_status": "failed"
+}

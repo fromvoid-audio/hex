@@ -1,0 +1,218 @@
+{
+  "commit": "b08136041ab8d1354964af733ec5159c0a535147",
+  "dirty": true,
+  "dirty_files": [
+    " M crates/hex-audio/README.md",
+    " M crates/hex-audio/src/spectrum.rs",
+    " M crates/hex-audio/src/spectrum_worker.rs",
+    " M crates/hex-audio/src/spectrum_worker/native.rs",
+    " M crates/hex-ui/src/editor/device_panel.rs",
+    " M crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs",
+    " M crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+    " M docs/spectrum-analysis.md",
+    " M todo.md",
+    "?? crates/hex-ui/src/editor/device_panel/spectrum_display.rs"
+  ],
+  "disk_headroom": {
+    "checked_at": "2026-10-17T12:52:29Z",
+    "minimum_free_bytes": 0,
+    "probes": [
+      {
+        "free_bytes": 10968162304,
+        "probed_path": "/workspace/hex-eq-quality",
+        "requested_path": "/workspace/hex-eq-quality",
+        "role": "workspace",
+        "total_bytes": 33770192896
+      },
+      {
+        "free_bytes": 10968162304,
+        "probed_path": "/workspace/hex-eq-quality/target",
+        "requested_path": "/workspace/hex-eq-quality/target",
+        "role": "target",
+        "total_bytes": 33770192896
+      }
+    ],
+    "target_source": "workspace default"
+  },
+  "duration_seconds": 15.511,
+  "end_tree": {
+    "commit": "b08136041ab8d1354964af733ec5159c0a535147",
+    "content_sha256": "31af73772198a021d4c06abb884e88f7438f1f690722c2aa1a34d129b81964a0",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-audio/README.md",
+      " M crates/hex-audio/src/spectrum.rs",
+      " M crates/hex-audio/src/spectrum_worker.rs",
+      " M crates/hex-audio/src/spectrum_worker/native.rs",
+      " M crates/hex-ui/src/editor/device_panel.rs",
+      " M crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs",
+      " M crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+      " M docs/spectrum-analysis.md",
+      " M todo.md",
+      "?? crates/hex-ui/src/editor/device_panel/spectrum_display.rs"
+    ]
+  },
+  "ended_at": "2026-10-17T12:52:43Z",
+  "exit_code": 0,
+  "invocation_argv": [
+    "scripts/local-ci.py",
+    "--quick"
+  ],
+  "mode": "quick",
+  "repo_root": "/workspace/hex-eq-quality",
+  "repository_commands": [
+    [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--show-toplevel"
+    ],
+    [
+      "git",
+      "rev-parse",
+      "--git-common-dir"
+    ],
+    [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    [
+      "git",
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "-z"
+    ]
+  ],
+  "run_id": "20261017T125227Z-8cf0b32d",
+  "schema_version": 1,
+  "source_identity": {
+    "commit": "b08136041ab8d1354964af733ec5159c0a535147",
+    "content_sha256": "31af73772198a021d4c06abb884e88f7438f1f690722c2aa1a34d129b81964a0",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-audio/README.md",
+      " M crates/hex-audio/src/spectrum.rs",
+      " M crates/hex-audio/src/spectrum_worker.rs",
+      " M crates/hex-audio/src/spectrum_worker/native.rs",
+      " M crates/hex-ui/src/editor/device_panel.rs",
+      " M crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs",
+      " M crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+      " M docs/spectrum-analysis.md",
+      " M todo.md",
+      "?? crates/hex-ui/src/editor/device_panel/spectrum_display.rs"
+    ],
+    "git_common_dir": "/workspace/hex/.git",
+    "workspace_root": "/workspace/hex-eq-quality"
+  },
+  "stale": false,
+  "start_tree": {
+    "commit": "b08136041ab8d1354964af733ec5159c0a535147",
+    "content_sha256": "31af73772198a021d4c06abb884e88f7438f1f690722c2aa1a34d129b81964a0",
+    "dirty": true,
+    "dirty_files": [
+      " M crates/hex-audio/README.md",
+      " M crates/hex-audio/src/spectrum.rs",
+      " M crates/hex-audio/src/spectrum_worker.rs",
+      " M crates/hex-audio/src/spectrum_worker/native.rs",
+      " M crates/hex-ui/src/editor/device_panel.rs",
+      " M crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs",
+      " M crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+      " M docs/spectrum-analysis.md",
+      " M todo.md",
+      "?? crates/hex-ui/src/editor/device_panel/spectrum_display.rs"
+    ]
+  },
+  "started_at": "2026-10-17T12:52:27Z",
+  "status": "partial",
+  "steps": [
+    {
+      "argv": [
+        "python3",
+        "scripts/check-architecture.py"
+      ],
+      "ended_at": "2026-10-17T12:52:29Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T125227Z-8cf0b32d/01-architecture.log",
+      "started_at": "2026-10-17T12:52:29Z",
+      "status": "passed",
+      "step_id": "architecture"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-gpui-patch.py"
+      ],
+      "ended_at": "2026-10-17T12:52:29Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T125227Z-8cf0b32d/02-gpui-patch.log",
+      "started_at": "2026-10-17T12:52:29Z",
+      "status": "passed",
+      "step_id": "gpui-patch"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-dependency-patches.py"
+      ],
+      "ended_at": "2026-10-17T12:52:29Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T125227Z-8cf0b32d/03-dependency-patches.log",
+      "started_at": "2026-10-17T12:52:29Z",
+      "status": "passed",
+      "step_id": "dependency-patches"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-ui-style.py"
+      ],
+      "ended_at": "2026-10-17T12:52:30Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T125227Z-8cf0b32d/04-ui-style.log",
+      "started_at": "2026-10-17T12:52:29Z",
+      "status": "passed",
+      "step_id": "ui-style"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-device-layout.py"
+      ],
+      "ended_at": "2026-10-17T12:52:30Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T125227Z-8cf0b32d/05-device-layout.log",
+      "started_at": "2026-10-17T12:52:30Z",
+      "status": "passed",
+      "step_id": "device-layout"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "ended_at": "2026-10-17T12:52:43Z",
+      "error": null,
+      "exit_code": 0,
+      "log": "artifacts/local-ci/20261017T125227Z-8cf0b32d/06-format.log",
+      "started_at": "2026-10-17T12:52:30Z",
+      "status": "passed",
+      "step_id": "format"
+    }
+  ],
+  "verification_status": "partial"
+}

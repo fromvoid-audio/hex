@@ -1,0 +1,6 @@
+warning: hex-engine@0.1.0: PCM declared Arc layout Unknown: unsupported_wrapper_or_ambiguous_flags
+    Checking linux-raw-sys v0.12.1
+    Checking hex-engine v0.1.0 (/workspace/hex-project-spectrum/crates/hex-engine)
+    Checking rustix v1.1.5
+    Checking hex-export v0.1.0 (/workspace/hex-project-spectrum/crates/hex-export)
+    Finished `dev` profile [unoptimized] target(s) in 6.25s

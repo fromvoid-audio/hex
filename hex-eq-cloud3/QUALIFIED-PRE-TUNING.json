@@ -1,0 +1,9 @@
+{
+  "head": "f575d53630440d8d9dd3f5104fd98de9cecced70",
+  "source_sha256": "2fa863d64a181933570e39afc26009e6c1d0f7061bf37b01a15515963bbfc08f",
+  "report": "/workspace/hex-project-spectrum/artifacts/local-ci/20261017T171612Z-3d09fb9c/summary.json",
+  "report_sha256": "75edbd255d675d39973bc808a1e02214b800611f8eb71af0c36f244587e9ac6c",
+  "required_checks": 20,
+  "native_acceptance": "pending",
+  "qualification": "pre-integration with published tuning351/waveform372"
+}
