@@ -11,7 +11,7 @@ fn actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validat
         sample_rate_hz: 48_000,
         applied_revision: 0,
     };
-    let (capture, reader, reaper) = spawn_native_spectrum_worker(initial).unwrap();
+    let (capture, mut reader, reaper) = spawn_native_spectrum_worker(initial).unwrap();
     let (mut control, mut callback) = channel_with_spectrum(48_000, Some(capture)).unwrap();
     let (playback, identity) = super::tests::spectrum_eq8_graph_with_params(true, 0, -12.0, 1.0);
     let (mut reference, _) = super::tests::spectrum_eq8_graph_with_params(true, 0, -12.0, 1.0);
@@ -71,12 +71,51 @@ fn actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validat
     }
     #[cfg(not(feature = "allocation-probe"))]
     run();
+    // Exercise the complete native factory -> worker -> retained reader value
+    // path on the ordinary test-thread stack. Large inline publications used to
+    // overflow during factory construction before any of this PCM ran.
+    for sequence in 1..16 {
+        reference.render(&mut expected).unwrap();
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            callback.finish_analysis_block(now, true).1,
+            Some(CaptureOutcome::Queued { sequence })
+        );
+    }
+    let selection = control.status.project_spectrum.read().unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    let published = loop {
+        if let Some(result) = reader.try_latest_project_at(now, selection) {
+            break result;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native project result was not delivered"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(published.frames().len(), 2);
+    assert_eq!(published.selection, selection);
+    assert!(
+        published
+            .frames()
+            .iter()
+            .all(|frame| frame.bins_dbfs.iter().all(|value| value.is_finite()))
+    );
+    drop(published);
     // A UI context change after rendering invalidates its staged project block.
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     control.status.project_spectrum.clear().unwrap();
     let (_, project) = callback.finish_analysis_block(now, true);
-    assert_eq!(project, Some(CaptureOutcome::Skipped { sequence: 1 }));
+    assert_eq!(project, Some(CaptureOutcome::Skipped { sequence: 16 }));
+    assert!(
+        reader
+            .try_latest_project_at(now, control.status.project_spectrum.read().unwrap())
+            .is_none()
+    );
     // Unknown identities never acquire invented zero layers or refuse audio.
     control
         .status
@@ -86,7 +125,7 @@ fn actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validat
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     let (_, project) = callback.finish_analysis_block(now, true);
-    assert_eq!(project, Some(CaptureOutcome::Skipped { sequence: 2 }));
+    assert_eq!(project, Some(CaptureOutcome::Skipped { sequence: 17 }));
     // No track selection still captures the actual master.
     control
         .status
@@ -96,11 +135,11 @@ fn actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validat
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     let (_, project) = callback.finish_analysis_block(now, true);
-    assert_eq!(project, Some(CaptureOutcome::Queued { sequence: 3 }));
+    assert_eq!(project, Some(CaptureOutcome::Queued { sequence: 18 }));
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     let (_, project) = callback.finish_analysis_block(now, false);
-    assert_eq!(project, Some(CaptureOutcome::Skipped { sequence: 4 }));
+    assert_eq!(project, Some(CaptureOutcome::Skipped { sequence: 19 }));
     callback.begin_block();
     callback.render(&mut actual).unwrap();
     control.request_shutdown();

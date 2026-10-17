@@ -36,10 +36,15 @@ fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
         applied_revision: 1,
         captured_at: now,
         processed_at: now,
-        frames: std::array::from_fn(|i| hex_audio::spectrum::SpectrumFrame {
-            sample_rate_hz: 48_000,
-            bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
-        }),
+        frames: (0..hex_audio::spectrum_worker::MAX_PROJECT_LAYERS)
+            .map(|i| hex_audio::spectrum::SpectrumFrame {
+                sample_rate_hz: 48_000,
+                bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+            .try_into()
+            .unwrap(),
     }
 }
 #[gpui::test]
