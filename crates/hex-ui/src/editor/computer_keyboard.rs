@@ -242,6 +242,7 @@ impl super::EditorView {
     ) -> bool {
         !modifiers.modified()
             && !self.theme_settings.open
+            && !self.tuning.open
             && self.context_menu.is_none()
             && !self.opening_project
             && !self.close_prompt_open

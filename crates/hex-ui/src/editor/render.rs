@@ -334,6 +334,7 @@ fn status_slot(
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reconcile_clip_name(window, cx);
+        self.sync_tuning(cx);
         self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
@@ -388,6 +389,8 @@ impl Render for EditorView {
             .track_focus(&self.focus)
             .key_context(if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
+            } else if self.tuning.open {
+                "hex_tuning"
             } else if self.theme_settings.open {
                 "hex_theme_settings"
             } else if self.controller_input_is_open() {
@@ -515,6 +518,10 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
+            .on_action(cx.listener(|view, _: &super::OpenTuning, window, cx| {view.open_tuning(window,cx);}))
+            .on_action(cx.listener(|view, _: &super::CloseTuning, window, cx| {view.close_tuning(window,cx);}))
+            .on_action(cx.listener(|view, _: &super::CommitTuningName, window, cx| {view.commit_tuning_name(window,cx);}))
+            .on_action(cx.listener(|view, _: &super::CancelTuningName, window, cx| {view.cancel_tuning_name(window,cx);}))
             .on_action(cx.listener(|view, _: &super::OpenSettings, window, cx| {
                 view.open_theme_settings(window, cx);
             }))
@@ -1068,5 +1075,6 @@ impl Render for EditorView {
             .children(self.context_menu_overlay(window, cx))
             .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
+            .children(self.tuning_overlay(cx))
     }
 }

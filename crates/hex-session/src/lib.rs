@@ -30,6 +30,7 @@ mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;
+pub mod tuning_gesture;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
 
 #[derive(Debug)]
@@ -566,6 +567,31 @@ impl Session {
             .map(Arc::new)
             .map_err(SessionError::from)
         })
+    }
+
+    /// Prepare a project-tuning overlay without changing canonical project
+    /// metadata, dirty state or history.
+    pub fn preview_tuning(
+        &self,
+        tuning: hex_tuning::ProjectTuning,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let (_, prepared) = preview.execute_prepared(Command::SetTuning(tuning), |candidate| {
+            prepare_with_waveforms(
+                candidate,
+                &media,
+                Arc::clone(&table),
+                previous.map(|artifact| artifact.session().as_ref()),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+            )
+            .map(Arc::new)
+            .map_err(SessionError::from)
+        })?;
+        Ok((Arc::new(preview.project().clone()), prepared))
     }
 
     /// Prepare a typed native parameter overlay without changing canonical

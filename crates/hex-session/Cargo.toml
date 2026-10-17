@@ -15,6 +15,7 @@ hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-export = { path = "../hex-export" }
+hex-tuning = { path = "../hex-tuning" }
 
 [dev-dependencies]
 serde_json = "=1.0.151"

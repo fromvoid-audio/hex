@@ -2,6 +2,7 @@
 mod files;
 mod journal;
 pub mod preset;
+pub mod tuning_library;
 pub use journal::{Journal, journal_path, load_journal};
 mod audio_edit;
 mod replacement;
