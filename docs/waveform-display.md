@@ -11,6 +11,17 @@ queries and source/loop/prepared-root mappings are unchanged. Fades remain a
 separate live envelope. This changes no project, Undo, worker or audio behavior.
 Other fitted waveform consumers retain their own view; browser UX is separate.
 
+The preview helper retains the accepted-root crop validation and changed-root
+stretch projection introduced by PR388/PR387. All preview paths now receive the
+same optional lane lattice; other fitted waveform consumers retain their own
+view. For a prepared crop, a lattice bin may start before the clip's displayed
+origin while still addressing valid samples in its full retained root. Combine
+the signed origin/offset translation before source-bound clamping. The edge-bin
+regression reproduces flat partial bins under the former subtract-first order
+and compares the actual stereo outlines against the same uncropped root/time map.
+The combined crop/stretch/grid pack passes39 tests with one existing manual
+profile ignored; final full exact-source evidence is recorded on PR372/Pulse.
+
 The former per-clip fit divided each changing visible interval into
 `ceil(width × scale)` columns. Both queried frame ranges and horizontal peak
 positions changed across otherwise untouched audio during fractional resizes.

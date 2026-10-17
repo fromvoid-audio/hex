@@ -48,7 +48,9 @@ the existing model. Native reproduction/acceptance is pending; the running
 source labels were0f99bfbc and1879e018 in static captures, with no resize captured. See docs/waveform-display.md.
 Earlier exact-source checks passed on8a787a2b. Final integration now preserves
 merged PR388 accepted-root crops, PR387 changed-root stretch mapping and PR383
-free lower handles; fresh required evidence is recorded in PR/Pulse. No native
+free lower handles. Combined crop/stretch/grid regressions pass39 tests with
+one existing manual profile ignored, including the reproduced/repaired prepared
+edge-bin translation defect. Fresh required evidence is recorded in PR/Pulse. No native
 acceptance or app delivery is claimed.
 
 ## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
