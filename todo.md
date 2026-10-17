@@ -1,3 +1,26 @@
+## lower fade handles free by default — pulse2777 / PR383, 17 october 2026
+
+Both lower fade-edge resize handles now use unsnapped pointer positions by
+default, independent of ordinary Arrangement snap. Holding the existing Command
+modifier enables the configured grid, or the existing adaptive grid when global
+snap is off. Stationary modifier changes and mouse-up use current modifiers.
+Ordinary trims/body gestures and upper/curve controls retain their behavior.
+The existing rendered gesture regression fails before this change (quarter grid
+produces frame24000 instead of the requested18000). Expanded coverage checks
+both edges, grid on/off, stationary press/release and both mouse-up disagreement
+directions, no-motion clicks and canonical single Undo/Redo. Existing cancellation
+coverage now exercises both lower edges; canonical model tests retain loop/source
+bounds and opposite-edge/fade-shape coverage. All eight focused fade tests pass;
+required final cloud CI is pending.
+
+Native acceptance remains pending through the coordinator's single Mac lane:
+on the approved optimized candidate, drag each lower handle with snap on and
+off; verify continuous free motion, hold Command to snap (adaptive when off),
+press/release Command without moving, then release with either modifier state.
+Check crop/reveal and unchanged waveform landmarks, opposite edge and fade shape,
+one Undo/Redo, click-only no-op, Escape cancellation and finite source limits.
+No Mac job, app replacement, save/quit or delivery was performed by this lane.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside

@@ -222,37 +222,49 @@ fn authored_fades_show_without_f_and_each_endpoint_and_curve_uses_its_real_handl
 }
 #[gpui::test]
 fn fade_escape_focus_loss_and_stale_revision_cancel_without_edits(cx: &mut TestAppContext) {
-    for cancel in [0, 1, 2] {
-        let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        key(&mut visual, true, "f");
-        let target = visual
-            .debug_bounds(Box::leak(
-                format!("fade-in-bottom-{}", clip.value()).into_boxed_str(),
-            ))
-            .unwrap()
-            .center();
-        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
-        let to = point(target.x + px(35.0), target.y);
-        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-        if cancel == 0 {
-            visual.simulate_keystrokes("escape");
-        } else if cancel == 1 {
-            visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
-        } else {
-            editor.update(&mut visual, |view, _| view.project_generation += 1);
-        }
-        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-        editor.read_with(&visual, |view, _| {
-            assert!(view.active_fade_drag.is_none());
-            assert!(
-                view.last_enqueued_edit.is_none(),
-                "cancel {cancel}: {:?}",
-                view.last_enqueued_edit
+    for kind in [Handle::InBottom, Handle::OutBottom] {
+        for cancel in [0, 1, 2] {
+            let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+            let (handle, editor) =
+                super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            key(&mut visual, true, "f");
+            let target = visual
+                .debug_bounds(Box::leak(
+                    format!("{}-{}", kind.name(), clip.value()).into_boxed_str(),
+                ))
+                .unwrap()
+                .center();
+            visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+            let to = point(
+                target.x
+                    + px(if kind == Handle::InBottom {
+                        35.0
+                    } else {
+                        -35.0
+                    }),
+                target.y,
             );
-        });
+            visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+            if cancel == 0 {
+                visual.simulate_keystrokes("escape");
+            } else if cancel == 1 {
+                visual.update(|window, cx| {
+                    editor.update(cx, |view, _| view.midi_focus.focus(window))
+                });
+            } else {
+                editor.update(&mut visual, |view, _| view.project_generation += 1);
+            }
+            visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert!(view.active_fade_drag.is_none());
+                assert!(
+                    view.last_enqueued_edit.is_none(),
+                    "cancel {cancel}: {:?}",
+                    view.last_enqueued_edit
+                );
+            });
+        }
     }
 }
 
@@ -446,71 +458,139 @@ fn held_f_neutral_lower_handle_resizes_without_authoring_a_ramp(cx: &mut TestApp
 fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_current_modifiers(
     cx: &mut TestAppContext,
 ) {
-    for kind in [Handle::InBottom, Handle::OutBottom] {
-        let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
-        let mut canonical = hex_project::Editor::new(project, 8).unwrap();
-        canonical
-            .execute(Command::SetClipFadeEnvelope {
-                clip,
-                fade: ClipFade::new(96_000, 0, 40_000, 40_000).unwrap(),
-            })
-            .unwrap();
-        let original = canonical.project().clone();
-        let (handle, editor) =
-            super::super::clip_drag_ui_test::editor_window(cx, original.clone(), Arc::default());
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        editor.update(&mut visual, |view, _| {
-            view.snap_grid = super::super::musical_time::SnapGrid::Quarter;
-        });
-        visual.run_until_parked();
-        let selector: &'static str =
-            Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
-        let target = visual.debug_bounds(selector).unwrap().center();
-        let direction = if kind == Handle::InBottom { 1.0 } else { -1.0 };
-        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
-        let dx = editor.read_with(&visual, |view, _| {
-            let drag = view.active_fade_drag.as_ref().unwrap();
-            18_000.0 * drag.lane.width / drag.viewport.length as f32
-        });
-        let moved = point(target.x + px(dx * direction), target.y);
-        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        let snapped = editor.read_with(&visual, |view, _| {
-            view.fade_trim_preview(clip).unwrap().clone()
-        });
-        let command = Modifiers {
-            platform: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_modifiers_change(command);
-        visual.run_until_parked();
-        let free = editor.read_with(&visual, |view, _| {
-            assert!(view.last_enqueued_edit.is_none());
-            view.fade_trim_preview(clip).unwrap().clone()
-        });
-        assert_ne!(
-            free, snapped,
-            "{kind:?}: stationary Command press refreshes preview"
-        );
-        visual.simulate_modifiers_change(Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(&visual, |view, _| {
-            assert_eq!(view.fade_trim_preview(clip), Some(&snapped));
-            assert!(view.last_enqueued_edit.is_none());
-            assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
-        });
-        // Release may carry a newer modifier than the last modifier event.
-        visual.simulate_mouse_up(moved, MouseButton::Left, command);
-        let edit = editor.read_with(&visual, |view, _| {
-            assert!(view.active_fade_drag.is_none());
-            view.last_enqueued_edit.clone().unwrap()
-        });
-        assert!(matches!(edit, Command::TrimClipFadeEdge { .. }));
-        canonical.execute(edit).unwrap();
-        assert_eq!(canonical.project().clip(clip), Some(&free));
-        assert!(canonical.undo());
-        assert_eq!(canonical.project(), &original);
-        assert!(canonical.redo());
-        assert_eq!(canonical.project().clip(clip), Some(&free));
+    use super::super::musical_time::SnapGrid;
+    for grid in [SnapGrid::Quarter, SnapGrid::Off] {
+        for kind in [Handle::InBottom, Handle::OutBottom] {
+            for release_snapped in [false, true] {
+                let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+                let mut canonical = hex_project::Editor::new(project, 8).unwrap();
+                canonical
+                    .execute(Command::SetClipFadeEnvelope {
+                        clip,
+                        fade: ClipFade::new(96_000, 0, 40_000, 40_000).unwrap(),
+                    })
+                    .unwrap();
+                let original = canonical.project().clone();
+                let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+                    cx,
+                    original.clone(),
+                    Arc::default(),
+                );
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                editor.update(&mut visual, |view, _| view.snap_grid = grid);
+                visual.run_until_parked();
+                let selector: &'static str =
+                    Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+                let target = visual.debug_bounds(selector).unwrap().center();
+                let direction = if kind == Handle::InBottom { 1.0 } else { -1.0 };
+                // Clicking without moving remains a no-op even with snap opt-in.
+                for modifiers in [
+                    Modifiers::default(),
+                    Modifiers {
+                        platform: true,
+                        ..Modifiers::default()
+                    },
+                ] {
+                    visual.simulate_mouse_down(target, MouseButton::Left, modifiers);
+                    visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
+                    assert!(editor.read_with(&visual, |view, _| view.last_enqueued_edit.is_none()));
+                    // Outward drags cannot reveal media beyond the source bounds.
+                    visual.simulate_mouse_down(target, MouseButton::Left, modifiers);
+                    let beyond_source = point(target.x - px(200_000.0 * direction), target.y);
+                    visual.simulate_mouse_move(beyond_source, MouseButton::Left, modifiers);
+                    visual.run_until_parked();
+                    editor.read_with(&visual, |view, _| {
+                        assert!(view.fade_trim_preview(clip).is_none());
+                        assert!(view.active_fade_drag.as_ref().unwrap().trim_frame.is_none());
+                        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+                    });
+                    visual.simulate_mouse_up(beyond_source, MouseButton::Left, modifiers);
+                    assert!(editor.read_with(&visual, |view, _| view.last_enqueued_edit.is_none()));
+                }
+                visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+                let dx = editor.read_with(&visual, |view, _| {
+                    let drag = view.active_fade_drag.as_ref().unwrap();
+                    17_321.0 * drag.lane.width / drag.viewport.length as f32
+                });
+                let moved = point(target.x + px(dx * direction), target.y);
+                visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                let (free, expected_snapped_frame) = editor.read_with(&visual, |view, _| {
+                    let drag = view.active_fade_drag.as_ref().unwrap();
+                    let delta = (f64::from(f32::from(moved.x - target.x))
+                        / f64::from(drag.lane.width)
+                        * drag.viewport.length as f64)
+                        .round() as i128;
+                    let endpoint = if kind == Handle::InBottom { 0 } else { 96_000 };
+                    let raw = (endpoint + delta) as u64;
+                    assert_eq!(
+                        drag.trim_frame,
+                        Some(raw),
+                        "{kind:?}/{grid:?}: default is free"
+                    );
+                    let snap = if grid == SnapGrid::Off {
+                        SnapGrid::Adaptive
+                    } else {
+                        grid
+                    };
+                    let frame = snap
+                        .snap_frame(&original, raw, drag.viewport, drag.lane.width)
+                        .unwrap();
+                    (view.fade_trim_preview(clip).unwrap().clone(), frame)
+                });
+                let command = Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                };
+                visual.simulate_modifiers_change(command);
+                visual.run_until_parked();
+                let snapped = editor.read_with(&visual, |view, _| {
+                    assert!(view.last_enqueued_edit.is_none());
+                    assert_eq!(
+                        view.active_fade_drag.as_ref().unwrap().trim_frame,
+                        Some(expected_snapped_frame)
+                    );
+                    view.fade_trim_preview(clip).unwrap().clone()
+                });
+                assert_ne!(
+                    free, snapped,
+                    "{kind:?}/{grid:?}: stationary Command enables snapping"
+                );
+                visual.simulate_modifiers_change(Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |view, _| {
+                    assert_eq!(view.fade_trim_preview(clip), Some(&free));
+                    assert!(view.last_enqueued_edit.is_none());
+                    assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+                });
+                // Mouse-up can carry a newer modifier than the last modifier event.
+                // Exercise release disagreement in both directions, without pointer motion.
+                if !release_snapped {
+                    visual.simulate_modifiers_change(command);
+                    visual.run_until_parked();
+                }
+                visual.simulate_mouse_up(
+                    moved,
+                    MouseButton::Left,
+                    if release_snapped {
+                        command
+                    } else {
+                        Modifiers::default()
+                    },
+                );
+                let edit = editor.read_with(&visual, |view, _| {
+                    assert!(view.active_fade_drag.is_none());
+                    view.last_enqueued_edit.clone().unwrap()
+                });
+                assert!(matches!(edit, Command::TrimClipFadeEdge { .. }));
+                canonical.execute(edit).unwrap();
+                let expected = if release_snapped { &snapped } else { &free };
+                assert_eq!(canonical.project().clip(clip), Some(expected));
+                assert!(canonical.undo());
+                assert_eq!(canonical.project(), &original);
+                assert!(canonical.redo());
+                assert_eq!(canonical.project().clip(clip), Some(expected));
+            }
+        }
     }
 }

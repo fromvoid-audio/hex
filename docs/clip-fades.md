@@ -149,9 +149,12 @@ policy. This is a trim, with no source stretch or audio-callback change.
 
 Pointer motion uses bounded clip metadata and cached peaks, draws the actual
 resized clip/header/waveform crop and fade, and queues no project work. Lower
-handles share Arrangement adaptive/off snapping and the Command inversion,
-recomputed immediately on modifier-only changes at the current pointer position
-and again on release. Cancellation and freshness checks remain in force.
+handles resize freely by default, independently of the ordinary Arrangement snap
+setting. Holding Command opts into the configured grid; when that setting is off,
+Command enables the existing adaptive grid. Releasing Command restores free
+movement. Both stationary modifier changes and mouse-up recompute at the current
+pointer position. Ordinary clip trim/body snapping and upper/curve controls keep
+their existing behavior. Cancellation and freshness checks remain in force.
 Automated coverage includes canonical source/loop limits, musical warped/event
 root preservation, preview/command equality, one-step history, strict saved
 roundtrip, saved export PCM, playback seek/block partitions and rendered gestures.
