@@ -127,7 +127,7 @@ impl ReturnEffectTailBank {
         &mut self,
         output: &mut [Frame],
         frame_offset: usize,
-        capture: &mut Option<&mut super::OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn super::capture::CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         let (slots, scratch) = (&mut self.slots, &mut self.scratch);
         for tail in slots.iter_mut().flatten() {

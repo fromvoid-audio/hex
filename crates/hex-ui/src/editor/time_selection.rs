@@ -108,6 +108,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -186,6 +187,7 @@ impl EditorView {
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -244,6 +246,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -320,6 +323,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -390,6 +394,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project
@@ -474,6 +479,7 @@ impl EditorView {
                 .as_ref()
                 .is_none_or(|state| state.revision != gesture.revision)
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
             || self.close_prompt_open
@@ -705,6 +711,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
             || self.opening_project

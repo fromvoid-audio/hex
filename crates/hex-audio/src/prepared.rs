@@ -32,6 +32,8 @@ pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
+#[cfg(test)]
+mod project_spectrum_tests;
 mod runtime_view;
 pub use applied_source::AppliedAudioSource;
 mod streaming;
@@ -346,6 +348,7 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
     admitted_ticket: AtomicU64,
     closing: AtomicBool,
@@ -473,6 +476,7 @@ impl Status {
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
+            project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -2279,30 +2283,36 @@ impl Callback {
             self.prepare_gain_recording_quantum();
         }
         self.reconcile_processor_audition();
-        let Some(target) = self
+        self.begin_project_spectrum(output.len());
+        self.spectrum_stage.clear();
+        if let Some(target) = self
             .spectrum_capture
             .as_ref()
             .and(self.spectrum_target.current())
-        else {
-            self.spectrum_stage.clear();
-            return self.render_unobserved(output);
-        };
-        let epoch = self.spectrum_target.current_epoch();
-        let active_matches_target = self
-            .active
-            .as_ref()
-            .and_then(ActivePublication::current)
-            .is_some_and(|active| {
-                active.control_context_generation == target.project_generation
-                    && active.revision >= target.activation_floor
-                    && active.playback.sample_rate() == target.sample_rate_hz
-            });
-        if target.sample_rate_hz != self.rate || !active_matches_target {
+        {
+            let epoch = self.spectrum_target.current_epoch();
+            let matches = self
+                .active
+                .as_ref()
+                .and_then(ActivePublication::current)
+                .is_some_and(|active| {
+                    active.control_context_generation == target.project_generation
+                        && active.revision >= target.activation_floor
+                        && active.playback.sample_rate() == target.sample_rate_hz
+                        && target.sample_rate_hz == self.rate
+                });
             self.spectrum_stage.begin(target, epoch, output.len());
-            self.spectrum_stage.valid = false;
+            self.spectrum_stage.valid &= matches;
+        }
+        let node_observed = self.spectrum_stage.target.is_some() && self.spectrum_stage.valid;
+        let project_observed = self
+            .spectrum_capture
+            .as_ref()
+            .and_then(|c| c.project.as_ref())
+            .is_some_and(|p| p.observing());
+        if !node_observed && !project_observed {
             return self.render_unobserved(output);
         }
-        self.spectrum_stage.begin(target, epoch, output.len());
         if self.status.closing.load(Acquire) {
             output.fill([0.0; 2]);
             return Ok(());
@@ -2311,15 +2321,37 @@ impl Callback {
         let mut observe = |identity, phase, offset, frames: &[Frame]| {
             stage.observe_signal(identity, phase, offset, frames)
         };
+        let mut project_capture = self
+            .spectrum_capture
+            .as_mut()
+            .and_then(|c| c.project.as_mut());
+        let selection = project_capture.as_ref().and_then(|p| p.selection());
+        let mut observe_project = |signal, offset, frames: &[Frame]| {
+            if let Some(project) = project_capture.as_mut() {
+                project.observe(signal, offset, frames);
+            }
+        };
+        let mut project = selection
+            .as_ref()
+            .filter(|_| project_observed)
+            .and_then(|selection| {
+                hex_engine::ProjectOutputTap::new(selection.tracks(), &mut observe_project)
+            });
+        let node: Option<&mut hex_engine::NodeSignalObserver<'_>> = if node_observed {
+            Some(&mut observe)
+        } else {
+            None
+        };
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
-            let outcome = active.render_streamed(
+            let outcome = active.render_streamed_with_project(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
-                Some(&mut observe),
+                node,
+                project.as_mut(),
             );
             streaming::record_outcome(
                 &self.status,
@@ -2335,7 +2367,7 @@ impl Callback {
         {
             active
                 .playback
-                .render_with_node_signal_observer(output, Some(&mut observe))?;
+                .render_with_signal_observers(output, node, project.as_mut())?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -2409,10 +2441,89 @@ impl Callback {
         Ok(())
     }
 
+    fn begin_project_spectrum(&mut self, frames: usize) {
+        let selection = self.status.project_spectrum.read().filter(|s| s.active);
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let Some(project) = self
+            .spectrum_capture
+            .as_mut()
+            .and_then(|c| c.project.as_mut())
+        else {
+            return;
+        };
+        let valid = match (selection, active) {
+            (Some(selection), Some(active))
+                if selection.sample_rate_hz == self.rate
+                    && active.playback.sample_rate() == self.rate
+                    && active.control_context_generation == selection.generation
+                    && active.revision >= selection.activation_floor =>
+            {
+                if project.needs_source_validation(selection, active.revision) {
+                    if active.playback.project_output_supported(selection.tracks()) {
+                        project.source_validated(selection, active.revision);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        };
+        project.begin(selection, frames, valid);
+    }
+    fn finish_project_spectrum(
+        &mut self,
+        captured_at: Instant,
+        output_valid: bool,
+    ) -> Option<crate::spectrum_worker::CaptureOutcome> {
+        let selection = self
+            .spectrum_capture
+            .as_ref()
+            .and_then(|c| c.project.as_ref())
+            .and_then(|p| p.selection())?;
+        let active = self.active.as_ref().and_then(ActivePublication::current);
+        let revision = active.as_ref().map_or(0, |active| active.revision);
+        let valid = output_valid
+            && !self.status.closing.load(Acquire)
+            && self.status.project_spectrum.token() == selection.token
+            && selection.sample_rate_hz == self.rate
+            && active.is_some_and(|active| {
+                active.control_context_generation == selection.generation
+                    && active.playback.sample_rate() == self.rate
+                    && active.revision >= selection.activation_floor
+            });
+        self.spectrum_capture
+            .as_mut()?
+            .project
+            .as_mut()?
+            .finish(captured_at, revision, valid)
+    }
+    fn finish_analysis_block(
+        &mut self,
+        captured_start: Instant,
+        output_valid: bool,
+    ) -> (
+        Option<crate::spectrum_worker::CaptureOutcome>,
+        Option<crate::spectrum_worker::CaptureOutcome>,
+    ) {
+        let project = self.finish_project_spectrum(captured_start, output_valid);
+        let node = self.finish_eq_spectrum(captured_start, output_valid);
+        (node, project)
+    }
+
     /// Accept or reject the staged post-node signal after the caller has
     /// validated the complete final output block. A skipped attempt consumes a
     /// capture sequence so the next accepted window cannot bridge the gap.
     pub fn finish_spectrum_block(
+        &mut self,
+        captured_start: Instant,
+        output_valid: bool,
+    ) -> Option<crate::spectrum_worker::CaptureOutcome> {
+        self.finish_analysis_block(captured_start, output_valid).0
+    }
+    fn finish_eq_spectrum(
         &mut self,
         captured_start: Instant,
         output_valid: bool,
@@ -2663,7 +2774,7 @@ mod tests {
         spectrum_eq8_graph_with_params(playing, mode, 0.0, 1.0)
     }
 
-    fn spectrum_eq8_graph_with_params(
+    pub(super) fn spectrum_eq8_graph_with_params(
         playing: bool,
         mode: u32,
         gain_db: f32,

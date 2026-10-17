@@ -74,6 +74,22 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## contiguous clip selection — pulse2769 / PR377, 17 october 2026
+
+A stable same-track clip-header anchor supports inclusive Shift ranges in either
+direction, repeated range changes, Command toggles and Command-Shift union. Audio
+and MIDI members paint selected; a membership epoch refreshes retained scenes
+when the primary selection is unchanged. Another-track Shift-click starts a new
+anchor. This is view state; body/time-range and header-drag behavior stay separate.
+Focused/full source checks and remaining native acceptance are recorded in Pulse.
+## inline track rename — pulse2768 / PR376, 17 october 2026
+
+Actual header focus routes Command-R to a compact inline name draft, Enter to
+canonical RenameTrack and Escape to cancellation. Clip rename remains focus
+specific; text/numeric inputs and track controls retain their behavior. Gesture
+eligibility protects active drafts. Source tests include rendered focus/keys,
+canonical single Undo/Redo and worker save/reopen; exact required checks and
+native acceptance are recorded in Pulse/PR.
 ## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
 
 Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
@@ -297,6 +313,23 @@ pending/numeric/automation-point isolation and held-pointer cancellation with
 real editor keybindings. Graph-scoped Escape preserves existing cancellation
 before ancestor editor actions. Full exact-source CI and optimized native input
 acceptance remain required.
+
+## project master and selected-track spectra — #2738 / PR349, 17 october 2026
+
+Added actual independent Master/direct post-device/post-fader track taps, forwarded
+through ordinary/compensated/stopped-monitor/streamed rendering without changing
+PCM or offline capture restrictions. All selected canonical tracks retain their
+own color/layer, up to 256 plus Master. One fixed pool and the existing worker/
+reaper enforce contribution/storage/freshness bounds; incremental work yields to
+EQ between batches. The view-only panel collapses/resizes and clears stale owner,
+selection, generation and output identities. Constrained populated details use a
+compact live plot; larger windows restore preferred height and full controls.
+Source tests cover actual PCM/Returns/loops, allocation/custody/budget refusal,
+anti-phase stereo, independent tones, rates/silence, all 256 identities, responsive
+geometry and existing compact device interactions. Optimized actual-worker source
+profiles are retained with their concurrency/outlier limitations. Exact-source
+full local CI and coordinated native visual/input/listening/performance checks
+remain required. See [tap, lifecycle, limits and profile](docs/project-spectrum.md).
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
