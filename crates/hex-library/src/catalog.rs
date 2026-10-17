@@ -1,5 +1,8 @@
 //! Recursive, bounded sample discovery. All calls belong on control workers.
-use crate::{EntryKind, LibraryEntry, compare_entries, is_hidden, is_wav};
+use crate::{
+    DirectoryListing, EntryKind, LibraryEntry, MAX_RETAINED_ENTRIES, compare_entries, is_hidden,
+    is_wav,
+};
 use std::{
     collections::BTreeSet,
     fs,
@@ -35,6 +38,40 @@ pub struct CatalogScan {
 impl SampleCatalog {
     pub fn entries(&self) -> &[LibraryEntry] {
         &self.entries
+    }
+
+    /// Combine global sample matches with a bounded current-folder snapshot.
+    /// Original-path identity deduplicates WAVs present in both sources while
+    /// retaining current-folder WAVs outside configured sample roots. This does
+    /// not enumerate files or recursively search projects.
+    pub fn search_with_listing(
+        &self,
+        query: &str,
+        listing: Option<&DirectoryListing>,
+    ) -> Vec<LibraryEntry> {
+        let mut entries = self.filtered(query, None);
+        if let Some(listing) = listing {
+            let query = query.to_lowercase();
+            let extra = {
+                let mut seen = entries
+                    .iter()
+                    .map(|entry| entry.path.as_path())
+                    .collect::<BTreeSet<_>>();
+                listing
+                    .entries
+                    .iter()
+                    .take(MAX_RETAINED_ENTRIES)
+                    .filter(|entry| entry.name.to_lowercase().contains(&query))
+                    .filter(|entry| seen.insert(entry.path.as_path()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            entries.extend(extra);
+        }
+        entries.sort_by(|left, right| {
+            compare_entries(left, right).then_with(|| left.path.cmp(&right.path))
+        });
+        entries
     }
 
     /// Discard cached records outside the current configured roots.

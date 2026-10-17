@@ -149,3 +149,35 @@ fn bounded_depth_and_roots_are_visible_and_cache_excludes_removed_roots() {
     catalog.retain_roots(&[fixture.0.join("elsewhere")]);
     assert!(catalog.entries().is_empty());
 }
+
+#[test]
+fn global_search_unions_index_and_folder_without_duplicate_or_lost_wavs() {
+    let indexed = Fixture::new();
+    let nested = indexed.file("nested/Utility.wav");
+    let outside = Fixture::new();
+    let outside_wav = outside.file("Utility-outside.wav");
+    let project = outside.file("Utility.hex");
+    let catalog = scan_samples(std::slice::from_ref(&indexed.0)).catalog;
+    let mut listing = crate::scan_directory(&outside.0).unwrap();
+    listing.entries.extend(catalog.entries().iter().cloned());
+    let results = catalog.search_with_listing("utility", Some(&listing));
+    assert_eq!(results.len(), 3);
+    for path in [&nested, &outside_wav, &project] {
+        assert_eq!(
+            results.iter().filter(|entry| &entry.path == path).count(),
+            1
+        );
+    }
+    assert!(
+        catalog
+            .search_with_listing("missing", Some(&listing))
+            .is_empty()
+    );
+    assert_eq!(catalog.search_with_listing("utility", None).len(), 1);
+    assert!(
+        catalog
+            .search_with_listing("", None)
+            .iter()
+            .all(|entry| entry.kind == EntryKind::WaveAudio)
+    );
+}
