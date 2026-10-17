@@ -22,6 +22,7 @@ fn mini_waveform(waveform: Arc<CachedWaveform>) -> Div {
                 }
                 let step = width / waveform.bins.len() as f32;
                 let half = (height - 2.0).max(0.0) * 0.5;
+                let color = rgb(theme::color(theme::PaletteRole::Muted));
                 for (index, channels) in waveform.bins.iter().enumerate() {
                     let peak = combined_peak(channels);
                     let x = index as f32 * step;
@@ -36,7 +37,7 @@ fn mini_waveform(waveform: Arc<CachedWaveform>) -> Div {
                                 px((bottom - top).max(1.0).min((height - top).max(0.0))),
                             ),
                         ),
-                        rgb(theme::color(theme::PaletteRole::Muted)),
+                        color,
                     ));
                 }
             },

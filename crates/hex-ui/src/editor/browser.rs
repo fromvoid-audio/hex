@@ -544,6 +544,7 @@ impl EditorView {
             self.cancel_browser_sample_playback();
         }
         self.browser.playback_phase = Phase::Unavailable;
+        self.status = "sample preview unavailable".into();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("sample preview is unavailable in verified streaming mode".into());
             return;
@@ -639,6 +640,7 @@ impl EditorView {
                             audio.control.preview_cancel();
                             view.browser.playback_output = None;
                             view.browser.playback_phase = Phase::Unavailable;
+                            view.status = "sample preview failed".into();
                             view.error = Some(format!("sample preview failed · {error}").into())
                         }
                     }

@@ -2893,6 +2893,7 @@ fn browser_audition_toggle_keeps_manual_play_and_result_focus(cx: &mut TestAppCo
                 .as_ref()
                 .is_some_and(|error| error.contains("sample preview"))
         );
+        assert_eq!(view.status.as_str(), "sample preview unavailable");
         assert!(view.pending_audio_commands.is_empty());
     });
     // The control must retain browser key focus so Right remains manual audition.
