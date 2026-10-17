@@ -4811,6 +4811,17 @@ Targeted and exact final local validation results are retained on the canonical 
   Real desktop worker/audio bridge, callback allocation/oracle and GPUI focus/
   release/close tests pass. Native Mac acceptance remains coordinator-serial;
   no app delivery or schema edits were performed by this continuation.
+
+- 2026-10-17: cloud5 continued canonical MTS PR353 with a safe hex-mts broker,
+  explicit per-project ownership, coalesced accepted tuning publications,
+  separate desired/published identities, foreign-master refusal, explicit retry
+  and reserved disable/project-switch/shutdown. Five broker lifecycle/race tests
+  and five dynamically loaded ABI fixture tests pass on Linux; standalone
+  adapter strict Clippy passes. Desktop/GPUI composition check and strict Clippy pass; the four focused
+  tuning GPUI tests pass, including explicit broadcast and project-switch release.
+  Final integration checks remain separate. Actual installed
+  macOS MTS runtime/signing/client qualification is pending coordinator-serial
+  native acceptance, with no installer or signing-policy change here.
 ## 17 October 2026 — W06 host binding extraction in progress
 
 Pulse2675 / PR291 factors persistent scalar controls into
@@ -4981,3 +4992,9 @@ handlers unchanged. Native double-click behavior remains coordinator-serial.
   worker/key-handler regression fails before repair (9541ec14), passes afterward
   (cdb30fde). Explicit cancellation/stale owners remain terminal. Final combined
   full CI and native interaction acceptance remain separate and pending.
+
+- 2026-10-17 tuning/MTS library follow-up: actual current Export failed behind
+  its device terminal on1251 (457acab2). Matching operation/gesture context now
+  rebinds in place at the exact terminal, keeping FIFO and earlier-dialog stale
+  refusal; focused three-case real-worker regression passes d6babcc0. New
+  dialogs defer and failed writes retire. Fresh final full CI remains pending.

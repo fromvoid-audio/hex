@@ -50,7 +50,7 @@ interaction/listening item still needs the finite Mac acceptance pass.
 | audition | triangle/square/saw, level, attack, release; live pitch follows tuning with finite voice/note-off ownership | project-saved settings #2739; audio/UI #2741 implemented; native acceptance pending |
 | save project | working scale and audition settings travel with project, independent of local library; malformed data refuses safely | #2739 |
 | native playback | one table for native pitched instruments, Arrangement, Session, preview and export; explicit fixed-Hz/held-voice policy | #2740 / PR351 implemented and focused-tested; native listening pending |
-| MTS-ESP | master status/client count, safe ownership and lifecycle; compatible clients only | #2742 / PR353 pending |
+| MTS-ESP | master status/client count, safe ownership and lifecycle; compatible clients only | #2742 / PR353 implemented and fixture-tested; installed-client/signing acceptance pending |
 
 ## canonical data contract
 
@@ -106,6 +106,13 @@ table, install privileged libraries silently, or deregister a registration not
 owned by this broker. Acquisition republishes the complete current table; disable,
 project replacement and shutdown cannot be lost behind coalesced edits. Native
 callback work has no MTS calls, locks, allocations, logging or final drops.
+
+Transient tuning previews publish only after the callback applies their exact
+candidate and the current generation/revision/gesture identity still matches.
+Worker preparation alone does not publish a preview. A refused nonterminal
+update preserves the observed table; Cancel/Commit use canonical data after the
+gesture acknowledgement. Canonical commits remain publishable without an audio
+output. External publication still runs asynchronously on its owner thread.
 
 Hex currently has no production third-party plugin host. Compatible external MTS
 clients may follow the broadcast in the configured IPC domain; unsupported
@@ -168,6 +175,8 @@ optimized user-test delivery remain required goal work. No user-facing tuning
 completion, listening pass, compatible-client pass, physical deadline or plugin
 hosting claim follows from these source tests. Full exact-candidate local CI and
 focused PR review precede merge; later source changes require fresh evidence.
+The queued [finite native acceptance](tuning-native-acceptance.md) records the
+Mac fixture commands, launcher-owned delivery and user/client checklist.
 The complete feature uses repository-owned optimized stable-path delivery with
 exact source/build/CI provenance and a finite user interaction/listening list.
 
@@ -215,3 +224,9 @@ Reference audition retains a pending preparation owner until its matching worker
 completion is consumed, so cancellation before event delivery cannot hide a
 preparation error. Stop, focus loss, close and replacement still cancel ownership
 immediately; stale completions cannot report over a newer owner.
+
+Library actions queued behind a device gesture keep their FIFO reservation. A
+current-context action binds its revision only at that exact matched terminal
+acknowledgement; a previously opened dialog retains its captured context and
+stale refusal. New import/export dialogs wait for the terminal before capturing
+context. Failed terminals retire dependent writes without changing queue limits.

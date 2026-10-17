@@ -609,6 +609,7 @@ impl EditorView {
         visible_change |= self.tick_gain_recording();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
+        visible_change |= self.tuning.broadcast.tick(cx);
         visible_change |= self.tick_tuning_midi_activity();
         visible_change |= self.tick_controller_input(cx);
         visible_change |= self.poll_audio_batch();
@@ -942,6 +943,13 @@ impl EditorView {
                 )
             });
             if source == AppliedCandidateSource::Current {
+                if candidate.tuning_preview_identity.is_some() {
+                    self.tuning.broadcast.observe(
+                        candidate.project_generation,
+                        candidate.state.revision,
+                        candidate.state.project.tuning(),
+                    );
+                }
                 if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
                 {
@@ -1915,6 +1923,18 @@ impl EditorView {
         if event.project_replaced {
             self.tuning.client.reset();
         }
+        // Canonical publication remains independent of audio availability.
+        // Active or rejected transient gestures retain their applied table.
+        if event.tuning_preview.is_none()
+            && event.active_tuning_gesture.is_none()
+            && self.tuning.client.snapshot().is_none()
+        {
+            self.tuning.broadcast.observe(
+                self.project_generation,
+                revision,
+                event_state.project.tuning(),
+            );
+        }
         if let Some(result) = event.tuning_library.as_ref() {
             self.tuning_library_complete(result);
         }
@@ -1936,6 +1956,15 @@ impl EditorView {
             self.device_gesture.snapshot().map(|snapshot| snapshot.key),
         ) && self.device_gesture.snapshot().is_some()
         {
+            self.refuse_deferred_tuning_writes();
+            if super::device_gesture::retire_failed_tuning_library_barriers(
+                &mut self.device_gesture_barriers,
+            ) {
+                self.tuning.library_pending = None;
+            }
+            if let Some(snapshot) = self.device_gesture.snapshot() {
+                self.bind_tuning_library_device_terminal(snapshot.key, false);
+            }
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,

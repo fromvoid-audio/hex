@@ -94,6 +94,10 @@ fn settle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
             view.tuning.client.snapshot().is_none()
                 && view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
+                && view.device_gesture.snapshot().is_none()
+                && view.device_gesture_barriers.is_empty()
+                && view.tuning.deferred_library.is_none()
+                && view.tuning.library_pending.is_none()
         });
         if done {
             return;
@@ -333,67 +337,109 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
 #[gpui::test]
 fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestAppContext) {
     use hex_session::device_gesture::{GestureTarget, ParameterValue};
-    let (_, editor) = window(cx);
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
-            name: "send".into()
-        })))
-    });
-    let added = next(&editor, cx);
-    let track = added.state.project.tracks()[0].id();
-    editor.update(cx, |view, _| {
-        view.receive(added);
-        assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
-            name: "return".into()
-        })));
-    });
-    let added = next(&editor, cx);
-    let return_track = added.state.project.return_tracks()[0].id();
-    editor.update(cx, |view, _| {
-        view.receive(added);
-        view.begin_device_gesture(
-            GestureTarget::ReturnSend {
-                track,
-                return_track,
-            },
-            ParameterValue::Float(0.0),
-        )
-        .unwrap();
-        assert!(view.pump_device_gesture());
-    });
-    let begun = next(&editor, cx);
-    editor.update(cx, |view, _| {
-        view.receive(begun);
-        view.change_device_gesture(ParameterValue::Float(0.2))
+    for action in ["list", "current export", "old dialog export"] {
+        let directory = scratch();
+        let path = directory.0.join("scale.freqs");
+        let (_, editor) = window(cx);
+        editor.update(cx, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+                name: "send".into()
+            })))
+        });
+        let added = next(&editor, cx);
+        let track = added.state.project.tracks()[0].id();
+        editor.update(cx, |view, _| {
+            view.receive(added);
+            assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+                name: "return".into()
+            })));
+        });
+        let added = next(&editor, cx);
+        let return_track = added.state.project.return_tracks()[0].id();
+        editor.update(cx, |view, _| {
+            view.receive(added);
+            view.begin_device_gesture(
+                GestureTarget::ReturnSend {
+                    track,
+                    return_track,
+                },
+                ParameterValue::Float(0.0),
+            )
             .unwrap();
-        assert!(view.pump_device_gesture());
-    });
-    let changed = next(&editor, cx);
-    editor.update(cx, |view, _| {
-        view.receive(changed);
-        view.change_device_gesture(ParameterValue::Float(0.3))
-            .unwrap();
-        view.request_tuning_library_list();
-        assert!(
-            view.device_gesture.has_pending_terminal(),
-            "library barrier must reserve the latest local device terminal"
-        );
-    });
-    settle(&editor, cx);
-    editor.read_with(cx, |view, _| {
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .track(track)
-                .unwrap()
-                .sends()[0]
-                .gain(),
-            0.3
-        );
-        assert!(view.device_gesture.snapshot().is_none());
-    });
+            assert!(view.pump_device_gesture());
+        });
+        let begun = next(&editor, cx);
+        editor.update(cx, |view, _| {
+            view.receive(begun);
+            view.change_device_gesture(ParameterValue::Float(0.2))
+                .unwrap();
+            assert!(view.pump_device_gesture());
+        });
+        let changed = next(&editor, cx);
+        editor.update(cx, |view, _| {
+            view.receive(changed);
+            view.change_device_gesture(ParameterValue::Float(0.3))
+                .unwrap();
+            if action == "list" {
+                view.request_tuning_library_list();
+            } else {
+                let owner = (action == "old dialog export").then(|| {
+                    (
+                        view.project_generation,
+                        view.state.as_ref().unwrap().revision,
+                    )
+                });
+                view.request_tuning_library(
+                    hex_session::tuning_gesture::TuningLibraryOperation::Export {
+                        path: path.clone(),
+                        name: "device terminal".into(),
+                    },
+                    owner,
+                );
+            }
+            assert!(
+                view.device_gesture.has_pending_terminal(),
+                "library barrier must reserve the latest local device terminal"
+            );
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "after library".into()
+            })));
+        });
+        settle(&editor, cx);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .sends()[0]
+                    .gain(),
+                0.3
+            );
+            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.tuning.library_pending.is_none());
+            if action == "old dialog export" {
+                assert!(
+                    view.tuning
+                        .error
+                        .as_deref()
+                        .is_some_and(|message| message.contains("changed project revision"))
+                );
+                assert!(!path.exists());
+            } else {
+                assert!(
+                    view.tuning.error.is_none(),
+                    "{action}: {:?}",
+                    view.tuning.error
+                );
+                if action == "current export" {
+                    assert!(std::fs::metadata(&path).unwrap().len() > 0);
+                }
+            }
+        });
+    }
 }
 
 #[gpui::test]

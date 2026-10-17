@@ -2611,6 +2611,7 @@ dependencies = [
  "hex-engine",
  "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-project",
  "hex-session",
  "hex-stream",
@@ -2689,6 +2690,14 @@ name = "hex-midi"
 version = "0.1.0"
 dependencies = [
  "coremidi",
+]
+
+[[package]]
+name = "hex-mts"
+version = "0.1.0"
+dependencies = [
+ "hex-tuning",
+ "mts-esp-master-adapter",
 ]
 
 [[package]]
@@ -2773,6 +2782,7 @@ dependencies = [
  "hex-library",
  "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-preferences",
  "hex-project",
  "hex-session",
@@ -3645,6 +3655,13 @@ checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mts-esp-master-adapter"
+version = "0.1.0"
+dependencies = [
+ "libloading",
 ]
 
 [[package]]
