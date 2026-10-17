@@ -211,3 +211,28 @@ fn normalized_numeric_edges_discrete_midpoints_and_singletons_are_explicit() {
     };
     assert!(semantics().validate(zero).is_err());
 }
+
+#[test]
+fn linear_denormalization_preserves_asymmetric_extreme_endpoints() {
+    let descriptor = ParameterDescriptor {
+        kind: ParameterKind::Float {
+            min: -f32::MAX,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+        ..DESCRIPTOR
+    };
+    assert_eq!(
+        ParameterNormalization::Linear
+            .denormalize(descriptor, 0.0)
+            .unwrap(),
+        ParameterValue::Float(-f32::MAX)
+    );
+    assert_eq!(
+        ParameterNormalization::Linear
+            .denormalize(descriptor, 1.0)
+            .unwrap(),
+        ParameterValue::Float(1.0)
+    );
+}
