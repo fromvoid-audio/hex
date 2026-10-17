@@ -73,6 +73,7 @@ impl MidiSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
     pub(crate) name: String,
+    pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) start: BeatTime,
     pub(crate) length: BeatTime,
@@ -100,6 +101,9 @@ impl MidiClipTrim {
 impl MidiClip {
     pub fn name(&self) -> &str {
         &self.name
+    }
+    pub fn flavor(&self) -> crate::ClipFlavor {
+        self.flavor
     }
     /// Preview an edge edit in O(1) metadata work without copying authored notes.
     /// Right extension may expose silence for a one-shot. Left edits preserve the
@@ -367,6 +371,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let clips = &mut project.track_mut(track)?.content.midi_clips;
             clips.push(MidiClip {
                 name: "clip".into(),
+                flavor: crate::ClipFlavor::default(),
                 id,
                 start,
                 length,
@@ -524,6 +529,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             left.length = left_length;
             let right = MidiClip {
                 name: left.name.clone(),
+                flavor: left.flavor,
                 id: right_id,
                 start: beat,
                 length: right_length,
@@ -804,6 +810,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let clips = &mut project.track_mut(track)?.content.midi_clips;
             clips.push(MidiClip {
                 name: source.name.clone(),
+                flavor: source.flavor,
                 id,
                 start,
                 length: source.length,
@@ -1125,6 +1132,7 @@ pub(crate) fn overwrite_midi_interval(
             let length = BeatTime::from_raw(right_end - right_start);
             Some(MidiClip {
                 name: original.name.clone(),
+                flavor: original.flavor,
                 id: if right_id_is_new {
                     ClipId(0)
                 } else {

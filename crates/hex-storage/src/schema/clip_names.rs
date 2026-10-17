@@ -39,8 +39,8 @@ pub(crate) struct DocumentV26 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ClipName {
-    clip: u64,
-    name: String,
+    pub(super) clip: u64,
+    pub(super) name: String,
 }
 pub(super) fn bounded_names<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -105,16 +105,14 @@ impl DocumentV26 {
         })
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-        let doc: Self = serde_json::from_slice(bytes)?;
+        Self::into_project(serde_json::from_slice(bytes)?)
+    }
+    pub(super) fn into_project(doc: Self) -> Result<Project, StorageError> {
         if doc.format != "hex-project" || doc.version != 26 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
         }
-        doc.into_project()
-    }
-    pub(super) fn into_project(self) -> Result<Project, StorageError> {
-        let doc = self;
         let base = DocumentV25 {
             format: doc.format,
             version: 25,

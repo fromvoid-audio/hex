@@ -1,3 +1,4 @@
+pub(crate) mod appearance;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
@@ -1795,6 +1796,7 @@ impl DocumentV12 {
                         SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV12::Audio { clip } => SessionCellContentSnapshot::Audio(
                             hex_project::SessionAudioClipSnapshot {
+                                flavor: hex_project::ClipFlavor::default(),
                                 gain: hex_project::ClipGain::UNITY,
                                 id: clip.id,
                                 name: clip.name,
@@ -1805,6 +1807,7 @@ impl DocumentV12 {
                         ),
                         SessionContentDtoV12::Midi { clip } => {
                             SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                flavor: hex_project::ClipFlavor::default(),
                                 id: clip.id,
                                 name: clip.name,
                                 source: MidiSourceSnapshot {
@@ -1953,6 +1956,7 @@ impl DocumentV13 {
             .into_iter()
             .map(|track| {
                 Ok(TrackSnapshot {
+                    color: hex_project::ElementColor::default(),
                     gain_envelope: Vec::new(),
                     gain_touch_spans: Vec::new(),
                     gain_touch_epoch: 0,
@@ -2029,11 +2033,14 @@ impl DocumentV11 {
                 "unsupported project format or version",
             ));
         }
-        if header.version == 27 {
-            return fade_shapes::DocumentV27::decode(bytes);
+        if header.version == 28 {
+            return fade_shapes::DocumentV28::decode(bytes);
         }
         if header.version == 26 {
             return clip_names::DocumentV26::decode(bytes);
+        }
+        if header.version == 27 {
+            return appearance::DocumentV27::decode(bytes);
         }
         if header.version == 25 {
             return musical_audio::DocumentV25::decode(bytes);
@@ -2166,6 +2173,7 @@ impl DocumentV11 {
                         SessionContentDtoV11::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV11::Midi { clip } => {
                             SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                flavor: hex_project::ClipFlavor::default(),
                                 id: clip.id,
                                 name: clip.name,
                                 source: MidiSourceSnapshot {
@@ -2250,6 +2258,7 @@ impl DocumentV10 {
                                     .into_iter()
                                     .map(|c| MidiClipSnapshot {
                                         name: "clip".into(),
+                                        flavor: hex_project::ClipFlavor::default(),
                                         id: c.id,
                                         start_raw: c.start_raw,
                                         length_raw: c.length_raw,
@@ -2275,6 +2284,7 @@ impl DocumentV10 {
                             ),
                         };
                         Ok(TrackSnapshot {
+                            color: hex_project::ElementColor::default(),
                             gain_envelope: Vec::new(),
                             gain_touch_spans: Vec::new(),
                             gain_touch_epoch: 0,
@@ -2383,6 +2393,7 @@ impl DocumentV9 {
                                 .into_iter()
                                 .map(|c| MidiClipSnapshot {
                                     name: "clip".into(),
+                                    flavor: hex_project::ClipFlavor::default(),
                                     id: c.id,
                                     start_raw: c.start_raw,
                                     length_raw: c.length_raw,
@@ -2409,6 +2420,7 @@ impl DocumentV9 {
                     }
                 };
                 Ok(TrackSnapshot {
+                    color: hex_project::ElementColor::default(),
                     gain_envelope: Vec::new(),
                     gain_touch_spans: Vec::new(),
                     gain_touch_epoch: 0,
@@ -2485,6 +2497,7 @@ fn midi_v10_from_snapshot(clip: MidiClipSnapshot) -> MidiClipDtoV10 {
 fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
     MidiClipSnapshot {
         name: "clip".into(),
+        flavor: hex_project::ClipFlavor::default(),
         id: clip.id,
         start_raw: clip.start_raw,
         length_raw: clip.length_raw,
@@ -2587,6 +2600,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     SessionContentDtoV12::Stop => SessionCellContentSnapshot::Stop,
                     SessionContentDtoV12::Audio { clip } => {
                         SessionCellContentSnapshot::Audio(hex_project::SessionAudioClipSnapshot {
+                            flavor: hex_project::ClipFlavor::default(),
                             gain: hex_project::ClipGain::UNITY,
                             id: clip.id,
                             name: clip.name,
@@ -2597,6 +2611,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     }
                     SessionContentDtoV12::Midi { clip } => {
                         SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                            flavor: hex_project::ClipFlavor::default(),
                             id: clip.id,
                             name: clip.name,
                             source: MidiSourceSnapshot {
@@ -2666,6 +2681,7 @@ fn clips_v7_into_snapshot(clips: Vec<ClipV7>) -> Result<Vec<ClipSnapshot>, Stora
         .map(|clip| {
             Ok(ClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: clip.id,
@@ -2695,6 +2711,7 @@ fn tracks_legacy_into_snapshot(
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2719,6 +2736,7 @@ fn tracks_v3_into_snapshot(tracks: Vec<TrackV3>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2743,6 +2761,7 @@ fn tracks_v4_into_snapshot(tracks: Vec<TrackV4>) -> Result<Vec<TrackSnapshot>, S
         .into_iter()
         .map(|track| {
             Ok(TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2779,6 +2798,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
                         name: "clip".into(),
+                        flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
@@ -2794,6 +2814,7 @@ fn tracks_v6_into_snapshot(tracks: Vec<TrackV6>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2830,6 +2851,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                     .map_err(|error| StorageError::Invalid(error.0))?;
                     Ok(ClipSnapshot {
                         name: "clip".into(),
+                        flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: clip.id,
@@ -2845,6 +2867,7 @@ fn tracks_v7_into_snapshot(tracks: Vec<TrackV7>) -> Result<Vec<TrackSnapshot>, S
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
             Ok(TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -2872,6 +2895,7 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
                 .map_err(|error| StorageError::Invalid(error.0))?;
             Ok(ClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 edit: None,
                 gain: hex_project::ClipGain::UNITY,
                 id: clip.id,

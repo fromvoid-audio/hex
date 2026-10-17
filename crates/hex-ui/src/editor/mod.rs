@@ -63,6 +63,8 @@ mod midi_thumbnail;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod output_meter_ui_test;
 mod overview;
 mod play_intent;
 mod project_recovery;
@@ -573,6 +575,7 @@ pub(super) struct EditorView {
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
+    output_meter_frame: Option<refresh::AudioFrame>,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
@@ -928,6 +931,7 @@ impl EditorView {
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
+            output_meter_frame: None,
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,

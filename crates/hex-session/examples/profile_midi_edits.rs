@@ -29,6 +29,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             })
             .collect();
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -43,6 +44,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: 256 << 32,

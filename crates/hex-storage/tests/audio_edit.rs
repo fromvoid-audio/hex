@@ -81,7 +81,7 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(value["version"], 27);
+    assert_eq!(value["version"], 28);
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
@@ -101,11 +101,11 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
 }
 
 #[test]
-fn schema27_shapes_roundtrip_plain_and_musical_split_domains_and_migrate26() {
-    use hex_project::ClipFade;
+fn schema28_shapes_preserve_appearance_names_and_migrate27_and26() {
+    use hex_project::{ClipFade, ClipFlavor, ElementColor};
     for musical in [false, true] {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
-        let Created::Imported { clip, .. } = editor
+        let Created::Imported { clip, track, .. } = editor
             .execute(Command::ImportAudioTrack {
                 name: "fade".into(),
                 path: "sound.wav".into(),
@@ -120,6 +120,18 @@ fn schema27_shapes_roundtrip_plain_and_musical_split_domains_and_migrate26() {
             .execute(Command::RenameClip {
                 clip,
                 name: "shaped name".into(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTrackColor {
+                track,
+                color: ElementColor::Cyan,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetClipFlavor {
+                clip,
+                flavor: ClipFlavor::Accent,
             })
             .unwrap();
         if musical {
@@ -166,6 +178,29 @@ fn schema27_shapes_roundtrip_plain_and_musical_split_domains_and_migrate26() {
                 "mutation {mutation}"
             );
         }
+        assert_eq!(value["version"], 28);
+        let mut appearance = value.clone();
+        appearance["version"] = 27.into();
+        assert!(
+            hex_storage::decode(&serde_json::to_vec(&appearance).unwrap()).is_err(),
+            "frozen 27 refuses shape fields"
+        );
+        appearance.as_object_mut().unwrap().remove("fade_shapes");
+        let migrated27 = hex_storage::decode(&serde_json::to_vec(&appearance).unwrap()).unwrap();
+        assert_eq!(migrated27.track(track).unwrap().color(), ElementColor::Cyan);
+        assert_eq!(migrated27.clip_flavor(clip), Some(ClipFlavor::Accent));
+        assert_eq!(migrated27.clip_name(clip), Some("shaped name"));
+        assert!(
+            migrated27
+                .tracks()
+                .iter()
+                .flat_map(|t| t.clips())
+                .all(|c| !c.retained_fade().has_shape())
+        );
+        assert_eq!(
+            hex_storage::decode(&hex_storage::encode(&migrated27).unwrap()).unwrap(),
+            migrated27
+        );
         let mut legacy = value;
         legacy["version"] = 26.into();
         assert!(
@@ -173,6 +208,8 @@ fn schema27_shapes_roundtrip_plain_and_musical_split_domains_and_migrate26() {
             "26 must refuse the new shape field"
         );
         legacy.as_object_mut().unwrap().remove("fade_shapes");
+        legacy.as_object_mut().unwrap().remove("track_colors");
+        legacy.as_object_mut().unwrap().remove("accented_clips");
         let migrated = hex_storage::decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
         assert_eq!(migrated.clip_name(clip), Some("shaped name"));
         assert!(

@@ -126,6 +126,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
                     name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     id: next,
                     start_raw: 0,
                     length_raw: 8 << 32,

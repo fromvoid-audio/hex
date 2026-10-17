@@ -163,6 +163,7 @@ Untouched numeric drafts retain the original exact value when an owner finalizes
 them or the field loses focus. Display rounding is not a parameter edit. Actual
 typed/composed input is tracked separately, so deliberately entering the displayed
 rounded value still commits through the existing edit events and validation.
+
 Numeric, toggle, selector and response-graph controls can opt into rendered-order
 Tab traversal with `set_tab_navigation`. Participation defaults off and excludes
 disabled controls (or noneditable graphs), including when availability changes
@@ -195,3 +196,7 @@ input/output index, live and held sample peaks, gain, colors and tooltip text,
 and composes the two controls. Gain and unity lines accompany the audio fill.
 Readout updates do not interrupt pointer gestures; both wells use the shared
 numeric gesture and double-click reset lifecycle.
+
+Windowed generic bodies retain the shared surface and rounded corners while
+placing the standard inset inside their scroll content. The editor owns row
+visibility, offsets and gesture pins; the widget owns chrome and that inset.

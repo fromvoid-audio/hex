@@ -36,9 +36,9 @@ edge trim is a true no-op and retains the inherited envelope.
 Compilation carries only validated envelope metadata into prepared playback.
 Evaluate gains without allocation or mutable ramp state so seeking, render block
 partitioning and project-loop wrapping use the same sample coordinates. A neutral
-envelope bypasses gain multiplication to retain the legacy PCM path. Schema 27
+envelope bypasses gain multiplication to retain the legacy PCM path. Schema 28
 persists a bounded, exact Arrangement-audio-ID bijection in `fade_shapes`,
-augmenting the frozen legacy fade DTO and retained musical domains. Schemas 25 and 26
+augmenting the frozen legacy fade DTO and retained musical domains. Schemas 25–27
 migrate with edge-aligned endpoints and linear curves; schemas 1–5 migrate to
 neutral envelopes. Earlier readers reject the new field, and explicit legacy
 encoders refuse shaped fades.

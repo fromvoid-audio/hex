@@ -20,8 +20,9 @@ the project generation at opening and refuse removed insertion anchors.
 
 Automated checks cover click activation, dismissal, keyboard selection, screen
 clamping, ordering, append, stale anchors and undo/redo. Native visual acceptance
-is pending. Initial integration is Arrangement only; other context-menu callers
-can reuse the popup without duplicating presentation.
+is pending. Track-header color swatches and clip-flavor toggles now also serve Arrangement
+and Session; see [element colors](element-colors.md). Other callers can reuse
+the popup without duplicating presentation.
 
 Verification: 747 workspace tests passed, 1 ignored; 239 UI tests
 passed, 1 ignored. Strict UI/project lint, desktop build, formatting and

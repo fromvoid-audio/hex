@@ -137,6 +137,7 @@ fn isolated_source(
         };
         MidiClipSnapshot {
             name: item.name().to_owned(),
+            flavor: hex_project::ClipFlavor::default(),
             id: clip.value(),
             start_raw: 0,
             length_raw: end.raw() - source.source_start().raw(),

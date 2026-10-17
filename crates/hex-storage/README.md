@@ -151,7 +151,8 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema27 (schema26 plus the required fade-shape bijection), extending the schema25 envelope for device input/output host gains,
+New saves use schema28, preserving schema27 inherited track colors/per-clip flavors
+and schema26 names, plus required fade-shape metadata and device host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
 and recording epochs with independent Arrangement clip names. All playback
 consumers share the admitted lane model. The
@@ -207,11 +208,11 @@ Schemas1–25 migrate Arrangement names to `clip`; explicit legacy writers refus
 authored Arrangement names. See [clip names](../../docs/clip-names.md).
 
 
-Schema27 adds the bounded `fade_shapes` table for every Arrangement audio clip.
+Schema28 adds the bounded `fade_shapes` table for every Arrangement audio clip.
 Each ID occurs exactly once and carries the lower-handle offsets and integer
 curve bends. The existing fade domain remains in its historical DTO or retained
 musical root; the table augments that domain before final canonical validation.
-Schemas25/26 migrate to edge-aligned linear defaults and reject the new table;
-schema27 rejects missing/null, duplicate, orphan, malformed or oversized entries.
+Schemas25–27 migrate to edge-aligned linear defaults and reject the new table;
+schema28 rejects missing/null, duplicate, orphan, malformed or oversized entries.
 Explicit historical encoders refuse shaped envelopes. Named clips retain their
 complete schema26 metadata. See [clip fades](../../docs/clip-fades.md).

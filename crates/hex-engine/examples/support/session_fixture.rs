@@ -39,6 +39,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         next += 3;
         let arrangement_notes = notes(&mut next, index, 0);
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -57,6 +58,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip,
                 start_raw: 0,
                 length_raw: 16 << 32,
@@ -76,6 +78,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
                 track,
                 scene: 1,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    flavor: hex_project::ClipFlavor::default(),
                     id: clip,
                     name: format!("session {index:03}"),
                     source: MidiSourceSnapshot {
@@ -151,6 +154,7 @@ pub fn finite_oracle(
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
                 name: "clip".into(),
+                flavor: hex_project::ClipFlavor::default(),
                 id: clip.id,
                 start_raw: 0,
                 length_raw: 16 << 32,
