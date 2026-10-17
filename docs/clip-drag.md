@@ -108,3 +108,21 @@ builds; this extension is not yet native-accepted.
 209 rendered UI tests pass/one ignored; core/history/persistence/render checks
 and strict affected lint/build pass. Review: `artifacts/hex-overwrite-drop-20261009.app`.
 Native interaction acceptance remains pending.
+
+## held-clip intersection feedback — 17 october 2026
+
+The existing-track landing preview highlights its occupied intersections with the
+editable theme secondary accent (bright turquoise by default). Audio and MIDI
+victims share the same feedback, including browser sample landing previews.
+Only the intersection inside the visible viewport is tinted; gaps and exact
+edge touches stay clear. A move excludes its original clip; Option-copy includes
+it, with stationary modifier changes refreshing the highlight. Overlapping
+victims are merged before painting so tint intensity stays uniform. Release,
+cancellation and invalid/stale targets remove the transient feedback with the
+existing preview lifetime. No project/history or overwrite semantics change.
+
+Source regressions cover mixed audio/MIDI intersection geometry, gaps, clipped
+spans, exact touches, merged victims, source exclusion/copy toggles and release
+cleanup. Native visual acceptance remains pending: hold an audio or MIDI clip
+over another clip, inspect partial/full overlap and gaps, toggle Option over its
+original position, then cancel/drop and check that the highlight disappears.

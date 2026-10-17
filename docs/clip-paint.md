@@ -1,10 +1,12 @@
 # Arrangement clip painting
 
 Double-click empty space or the lower two thirds of an audio/MIDI clip in a
-regular Arrangement track, keeping the second press held. Drag right to preview
-the clip's length, then release in that track to create an empty MIDI clip. All regular tracks support MIDI content. A double
+regular Arrangement track, keeping the second press held. Drag left or right to
+preview the clip's length, then release in that track to create an empty MIDI
+clip. All regular tracks support MIDI content. A double
 click without movement creates one snap-grid cell, or one quarter-note beat
-with snapping off. Dragging left keeps that minimum preview length.
+with snapping off. The original double-click position stays anchored: dragging
+left moves the clip start earlier, and crossing the anchor switches direction.
 
 Start/end positions use the canonical tempo map and current snap setting;
 Command temporarily toggles snapping as in other Arrangement gestures. The
@@ -25,11 +27,14 @@ Automated checks cover the captured second press, growing preview, absence of
 edits before release, canonical placement/undo/redo, cancellation, stale project
 identity, clip-header rejection, painting over audio/MIDI bodies, minimum length
 and free pointer precision.
-Native interaction remains pending. User checklist:
+The user confirmed rightward painting on empty tracks works on 17 October 2026.
+Painting through clip bodies, leftward painting and direction reversal still
+need native acceptance. User checklist:
 
-1. Double-click empty track space, hold the second click, drag right and release:
-   the created MIDI clip should match the preview. Undo and redo once.
+1. Double-click empty track space, hold the second click, drag in either direction
+   and release: the created MIDI clip should match the preview. Undo and redo once.
 2. Repeat with snapping off and with Command held. Try a double click without
-   moving, and drag back left to confirm a positive minimum length.
+   moving. Cross back over the initial press position during a drag: the preview
+   should switch sides while keeping that position as its anchor.
 3. Cancel with Escape or release over another track/header; no clip should appear.
    Single-click selection and existing clip movement should still work.

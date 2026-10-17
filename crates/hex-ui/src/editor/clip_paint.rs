@@ -8,6 +8,7 @@ use hex_session::service::Request;
 #[derive(Clone, Copy)]
 pub(super) struct ClipPaintGesture {
     track: TrackId,
+    anchor: BeatTime,
     start: BeatTime,
     end: BeatTime,
     minimum_end: BeatTime,
@@ -86,6 +87,7 @@ impl EditorView {
         };
         self.clip_paint_gesture = Some(ClipPaintGesture {
             track,
+            anchor: start,
             start,
             end: minimum_end,
             minimum_end,
@@ -124,10 +126,11 @@ impl EditorView {
                 lane.width,
             )
         {
-            gesture.end = if end > gesture.start {
-                end
-            } else {
+            gesture.start = end.min(gesture.anchor);
+            gesture.end = if end == gesture.anchor {
                 gesture.minimum_end
+            } else {
+                end.max(gesture.anchor)
             };
             self.clip_paint_gesture = Some(gesture);
         }

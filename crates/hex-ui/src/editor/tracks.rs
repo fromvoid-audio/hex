@@ -155,6 +155,43 @@ fn midi_trim_note_shapes(
 pub(super) const TRACK_ROW_HEIGHT: f32 = 44.0;
 pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
 
+/// Visible occupied spans under a landing preview. Merge overlapping victims so
+/// the translucent accent has the same intensity everywhere.
+fn drop_overlap_spans(
+    state: &ViewState,
+    track: &Track,
+    interval: (u64, u64),
+    excluded_clip: Option<hex_project::ClipId>,
+) -> Vec<(u64, u64)> {
+    let audio = track.clips().iter().filter_map(|clip| {
+        (Some(clip.id()) != excluded_clip)
+            .then(|| clip_intersection(clip, interval))
+            .flatten()
+    });
+    let midi = track.midi_clips().iter().filter_map(|clip| {
+        if Some(clip.id()) == excluded_clip {
+            return None;
+        }
+        let preview = state.midi_preview.get(clip.id())?;
+        let start = preview.frame_start.max(interval.0);
+        let end = preview.frame_end.min(interval.1);
+        (start < end).then_some((start, end))
+    });
+    let mut spans: Vec<_> = audio.chain(midi).collect();
+    spans.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        if let Some(last) = merged.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    merged
+}
+
 pub(super) fn clip_grid_layer(
     lines: &[super::musical_time::GridLine],
     start: u64,
@@ -458,6 +495,32 @@ impl EditorView {
                     )]);
                 }
                 clip_area = clip_area.children([drop_preview]);
+                let excluded_clip = self
+                    .active_clip_drag
+                    .as_ref()
+                    .filter(|drag| clip_preview.is_some() && !drag.copy_modifier.get())
+                    .map(|drag| drag.clip);
+                for (index, (start, end)) in
+                    drop_overlap_spans(state, track, (visible_start, visible_end), excluded_clip)
+                        .into_iter()
+                        .enumerate()
+                {
+                    clip_area = clip_area.child(
+                        div()
+                            .debug_selector(move || format!("clip-drop-overlap-{index}"))
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(relative(
+                                ((start - viewport.start) as f64 / viewport.length as f64) as f32,
+                            ))
+                            .w(relative(
+                                ((end - start) as f64 / viewport.length as f64) as f32,
+                            ))
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .opacity(0.72),
+                    );
+                }
             }
         } else if let Some((pending_track, start)) = self
             .active_browser_audio_drag
@@ -1660,5 +1723,40 @@ impl gpui::Render for ClipDragGhost {
             .debug_selector(|| "clip-drag-ghost".to_owned())
             .w(px(0.0))
             .h(px(0.0))
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod overlap_tests {
+    use super::*;
+    use crate::editor::clip_drag_ui_test::{audio_project, editor_window};
+    use hex_project::{Command, Editor};
+
+    #[gpui::test]
+    fn drop_overlap_spans_clip_merge_and_ignore_exact_touches(cx: &mut gpui::TestAppContext) {
+        let (project, source, _, clip) = audio_project();
+        let mut model = Editor::new(project, 8).unwrap();
+        model
+            .execute(Command::CopyClipTo {
+                clip,
+                track: source,
+                start: 48_000,
+            })
+            .unwrap();
+        let (_handle, editor) = editor_window(cx, model.project().clone(), Default::default());
+        editor.read_with(cx, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            let track = state.project.track(source).unwrap();
+            assert_eq!(
+                drop_overlap_spans(state, track, (24_000, 120_000), None),
+                vec![(24_000, 120_000)]
+            );
+            assert_eq!(
+                drop_overlap_spans(state, track, (24_000, 120_000), Some(clip)),
+                vec![(48_000, 120_000)]
+            );
+            assert!(drop_overlap_spans(state, track, (144_000, 192_000), None).is_empty());
+            assert!(drop_overlap_spans(state, track, (12_000, 12_000), None).is_empty());
+        });
     }
 }

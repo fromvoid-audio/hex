@@ -198,7 +198,7 @@ pub trait NativeProcessorRuntime: StdAny + Send {
 /// Device-neutral selector for a transient processor audition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessorAuditionSelection {
-    pub index: u8,
+    pub index: u32,
     pub lane: u8,
 }
 
@@ -322,6 +322,10 @@ struct OffsetClock<'a> {
 }
 
 impl NativeInstrumentClock for OffsetClock<'_> {
+    fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+        self.clock
+            .arrangement_beat_at_offset(self.offset.checked_add(offset)?)
+    }
     fn beat_at_offset(&self, offset: usize) -> Option<u64> {
         self.clock.beat_at_offset(self.offset.checked_add(offset)?)
     }

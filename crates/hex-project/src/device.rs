@@ -103,6 +103,31 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             project.device_mut(device)?.state = state;
             Ok(crate::Created::None)
         }
+        Command::ReplaceDeviceStateWithIdentityReservation {
+            device,
+            expected_state,
+            state,
+            expected_next_id,
+            reserved_ids,
+        } => {
+            if project.next_id != expected_next_id
+                || project
+                    .device(device)
+                    .ok_or(Invalid("device no longer exists"))?
+                    .state()
+                    != &expected_state
+            {
+                return Err(Invalid(
+                    "device changed; retry the edit from its current state",
+                ));
+            }
+            let next = expected_next_id
+                .checked_add(reserved_ids)
+                .ok_or(Invalid("project identity space exhausted"))?;
+            project.device_mut(device)?.state = state;
+            project.next_id = next;
+            Ok(crate::Created::None)
+        }
         Command::SetDeviceBypass { device, bypassed } => {
             project.device_mut(device)?.bypassed = bypassed;
             Ok(crate::Created::None)
@@ -470,6 +495,45 @@ mod tests {
             crate::Created::Device(id) => id,
             other => panic!("unexpected edit result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn opaque_identity_reservation_rejects_stale_edits_and_undo_never_reuses_ids() {
+        let mut editor = crate::Editor::new(Project::new(48000).unwrap(), 16).unwrap();
+        let track = track_id(&mut editor, "track");
+        let device = device_id(&mut editor, track);
+        let expected = editor.project().device(device).unwrap().state().clone();
+        let first = editor.project().next_identity();
+        let command = Command::ReplaceDeviceStateWithIdentityReservation {
+            device,
+            expected_state: expected.clone(),
+            state: state(vec![9]),
+            expected_next_id: first,
+            reserved_ids: 41,
+        };
+        editor.execute(command.clone()).unwrap();
+        assert_eq!(editor.project().next_identity(), first + 41);
+        assert!(editor.execute(command).is_err());
+        assert_eq!(
+            editor.project().device(device).unwrap().state(),
+            &state(vec![9])
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().device(device).unwrap().state(), &expected);
+        assert_eq!(editor.project().next_identity(), first + 41);
+        let snapshot = editor.project().snapshot();
+        assert!(
+            editor
+                .execute(Command::ReplaceDeviceStateWithIdentityReservation {
+                    device,
+                    expected_state: expected,
+                    state: state(vec![10]),
+                    expected_next_id: first + 41,
+                    reserved_ids: u64::MAX
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), snapshot);
     }
 
     #[test]
