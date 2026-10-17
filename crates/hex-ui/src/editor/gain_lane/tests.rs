@@ -305,7 +305,7 @@ mod native {
         let focus = visual.update(|window, cx| window.focused(cx).unwrap());
         visual.simulate_keystrokes("cmd-t");
         visual.update(|window, _| assert!(focus.is_focused(window)));
-        entity.read_with(&visual, |view, cx| {
+        entity.update(&mut visual, |view, cx| {
             assert!(view.gain_numeric_editing(cx));
             assert!(view.last_enqueued_edit.is_none());
             assert_eq!(view.worker_requests_pending, 0);
