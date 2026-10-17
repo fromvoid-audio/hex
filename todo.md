@@ -1,3 +1,13 @@
+## owned history example feature — #2747 / PR357, 17 october 2026
+
+The conformance-only owned-history profile now declares its required Cargo
+feature. Default isolated lattice tests previously failed E0432 because Cargo
+compiled the example without its gated provider. The same command now passes
+55 tests; explicitly enabling conformance runs the optimized example and its
+independent PCM oracle at all four documented rates. Runtime code, features,
+dependencies and admission limits are unchanged. Full final-source CI remains
+pending; retained failure/success logs are separate from native acceptance.
+
 ## native parameter semantics — #2674 / PR290, 17 october 2026
 
 Optional validated state-aware semantics preserve descriptor literals and authored
