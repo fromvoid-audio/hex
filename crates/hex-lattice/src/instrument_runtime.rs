@@ -9,6 +9,12 @@ use std::{any::Any, fmt};
 /// No device owns this clock or constructs a project tempo map on the callback.
 pub trait NativeInstrumentClock {
     fn beat_at_offset(&self, offset: usize) -> Option<u64>;
+    /// Explicit Arrangement position in Q32.32 quarter-note beats, including
+    /// loop normalization. Performance beats may continue across a loop and
+    /// are not a substitute. Unknown/warmup timing remains explicit None.
+    fn arrangement_beat_at_offset(&self, _offset: usize) -> Option<u64> {
+        None
+    }
     /// Optional exact content-frame origin and loop pass at an aligned input.
     /// None is explicit warmup/unavailable timing, never a guessed frame zero.
     fn arrangement_frame_at_offset(&self, _offset: usize) -> Option<u64> {

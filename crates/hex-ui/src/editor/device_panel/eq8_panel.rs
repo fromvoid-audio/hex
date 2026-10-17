@@ -3,7 +3,8 @@ mod graph;
 
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, finalize_controls, parameter_control_with_presentation,
+    action_button, effective_parameter_value, finalize_controls,
+    parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Entity, Stateful, Subscription, div, prelude::*, px, rgb};
@@ -124,6 +125,18 @@ pub(super) fn render_body(
         .items_center()
         .gap(px(4.0))
         .child(mode_control);
+    toolbar = toolbar.child(
+        action_button(
+            format!("eq-upgrade-{}", device.value()),
+            "edit nodes",
+            "upgrade all five authored banks to flexible eq",
+            theme::DeviceActionRole::Normal,
+            true,
+        )
+        .on_click(cx.listener(move |view, _, _, cx| {
+            super::eq_panel::upgrade(view, cx, device);
+        })),
+    );
     if mode != 0 {
         toolbar = toolbar
             .child(lane_button(
@@ -320,7 +333,7 @@ fn audition_toggle(
         .child(entity.clone())
 }
 
-fn spectrum_toggle(
+pub(super) fn spectrum_toggle(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
@@ -343,7 +356,7 @@ fn spectrum_toggle(
         .audio
         .as_ref()
         .and_then(|audio| audio.spectrum_error.clone())
-        .unwrap_or_else(|| "show post-eq8 output spectrum".to_owned());
+        .unwrap_or_else(|| "show post-eq output spectrum".to_owned());
     hex_widgets::device_action(
         theme::text("∿"),
         theme::device_segment_style(selected && available),

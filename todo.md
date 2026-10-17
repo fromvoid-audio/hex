@@ -95,6 +95,19 @@ Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
 The parent EQ redesign, per-node automation, full final-source local CI and any
 native/user-test delivery remain separate work; this entry does not claim them.
 
+## streaming transport and native acceptance ledger — pulse2546 / PR241, 17 october 2026
+
+- One connected VerifiedStreaming adapter control exercises actual mixed-rate
+  worker PCM, direct seek, unchanged applied source/domain, Pause and priority
+  Stop with a full command queue; real callback entries retain allocation probes.
+- [Native validation ledger](docs/streaming-native-validation.md) maps all eight
+  original24 criteria plus the finite edit/Undo/save/reopen/catalog/transport/fault/
+  shutdown matrix to owning source tests and separate unperformed native cases.
+  No provider/cap/production behavior changes or manual merge gate are introduced.
+- Exact final local CI and stable optimized delivery are recorded externally.
+  Physical deadlines, listening, GUI interaction and backend faults remain
+  unverified; source merge and installation do not complete original24 acceptance.
+
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
 - Create-new canonical workload generator writes100 independent120s original
@@ -3958,6 +3971,37 @@ see docs/browser-layout.md for scope and native review checklist. Full functiona
 follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
 Command-F. Tag assignment/filtering, collections and history remain pending.
 
+## 17 October 2026 — sparse eq (Pulse #2654 / PR #270)
+
+- New-insert `eq` supports 64 stable-ID nodes, direct graph creation/drag,
+  shape/Q/12–48 db/oct controls and EQ-owned beat-curve automation. Existing EQ8
+  panels and codec remain supported, with an explicit five-bank lossless upgrade.
+- Atomic source-state/allocator reservation and preset node high-water marks
+  preserve targeting through delete/undo/new additions. EQ automation travels in
+  strict bounded opaque state; no general automation storage schema was added.
+- Focused codec/DSP/legacy PCM, canonical reservation, rendered gesture/automation/
+  upgrade and real renderer clock tests passed during implementation; exact final
+  full local CI and optimized/native delivery are coordinator-owned and pending
+  until their candidate evidence is recorded. See docs/eq.md for limitations and
+  the finite native checklist. Headless evidence is not native/listening acceptance.
+
+
+EQ #2654 final integration evidence: feature source `238bcb858426cc0caa192463d4395578be7030f2`
+includes merged metadata #2657/PR273 and current main. Targeted device, rendered
+UI, engine arrangement/loop/seek/export, identity reservation, legacy-layout and
+actual callback allocation checks pass. The release profile above is recorded
+in `docs/performance.md`; full exact-candidate local CI and stable optimized
+installation remain coordinator work. Native user checklist: `docs/eq.md`.
+
+Final EQ UI review also reproduced and repaired automation-point selection
+retargeting after deletion and insertion before the selected point. A canonical
+opaque-state key clears index-based selection after any authored edit or
+undo/redo while preserving local drag previews. The rendered two-point fixture
+now checks neighbor preservation and selection/history behavior; finite page
+navigation and Q32.32 endpoint checks cover extreme page values. Targeted
+rendered tests and the page-boundary regression pass; final full CI remains
+required on the committed integration candidate.
+
 ## 17 october 2026 — track header hover
 
 Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
@@ -3969,6 +4013,22 @@ then leave and confirm the original background returns. Pulse #2663 tracks the r
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
 
+Full EQ CI caught an early-failure regression in the new compensated arrangement
+beat stamp. The ordinary path already treats unrepresentable beats as unavailable;
+the compensated stamp now preserves that optional clock contract without losing
+exact frame identity. The original late-failure rollback regression is retained
+unchanged, with an added origin-clock unavailable-beat assertion. Final CI must
+be rerun on this repair; the earlier failed report is not merge evidence.
+
+The final rendered EQ workflow regression also reproduces and repairs removing
+the last node while its automation editor is open. Canonical-state changes now
+persist valid node selection and leave automation mode when that target is gone,
+while pending node creation retains optimistic selection until publication.
+Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
+new-node controls pass in the rendered fixture, alongside strict UI Clippy and
+page-boundary checks. The prior full run was interrupted for this repair; only
+the next unchanged full candidate may supply merge evidence.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -3976,3 +4036,13 @@ merge after the missing Rust/native validation was disclosed.
 - Future context-menu size selection: Pulse #2694, Hex 0.1.
 - Native zoom/snap/toggle acceptance remains pending; automated evidence is
   recorded with the focused PR.
+
+## 17 october 2026 — pulse2698 / PR316: fetch, verify and launch desktop
+
+- Root `./launch` requires a clean main checkout, fetches and fast-forwards only
+  to `origin/main`, records the current main commit's associated PR revision,
+  runs full local CI, installs the optimized app through the supported stable
+  path, verifies its source receipt, and opens that exact app.
+- Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
+  fetch/CI/package failures, and successful operation order. Native UI and
+  listening acceptance remain user checks after launch.

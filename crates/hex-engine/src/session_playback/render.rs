@@ -469,11 +469,19 @@ impl SessionPlayback {
         observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
         capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
-        let tracks = self.revision.arrangement().tracks();
+        let revision = Arc::clone(&self.revision);
+        let tracks = revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
             scratch[..output.len()].fill([0.0; 2]);
         }
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo, self.anchor);
+        let effect_clock = crate::effect_clock::ArrangementEffectClock::session(
+            revision.session().timing(),
+            arrangement_frame,
+            performance_frame,
+            arrangement_loop_pass,
+            self.playing,
+        );
         let table = self.revision.session().sine_table().as_ref();
         let mut release_cursor = 0;
         for index in 0..tracks.len() {
@@ -581,16 +589,21 @@ impl SessionPlayback {
                                     );
                                 };
                             self.device_chains[index]
-                                .process_range_observed(
+                                .process_range_observed_with_clock(
                                     0..track.instrument_position(),
                                     render_output,
                                     frame_offset,
+                                    Some(&effect_clock),
                                     &mut observe,
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                         } else {
                             self.device_chains[index]
-                                .process_range(0..track.instrument_position(), render_output)
+                                .process_range_with_clock(
+                                    0..track.instrument_position(),
+                                    render_output,
+                                    Some(&effect_clock),
+                                )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                         }
                     } else {
@@ -693,18 +706,20 @@ impl SessionPlayback {
                                     );
                                 };
                             chain
-                                .process_range_observed(
+                                .process_range_observed_with_clock(
                                     track.instrument_position()..effect_count,
                                     render_output,
                                     frame_offset,
+                                    Some(&effect_clock),
                                     &mut observe,
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                         } else {
                             chain
-                                .process_range(
+                                .process_range_with_clock(
                                     track.instrument_position()..effect_count,
                                     render_output,
+                                    Some(&effect_clock),
                                 )
                                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                         }
@@ -809,9 +824,23 @@ impl SessionPlayback {
                                     frames,
                                 );
                             };
-                        chain.process_block_observed(render_output, frame_offset, &mut observe);
+                        chain
+                            .process_range_observed_with_clock(
+                                0..chain.len(),
+                                render_output,
+                                frame_offset,
+                                Some(&effect_clock),
+                                &mut observe,
+                            )
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     } else {
-                        chain.process_block(render_output);
+                        chain
+                            .process_range_with_clock(
+                                0..chain.len(),
+                                render_output,
+                                Some(&effect_clock),
+                            )
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                     }
                 }
                 for (frame_index, source) in render_output.iter_mut().enumerate() {
@@ -930,13 +959,14 @@ impl SessionPlayback {
             }
         }
         self.render_detached_tails(performance_frame, output, frame_offset, capture)?;
-        self.render_return_buses(output, frame_offset, observer, capture)
+        self.render_return_buses(output, frame_offset, Some(&effect_clock), observer, capture)
     }
 
     fn render_return_buses(
         &mut self,
         output: &mut [Frame],
         frame_offset: usize,
+        effect_clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
         capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
@@ -957,9 +987,19 @@ impl SessionPlayback {
                             frames,
                         );
                     };
-                    chain.process_block_observed(frames, frame_offset, &mut observe);
+                    chain
+                        .process_range_observed_with_clock(
+                            0..chain.len(),
+                            frames,
+                            frame_offset,
+                            effect_clock,
+                            &mut observe,
+                        )
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 } else {
-                    chain.process_block(frames);
+                    chain
+                        .process_range_with_clock(0..chain.len(), frames, effect_clock)
+                        .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 if let Some(matrix) = bus.matrix {
                     matrix.apply_block(frames);
@@ -1027,9 +1067,19 @@ impl SessionPlayback {
                         frames,
                     );
                 };
-                chain.process_block_observed(frames, frame_offset, &mut observe);
+                chain
+                    .process_range_observed_with_clock(
+                        0..chain.len(),
+                        frames,
+                        frame_offset,
+                        effect_clock,
+                        &mut observe,
+                    )
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             } else {
-                chain.process_block(frames);
+                chain
+                    .process_range_with_clock(0..chain.len(), frames, effect_clock)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
             if let Some(matrix) = bus.matrix {
                 matrix.apply_block(frames);
