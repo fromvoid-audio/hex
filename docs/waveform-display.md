@@ -1,5 +1,49 @@
 # detailed Arrangement waveform display
 
+## stable resize sampling — #2764 / PR372
+
+Arrangement audio clips, ordinary trim previews and lower fade resize previews
+sample a shared viewport lattice. Its timeline interval, lane origin, density
+and 4,096-column cap stay fixed while clip edges move. Only the intersecting
+columns and a neighbor on each side are prepared; the existing clip mask crops
+the paths. Cache accounting charges the actual prepared columns. Peak hierarchy
+queries and source/loop/prepared-root mappings are unchanged. Fades remain a
+separate live envelope. This changes no project, Undo, worker or audio behavior.
+Other fitted waveform consumers retain their own view; browser UX is separate.
+
+The preview helper retains the accepted-root crop validation and changed-root
+stretch projection introduced by PR388/PR387. All preview paths now receive the
+same optional lane lattice; other fitted waveform consumers retain their own
+view. For a prepared crop, a lattice bin may start before the clip's displayed
+origin while still addressing valid samples in its full retained root. Combine
+the signed origin/offset translation before source-bound clamping. The edge-bin
+regression reproduces flat partial bins under the former subtract-first order
+and compares the actual stereo outlines against the same uncropped root/time map.
+The combined crop/stretch/grid pack passes39 tests with one existing manual
+profile ignored; final full exact-source evidence is recorded on PR372/Pulse.
+
+The former per-clip fit divided each changing visible interval into
+`ceil(width × scale)` columns. Both queried frame ranges and horizontal peak
+positions changed across otherwise untouched audio during fractional resizes.
+The deterministic stereo-outline regression fails with that sampling restored
+and passes on a shared lattice at 1×, 2× and the column cap, for both clip edges,
+newly revealed audio and retained prepared-root crops. Canonical one-shot/loop
+trims and lower fade resize geometry also preserve interior outline points.
+These compare the actual points supplied to GPUI's path builder, not screenshots
+or display timing. Existing rendered trim and fade gesture tests cover input,
+preview and release/Undo behavior.
+
+Static user captures showed source labels `0f99bfbc` and later `1879e018`;
+no resize interaction was captured. Native
+visual reproduction and acceptance remain pending in the coordinator's one Mac
+lane. Without stopping/replacing the running app, record its build and zoom,
+then check both trim edges and both lower fade handles at fixed zoom, with
+Command held/released, through offscreen clips, loop boundaries and prepared
+warp clips. Unchanged interior landmarks should remain fixed; cropped/revealed
+audio and fade overlays should update, with one Undo/Redo per release. The
+launcher owns the later combined optimized delivery. No subjective smoothness,
+GPU timing or app-delivery result is claimed by cloud geometry tests.
+
 ## waveform visibility during trim — pulse2782 / PR388
 
 During an ordinary edge trim, Arrangement hides the original clip's waveform

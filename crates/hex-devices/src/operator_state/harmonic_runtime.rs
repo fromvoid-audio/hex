@@ -23,6 +23,9 @@ const VOICES: usize = 64;
 #[derive(Clone)]
 pub(super) struct Factory {
     pub configuration: PreparedOperatorConfiguration,
+    // Kept out of the small legacy configuration, which callback parameter
+    // interpolation copies. This fixed owner is charged by the wide runtime.
+    pub tuning: Option<hex_lattice::TuningTable>,
     pub base: [u8; ENABLE_PAYLOAD_BYTES],
     pub settings: OperatorSettings,
     target: Spectrum,
@@ -36,11 +39,21 @@ pub(super) struct Factory {
     companion_active: bool,
 }
 impl Factory {
+    #[cfg(test)]
     pub fn new(
         settings: OperatorSettings,
         configuration: PreparedOperatorConfiguration,
         table: &'static SineTable,
         rate: u32,
+    ) -> Result<Self, DeviceContractError> {
+        Self::new_with_tuning(settings, configuration, table, rate, None)
+    }
+    pub fn new_with_tuning(
+        settings: OperatorSettings,
+        configuration: PreparedOperatorConfiguration,
+        table: &'static SineTable,
+        rate: u32,
+        tuning: Option<hex_lattice::TuningTable>,
     ) -> Result<Self, DeviceContractError> {
         let state = settings.to_state()?;
         let parameters = parameter_words(
@@ -50,6 +63,7 @@ impl Factory {
         );
         Ok(Self {
             configuration,
+            tuning,
             base: state.payload()[..ENABLE_PAYLOAD_BYTES]
                 .try_into()
                 .map_err(|_| DeviceContractError::MalformedState)?,
@@ -78,9 +92,11 @@ impl Factory {
         running: Option<bool>,
     ) -> Result<Voice, Error> {
         let note = if self.settings.lfo.active() {
-            self.configuration.prepare_lfo_note(pitch, velocity)
+            self.configuration
+                .prepare_lfo_note_with_tuning(pitch, velocity, self.tuning.as_ref())
         } else {
-            self.configuration.prepare_note(pitch, velocity)
+            self.configuration
+                .prepare_note_with_tuning(pitch, velocity, self.tuning.as_ref())
         }
         .map_err(|_| Error::InvalidEventBatch)?;
         let settings = self.settings;
@@ -130,6 +146,17 @@ impl Factory {
         } else {
             64
         }
+    }
+    fn retuned_note(&self, source: PreparedOperatorNote) -> Result<PreparedOperatorNote, Error> {
+        let (pitch, velocity) = source.midi_origin();
+        if self.settings.lfo.active() {
+            self.configuration
+                .prepare_lfo_note_with_tuning(pitch, velocity, self.tuning.as_ref())
+        } else {
+            self.configuration
+                .prepare_note_with_tuning(pitch, velocity, self.tuning.as_ref())
+        }
+        .map_err(|_| Error::InvalidEventBatch)
     }
     fn compatible(&self, other: &Self) -> bool {
         self.rate == other.rate
@@ -595,10 +622,12 @@ impl MutableInstrumentRuntime for Runtime {
                             .is_some_and(|end| end > voice.age_frames)
                 })
                 && source.continuation_note(&voice.note).is_ok_and(|note| {
-                    !self.factory.settings.lfo.active()
-                        || PreparedOperatorConfiguration::lfo_steps(&note)
-                            .iter()
-                            .all(|step| *step < (1u64 << 62))
+                    self.factory.retuned_note(note).is_ok_and(|target| {
+                        !self.factory.settings.lfo.active()
+                            || PreparedOperatorConfiguration::lfo_steps(&target)
+                                .iter()
+                                .all(|step| *step < (1u64 << 62))
+                    })
                 })
         })
     }
@@ -627,13 +656,23 @@ impl MutableInstrumentRuntime for Runtime {
         self.voices.fill(Voice::default());
         self.local_frame = history.performance_frame;
         for (target, voice) in self.voices.iter_mut().zip(history.voices) {
-            let Ok(note) = source.continuation_note(&voice.note) else {
+            let Ok(source_note) = source.continuation_note(&voice.note) else {
                 return;
+            };
+            // Shared analytic contexts are neutral; custom tables opt into the
+            // wide mutable owner before any note is prepared.
+            let note = if self.factory.tuning.is_some() {
+                let Ok(note) = self.factory.retuned_note(source_note) else {
+                    return;
+                };
+                note
+            } else {
+                source_note
             };
             *target = Voice {
                 note,
                 phases: PreparedOperatorConfiguration::harmonic_initial_phases(
-                    &note,
+                    &source_note,
                     voice.age_frames,
                 ),
                 age: voice.age_frames,
@@ -1032,7 +1071,9 @@ impl MutableInstrumentRuntime for Runtime {
     }
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
         previous.as_any().downcast_ref::<Self>().is_some_and(|p| {
-            self.factory.compatible(&p.factory) && self.factory.settings == p.factory.settings
+            self.factory.compatible(&p.factory)
+                && self.factory.settings == p.factory.settings
+                && self.factory.tuning.as_ref() == p.factory.tuning.as_ref()
         })
     }
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
@@ -1063,6 +1104,10 @@ impl MutableInstrumentRuntime for Runtime {
         {
             return false;
         }
+        let expression = previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .map_or([0.0; 3], |runtime| runtime.expression);
         proof
             .as_any()
             .downcast_ref::<Target>()
@@ -1077,6 +1122,21 @@ impl MutableInstrumentRuntime for Runtime {
                         self.factory.settings.global.active,
                     )
                     && p.voices().filter(|v| v.id != 0).count() <= self.factory.capacity()
+                    && (p.tuning == self.factory.tuning.as_ref()
+                        || p.voices().filter(|v| v.id != 0).all(|v| {
+                            self.factory.retuned_note(v.note).is_ok_and(|note| {
+                                (!self.factory.settings.lfo.active()
+                                    || PreparedOperatorConfiguration::lfo_steps(&note)
+                                        .iter()
+                                        .all(|step| *step < (1u64 << 62)))
+                                    && (!self.factory.settings.global.active
+                                        || self
+                                            .factory
+                                            .effective(note, expression)
+                                            .and_then(|e| self.factory.modulated_filter(e))
+                                            .is_ok())
+                            })
+                        }))
                     && (!self.factory.settings.lfo.active()
                         || p.voices().filter(|v| v.id != 0).all(|v| {
                             PreparedOperatorConfiguration::lfo_steps(&v.note)
@@ -1100,6 +1160,14 @@ impl MutableInstrumentRuntime for Runtime {
                 .zip(p.voices().filter(|voice| voice.id != 0))
             {
                 *target = source;
+                if p.tuning != self.factory.tuning.as_ref() {
+                    let Ok(note) = self.factory.retuned_note(source.note) else {
+                        return;
+                    };
+                    // Phase accumulators, envelopes, feedback, filters and expression
+                    // remain at the actual applied boundary; only future increments change.
+                    target.note = note;
+                }
             }
             if self.factory.settings.global.active {
                 if let Some(old) = previous.as_any().downcast_ref::<Self>() {
@@ -1168,6 +1236,7 @@ impl VoiceHistory for Runtime {
 }
 
 pub(super) struct Legacy<'a> {
+    pub tuning: Option<&'a hex_lattice::TuningTable>,
     pub rate: u32,
     pub base: [u8; ENABLE_PAYLOAD_BYTES],
     pub voices: &'a dyn VoiceHistory,
@@ -1212,6 +1281,7 @@ impl<'a> Legacy<'a> {
     fn read(previous: &'a dyn MutableInstrumentRuntime) -> Option<Self> {
         if let Some(p) = previous.as_any().downcast_ref::<Runtime>() {
             return Some(Self {
+                tuning: p.factory.tuning.as_ref(),
                 rate: p.factory.rate,
                 base: p.factory.base,
                 voices: p,

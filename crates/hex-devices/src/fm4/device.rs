@@ -379,10 +379,26 @@ impl NativeInstrumentDefinition for Fm4Definition {
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
+        self.prepare_instrument_with_tuning(
+            state,
+            sample_rate,
+            &hex_lattice::TuningTable::default(),
+        )
+    }
+    fn prepare_instrument_with_tuning(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        tuning: &hex_lattice::TuningTable,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
         let settings = Fm4Settings::from_state(state)?;
         let (oscillators, routing, envelope) = settings.kernel_parts()?;
         let _ = crate::shared_sine_table();
         Ok(Box::new(PreparedFm4Instrument {
+            tuning: *tuning,
             sample_rate,
             oscillators,
             routing,
@@ -392,6 +408,7 @@ impl NativeInstrumentDefinition for Fm4Definition {
 }
 
 struct PreparedFm4Instrument {
+    tuning: hex_lattice::TuningTable,
     sample_rate: u32,
     oscillators: [Oscillator; OPERATORS],
     routing: Routing,
@@ -408,9 +425,13 @@ impl PreparedNativeInstrument for PreparedFm4Instrument {
         pitch: u8,
         velocity: u8,
     ) -> Result<PreparedAnalyticNote, DeviceContractError> {
-        let prepared = PreparedFm4::new(
+        let frequency = self
+            .tuning
+            .frequency(pitch)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let prepared = PreparedFm4::new_with_frequency(
             self.sample_rate,
-            pitch,
+            frequency,
             velocity,
             self.oscillators,
             self.routing,

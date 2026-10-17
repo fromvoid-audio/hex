@@ -174,14 +174,14 @@ fn lfo_reversal_copy_new_onsets_partition_and_pair_budget_preserve_current_bound
     assert_eq!(copy.current_levels(), boundary);
     assert_eq!(copy.enable_ramp.unwrap().elapsed, 0);
     eprintln!(
-        "enable mutable storage: runtime={} twins={} cap=8192 retarget={} voices={}",
+        "enable mutable storage: runtime={} twins={} cap=10240 retarget={} voices={}",
         size_of::<Runtime>(),
         size_of::<Runtime>() * 2,
         size_of::<Retarget>(),
         VOICES,
     );
     assert!(
-        size_of::<Runtime>() * 2 <= 8192,
+        size_of::<Runtime>() * 2 <= 10240,
         "pair {}",
         size_of::<Runtime>() * 2
     );
