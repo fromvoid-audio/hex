@@ -939,6 +939,13 @@ impl EditorView {
                 )
             });
             if source == AppliedCandidateSource::Current {
+                if candidate.tuning_preview_identity.is_some() {
+                    self.tuning.broadcast.observe(
+                        candidate.project_generation,
+                        candidate.state.revision,
+                        candidate.state.project.tuning(),
+                    );
+                }
                 if candidate.project_generation == self.project_generation
                     && candidate.seek_request_id.is_none()
                 {
@@ -1567,37 +1574,6 @@ impl EditorView {
             &event.state.project,
             event.project_replaced,
         );
-        // Reuse the native preview identity gate: an older worker preview must
-        // not retune external clients after a newer gesture or cancel won.
-        let mts_tuning = match event.tuning_preview.as_ref() {
-            Some(preview)
-                if tuning_preview_current(
-                    preview.identity,
-                    self.project_generation,
-                    revision,
-                    self.project_generation,
-                    Some(revision),
-                    self.tuning
-                        .client
-                        .snapshot()
-                        .map(|snapshot| (snapshot.key, snapshot.sequence)),
-                ) =>
-            {
-                Some(preview.state.project.tuning())
-            }
-            Some(_) => None,
-            None => Some(event.state.project.tuning()),
-        };
-        let mts_generation = if event.project_replaced {
-            self.project_generation.saturating_add(1)
-        } else {
-            self.project_generation
-        };
-        if let Some(tuning) = mts_tuning {
-            self.tuning
-                .broadcast
-                .observe(mts_generation, revision, tuning);
-        }
         self.state = Some(event.state);
         if event.project_replaced {
             self.loop_rail_gesture = None;
@@ -1926,6 +1902,18 @@ impl EditorView {
         }
         if event.project_replaced {
             self.tuning.client.reset();
+        }
+        // Canonical publication remains independent of audio availability.
+        // Active or rejected transient gestures retain their applied table.
+        if event.tuning_preview.is_none()
+            && event.active_tuning_gesture.is_none()
+            && self.tuning.client.snapshot().is_none()
+        {
+            self.tuning.broadcast.observe(
+                self.project_generation,
+                revision,
+                event_state.project.tuning(),
+            );
         }
         if let Some(result) = event.tuning_library.as_ref() {
             self.tuning_library_complete(result);

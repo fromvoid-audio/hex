@@ -107,6 +107,13 @@ owned by this broker. Acquisition republishes the complete current table; disabl
 project replacement and shutdown cannot be lost behind coalesced edits. Native
 callback work has no MTS calls, locks, allocations, logging or final drops.
 
+Transient tuning previews publish only after the callback applies their exact
+candidate and the current generation/revision/gesture identity still matches.
+Worker preparation alone does not publish a preview. A refused nonterminal
+update preserves the observed table; Cancel/Commit use canonical data after the
+gesture acknowledgement. Canonical commits remain publishable without an audio
+output. External publication still runs asynchronously on its owner thread.
+
 Hex currently has no production third-party plugin host. Compatible external MTS
 clients may follow the broadcast in the configured IPC domain; unsupported
 instruments do not automatically retune. External held-note response depends on
