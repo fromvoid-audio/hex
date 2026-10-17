@@ -1,5 +1,11 @@
 ## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
 
+Current integration now includes merged350/387 and exact published runtime351
+at e1d9d50f. Its new Operator tuning-admission fixture uses the unified context;
+all320 device tests pass (one existing ignore), all3 independent tuning playback
+tests and strict affected all-target Clippy pass. Runtime351 remains unmerged;
+final full current resource-candidate validation and dependency merge are pending.
+
 Cloud4 accepted integrated tuning runtimeffb42158 and owns the next shared seam.
 Typed borrowed mono/stereo resource views and one rate/tuning/resource context now
 serve instrument and effect preparation, providers, Arrangement/Session/keyboard

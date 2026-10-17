@@ -17,7 +17,14 @@ fn custom_tuning_note_admission_matches_operator_runtime_nyquist_law() {
         for (pitch, hz, supported) in [(69, 30_000.0, false), (127, 220.0, true)] {
             let tuning = hex_lattice::TuningTable::new([hz; 128]).unwrap();
             let instrument = OPERATOR_METADATA
-                .prepare_instrument_with_tuning(&state, 48_000, &tuning)
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &tuning,
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
                 .unwrap();
             assert_eq!(
                 instrument.validate_event_note(pitch, 100).is_ok(),
