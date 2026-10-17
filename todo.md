@@ -24,6 +24,71 @@ admission remain unfinished. No cap or note layout increase.
 No sampler registration, full-CI or native acceptance claim. Beats clip stretching
 2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
 
+## tuning review precision and cyclic gaps — #2739 / PR350, 17 october 2026
+
+Review found preset float rounding and a missing period-seam gap check. Four
+regressions fail before repair and pass afterward: exact authored-float portable
+round trips, construction/drag seam refusal, safe clicked insertion, and wrapped
+insertion/count changes retaining the root. All23 tuning tests and strict scoped
+Clippy pass. Existing Rust1.85 baseline stays unchanged. The previous full-run
+checkpoint is superseded; final exact-source integration checks remain required.
+Extended existing fractional-root and combined device-manifest fixtures also
+reproduced a one-ulp JSON parser error. The pinned serde_json dependency now
+enables float_roundtrip, preserving current-format authored root precision.
+Both owning storage fixtures pass after the repair, including all device owners.
+
+## combined current project format — #2739 / PR350, 17 october 2026
+
+After asset PR297 landed, cloud5 integrates both active capabilities in one
+schema31: required complete tuning and device-asset manifest for every project,
+including empty/default values. Prior alpha30 refuses explicitly without
+conversion, rewriting or deletion. The manifest is a reusable bounded current
+payload, not a historical30 dispatch reader. Existing older readers stay intact;
+legacy writers continue to refuse data loss. Combined non-octave tuning/assets,
+Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
+covered by the owning storage fixtures. All storage/project/tuning tests and
+strict affected all-target Clippy pass. Source20cd1de3 passed all20 local checks
+with stale=false; checks for the current main integration remain required. No historical30 reader or automatic user-file conversion was added.
+
+## track header width and row height — pulse2714 / PR330
+
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
+## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
+
+Prepared imports and Session assets retain original-rate decoded PCM beside
+unchanged project-rate clip derivatives through single/batch/Session/Open and
+Undo/Redo paths. The same resident-frame ceiling charges unique buffer capacity;
+identity aliases count once, excess Vec capacity counts, and source+derivative
+refusal preserves canonical state/Redo. An identity-alias reload failure at zero
+remaining frames was reproduced and repaired. All113 Session tests pass. The real mixed-rate service fixture now proves
+derivative-only budget refusal and exact source+derivative Save/Open under its
+actual declared workload; targeted worker case passes. Failed full evidence is
+retained, including the second mixed-rate clip fixture reservation repair.
+The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
+resource-root/handle/callback lease admission; full W10/sampler remain open.
+
+
+## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+
+The selected Arrangement audio clip now exposes Warp and a direct implemented
+algorithm picker above source controls. Beats defaults to transient preservation;
+existing modes, parameters, canonical maps/history and worker preparation remain.
+Independent PCM, persistence, engine seek/partition, native/export and both
+actual-input UI checks pass. An unused UI-test import was removed after the first
+full run was deliberately interrupted; corrected exact-source full checks remain.
+See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
+No Mac execution or app installation; full sampler/resource work stays open.
+
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
@@ -119,6 +184,44 @@ Existing node and automation-point gestures retain their paths. Targeted rendere
 regressions and source checks are recorded with PR342; full exact-source CI,
 optimized delivery and native interaction/listening remain separate evidence.
 See [eq editing contract](docs/eq.md).
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
+coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
+
+## eq panel geometry — #2731 / PR344, 17 october 2026
+
+Sized the toolbar/footer for full shared controls, kept fixed control widths,
+added the reusable wide frequency micro dial and compact boolean button, and
+moved remove alongside selected-node controls. Automation telemetry now lives
+in its own field/page row. A rendered regression fails before and passes after
+at 880/1500-pixel windows in response and automation modes, checking containment,
+nonoverlap, action/readout bounds and usable graph height. Review exposed
+38.4-pixel automate text in a twelve-pixel action. Intrinsic nonwrapping action
+widths preserve shared styling; the strengthened font-shaped text-fit regression
+fails before and passes after, alongside all six rendered EQ tests. Full exact-source CI
+and optimized native visual/input acceptance remain required.
+See [layout contract](docs/eq.md#panel-layout).
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4593,6 +4696,19 @@ PR355 owns pending signing integration. One coordinator-controlled serial Mac
 thread will verify native behavior and the single combined delivery; cloud tests
 cannot establish keychain signing, installed launch or permission persistence.
 
+## terminal launch activity — pulse2760 / PR368, 17 october 2026
+
+The launcher now shows stage activity while fetching and verifying the installed
+app; the shared runner animates logged test/check steps and optimized compilation.
+Animation requires both stdout and stderr to be terminals. Redirected output stays
+plain, and no ticker writes over live child output. The worker stops, joins and
+clears before success/failure/interruption output resumes; narrow frames cannot
+wrap. Existing default fetch/build/start without tests, explicit `--test` full CI
+and installed-only `--open` remain. Focused deterministic terminal/redirected,
+failure/interrupt, diagnostic and release-guard regressions accompany the change.
+Final exact-source checks and finite Mac terminal acceptance remain with PR368;
+this cloud task does not install or restart the app.
+
 ## signing and build-only launch integration — pulse2745 / PR355, 17 october 2026
 
 Reconciled signing with merged launcher PR364 at main `846078bc`, then
@@ -4607,3 +4723,72 @@ stages on Linux and Mac, including real signing; those reports do not certify
 this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+## browser audition lifecycle — pulse2766 / PR374, 17 october 2026
+
+Callback-derived request generations distinguish preparing, playing and finite
+completion, including retirement pressure. Cancel silences pending/queued/active
+PCM independently of project transport; stale decode cannot restart it. Faults
+and shutdown report unavailable. Two fixed atomic acknowledgements add no
+callback allocation, locks or final PCM disposal. Browser layout and transport
+integration remain canonical Pulse2664 / PR280. Source does not establish that
+the reported endless audition is a backend loop; native listening remains open.
+
+## compact browser audition — pulse2664 / PR280, 17 october 2026
+
+Replace the overflowing bottom preview column with one 22 px auto/Play-Stop/mini
+waveform row below the existing tags. Default-on automatic audition covers changed
+mouse/Up/Down selection; manual Play/Right remains independent. Real callback
+state distinguishes preparation, audible PCM, completion and unavailable output.
+Stop and selection resets invalidate stale requests without touching project
+transport. Cached neutral combined-channel extrema preserve out-of-phase peaks;
+no per-paint decoding or callback allocation is introduced. Headless regressions
+cover width bounds, focus, toggle/manual semantics, completion, cancellation,
+actual Client-to-callback silence and list-boundary retrigger prevention. Native
+layout/listening and broader historical scrub/playhead wishlist remain open;
+Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
+
+
+## waveform visibility during edge trim — pulse2782 / PR388, 17 october 2026
+
+The actual trim overlay hid the original waveform and always used raw asset
+mapping, which refuses transformed clips. Before-fix rendered input reproduced
+zero-height stereo paths in all 24 processed/warped motion cases across two
+sample/rate fixtures; untouched controls remained visible. The preview now
+reuses the immutable accepted processing root with the model-projected crop
+offset and validates root identity, extent and original cached crop metadata.
+Original/prospective clips remain available for the separate tempo-aware
+Shift-stretch seam; no source BPM or gesture policy is implemented here.
+See docs/waveform-display.md for regression scope and the finite pending native
+checklist. Exact cloud CI evidence is recorded in Pulse2782 and canonical PR388.
+No Mac/app operation or delivery is claimed.
+
+## browser waveform cache stability — pulse2778 / PR384
+
+Visible row composition no longer mutates the16-entry metadata cache. Selected
+waveform, in-flight and pending keys stay protected; failed hover previews do not
+retry automatically. Reproduced selected-cache loss before repair; real pointer
+hover/selection regression checks no repeated preparation/audition, stable metadata,
+unchanged project state and surrounding lane geometry/style. Native flicker
+acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## browser waveform-position audition — pulse2779 / PR385
+
+Manual waveform clicks resolve bounded hit position against decoded preview PCM;
+existing generation/ownership queues replace previews and silence Stop without
+project transport. Exact-end starts finish silently. Callback position publication
+feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation,
+locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
+focus and unavailable-output regressions cover the browser strip. Native pointer,
+listening and position acceptance remains coordinator-serial.
+
+
+## deliberate sample insertion — pulse2780 / PR386
+
+Sample-result double-click no longer imports; consume its bubble after ordinary
+selection/automatic audition. Actual second-mouse-down regression with a valid
+target track failed before repair, and verifies no import/canonical mutation with
+auto on/off while retaining manual Right/search focus and explicit Enter import.
+Existing deliberate drag/drop coverage remains required. Other file/device
+handlers unchanged. Native double-click behavior remains coordinator-serial.

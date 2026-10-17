@@ -79,7 +79,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), bound);
     let mut scale = hex_tuning::Scale::equal(7);
-    scale.set_reference(60, 333.125, 2).unwrap();
+    scale.set_reference(60, 440.000_000_011_720_83, 2).unwrap();
     scale.set_period(1901.955);
     let tuning =
         hex_tuning::ProjectTuning::new(true, scale, hex_tuning::Audition::default()).unwrap();

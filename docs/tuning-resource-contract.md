@@ -8,14 +8,24 @@ protected.
 
 ## source and APIs available now
 
-Main `e610b2ea130410640990546935c0416642aad0f8` contains W10/PR297's bounded
+Main `94646b35aec34deb8d663548a006fd03f63d9dfa` contains W10/PR297's bounded
 host-owned device slot references, catalog/snapshot/history validation and
 explicit processing refusal for nonempty bindings. It contains W05/PR290 and
 W06/PR291 as well. It has no resident instrument PCM lease or callback borrowing
 contract and does not admit sampler.
 
+PR370 now retains original-rate decoded PCM independently of clip derivatives.
+The exact control APIs available on that main are
+`hex_session::Session::source_audio(asset) -> Option<&hex_engine::Audio>`,
+`Audio::sample_rate()`, `Audio::frames()`, `Audio::shares_pcm_with()` and
+`Audio::pcm_capacity_frames()`. `Session::resident_frames()` charges unique PCM
+buffer capacity across source/derivative aliases. `Audio` is the current decoded
+stereo-frame abstraction; these control borrows and bank totals are not typed
+callback resource leases or graph coexistence accounting. Cloud4 still owns that
+next preparation/process boundary under the contract below.
+
 Canonical tuning runtime PR351 at
-`06d413f36b3f12b6a4f46098ddfa79cacdaf09d4` exposes
+`ffb42158c6cdb5509871d8fbaa84321614ac8d59` exposes
 `NativeInstrumentRegistry::prepare_instrument_with_tuning(state, sample_rate,
 &hex_lattice::TuningTable)`. The validated table contains 128 effective Hz values;
 disabled tuning uses the exact existing equal-temperament law. Providers prepare
@@ -29,8 +39,8 @@ small context. W10's unchanged 4KiB context and 2MiB shared-context ceilings app
 The tuning head above includes the Operator exact-copy/retarget fix: exact mutable
 source matching includes the existing shared tuning identity. An unchanged
 opaque instrument payload alone is insufficient authority for history copy.
-The current integration must also retain W10's asset refusal in the table-aware
-registry entrypoint, before provider migration or preparation. Asset-free tuning
+This integrated source retains W10's asset refusal in the table-aware registry
+entrypoint before provider migration or preparation, with a provider-spy regression. Asset-free tuning
 preparation must remain independent of the optional MTS broadcaster.
 
 PR350 owns the combined current schema31 after asset30's landing. It requires

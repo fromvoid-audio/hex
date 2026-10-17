@@ -130,6 +130,15 @@ pub type MainOutputObserver<'observer> = dyn for<'frames> FnMut(&'frames [Frame]
 /// Borrowed post-node samples delivered during one render call.
 pub type PostNodeObserver<'observer> =
     dyn for<'frames> FnMut(PostNodeIdentity, usize, &'frames [Frame]) + 'observer;
+pub use hex_lattice::NodeSignalPhase;
+
+/// Synchronous input/output signals around one native entry, before host input
+/// trim and after the entire effect/output trim. Both borrows are speculative
+/// until the full render and caller's final output validation succeed.
+/// Real-time observers must not allocate, block or retain either sample borrow.
+pub type NodeSignalObserver<'observer> =
+    dyn for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]) + 'observer;
+
 /// Maximum stable track routes exposed to native callback telemetry.
 pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;
 
@@ -418,6 +427,11 @@ impl Audio {
     /// Shared immutable stereo PCM, available for import validation and analysis.
     pub fn frames(&self) -> &[Frame] {
         &self.frames
+    }
+    /// Control-side capacity of the retained PCM buffer, in stereo frames.
+    /// This excludes owner/graph metadata and is not a resource-admission proof.
+    pub fn pcm_capacity_frames(&self) -> usize {
+        self.frames.values.capacity()
     }
     /// True when two audio handles retain the same immutable PCM allocation.
     /// Exact retained PCM identity for control-side cache/summary reuse.
