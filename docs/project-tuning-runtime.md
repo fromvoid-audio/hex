@@ -102,3 +102,10 @@ Mac follow-ups use the coordinator's single serial local thread: exact-source
 native checks and optimized combined delivery, user interaction/listening,
 CoreAudio/deadline evidence and installed MTS-compatible client/signing validation.
 Linux tests establish none of those. No Mac work is launched by this cloud lane.
+
+Exact mutable Arrangement/Session topology matching includes the existing
+shared tuning identity. Identical authored instrument bytes with a changed table
+must use the prepared history-retarget path rather than incompatible exact-copy
+history. A public Operator keyboard playback regression and real FM4/Operator
+callback held/released-retune allocation fixture cover this distinction; the
+callback fixture failed on the old exact-match path before the repair.

@@ -556,7 +556,9 @@ impl PreparedRevision {
         let Some(new) = other.mutable_track_revision(track) else {
             return false;
         };
-        old.topology_matches(new)
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.topology_matches(new)
     }
 
     pub(crate) fn mutable_track_retarget_topology_matches(
@@ -580,7 +582,10 @@ impl PreparedRevision {
         let Some(new) = other.mutable_track_revision(track) else {
             return false;
         };
-        old.topology_matches(new) && old.arrangement_sources_match(new)
+        self.arrangement.shared_contexts().tuning_identity()
+            == other.arrangement.shared_contexts().tuning_identity()
+            && old.topology_matches(new)
+            && old.arrangement_sources_match(new)
     }
 
     pub(crate) fn mutable_arrangement_retarget_matches(

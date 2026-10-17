@@ -227,3 +227,42 @@ fn profile_keyboard_tuning_handoff_copy_cost() {
         );
     }
 }
+
+#[test]
+fn operator_custom_table_keyboard_retargets_mutable_history() {
+    let (project, track) = super::tests::fixture();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: crate::default_native_device_state_for_class(
+                crate::NativeDeviceClass::Instrument,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.operator"),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let p0 = tuned(editor.project(), 240.0);
+    let p1 = tuned(&p0, 333.0);
+    let r0 = revision(&p0);
+    let r1 = next_revision(&p1, &p0, &r0);
+    let input = Arc::new(ComputerKeyboardInput::default());
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    let mut old = start(&p0, Arc::clone(&r0), track, &input);
+    old.render(&mut [[0.0; 2]; 137]).unwrap();
+    let mut next = target(&p1, r1, track, &input, &old);
+    next.try_inherit_runtime_from(&mut old).unwrap();
+    old.cancel_computer_keyboard();
+    drop(old);
+    assert!(!input.is_cancelled());
+    let mut output = [[0.0; 2]; 137];
+    next.render(&mut output).unwrap();
+    assert!(output.iter().flatten().any(|sample| sample.abs() > 0.00001));
+}
