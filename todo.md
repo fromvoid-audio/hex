@@ -1,3 +1,11 @@
+## adaptive arranger grid — 17 october 2026
+
+- Arranger snapping uses one adaptive size with shared painting/snap spacing;
+  the toolbar toggles adaptive/off instead of cycling fixed sizes.
+- Future context-menu size selection: Pulse #2694, Hex 0.1.
+- Native zoom/snap/toggle acceptance remains pending; automated evidence is
+  recorded with the focused PR.
+
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
 
 - Worker batch failures retain member/path metadata through the UI boundary;
