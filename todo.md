@@ -4383,3 +4383,16 @@ target ownership after the Python suite, guards and formatting passed. No comple
 macOS CI, signing, installation or native acceptance is established. Mac execution
 remains paused until the user explicitly resumes it; PR355 owns signing and sample
 permissions, and the eventual combined app uses one exact verified source.
+
+## optional runtime launcher tests — pulse2755 / PR364, 17 october 2026
+
+The user's later direction supersedes PR359's default full-CI launch. Normal
+`./launch` always fetches clean main, builds the optimized exact source, verifies,
+installs and opens it without test suites or an earlier CI receipt. `--test`
+opts into full exact-source CI before building; `--open` remains installed-only.
+Build-only packaging freezes/rechecks clean source and retains guarded release,
+signature/artifact checks and safe publication, recording tests as `not_run`.
+Developer full exact-candidate checks remain required before merging this change.
+PR355 owns pending signing integration. One coordinator-controlled serial Mac
+thread will verify native behavior and the single combined delivery; cloud tests
+cannot establish keychain signing, installed launch or permission persistence.

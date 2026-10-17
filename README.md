@@ -50,23 +50,27 @@ remains open. Asset relinking is deferred.
 ## Run
 
 On macOS, `./launch` fetches the latest `origin/main`, fast-forwards a clean local
-`main`, runs full local CI, builds and installs the optimized app at the configured
+`main`, builds and installs the optimized app at the configured
 stable path (default `artifacts/hex.app`), then opens that verified build. It refuses
 dirty, non-main, ahead or divergent checkouts. If the update changes the launcher,
 it re-executes from the updated source before continuing.
 
-`./launch --test` is a compatible explicit spelling of the same checked build
-workflow. `./launch --open` only verifies and opens the installed optimized app;
+Normal launch always fetches and invokes the optimized build, even if an app is
+already installed. It does not run tests or require an earlier CI report. Source,
+artifact and configured signature checks still apply; receipts record tests as not
+run. `./launch --test` adds full exact-source local CI before building.
+`./launch --open` only verifies and opens the installed optimized app;
 it does not update source, build or run tests. This mode can open an already running
 installed app normally. The update/build workflow requires the native toolchain and
 authenticated `gh` for PR provenance. Save and quit hex before using it; it refuses
 running installed or raw `hex-desktop` processes and never force-quits. Build
-provenance and a finite smoke checklist remain under `artifacts/local-ci/`; native
+provenance and a finite smoke checklist remain under `artifacts/launch/` and
+`artifacts/local-ci/`; native
 interaction and listening results remain user checks.
 
 ```sh
-./launch          # update, check, build/install, then open latest main
-./launch --test   # explicit spelling of the checked build workflow
+./launch          # fetch latest main, build/install and open; no tests
+./launch --test   # also run full exact-source local CI before building
 ./launch --open   # open the installed optimized app without updating/building
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
