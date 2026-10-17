@@ -1282,11 +1282,7 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
     let (mut editor, track) = setup();
     let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(4, 1));
     let mut snapshot = editor.project().snapshot();
-    let hex_project::TrackSnapshot {
-        color: hex_project::ElementColor::default(),
-        content,
-        ..
-    } = &mut snapshot.tracks[0];
+    let hex_project::TrackSnapshot { content, .. } = &mut snapshot.tracks[0];
     let TrackContentSnapshot::Hybrid {
         midi_clips: clips, ..
     } = content
