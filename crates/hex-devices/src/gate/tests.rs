@@ -15,7 +15,14 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 
 fn prepared(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn PreparedNativeProcessor> {
     GATE_DEFINITION
-        .prepare_processor(state, sample_rate)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("valid gate preparation")
         .expect("stateful gate")
 }
@@ -137,7 +144,14 @@ fn malformed_state_parameter_cross_control_and_rate_values_are_rejected() {
     for sample_rate in [0, 7_999, 192_001] {
         assert!(
             GATE_DEFINITION
-                .prepare_processor(&state, sample_rate)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    }
+                )
                 .is_err()
         );
     }

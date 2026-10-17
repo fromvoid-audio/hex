@@ -611,8 +611,9 @@ impl NativeDeviceDefinition for UtilityDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         Self::prepare_owned_filter(state, sample_rate)
             .map(|value| value.map(|value| Box::new(value) as Box<dyn PreparedNativeProcessor>))
     }
@@ -894,7 +895,14 @@ mod tests {
                 })
                 .unwrap();
             let prepared = UTILITY_DEFINITION
-                .prepare_processor(&state, 48_000)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
                 .unwrap()
                 .unwrap();
             assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
@@ -927,7 +935,14 @@ mod tests {
                     .unwrap();
             }
             let mut source = UTILITY_DEFINITION
-                .prepare_processor(&state, 48_000)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
                 .unwrap()
                 .unwrap()
                 .create_runtime();
@@ -945,7 +960,14 @@ mod tests {
                 .prepare_effect_matrix(&muted_state)
                 .unwrap();
             let mut candidate = UTILITY_DEFINITION
-                .prepare_processor(&muted_state, 48_000)
+                .prepare_processor(
+                    &muted_state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
                 .unwrap()
                 .unwrap()
                 .create_runtime();
@@ -963,7 +985,14 @@ mod tests {
             let mut oracle_silence = [[0.0, 0.0]; 16];
             source.process_block(&mut oracle_silence);
             let mut unmuted = UTILITY_DEFINITION
-                .prepare_processor(&state, 48_000)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
                 .unwrap()
                 .unwrap()
                 .create_runtime();

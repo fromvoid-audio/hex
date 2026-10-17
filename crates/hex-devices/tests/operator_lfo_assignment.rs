@@ -53,7 +53,16 @@ fn check(
 ) {
     let registry = hex_devices::native_instrument_registry().unwrap();
     let original = state(operator, fixed, selected, amount);
-    let prepared = registry.prepare_instrument(&original, 48_000).unwrap();
+    let prepared = registry
+        .prepare_instrument(
+            &original,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
     let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
     let mut runtime = factory.create_runtime();
     let mut phase = 0.0_f64;
@@ -61,7 +70,16 @@ fn check(
     while at < 1100 {
         if edit_at == Some(at) {
             let target = patch(&original, 89 + operator, ParameterValue::Bool(!selected));
-            let target = registry.prepare_instrument(&target, 48_000).unwrap();
+            let target = registry
+                .prepare_instrument(
+                    &target,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
             let target = target.prepare_mutable_runtime().unwrap().unwrap();
             let InstrumentHistoryRetargetPreparation::Prepared(proof) =
                 target.prepare_history_retarget_target().unwrap()

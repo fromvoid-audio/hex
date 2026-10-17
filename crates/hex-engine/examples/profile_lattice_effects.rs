@@ -105,7 +105,14 @@ fn oracle(
     let mut processors: Vec<Box<dyn NativeProcessorRuntime>> = Vec::new();
     for state in states {
         let prepared = native_registry()?
-            .prepare_processor(state, RATE)?
+            .prepare_processor(
+                state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: RATE,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )?
             .ok_or("expected registered processor")?;
         processors.push(prepared.create_runtime());
     }

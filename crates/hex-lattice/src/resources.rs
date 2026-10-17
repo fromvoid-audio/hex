@@ -89,8 +89,10 @@ impl DevicePreparationContext<'_> {
     /// Control-only complete slot/type/bounds/finite-PCM check. This is not a
     /// cryptographic identity verification, reservation or runtime admission.
     pub fn validate_for(&self, state: &NativeDeviceState) -> Result<(), DeviceContractError> {
-        if self.sample_rate == 0
-            || self.resources.len() > MAX_DEVICE_ASSET_REFERENCES
+        if self.sample_rate == 0 {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        if self.resources.len() > MAX_DEVICE_ASSET_REFERENCES
             || self.resources.len() != state.asset_references().len()
         {
             return Err(DeviceContractError::AssetResourcesUnavailable);

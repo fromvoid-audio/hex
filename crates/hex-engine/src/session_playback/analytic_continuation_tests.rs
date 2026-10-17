@@ -68,7 +68,7 @@ impl hex_lattice::NativeInstrumentDefinition for Definition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let state = self.migrate_state(state)?;
         Ok(Box::new(Context {

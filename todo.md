@@ -1,13 +1,18 @@
 ## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
 
 Cloud4 accepted integrated tuning runtimeffb42158 and owns the next shared seam.
-Typed original-rate mono/stereo resource borrows and one sample-rate/tuning/resource
-preparation context now compile in this draft. Host-verified identities confer no
-lease; complete slot and finite-PCM validation is control-only. Registry/provider
-and actual processing plumbing, retained-root admission and conformance fixtures
-remain unfinished. Existing asset refusal remains unchanged. No new source can
-admit sampler merely because these types exist; caps and canonical tuning PRs
-remain intact. Beats clip stretching2771/PR379 has current explicit priority.
+Typed borrowed mono/stereo resource views and one rate/tuning/resource context now
+serve instrument and effect preparation, providers, Arrangement/Session/keyboard
+hosts and conformance callers. Old with_tuning overloads are removed. Arrangement
+instruments and track/return effects borrow the same effective project table.
+All319 device and54 lattice library tests pass (one existing device test ignored),
+strict affected all-target Clippy and audio/export/allocation-feature compilation
+pass. Actual registry tests prove a valid borrowed PCM view alone cannot bypass
+root admission, and stale extra views refuse before provider migration.
+Processing-side borrows, real PCM consumer fixtures and retained-root admission
+remain unfinished; existing nonempty asset refusal and caps remain unchanged.
+No sampler registration, full-CI or native acceptance claim. Beats clip stretching
+2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
 
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 

@@ -119,7 +119,14 @@ fn run(variant: Variant, path: &Path) -> Result<(), Box<dyn Error>> {
         )),
         state.payload(),
     )?;
-    let prepared = OPERATOR_METADATA.prepare_instrument(&state, RATE)?;
+    let prepared = OPERATOR_METADATA.prepare_instrument(
+        &state,
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: RATE,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )?;
     let factory = prepared
         .prepare_mutable_runtime()?
         .ok_or("fixture did not select a mutable runtime")?;

@@ -108,8 +108,12 @@ impl NativeInstrumentDefinition for ProfileDefinition {
     fn prepare_instrument(
         &self,
         _: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if sample_rate != RATE {
             return Err(DeviceContractError::InvalidParameterValue);
         }

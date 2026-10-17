@@ -24,7 +24,14 @@ fn patch(
 
 fn runtime(state: &NativeDeviceState) -> Box<dyn NativeProcessorRuntime> {
     SATURATOR_DEFINITION
-        .prepare_processor(state, 48_000)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("valid preparation")
         .expect("nonlinear processor")
         .create_runtime()
@@ -235,10 +242,24 @@ fn linear_utility_and_saturator_observe_the_declared_device_order() {
         .expect("digital clip");
     let catalog = crate::native_registry().expect("built-in catalog");
     let utility = catalog
-        .prepare_device(&utility_state, 48_000)
+        .prepare_device(
+            &utility_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared linear utility");
     let saturator = catalog
-        .prepare_device(&saturator_state, 48_000)
+        .prepare_device(
+            &saturator_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared nonlinear saturator");
     let saturator_processor: std::sync::Arc<dyn PreparedNativeProcessor> =
         std::sync::Arc::from(saturator.processor.expect("nonlinear runtime"));
@@ -301,7 +322,14 @@ fn nonlinear_processor_refuses_matrix_compilation_and_reports_no_delay_or_tail()
         StereoMatrix::identity()
     );
     let prepared = SATURATOR_DEFINITION
-        .prepare_processor(&state, 48_000)
+        .prepare_processor(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("processor prepared")
         .expect("stateful contract processor");
     assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
@@ -315,7 +343,14 @@ fn nonlinear_processor_refuses_matrix_compilation_and_reports_no_delay_or_tail()
     assert!(runtime.is_quiescent());
     assert!(
         SATURATOR_DEFINITION
-            .prepare_processor(&state, 7_999)
+            .prepare_processor(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 7_999,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                }
+            )
             .is_err()
     );
 }

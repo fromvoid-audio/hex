@@ -19,7 +19,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let providers: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&owned_delay::DEFINITION];
         let registry = NativeDeviceRegistry::new(&providers)?;
         let state = owned_delay::state(length as u32)?;
-        let prepared = registry.prepare_runtime_device(&state, rate)?;
+        let prepared = registry.prepare_runtime_device(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )?;
         let Some(PreparedProcessorFactory::Owned(factory)) = prepared.processor else {
             return Err("owned factory missing".into());
         };

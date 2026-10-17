@@ -97,12 +97,26 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
         assert!(!upgraded.nodes[39].enabled);
         assert_eq!(upgraded.nodes[39].q, 0.7);
         let mut legacy = definition
-            .prepare_processor(&old, 48000)
+            .prepare_processor(
+                &old,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap()
             .create_runtime();
         let mut new = EQ_DEFINITION
-            .prepare_processor(&upgraded.encode().unwrap(), 48000)
+            .prepare_processor(
+                &upgraded.encode().unwrap(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap()
             .create_runtime();

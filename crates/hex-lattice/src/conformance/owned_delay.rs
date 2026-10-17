@@ -117,7 +117,7 @@ impl NativeDeviceDefinition for OwnedDelayDefinition {
     fn prepare_processor(
         &self,
         value: &NativeDeviceState,
-        _rate: u32,
+        _context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn crate::PreparedNativeProcessor>>, DeviceContractError> {
         decode(value)?;
         Err(DeviceContractError::UnsupportedProcessingClass)
@@ -125,8 +125,9 @@ impl NativeDeviceDefinition for OwnedDelayDefinition {
     fn prepare_runtime_factory(
         &self,
         value: &NativeDeviceState,
-        rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        let rate = context.sample_rate;
         if !(8_000..=192_000).contains(&rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }

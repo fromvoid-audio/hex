@@ -4,7 +4,14 @@ use hex_lattice::{AnalyticContinuation, AnalyticContinuationError, AnalyticConti
 
 fn context(state: &NativeDeviceState) -> Box<dyn PreparedSharedAnalyticContext> {
     OPERATOR_METADATA
-        .prepare_instrument(state, 48_000)
+        .prepare_instrument(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .prepare_shared_analytic_context()
         .unwrap()

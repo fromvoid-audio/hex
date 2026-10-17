@@ -117,11 +117,15 @@ impl hex_lattice::NativeInstrumentDefinition for ContinuityInstrumentDefinition 
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate)
             || state.type_id() != self.id
             || state.state_version() != 1
@@ -242,7 +246,7 @@ impl hex_lattice::NativeInstrumentDefinition for OversizedSharedContextDefinitio
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
@@ -599,11 +603,15 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFeedbackDefinition {
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,
     > {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if !(8_000..=192_000).contains(&sample_rate)
             || state.type_id() != self.metadata.id
             || state.state_version() != 1
@@ -1955,7 +1963,14 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let old_prepared = hex_devices::eq8::EQ8_DEFINITION
-        .prepare_processor(&old_state, 48_000)
+        .prepare_processor(
+            &old_state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .unwrap();
     let mut reference_runtime = old_prepared.create_runtime();
@@ -1977,7 +1992,14 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         assert_eq!(candidate.tail_groups.iter().flatten().count(), 0);
         assert!(!candidate.device_chains[0].committed_range_is_quiescent(0..1));
         let prepared = hex_devices::eq8::EQ8_DEFINITION
-            .prepare_processor(&candidate_state, 48_000)
+            .prepare_processor(
+                &candidate_state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap();
         let mut next_reference = prepared.create_runtime();

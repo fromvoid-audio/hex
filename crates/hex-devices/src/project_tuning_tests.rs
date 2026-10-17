@@ -8,7 +8,14 @@ fn instrument(kind: DeviceTypeId, table: &TuningTable) -> Box<dyn PreparedNative
     let registry = native_instrument_registry().unwrap();
     let state = registry.default_state(kind).unwrap();
     registry
-        .prepare_instrument_with_tuning(&state, 48000, table)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: table,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
 }
 #[test]
@@ -20,9 +27,25 @@ fn neutral_preparation_preserves_all_builtin_pcm() {
         operator_state::OPERATOR_TYPE_ID,
     ] {
         let state = registry.default_state(kind).unwrap();
-        let old = registry.prepare_instrument(&state, 48000).unwrap();
+        let old = registry
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let new = registry
-            .prepare_instrument_with_tuning(&state, 48000, &TuningTable::default())
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap();
         let old_context = old.prepare_shared_analytic_context().unwrap();
         let new_context = new.prepare_shared_analytic_context().unwrap();
@@ -115,7 +138,14 @@ fn fm4_continuation_preserves_all_oscillator_phases_and_refuses_other_law_change
     let state = registry.default_state(fm4::device::FM4_TYPE_ID).unwrap();
     let prepare = |state: &NativeDeviceState, hz| {
         registry
-            .prepare_instrument_with_tuning(state, 48000, &table(hz))
+            .prepare_instrument(
+                state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &table(hz),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .prepare_note(60, 100)
             .unwrap()

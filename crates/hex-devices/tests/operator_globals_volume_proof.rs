@@ -191,7 +191,16 @@ fn registered_operator_carrier_pcm_has_exact_neutral_identity_and_independent_ga
     let state = support::legacy_operator_state();
     let original = state.clone();
     for rate in [8_000, 48_000, 192_000] {
-        let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
+        let instrument = OPERATOR_METADATA
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let context = instrument
             .prepare_shared_analytic_context()
             .unwrap()
@@ -235,7 +244,14 @@ fn mutable_factory(
             .unwrap();
     }
     OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .prepare_mutable_runtime()
         .unwrap()
@@ -302,7 +318,14 @@ fn profile_original_carrier_and_volume_composition() {
     use std::{hint::black_box, time::Instant};
     let state = support::legacy_operator_state();
     let instrument = OPERATOR_METADATA
-        .prepare_instrument(&state, 48_000)
+        .prepare_instrument(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap();
     let context = instrument
         .prepare_shared_analytic_context()

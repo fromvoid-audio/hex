@@ -89,10 +89,13 @@ fn prepare(project: &Project, previous: Option<&PreparedRevision>) -> Arc<Prepar
 fn sampler(project: &Project) -> hex_lattice::PreparedAnalyticNote {
     hex_devices::native_instrument_registry()
         .unwrap()
-        .prepare_instrument_with_tuning(
+        .prepare_instrument(
             project.tracks()[0].instrument().unwrap().state(),
-            48000,
-            &project.tuning().table().unwrap(),
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &project.tuning().table().unwrap(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
         )
         .unwrap()
         .prepare_note(60, 100)

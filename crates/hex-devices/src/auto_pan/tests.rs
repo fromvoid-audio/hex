@@ -15,7 +15,14 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 
 fn prepared(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn PreparedNativeProcessor> {
     AUTO_PAN_DEFINITION
-        .prepare_processor(state, sample_rate)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("valid Auto Pan preparation")
         .expect("stateful Auto Pan")
 }
@@ -108,14 +115,28 @@ fn rejects_malformed_versions_payloads_nonfinite_parameters_and_sample_rates() {
     for sample_rate in [0, 7_999, 192_001] {
         assert!(
             AUTO_PAN_DEFINITION
-                .prepare_processor(&state, sample_rate)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    }
+                )
                 .is_err()
         );
     }
     for sample_rate in [8_000, 48_000, 192_000] {
         assert!(
             AUTO_PAN_DEFINITION
-                .prepare_processor(&state, sample_rate)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    }
+                )
                 .is_ok()
         );
     }

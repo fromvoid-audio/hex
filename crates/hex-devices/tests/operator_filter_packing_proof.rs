@@ -37,7 +37,16 @@ fn canonical_notes_reconstruct_every_word_and_actual_native_pcm_exactly() {
         state.payload().len()
     );
     for rate in [8_000, 48_000, 192_000] {
-        let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
+        let instrument = OPERATOR_METADATA
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let context = instrument
             .prepare_shared_analytic_context()
             .unwrap()

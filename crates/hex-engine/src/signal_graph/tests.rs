@@ -71,7 +71,7 @@ impl NativeDeviceDefinition for Definition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         let delay = u32::from_le_bytes(
@@ -433,7 +433,7 @@ impl hex_lattice::NativeInstrumentDefinition for InstrumentDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         self.migrate_state(state)?;
         Ok(Box::new(Instrument))

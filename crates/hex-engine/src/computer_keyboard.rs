@@ -190,10 +190,13 @@ impl ComputerKeyboardRuntime {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("instrument registry is unavailable"))?;
         let instrument = registry
-            .prepare_instrument_with_tuning(
+            .prepare_instrument(
                 device.state(),
-                project.sample_rate(),
-                &project.tuning().table().map_err(|e| Invalid(e.0))?,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: &project.tuning().table().map_err(|e| Invalid(e.0))?,
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .map_err(|_| Invalid("computer keyboard instrument preparation failed"))?;
         let mut runtime =
@@ -401,7 +404,14 @@ impl ComputerKeyboardRuntime {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("instrument registry is unavailable"))?;
         let instrument = registry
-            .prepare_instrument_with_tuning(device.state(), project.sample_rate(), &tuning)
+            .prepare_instrument(
+                device.state(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: &tuning,
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .map_err(|_| Invalid("computer keyboard tuning preparation failed"))?;
         let mut result = Self::prepare_instrument_with_continuation(
             track,

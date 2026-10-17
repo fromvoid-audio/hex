@@ -67,8 +67,12 @@ impl NativeInstrumentDefinition for ProbeInstrumentDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if sample_rate != RATE || state.type_id() != MUTABLE_TYPE || state.state_version() != 1 {
             return Err(DeviceContractError::MalformedState);
         }

@@ -1112,20 +1112,10 @@ impl NativeInstrumentDefinition for OperatorMetadata {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        self.prepare_instrument_with_tuning(
-            state,
-            sample_rate,
-            &hex_lattice::TuningTable::default(),
-        )
-    }
-    fn prepare_instrument_with_tuning(
-        &self,
-        state: &NativeDeviceState,
-        sample_rate: u32,
-        tuning: &hex_lattice::TuningTable,
-    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        let tuning = context.tuning;
         let settings = OperatorSettings::from_state(state)?;
         let configuration = settings.prepare_configuration(sample_rate)?;
         let authored_state = settings.prepared_authored_state(state)?;

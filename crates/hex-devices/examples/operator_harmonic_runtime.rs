@@ -79,7 +79,16 @@ fn main() {
                         .unwrap();
                 }
             }
-            let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
+            let instrument = OPERATOR_METADATA
+                .prepare_instrument(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
             let factory = instrument.prepare_mutable_runtime().unwrap().unwrap();
             let mut runtime = factory.create_runtime();
             let events: Vec<_> = (0..voices)

@@ -69,7 +69,14 @@ fn runtime(
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Box<dyn hex_lattice::NativeProcessorRuntime> {
     COMPRESSOR_DEFINITION
-        .prepare_processor(state, 48_000)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("prepared compressor")
         .expect("stateful compressor")
         .create_runtime()

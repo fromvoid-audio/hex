@@ -29,7 +29,14 @@ fn state() -> NativeDeviceState {
 }
 fn factory(state: &NativeDeviceState) -> Box<dyn PreparedMutableInstrumentRuntime> {
     OPERATOR_METADATA
-        .prepare_instrument(state, 48000)
+        .prepare_instrument(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .prepare_mutable_runtime()
         .unwrap()
@@ -290,7 +297,14 @@ fn analytic_import_refuses_invalid_ids_gates_capacity_and_payload_without_mutati
     let s = state();
     let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, s.payload()[..364].to_vec()).unwrap();
     let prepared = OPERATOR_METADATA
-        .prepare_instrument(&legacy, 48000)
+        .prepare_instrument(
+            &legacy,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap();
     let context = prepared.prepare_shared_analytic_context().unwrap().unwrap();
     let f = factory(&s);

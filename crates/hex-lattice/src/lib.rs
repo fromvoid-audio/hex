@@ -54,9 +54,9 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
     fn prepare_runtime_factory(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        self.prepare_processor(state, sample_rate).map(|processor| {
+        self.prepare_processor(state, context).map(|processor| {
             processor
                 .map(|processor| PreparedProcessorFactory::Legacy(std::sync::Arc::from(processor)))
         })
@@ -67,7 +67,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
     fn prepare_processor(
         &self,
         _state: &NativeDeviceState,
-        _sample_rate: u32,
+        _context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         Ok(None)
     }
@@ -1361,9 +1361,10 @@ impl<'a> NativeDeviceRegistry<'a> {
     pub fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -1373,14 +1374,15 @@ impl<'a> NativeDeviceRegistry<'a> {
                 .migrate_state(state)?
                 .with_host_metadata_from(state)?,
         )?;
-        definition.prepare_processor(&current, sample_rate)
+        definition.prepare_processor(&current, context)
     }
     pub fn prepare_device(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedNativeDevice, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -1392,15 +1394,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         )?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_processor(&current, sample_rate)?,
+            processor: definition.prepare_processor(&current, context)?,
         })
     }
     pub fn prepare_runtime_device(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -1412,7 +1415,7 @@ impl<'a> NativeDeviceRegistry<'a> {
         )?;
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_runtime_factory(&current, sample_rate)?,
+            processor: definition.prepare_runtime_factory(&current, context)?,
         })
     }
     fn validate_current(
@@ -1751,7 +1754,7 @@ mod tests {
         fn prepare_processor(
             &self,
             state: &NativeDeviceState,
-            _sample_rate: u32,
+            _context: &crate::DevicePreparationContext<'_>,
         ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
             if state.payload() != [1] {
                 return Err(DeviceContractError::MalformedState);
@@ -2270,7 +2273,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2323,7 +2330,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2351,7 +2362,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                44_100,
+                &crate::DevicePreparationContext {
+                    sample_rate: 44_100,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2384,7 +2399,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2432,7 +2451,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2472,7 +2495,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2533,7 +2560,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();

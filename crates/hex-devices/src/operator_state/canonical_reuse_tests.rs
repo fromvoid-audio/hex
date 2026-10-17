@@ -4,7 +4,14 @@ use hex_lattice::AnalyticContinuationId;
 
 fn context(state: &NativeDeviceState) -> Box<dyn PreparedSharedAnalyticContext> {
     OPERATOR_METADATA
-        .prepare_instrument(state, 48_000)
+        .prepare_instrument(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .prepare_shared_analytic_context()
         .unwrap()
@@ -244,7 +251,16 @@ fn malformed_versions_lengths_flags_and_values_keep_decoder_refusals() {
     for input in cases {
         let error = OperatorSettings::from_state(&input).unwrap_err();
         assert_eq!(
-            OPERATOR_METADATA.prepare_instrument(&input, 48_000).err(),
+            OPERATOR_METADATA
+                .prepare_instrument(
+                    &input,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    }
+                )
+                .err(),
             Some(error)
         );
     }

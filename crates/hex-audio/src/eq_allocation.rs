@@ -44,7 +44,14 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
             .unwrap();
     }
     let prepared = EQ_DEFINITION
-        .prepare_processor(&settings.encode().unwrap(), 48000)
+        .prepare_processor(
+            &settings.encode().unwrap(),
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .unwrap();
     let mut a = prepared.create_runtime();

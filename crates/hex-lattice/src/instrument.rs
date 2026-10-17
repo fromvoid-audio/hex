@@ -263,23 +263,10 @@ pub trait PreparedNativeInstrument: Send + Sync {
 /// registry from effects because they prepare authored notes rather than a
 /// stereo effect matrix.
 pub trait NativeInstrumentDefinition: NativeDeviceMetadata {
-    /// Optional project tuning. Legacy providers are supported only for exact
-    /// neutral tuning; nonneutral tables must never silently use equal temperament.
-    fn prepare_instrument_with_tuning(
-        &self,
-        state: &NativeDeviceState,
-        sample_rate: u32,
-        tuning: &crate::TuningTable,
-    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        if !tuning.is_neutral() {
-            return Err(DeviceContractError::UnsupportedProcessingClass);
-        }
-        self.prepare_instrument(state, sample_rate)
-    }
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError>;
 }
 
@@ -415,23 +402,15 @@ impl<'a> NativeInstrumentRegistry<'a> {
         )
     }
 
+    /// Prepare the exact effective table; resource bindings refuse before
+    /// provider migration until the host supplies actual resource leases.
     pub fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
-    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        self.prepare_instrument_with_tuning(state, sample_rate, &crate::TuningTable::default())
-    }
-
-    /// Prepare the exact effective table; resource bindings refuse before
-    /// provider migration until the host supplies actual resource leases.
-    pub fn prepare_instrument_with_tuning(
-        &self,
-        state: &NativeDeviceState,
-        sample_rate: u32,
-        tuning: &crate::TuningTable,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -441,7 +420,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
                 .migrate_state(state)?
                 .with_host_metadata_from(state)?,
         )?;
-        definition.prepare_instrument_with_tuning(&current, sample_rate, tuning)
+        definition.prepare_instrument(&current, context)
     }
 
     fn validate_current(
@@ -567,8 +546,11 @@ mod tests {
         fn prepare_instrument(
             &self,
             _state: &NativeDeviceState,
-            _sample_rate: u32,
+            context: &crate::DevicePreparationContext<'_>,
         ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+            if !context.tuning.is_neutral() {
+                return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+            }
             Err(DeviceContractError::MalformedState)
         }
     }
@@ -661,8 +643,12 @@ mod tests {
         fn prepare_instrument(
             &self,
             _state: &NativeDeviceState,
-            sample_rate: u32,
+            context: &crate::DevicePreparationContext<'_>,
         ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+            let sample_rate = context.sample_rate;
+            if !context.tuning.is_neutral() {
+                return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+            }
             if !(8_000..=192_000).contains(&sample_rate) {
                 return Err(DeviceContractError::InvalidParameterValue);
             }
@@ -732,7 +718,16 @@ mod tests {
             (right.type_id(), [0.0, 0.75]),
         ] {
             let state = registry.default_state(type_id).unwrap();
-            let instrument = registry.prepare_instrument(&state, 48_000).unwrap();
+            let instrument = registry
+                .prepare_instrument(
+                    &state,
+                    &crate::DevicePreparationContext {
+                        sample_rate: 48_000,
+                        tuning: &crate::TuningTable::default(),
+                        resources: &crate::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
+                .unwrap();
             let note = instrument.prepare_note(60, 100).unwrap();
             assert_eq!(note.sample(0, 32), expected);
             assert_eq!(note.sample(39, 32), expected);
@@ -751,12 +746,26 @@ mod tests {
         let state = registry.default_state(provider.type_id()).unwrap();
         assert!(
             registry
-                .prepare_instrument_with_tuning(&state, 48000, &crate::TuningTable::default())
+                .prepare_instrument(
+                    &state,
+                    &crate::DevicePreparationContext {
+                        sample_rate: 48000,
+                        tuning: &crate::TuningTable::default(),
+                        resources: &crate::EMPTY_DEVICE_RESOURCES
+                    }
+                )
                 .is_ok()
         );
         let custom = crate::TuningTable::new([333.0; 128]).unwrap();
         assert!(matches!(
-            registry.prepare_instrument_with_tuning(&state, 48000, &custom),
+            registry.prepare_instrument(
+                &state,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48000,
+                    tuning: &custom,
+                    resources: &crate::EMPTY_DEVICE_RESOURCES
+                }
+            ),
             Err(DeviceContractError::UnsupportedProcessingClass)
         ));
     }

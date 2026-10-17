@@ -59,7 +59,7 @@ impl NativeDeviceDefinition for Definition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         Ok(Some(Box::new(Prepared)))

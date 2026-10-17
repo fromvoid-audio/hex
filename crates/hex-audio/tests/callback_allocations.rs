@@ -120,7 +120,7 @@ impl hex_lattice::NativeInstrumentDefinition for SharedContextFixtureDefinition 
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         let state = self.migrate_state(state)?;
         Ok(Box::new(SharedContextFixturePrepared {
@@ -259,7 +259,7 @@ impl hex_lattice::NativeInstrumentDefinition for MutableFixtureDefinition {
     fn prepare_instrument(
         &self,
         state: &hex_lattice_contract::NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<
         Box<dyn hex_lattice::PreparedNativeInstrument>,
         hex_lattice_contract::DeviceContractError,

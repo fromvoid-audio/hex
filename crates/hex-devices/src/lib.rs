@@ -66,7 +66,14 @@ pub fn prepare_legacy_sine_instrument(
 ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
     let registry = native_instrument_registry()?;
     let state = registry.default_state(SINE_INSTRUMENT_TYPE_ID)?;
-    registry.prepare_instrument(&state, sample_rate)
+    registry.prepare_instrument(
+        &state,
+        &hex_lattice::DevicePreparationContext {
+            sample_rate,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )
 }
 
 static SINE_INSTRUMENT: SineInstrumentDefinition = SineInstrumentDefinition;
@@ -125,23 +132,10 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
     fn prepare_instrument(
         &self,
         _state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        if !(8_000..=192_000).contains(&sample_rate) {
-            return Err(DeviceContractError::InvalidParameterValue);
-        }
-        self.prepare_instrument_with_tuning(
-            _state,
-            sample_rate,
-            &hex_lattice::TuningTable::default(),
-        )
-    }
-    fn prepare_instrument_with_tuning(
-        &self,
-        _state: &NativeDeviceState,
-        sample_rate: u32,
-        tuning: &hex_lattice::TuningTable,
-    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        let tuning = context.tuning;
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -433,7 +427,16 @@ mod tests {
         let legacy = table.prepare_voice(48_000, 69, 100).unwrap();
         let registry = native_instrument_registry().unwrap();
         let state = registry.default_state(SINE_INSTRUMENT_TYPE_ID).unwrap();
-        let prepared = registry.prepare_instrument(&state, 48_000).unwrap();
+        let prepared = registry
+            .prepare_instrument(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap();
         let note = prepared.prepare_note(69, 100).unwrap();
         assert_eq!(std::mem::size_of_val(&note), 352);
         for gate in [1, 24_000, 48_000] {

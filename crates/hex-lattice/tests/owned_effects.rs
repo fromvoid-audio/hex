@@ -10,7 +10,14 @@ fn chain(frames: u32, bypassed: bool) -> Result<NativeRuntimeChain, DeviceContra
     let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&owned_delay::DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions)?;
     let state = owned_delay::state(frames)?;
-    let prepared = registry.prepare_runtime_device(&state, 48_000)?;
+    let prepared = registry.prepare_runtime_device(
+        &state,
+        &hex_lattice::DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &hex_lattice::TuningTable::default(),
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        },
+    )?;
     NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
         meter: Default::default(),
         owner: ProcessorChainOwner::Track(1),
@@ -29,7 +36,18 @@ fn registered_owned_factory_uses_real_chain_and_refuses_legacy_interface()
     let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&owned_delay::DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions)?;
     let state = owned_delay::DEFINITION.default_state()?;
-    assert!(registry.prepare_device(&state, 48_000).is_err());
+    assert!(
+        registry
+            .prepare_device(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                }
+            )
+            .is_err()
+    );
     check_metadata(&owned_delay::DEFINITION, &state)?;
     check_effect(&owned_delay::DEFINITION, &state, 48_000)?;
     let chain = chain(17, false)?;
@@ -150,7 +168,16 @@ fn owned_factory_failure_and_underreported_storage_refuse_before_publication() {
     let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&owned_delay::DEFINITION];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let state = owned_delay::state(17).unwrap();
-    let prepared = registry.prepare_runtime_device(&state, 48_000).unwrap();
+    let prepared = registry
+        .prepare_runtime_device(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
     let Some(hex_lattice::PreparedProcessorFactory::Owned(factory)) = prepared.processor else {
         panic!("owned factory missing")
     };

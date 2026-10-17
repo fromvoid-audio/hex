@@ -15,7 +15,14 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: f32) -> NativeDevice
 
 fn prepared(state: &NativeDeviceState, sample_rate: u32) -> Box<dyn PreparedNativeProcessor> {
     COMPRESSOR_DEFINITION
-        .prepare_processor(state, sample_rate)
+        .prepare_processor(
+            state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .expect("valid compressor preparation")
         .expect("stateful processor")
 }
@@ -109,7 +116,14 @@ fn malformed_states_parameters_and_sample_rates_are_rejected() {
     for sample_rate in [0, 7_999, 192_001] {
         assert!(
             COMPRESSOR_DEFINITION
-                .prepare_processor(&state, sample_rate)
+                .prepare_processor(
+                    &state,
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate,
+                        tuning: &hex_lattice::TuningTable::default(),
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES
+                    }
+                )
                 .is_err()
         );
     }

@@ -165,7 +165,14 @@ fn chain(
     let prepared = contract(
         definition,
         "effect preparation",
-        registry.prepare_runtime_device(state, rate),
+        registry.prepare_runtime_device(
+            state,
+            &crate::DevicePreparationContext {
+                sample_rate: rate,
+                tuning: &crate::TuningTable::default(),
+                resources: &crate::EMPTY_DEVICE_RESOURCES,
+            },
+        ),
     )?;
     contract(
         definition,
@@ -290,7 +297,14 @@ pub fn check_instrument(
     let prepared = contract(
         definition,
         "instrument preparation",
-        definition.prepare_instrument(state, sample_rate),
+        definition.prepare_instrument(
+            state,
+            &crate::DevicePreparationContext {
+                sample_rate,
+                tuning: &crate::TuningTable::default(),
+                resources: &crate::EMPTY_DEVICE_RESOURCES,
+            },
+        ),
     )?;
     if contract(
         definition,
