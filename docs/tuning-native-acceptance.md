@@ -19,6 +19,7 @@ Run the Mac-specific package checks from the exact checkout:
 
 ```sh
 cargo test -p hex-mts --locked
+cargo test -p hex-audio --features allocation-probe --test callback_allocations --locked
 CARGO_TARGET_DIR=third_party/mts-esp-master/target cargo test --manifest-path third_party/mts-esp-master/Cargo.toml --locked
 CARGO_TARGET_DIR=third_party/mts-esp-master/target cargo clippy --manifest-path third_party/mts-esp-master/Cargo.toml --all-targets --locked -- -D warnings
 ```
@@ -28,6 +29,17 @@ the installed library or machine-wide master. Retain commands, source identity,
 exit codes and output. Use repository target-ownership rules; do not adopt or
 clean another active checkout's cache. Report a platform failure to cloud5 before
 changing source; a repair needs fresh exact-source evidence.
+
+Record the bounded keyboard handoff release probe on the actual Mac CPU, with
+its own inactive/owned profile target and no concurrent compiler job:
+
+```sh
+CARGO_TARGET_DIR=artifacts/tuning-native-profile/target cargo test --release -p hex-engine --lib profile_keyboard_tuning_handoff_copy_cost --locked -- --ignored --nocapture
+```
+
+Retain the printed workload, runtime/override sizes and same-tuning/retune
+percentiles, plus hardware, toolchain and background-load context. This is a CPU
+handoff measurement; physical CoreAudio/listening evidence remains separate.
 
 ## launcher-owned delivery
 
@@ -49,7 +61,8 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
 
 1. Open tuning in a new neutral project. Opening does not enable tuning or dirty
    the project. Check useful resizing, lowercase typography, focus, scroll,
-   shortcuts and traffic-light clearance.
+   shortcuts, keyboard accessibility and traffic-light clearance. Record any
+   missing accessibility semantics explicitly.
 2. Edit degree Hz/cents with Enter, Escape, blur and arrow/fine steps. Insert,
    drag and remove on the pitch line and context menu; exercise the 3/48-degree
    bounds and protected root. One whole gesture is one Undo/Redo step.
