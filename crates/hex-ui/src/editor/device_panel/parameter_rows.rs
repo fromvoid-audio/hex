@@ -389,6 +389,7 @@ pub(super) mod tests {
                 };
                 NativeDeviceParameterView {
                     descriptor,
+                    semantics: None,
                     value: if id == 10 {
                         ParameterValue::Float(0.5)
                     } else {
@@ -469,6 +470,7 @@ pub(super) mod tests {
                     default: ParameterValue::Bool(false),
                     presentation: ParameterPresentation::Linear,
                 },
+                semantics: None,
                 value: ParameterValue::Float(0.5),
                 enabled: false,
             },
