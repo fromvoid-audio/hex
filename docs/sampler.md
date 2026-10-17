@@ -147,6 +147,15 @@ uses the host's tuning and output rate. Decoded state and marker storage may be
 destroyed after scalar runtime preparation. This does not yet connect file
 loading, canonical device commands, project round-trip or UI interaction.
 
+The neutral `ImportDeviceAsset` canonical command now adds original source
+metadata and assigns one device slot as one prepared edit. It preserves other
+bindings and host gains even when the new DSP payload is reconstructed. An
+expected-state check refuses a stale target; failed playback preparation retains
+the exact source project, allocator and both history stacks. Current snapshot
+round-trip, one Undo/Redo, original/project-rate frame metadata and full binding
+capacity are covered. This model transaction performs no decoding or resource
+admission; the actual worker/media-loading and usable device request remain open.
+
 The kernel implements these original laws, pending reference measurement:
 
 | Area | Implemented contract |

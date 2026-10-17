@@ -134,6 +134,18 @@ pub enum Command {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Atomically add original media metadata and bind it to one device slot.
+    /// The worker must prepare actual media/playback before committing this
+    /// edit. This command performs no I/O and grants no resource admission.
+    ImportDeviceAsset {
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        state: hex_lattice_contract::NativeDeviceState,
+        slot: hex_lattice_contract::DeviceAssetSlot,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+    },
     /// Atomically replace opaque device state and reserve fresh identities.
     /// Expected source and allocator cursor prevent stale UI edits overwriting
     /// another edit; history preserves the allocator high-water mark on undo.
@@ -1339,6 +1351,9 @@ impl Project {
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
+            command @ Command::ImportDeviceAsset { .. } => {
+                crate::device_assets::apply(self, command)
+            }
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
@@ -2251,7 +2266,7 @@ impl Project {
 }
 
 impl Project {
-    fn add_prepared_asset(
+    pub(crate) fn add_prepared_asset(
         &mut self,
         path: PathBuf,
         source_sample_rate: u32,
