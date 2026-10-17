@@ -1,3 +1,12 @@
+## browser outward tag editor and resizable picker — 17 october 2026
+
+The tag editor adds a right column without consuming results/preview width.
+The picker has its own drag divider, an icons-only mode and lowercase hover
+labels for collections, sections and places. Width/settings remain session-only.
+See [browser layout](docs/browser-layout.md) for the finite native checklist.
+Automated validation results are recorded with this change; native macOS
+resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
+
 ## held-clip intersection accent — #2696 / PR314, 17 october 2026
 
 Arrangement landing previews tint only occupied audio/MIDI intersections with the

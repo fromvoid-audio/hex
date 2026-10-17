@@ -4,8 +4,17 @@
 search and navigation slots at the top, collections/library/places in a left
 column, tag groups above results, selected-item tags and preview below results,
 and an optional tag editor column to the right. The browser starts at 480 px and
-retains its existing resize/collapse behavior and workspace minimum. At narrow
-widths the sidebar becomes an icon rail. All paint uses the existing semantic
+retains its outer resize/collapse behavior. Opening the tag editor adds a column
+to the right of that base width, preserving the picker, results and preview widths;
+closing it returns that space to Arrangement/Session. The existing workspace
+minimum applies to the base browser, with the editor borrowing additional workspace
+space while open. Workspace/drop geometry includes the extra column.
+
+The picker has an independent 4 px drag divider. Its session-only width starts at
+124 px, leaves at least 120 px for results, and snaps to a 36 px icon rail below
+64 px. Drag right to restore labels. In icon mode, collections, sections and folder
+places retain name tooltips; folder save/error status remains available by hover.
+Section settings expand the picker when opened. All paint uses the existing semantic
 theme and captions use the bundled typography/lowercase display boundary.
 
 Panel visibility and tag-group disclosure work. Section settings allow hiding
@@ -44,8 +53,12 @@ User-owned macOS acceptance remains pending. Review the actual native window:
    the mini strip's editor button. Verify independently scrolling regions.
 3. Select and audition WAV files, including an unreadable file; confirm real
    waveform/loading/error states and preserve right-arrow audition and dragging.
-4. Resize to the narrowest/widest browser widths, collapse/reopen the browser,
-   and check result widths, text clipping and the retained timeline workspace.
+4. Drag the picker's divider left to icons only; hover collection, library and
+   place icons for names, select a section/place, and drag right to restore labels.
+   Resize the outer browser at narrow/wide window sizes, collapse/reopen it, and
+   verify results stay usable. Open the editor from both top and mini-strip controls:
+   results/preview must retain their width, with workspace shrinking to its right.
+   Close the editor and verify the space returns; test resizing while it is open.
 5. Toggle section visibility and cycle icons; confirm the final category cannot
    be hidden and clearly distinguish session settings from persistent places.
 
