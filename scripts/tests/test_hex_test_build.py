@@ -18,6 +18,9 @@ SPEC = importlib.util.spec_from_file_location("hex_test_build", Path(__file__).r
 delivery = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = delivery
 SPEC.loader.exec_module(delivery)
+SIGNING = {"certificate_sha1": "4EDF56A7ADD0B4786C2EEE23A50D61620BCE7E4E", "team_identifier": "DKTKQ8U5T8"}
+SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_identifier"],
+          "designated_requirement": f'designated => identifier "{delivery.IDENTITY}" and anchor apple generic and certificate leaf[subject.OU] = {SIGNING["team_identifier"]}'}
 
 
 class DeliveryTests(unittest.TestCase):
@@ -45,9 +48,12 @@ class DeliveryTests(unittest.TestCase):
         self.journal = self.root / ".hex-test-build-transaction.json"
         self.mock = patch.object(delivery, "run", return_value="")
         self.mock.start()
+        self.signature_mock = patch.object(delivery, "native_signature", return_value={"team_identifier": "not set"})
+        self.signature_mock.start()
 
     def tearDown(self):
         self.mock.stop()
+        self.signature_mock.stop()
         self.temp.cleanup()
 
     def bundle(self, path, data=b"new"):
@@ -110,6 +116,24 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(delivery.DeliveryError, "checksum"):
             delivery.activate(self.app, self.stage)
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+
+    def test_signing_configuration_is_explicit_and_rejects_ad_hoc_or_partial_identity(self):
+        self.assertEqual(delivery.signing_configuration({"signing": SIGNING}), SIGNING)
+        for value in (None, {}, {"certificate_sha1": "-", "team_identifier": "DKTKQ8U5T8"},
+                      {**SIGNING, "team_identifier": 'team" injection'}, {**SIGNING, "extra": True}):
+            with self.subTest(value=value), self.assertRaises(delivery.DeliveryError):
+                delivery.signing_configuration({"signing": value})
+
+    def test_signed_bundle_cannot_downgrade_receipt_or_use_wrong_identity_or_cdhash(self):
+        self.bundle(self.stage)
+        with patch.object(delivery, "native_signature", return_value=SIGNED):
+            with self.assertRaisesRegex(delivery.DeliveryError, "schema-2"):
+                delivery.verify(self.stage)
+        for actual in ({**SIGNED, "team_identifier": "OTHERTEAM0"},
+                       {**SIGNED, "identifier": "another.app"},
+                       {**SIGNED, "designated_requirement": "designated => cdhash H\"abc\""}):
+            with self.subTest(actual=actual), self.assertRaisesRegex(delivery.DeliveryError, "stable"):
+                delivery.verify_signed_bundle(self.stage, SIGNING, actual)
 
     def test_interruption_between_renames_is_recoverable(self):
         self.bundle(self.app, b"old")
@@ -241,7 +265,7 @@ class DeliveryTests(unittest.TestCase):
         source.mkdir()
         for relative in ("scripts", "assets/fonts/ioskeley-mono", "third_party/gpui"):
             (source / relative).mkdir(parents=True)
-        (source / "scripts/hex-test-build.json").write_text('{"app_path":"artifacts/hex.app"}')
+        (source / "scripts/hex-test-build.json").write_text(json.dumps({"app_path":"artifacts/hex.app", "signing": SIGNING}))
         (source / "assets/fonts/ioskeley-mono/OFL.txt").write_text("font license")
         (source / "third_party/gpui/LICENSE-APACHE").write_text("gpui license")
         # The reported executable deliberately lives outside target/release.
@@ -291,10 +315,26 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(runner, "_resolve_cargo_identity", return_value=True), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
                 patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
+                patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event))):
+            with patch.object(delivery, "sign_bundle", side_effect=subprocess.CalledProcessError(1, ["codesign"])), \
+                    patch.object(delivery, "activate") as activate:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    delivery.build(args)
+                activate.assert_not_called()
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                self.assertFalse(self.backup.exists())
+            # A real retry gets a fresh runner/log directory while preserving
+            # the failed signing attempt's evidence.
+            runner.output_dir = runner.output_dir.parent / "retry"
             receipt = delivery.build(args)
-        verified = delivery.verify(self.app)
+            verified = delivery.verify(self.app)
+            wrong = {**verified, "signing": {**SIGNING, "certificate_sha1": "0" * 40}}
+            delivery.write_json(self.app / "Contents/Resources/test-build.json", wrong)
+            with self.assertRaisesRegex(delivery.DeliveryError, "configured certificate"):
+                delivery.verify(self.app)
+            delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
         self.assertEqual(verified["profile"], "release")
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
@@ -305,7 +345,11 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse(self.workspace.exists())
         self.assertEqual(list(self.root.glob(".hex-rollback-*.app")), [])
         self.assertEqual(json.loads((self.root / "hex-test-build-receipt.json").read_text()), receipt)
-        runner.target_lock.release.assert_called_once()
+        self.assertEqual(receipt["schema"], 2)
+        self.assertNotIn("Contents/MacOS/hex", verified["files"])
+        self.assertIn("Contents/MacOS/hex", receipt["artifact_files"])
+        self.assertIn("Contents/Resources/test-build.json", receipt["artifact_files"])
+        self.assertEqual(runner.target_lock.release.call_count, 2)
 
     def test_ci_gate_rejects_shortcuts_stale_and_changed_source(self):
         runner = delivery.ci.LocalCiRunner(self.root, steps=(delivery.ci.Step("fake", ("true",)),))
@@ -332,6 +376,54 @@ class DeliveryTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "darwin", "native macOS signature behavior")
 class NativeSignatureTests(unittest.TestCase):
+    def test_developer_id_seals_receipt_and_keeps_requirement_across_changed_executables(self):
+        # Opt in only on a configured developer machine; never select another
+        # identity or substitute ad-hoc signing on ordinary test machines.
+        if os.environ.get("HEX_TEST_SIGNING_IDENTITY") != SIGNING["certificate_sha1"]:
+            self.skipTest("set HEX_TEST_SIGNING_IDENTITY to the configured certificate for real keychain signing")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            requirements = []
+            executable_hashes = []
+            for index in (0, 1):
+                app = root / str(index) / "hex.app"
+                binary = app / "Contents/MacOS/hex"
+                binary.parent.mkdir(parents=True)
+                resources = app / "Contents/Resources"
+                resources.mkdir()
+                source = root / "main.c"
+                source.write_text(f"int main(void) {{ return {index}; }}\n")
+                subprocess.run(["clang", str(source), "-o", str(binary)], check=True, capture_output=True)
+                with (app / "Contents/Info.plist").open("wb") as output:
+                    plistlib.dump({"CFBundleIdentifier": delivery.IDENTITY, "CFBundleExecutable": "hex"}, output)
+                resource = resources / "fixture.txt"
+                resource.write_text("original")
+                receipt_path = resources / "test-build.json"
+                receipt = {"schema": 2, "signing": SIGNING,
+                           "files": delivery.inventory(app, signed_payload=True)}
+                delivery.write_json(receipt_path, receipt)
+                delivery.sign_bundle(app, SIGNING)
+                delivery.verify(app)
+                metadata = delivery.native_signature(binary)
+                requirements.append(metadata["designated_requirement"])
+                executable_hashes.append(delivery.sha(binary))
+                for wrong in ({**SIGNING, "certificate_sha1": "0" * 40},
+                              {**SIGNING, "team_identifier": "OTHERTEAM0"}):
+                    with self.subTest(wrong=wrong), self.assertRaises(subprocess.CalledProcessError):
+                        delivery.verify_signed_bundle(app, wrong, metadata)
+                # Resource hash/receipt rewriting cannot bypass the native seal.
+                resource.write_text("tampered")
+                receipt["files"] = delivery.inventory(app, signed_payload=True)
+                delivery.write_json(receipt_path, receipt)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    delivery.verify(app)
+                # Nor can removing the signed-schema declaration downgrade it.
+                delivery.write_json(receipt_path, {"schema": 1, "files": delivery.inventory(app)})
+                with self.assertRaisesRegex(delivery.DeliveryError, "schema-2"):
+                    delivery.verify(app)
+            self.assertNotEqual(*executable_hashes)
+            self.assertEqual(*requirements)
+
     def test_linker_signature_in_unsigned_bundle_and_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

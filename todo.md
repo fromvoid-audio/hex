@@ -4320,3 +4320,17 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+
+## stable native signing identity — pulse2745 / PR355, 17 october 2026
+
+Optimized test delivery now requires the configured existing Developer ID
+certificate/team and signs the complete staged bundle as `org.portalsurfer.hex.dev`.
+Strict native seal, exact signer and stable designated-requirement checks cover
+the receipt and executable; bundled pre-sign provenance and adjacent final file
+hashes avoid a signature cycle. Legacy unsigned installed apps still verify on
+normal launch. Signing failures preserve the previous app with no ad-hoc fallback.
+Targeted real macOS fixtures verify equal requirements across changed executables,
+wrong-signer rejection, receipt/resource tamper rejection and legacy compatibility.
+No app installation, privacy-setting changes or native permission-persistence
+acceptance is established by these fixtures; full candidate CI and delivery remain
+with the PR coordinator.
