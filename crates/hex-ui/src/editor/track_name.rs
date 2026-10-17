@@ -63,13 +63,11 @@ impl EditorView {
                 .any(|focus| focus.is_focused(window))
     }
     pub(super) fn focus_track_header_after_navigation(&self, track: TrackId, window: &mut Window) {
-        if self.track_header_focused(window) {
-            self.track_name
-                .focuses
-                .get(&track)
-                .unwrap_or(&self.focus)
-                .focus(window);
-        }
+        self.track_name
+            .focuses
+            .get(&track)
+            .unwrap_or(&self.focus)
+            .focus(window);
     }
     pub(super) fn reconcile_track_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self

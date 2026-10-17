@@ -36,6 +36,15 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## inline track rename — pulse2768 / PR376, 17 october 2026
+
+Actual header focus routes Command-R to a compact inline name draft, Enter to
+canonical RenameTrack and Escape to cancellation. Clip rename remains focus
+specific; text/numeric inputs and track controls retain their behavior. Gesture
+eligibility protects active drafts. Source tests include rendered focus/keys,
+canonical single Undo/Redo and worker save/reopen; exact required checks and
+native acceptance are recorded in Pulse/PR.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside

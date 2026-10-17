@@ -1073,6 +1073,7 @@ impl EditorView {
     }
 
     pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
+        let header_focused = self.track_header_focused(window);
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
         self.midi_hit_cycle = None;
@@ -1085,7 +1086,9 @@ impl EditorView {
         self.selected_clip = None;
         self.midi_selection.clear();
         self.update_track_selection_status();
-        self.focus_track_header_after_navigation(track, window);
+        if header_focused {
+            self.focus_track_header_after_navigation(track, window);
+        }
     }
 
     pub(super) fn toggle_play(&mut self) {
