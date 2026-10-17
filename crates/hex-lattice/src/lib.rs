@@ -3,6 +3,7 @@
 pub mod conformance;
 mod meter;
 mod owned_processor;
+mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
@@ -13,6 +14,10 @@ pub use meter::DeviceMeter;
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
     PreparedRuntimeDevice, PreparedRuntimeInstance,
+};
+pub use resources::{
+    BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity, DeviceResourcePcm,
+    DeviceResourceView, DeviceResources, EMPTY_DEVICE_RESOURCES,
 };
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;

@@ -1,3 +1,14 @@
+## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
+
+Cloud4 accepted integrated tuning runtimeffb42158 and owns the next shared seam.
+Typed original-rate mono/stereo resource borrows and one sample-rate/tuning/resource
+preparation context now compile in this draft. Host-verified identities confer no
+lease; complete slot and finite-PCM validation is control-only. Registry/provider
+and actual processing plumbing, retained-root admission and conformance fixtures
+remain unfinished. Existing asset refusal remains unchanged. No new source can
+admit sampler merely because these types exist; caps and canonical tuning PRs
+remain intact. Beats clip stretching2771/PR379 has current explicit priority.
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
