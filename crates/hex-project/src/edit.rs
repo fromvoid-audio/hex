@@ -20,6 +20,14 @@ pub enum Command {
         clip: ClipId,
         name: String,
     },
+    SetTrackColor {
+        track: TrackId,
+        color: crate::ElementColor,
+    },
+    SetClipFlavor {
+        clip: ClipId,
+        flavor: crate::ClipFlavor,
+    },
     /// Replace audio with an empty editable MIDI source, retaining clip identity.
     ConvertAudioClipToMidi(ClipId),
     /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
@@ -702,6 +710,7 @@ pub(crate) fn insert_track_before(
     project.tracks.insert(
         index,
         Track {
+            color: crate::ElementColor::default(),
             gain_lane: crate::GainLane::default(),
             id,
             name,
@@ -893,6 +902,7 @@ pub(crate) fn preview_edge_trim(
     };
     Ok(Clip {
         name: clip.name.clone(),
+        flavor: clip.flavor,
         gain: clip.gain,
         edit: clip.edit.clone(),
         id: clip.id,
@@ -965,6 +975,7 @@ pub(crate) fn split_clip_at(
     }
     let right = Clip {
         name: original.name.clone(),
+        flavor: original.flavor,
         id: right_id,
         asset: original.asset,
         start: frame,
@@ -1250,6 +1261,11 @@ impl Project {
                 lane.spans.clear();
                 Ok(Created::None)
             }
+            Command::SetTrackColor { track, color } => {
+                self.track_mut(track)?.color = color;
+                Ok(Created::None)
+            }
+            Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
             Command::SetRouting(edges) => self.adopt_routing(edges),
             Command::SetAudioFeed {
                 source,
@@ -1374,6 +1390,7 @@ impl Project {
                 let fade = original.fade;
                 let source_phase = original.source_phase;
                 let gain = original.gain;
+                let flavor = original.flavor;
                 let audio_edit = original.edit.clone();
                 let duplicate = self.apply(Command::PlaceClip {
                     track,
@@ -1388,6 +1405,7 @@ impl Project {
                     self.clip_mut(duplicate_id)?.fade = fade;
                     self.clip_mut(duplicate_id)?.source_phase = source_phase;
                     self.clip_mut(duplicate_id)?.gain = gain;
+                    self.clip_mut(duplicate_id)?.flavor = flavor;
                     let mut duplicated = self
                         .clip(duplicate_id)
                         .cloned()
@@ -1921,6 +1939,7 @@ impl Project {
                 let fade = ClipFade::neutral(duration)?;
                 self.audio_clips_mut(track)?.push(Clip {
                     name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -2249,6 +2268,7 @@ mod overwrite_tests {
                 .expect("target content")
                 .push(Clip {
                     name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,
@@ -2311,6 +2331,7 @@ mod overwrite_tests {
                 .expect("target content")
                 .push(Clip {
                     name: "clip".into(),
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     asset,
                     start,

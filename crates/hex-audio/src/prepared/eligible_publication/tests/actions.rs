@@ -204,6 +204,7 @@ fn real_immediate_scene_waits_before_route_and_play_then_restarts_actual_clip() 
             scene,
             content: hex_project::SessionCellContentSnapshot::Audio(
                 hex_project::SessionAudioClipSnapshot {
+                    flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id: clip,
                     name: "launch".into(),
@@ -402,6 +403,7 @@ fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_press
             scene,
             content: hex_project::SessionCellContentSnapshot::Audio(
                 hex_project::SessionAudioClipSnapshot {
+                    flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id: clip,
                     name: "future".into(),
