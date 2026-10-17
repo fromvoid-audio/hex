@@ -1865,7 +1865,7 @@ fn run_worker(
                                 .into(),
                             );
                         }
-                        Err(reason) => error = Some(reason.to_lowercase()),
+                        Err(reason) => error = Some(reason),
                     }
                 }
                 Request::Edit(command) => {
