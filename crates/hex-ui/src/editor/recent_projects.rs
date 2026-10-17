@@ -74,10 +74,13 @@ impl EditorView {
         match result {
             Err(error) => {
                 self.recent_projects.writable = false;
-                self.error = Some(format!(
-                    "could not load recent projects · {}",
-                    error.to_string().to_lowercase()
-                ));
+                self.error = Some(
+                    format!(
+                        "could not load recent projects · {}",
+                        error.to_string().to_lowercase()
+                    )
+                    .into(),
+                );
             }
             Ok(loaded) => {
                 if self.recent_projects.changed_while_loading {
@@ -85,7 +88,7 @@ impl EditorView {
                     for path in self.recent_projects.projects.paths().iter().rev() {
                         if let Err(error) = merged.record_opened(path.clone()) {
                             self.recent_projects.writable = false;
-                            self.error = Some(error.to_string().to_lowercase());
+                            self.error = Some(error.to_string().to_lowercase().into());
                             break;
                         }
                     }
@@ -106,10 +109,13 @@ impl EditorView {
             Ok(false) => return,
             Ok(true) => {}
             Err(error) => {
-                self.error = Some(format!(
-                    "could not add recent project · {}",
-                    error.to_string().to_lowercase()
-                ));
+                self.error = Some(
+                    format!(
+                        "could not add recent project · {}",
+                        error.to_string().to_lowercase()
+                    )
+                    .into(),
+                );
                 return;
             }
         }
@@ -161,10 +167,13 @@ impl EditorView {
         if self.recent_projects.pending_save.is_some() {
             self.start_recent_projects_save(cx);
         } else if let Err(error) = result {
-            self.error = Some(format!(
-                "could not save recent projects · {}",
-                error.to_string().to_lowercase()
-            ));
+            self.error = Some(
+                format!(
+                    "could not save recent projects · {}",
+                    error.to_string().to_lowercase()
+                )
+                .into(),
+            );
         }
     }
 

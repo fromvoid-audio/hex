@@ -310,7 +310,11 @@ pub(super) fn finalize_controls_except(
         }
     }
     if let Some(error) = first_error {
-        view.error = Some(format!("finish the device value edit: {error}").to_lowercase());
+        view.error = Some(
+            format!("finish the device value edit: {error}")
+                .to_lowercase()
+                .into(),
+        );
         false
     } else {
         true
@@ -1611,7 +1615,7 @@ impl EditorView {
                 }
             }
             Err(reason) => {
-                self.error = Some(reason.clone());
+                self.error = Some(reason.clone().into());
                 self.device_panel.message = Some(reason);
             }
         }
@@ -1683,7 +1687,7 @@ impl EditorView {
 
         let Some(track) = self.selected_track else {
             self.error = Some("select a track before dropping a device".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1694,7 +1698,7 @@ impl EditorView {
         };
         let Some(target_track) = state.project.track(track) else {
             self.error = Some("device drop target is no longer available".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1706,7 +1710,7 @@ impl EditorView {
             })
         {
             self.error = Some("device drop target changed; drag again".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1734,7 +1738,7 @@ impl EditorView {
             && drop_target.replace.is_none()
         {
             self.error = Some("instrument slot is already occupied".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1755,7 +1759,7 @@ impl EditorView {
                 || drop_target.before.is_some()
             {
                 self.error = Some("instrument replacement target changed; drag again".into());
-                self.device_panel.message = self.error.clone();
+                self.device_panel.message = self.error.as_ref().map(ToString::to_string);
                 self.clear_native_device_drag(drag);
                 cx.notify();
                 return;
@@ -2648,7 +2652,7 @@ fn create_parameter_control(
                     if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
                         && event.phase != NumericEventPhase::Cancel
                     {
-                        view.error = Some(error.to_owned());
+                        view.error = Some(error.to_owned().into());
                     }
                     cx.notify();
                 });

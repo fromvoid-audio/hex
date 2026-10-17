@@ -10,7 +10,7 @@ struct Files(PathBuf);
 impl Files {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "hex-batch-service-{}-{}",
+            "hex-Batch-Service-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -149,7 +149,7 @@ fn worker_batch_publishes_one_revision_playable_ordered_pcm_and_one_undo() {
 fn worker_bad_middle_or_end_never_publishes_partial_media_dirty_or_playback() {
     let files = Files::new();
     let good = files.wav("good.wav", 48_000, &[1; 8]);
-    let bad = files.0.join("unsupported.mp3");
+    let bad = files.0.join("Kick.WAV");
     fs::write(&bad, b"not a wav").unwrap();
     for index in [1, 2] {
         let (s, initial) = service();
@@ -164,10 +164,22 @@ fn worker_bad_middle_or_end_never_publishes_partial_media_dirty_or_playback() {
                 .unwrap()
                 .contains(&format!("file {}", index + 1))
         );
+        let failure = refused.audio_batch_failure.as_ref().unwrap();
+        assert_eq!(failure.member, index + 1);
+        assert_eq!(failure.path.as_os_str(), bad.as_os_str());
+        assert_eq!(fs::read(&failure.path).unwrap(), b"not a wav");
+        assert!(
+            refused
+                .error
+                .as_ref()
+                .unwrap()
+                .contains(bad.to_str().unwrap())
+        );
         assert_eq!(refused.state.project, initial.state.project);
         assert_eq!(refused.state.revision, 0);
         assert!(!refused.state.unsaved);
         assert!(!refused.state.can_undo);
+        assert!(!refused.state.can_redo);
         assert!(refused.state.waveforms.is_empty());
         assert!(refused.playback.is_none());
         assert_eq!(control.progress().phase, AudioBatchPhase::Failed);
@@ -322,4 +334,27 @@ fn additive_batch_preserves_target_identity_and_cancels_the_old_keyboard_lease_o
             .id(),
         device
     );
+}
+
+#[test]
+fn worker_conversion_failure_retains_mixed_case_source_without_history_or_media() {
+    let files = Files::new();
+    let path = files.wav("Kick.WAV", 24_000, &[1; 8]);
+    let bytes = fs::read(&path).unwrap();
+    let s = Service::new(48_000, 16, 8).unwrap();
+    let initial = event(&s);
+    let control = submit(&s, vec![path.clone()], new_tracks(), &initial.state);
+    let refused = event(&s);
+    let failure = refused.audio_batch_failure.as_ref().unwrap();
+    assert_eq!(failure.member, 1);
+    assert_eq!(failure.path.as_os_str(), path.as_os_str());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(refused.state.project, initial.state.project);
+    assert_eq!(refused.state.revision, initial.state.revision);
+    assert!(!refused.state.unsaved);
+    assert!(!refused.state.can_undo);
+    assert!(!refused.state.can_redo);
+    assert!(refused.state.waveforms.is_empty());
+    assert!(refused.playback.is_none());
+    assert_eq!(control.progress().phase, AudioBatchPhase::Failed);
 }

@@ -98,12 +98,28 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
     for match in re.finditer(r'\.child\(\s*', source):
         suffix = source[match.end():]
-        if not suffix.startswith(widgets):
+        # These two typed error components share fragment-normalized text. Keep
+        # the exception local: arbitrary self.display_text() is not a text bypass.
+        typed_error = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/render.rs'
+            and suffix.startswith('error.display_text())')
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/display_error.rs'
+            and suffix.startswith('self.display_text())')
+        )
+        if not suffix.startswith(widgets) and not typed_error:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
         if match.group(1).strip() != 'theme::FONT_FAMILY':
             errors.append(f'{path.relative_to(ROOT)}: use the required theme font')
+# A generic lowercase pass over either error surface would corrupt source paths.
+error_status = (ROOT / 'crates/hex-ui/src/editor/render.rs').read_text()
+error_tooltip = (ROOT / 'crates/hex-ui/src/editor/display_error.rs').read_text()
+if '.child(error.display_text())' not in error_status or 'ErrorTooltip(message.clone())' not in error_status:
+    errors.append('editor/render.rs: status and tooltip must use typed source-preserving error text')
+if '.child(self.display_text())' not in error_tooltip or 'self.0.display_text()' not in error_tooltip:
+    errors.append('editor/display_error.rs: error tooltip must share source-preserving status text')
 for root_view in ('app.rs', 'editor/render.rs'):
     app = (ROOT / 'crates/hex-ui/src' / root_view).read_text()
     if '.font_family(theme::FONT_FAMILY)' not in app:
