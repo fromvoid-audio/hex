@@ -85,6 +85,36 @@ live; the selected automation value's **playhead** readout is display telemetry,
 not an exact delayed-callback timestamp. Transient listen selectors carry stable
 node IDs and fade over 256 frames, independently of authored state/history.
 
+## Live input and output spectra
+
+The **spectrum** action explicitly enables analysis for the selected device while
+audio runs. It replaces the easy-to-miss wave glyph; an inactive analyzer has no
+live trace. The flexible EQ shows two actual signal layers on identical
+frequency/dB axes. Input is sampled immediately before the entire native entry,
+including host input trim; output is sampled after processing and host output
+trim. The **input** action defaults on and hides only input. It does not disable
+output capture or replace input with an inferred response curve. Legacy EQ8
+continues to show its output layer. Silence, unavailable targets and inactive
+transport are not fabricated into animated traces.
+
+Each at-most-256-frame callback chunk stages both phases independently by exact
+offset and stable owner/device/type. Incomplete, overlapping, out-of-bounds or
+failed renders discard the entire pair. Final caller output validation, target
+epoch, generation, sample rate and activation revision must all agree before
+one paired packet is queued. Refusals consume a sequence, preventing the next
+FFT window from spanning a gap. Existing output-only observer/capture/reader
+APIs remain adapters; legacy output-only captures have no input result.
+
+The existing 32-packet queue, one-result channel and single worker/reaper remain.
+Each packet carries two fixed stereo arrays. The worker adds input rolling and
+ordered windows (two 4096-frame stereo boxes, 65,536 payload bytes total), reuses
+the existing FFT scratch sequentially and publishes both transforms together at
+at most 30 Hz. Native storage accounting includes these boxes and the enlarged
+actual queue payload. Both layers clear together after 100 ms of capture age;
+context/rate/generation changes and sequence gaps reset both windows. FFT work,
+allocation and final reclamation stay outside the callback. These bounded
+headless contracts do not establish native deadline or listening acceptance.
+
 ## Evidence and native checks
 
 Focused automated checks cover codec truncation/ranges/capacity, identity

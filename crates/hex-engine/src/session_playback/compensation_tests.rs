@@ -12,18 +12,24 @@ fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
         runtime.render(&mut [[0.0; 2]; 4]).unwrap();
     }
     tested.arrangement_frame = u64::MAX - 300;
-    let mut observed = 0;
+    let mut observed = [0; 2];
     let mut output = [[9.0; 2]; 512];
     assert!(
         tested
-            .render_with_post_node_observer(
+            .render_with_node_signal_observer(
                 &mut output,
-                Some(&mut |_, _, _: &[Frame]| observed += 1)
+                Some(&mut |_, phase, _, _: &[Frame]| {
+                    let index = match phase {
+                        crate::NodeSignalPhase::Input => 0,
+                        crate::NodeSignalPhase::Output => 1,
+                    };
+                    observed[index] += 1;
+                })
             )
             .is_err()
     );
     assert!(
-        observed > 0,
+        observed.iter().all(|count| *count > 0),
         "fault must occur after speculative processing"
     );
     assert_eq!(output, [[0.0; 2]; 512]);

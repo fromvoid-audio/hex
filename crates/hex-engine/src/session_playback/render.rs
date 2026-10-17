@@ -22,6 +22,28 @@ impl SessionPlayback {
         output: &mut [Frame],
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        if let Some(observer) = observer {
+            self.render_with_node_signal_observer(
+                output,
+                Some(&mut |identity, phase, offset, frames| {
+                    if phase == crate::NodeSignalPhase::Output {
+                        observer(identity, offset, frames);
+                    }
+                }),
+            )
+        } else {
+            self.render_with_node_signal_observer(output, None)
+        }
+    }
+
+    /// Render with synchronous input/output taps around each whole native entry.
+    /// Input precedes host input trim; output follows effect and output trim.
+    /// Observations commit only after render and final caller validation succeed.
+    pub fn render_with_node_signal_observer(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let contains_streamed_sources = if self.linear_arrangement_export {
             self.revision.arrangement().contains_streamed_sources()
@@ -101,6 +123,30 @@ impl SessionPlayback {
         pages: &mut P,
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        if let Some(observer) = observer {
+            self.render_with_pages_and_node_signal_observer(
+                output,
+                pages,
+                Some(&mut |identity, phase, offset, frames| {
+                    if phase == crate::NodeSignalPhase::Output {
+                        observer(identity, offset, frames);
+                    }
+                }),
+            )
+        } else {
+            self.render_with_pages_and_node_signal_observer(output, pages, None)
+        }
+    }
+
+    /// Render with synchronous input/output taps around each whole native entry.
+    /// Input precedes host input trim; output follows effect and output trim.
+    /// Observations commit only after render and final caller validation succeed.
+    pub fn render_with_pages_and_node_signal_observer<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+    ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         self.render_internal(output, Some(pages), observer, None)
     }
@@ -143,7 +189,7 @@ impl SessionPlayback {
         &mut self,
         output: &mut [Frame],
         pages: Option<&mut P>,
-        observer: Option<&mut crate::PostNodeObserver<'_>>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut capture: Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         output.fill([0.0; 2]);
@@ -264,7 +310,7 @@ impl SessionPlayback {
         &mut self,
         output: &mut [Frame],
         mut pages: Option<&mut P>,
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
@@ -510,7 +556,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
         frame_offset: usize,
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         let revision = Arc::clone(&self.revision);
@@ -624,16 +670,18 @@ impl SessionPlayback {
                                 |owner: hex_lattice::ProcessorChainOwner,
                                  device_id: u64,
                                  device_type: hex_lattice_contract::DeviceTypeId,
+                                 phase: crate::NodeSignalPhase,
                                  offset: usize,
                                  frames: &[Frame]| {
                                     observer(
                                         crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                        phase,
                                         offset,
                                         frames,
                                     );
                                 };
                             self.device_chains[index]
-                                .process_range_observed_with_clock(
+                                .process_range_tapped_with_clock(
                                     0..track.instrument_position(),
                                     render_output,
                                     frame_offset,
@@ -741,16 +789,18 @@ impl SessionPlayback {
                                 |owner: hex_lattice::ProcessorChainOwner,
                                  device_id: u64,
                                  device_type: hex_lattice_contract::DeviceTypeId,
+                                 phase: crate::NodeSignalPhase,
                                  offset: usize,
                                  frames: &[Frame]| {
                                     observer(
                                         crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                        phase,
                                         offset,
                                         frames,
                                     );
                                 };
                             chain
-                                .process_range_observed_with_clock(
+                                .process_range_tapped_with_clock(
                                     track.instrument_position()..effect_count,
                                     render_output,
                                     frame_offset,
@@ -860,16 +910,18 @@ impl SessionPlayback {
                             |owner: hex_lattice::ProcessorChainOwner,
                              device_id: u64,
                              device_type: hex_lattice_contract::DeviceTypeId,
+                             phase: crate::NodeSignalPhase,
                              offset: usize,
                              frames: &[Frame]| {
                                 observer(
                                     crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                    phase,
                                     offset,
                                     frames,
                                 );
                             };
                         chain
-                            .process_range_observed_with_clock(
+                            .process_range_tapped_with_clock(
                                 0..chain.len(),
                                 render_output,
                                 frame_offset,
@@ -1011,7 +1063,7 @@ impl SessionPlayback {
         output: &mut [Frame],
         frame_offset: usize,
         effect_clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut OutputCapture<'_, '_>>,
     ) -> Result<(), SessionPlaybackError> {
         let arrangement = self.revision.arrangement();
@@ -1024,15 +1076,17 @@ impl SessionPlayback {
                     .get_mut(index)
                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
                 if let Some(observer) = observer.as_mut() {
-                    let mut observe = |owner, device_id, device_type, offset, frames: &[Frame]| {
-                        observer(
-                            crate::PostNodeIdentity::new(owner, device_id, device_type),
-                            offset,
-                            frames,
-                        );
-                    };
+                    let mut observe =
+                        |owner, device_id, device_type, phase, offset, frames: &[Frame]| {
+                            observer(
+                                crate::PostNodeIdentity::new(owner, device_id, device_type),
+                                phase,
+                                offset,
+                                frames,
+                            );
+                        };
                     chain
-                        .process_range_observed_with_clock(
+                        .process_range_tapped_with_clock(
                             0..chain.len(),
                             frames,
                             frame_offset,
@@ -1103,16 +1157,18 @@ impl SessionPlayback {
                 let mut observe = |owner: hex_lattice::ProcessorChainOwner,
                                    device_id: u64,
                                    device_type: hex_lattice_contract::DeviceTypeId,
+                                   phase: crate::NodeSignalPhase,
                                    offset: usize,
                                    frames: &[Frame]| {
                     observer(
                         crate::PostNodeIdentity::new(owner, device_id, device_type),
+                        phase,
                         offset,
                         frames,
                     );
                 };
                 chain
-                    .process_range_observed_with_clock(
+                    .process_range_tapped_with_clock(
                         0..chain.len(),
                         frames,
                         frame_offset,

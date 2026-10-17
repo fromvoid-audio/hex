@@ -674,13 +674,13 @@ impl EditorView {
             let _ = audio.control.spectrum_retry_pending();
             let _ = audio.control.audition_retry_pending();
             let desired_spectrum = audio.control.spectrum_desired();
-            let spectrum = audio.control.spectrum_latest();
+            let spectrum = audio.control.spectrum_latest_pair();
             let spectrum = spectrum.filter(|result| {
                 desired_spectrum.is_some_and(|target| {
-                    result.stamp.target == target.token
-                        && result.stamp.generation == target.project_generation
-                        && result.stamp.sample_rate_hz == target.sample_rate_hz
-                        && result.stamp.applied_revision >= target.activation_floor
+                    result.output.stamp.target == target.token
+                        && result.output.stamp.generation == target.project_generation
+                        && result.output.stamp.sample_rate_hz == target.sample_rate_hz
+                        && result.output.stamp.applied_revision >= target.activation_floor
                 })
             });
             if self.device_panel.spectrum_result != spectrum {
