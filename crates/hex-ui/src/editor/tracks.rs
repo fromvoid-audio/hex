@@ -261,7 +261,7 @@ impl EditorView {
         } = timeline;
         let track_id = track.id();
         let Some(viewport_end) = viewport.end() else {
-            return div().w_full().h(px(TRACK_ROW_HEIGHT));
+            return div().w_full().h(px(self.track_height(track_id)));
         };
         let mut clip_area = div()
             .id(("track-lane", track_id.value()))
@@ -269,7 +269,7 @@ impl EditorView {
             .relative()
             .flex_1()
             .min_w_0()
-            .h(px(TRACK_ROW_HEIGHT))
+            .h(px(self.track_height(track_id)))
             .overflow_hidden()
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
@@ -715,7 +715,7 @@ impl EditorView {
                     .opacity(0.2)
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
-            .w(px(TRACK_HEADER_WIDTH - 10.0))
+            .w(px(self.track_header_width() - 10.0))
             .flex_shrink_0()
             .min_w_0()
             .h(px(18.0))
@@ -737,6 +737,7 @@ impl EditorView {
                 }),
             );
         let track_controls = div()
+            .debug_selector(move || format!("track-controls-{}", track_id.value()))
             .flex()
             .items_center()
             .gap_1()
@@ -874,12 +875,13 @@ impl EditorView {
         let header = div()
             .id(("arrangement-track-header", track_id.value()))
             .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
-            .w(px(TRACK_HEADER_WIDTH))
-            .h(px(TRACK_ROW_HEIGHT))
+            .w(px(self.track_header_width()))
+            .h(px(self.track_height(track_id)))
             .flex_shrink_0()
             .flex()
             .flex_col()
             .relative()
+            .pb(px(3.0))
             .justify_center()
             .px_1()
             .border_l_2()
@@ -897,6 +899,7 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .child(track_name_view)
             .child(track_controls)
+            .children(self.track_resize_handles(track_id, cx))
             .relative()
             .child(
                 div()
@@ -916,7 +919,7 @@ impl EditorView {
             );
         div()
             .w_full()
-            .h(px(TRACK_ROW_HEIGHT))
+            .h(px(self.track_height(track_id)))
             .flex_shrink_0()
             .flex()
             .child(clip_area)
@@ -1455,7 +1458,8 @@ impl EditorView {
     }
 
     pub(super) fn drag_available(&self) -> bool {
-        self.clip_name_edit.is_none()
+        !self.track_resize_active()
+            && self.clip_name_edit.is_none()
             && !self.opening_project
             && !self.close_prompt_open
             && self.worker_requests_pending == 0
@@ -1481,7 +1485,7 @@ impl EditorView {
             if visible_start >= visible_end {
                 return None;
             }
-            let timeline_width = body.width - TRACK_HEADER_WIDTH;
+            let timeline_width = body.width - self.track_header_width();
             if !timeline_width.is_finite() || timeline_width <= 0.0 {
                 return None;
             }

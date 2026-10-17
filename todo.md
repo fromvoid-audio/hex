@@ -1,25 +1,14 @@
-## lower fade handles free by default — pulse2777 / PR383, 17 october 2026
+## track header width and row height — pulse2714 / PR330
 
-Both lower fade-edge resize handles now use unsnapped pointer positions by
-default, independent of ordinary Arrangement snap. Holding the existing Command
-modifier enables the configured grid, or the existing adaptive grid when global
-snap is off. Stationary modifier changes and mouse-up use current modifiers.
-Ordinary trims/body gestures and upper/curve controls retain their behavior.
-The existing rendered gesture regression fails before this change (quarter grid
-produces frame24000 instead of the requested18000). Expanded coverage checks
-both edges, grid on/off, stationary press/release and both mouse-up disagreement
-directions, no-motion clicks and canonical single Undo/Redo. Existing cancellation
-coverage now exercises both lower edges; canonical model tests retain loop/source
-bounds and opposite-edge/fade-shape coverage. All nine focused fade tests pass;
-required final cloud CI is pending.
-
-Native acceptance remains pending through the coordinator's single Mac lane:
-on the approved optimized candidate, drag each lower handle with snap on and
-off; verify continuous free motion, hold Command to snap (adaptive when off),
-press/release Command without moving, then release with either modifier state.
-Check crop/reveal and unchanged waveform landmarks, opposite edge and fade shape,
-one Undo/Redo, click-only no-op, Escape cancellation and finite source limits.
-No Mac job, app replacement, save/quit or delivery was performed by this lane.
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
@@ -4440,6 +4429,30 @@ CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
 native physical input/listening and optimized coordinated Mac delivery remain
 pending with the coordinator's serial follow-up workflow.
 
+
+## lower fade handles free by default — pulse2777 / PR383, 17 october 2026
+
+Both lower fade-edge resize handles now use unsnapped pointer positions by
+default, independent of ordinary Arrangement snap. Holding the existing Command
+modifier enables the configured grid, or the existing adaptive grid when global
+snap is off. Stationary modifier changes and mouse-up use current modifiers.
+Ordinary trims/body gestures and upper/curve controls retain their behavior.
+The existing rendered gesture regression fails before this change (quarter grid
+produces frame24000 instead of the requested18000). Expanded coverage checks
+both edges, grid on/off, stationary press/release and both mouse-up disagreement
+directions, no-motion clicks and canonical single Undo/Redo. Existing cancellation
+coverage now exercises both lower edges; canonical model tests retain loop/source
+bounds and opposite-edge/fade-shape coverage. All nine focused fade tests pass. Exact full cloud CI evidence is tracked in
+Pulse2777 and canonical PR383.
+
+Native acceptance remains pending through the coordinator's single Mac lane:
+on the approved optimized candidate, drag each lower handle with snap on and
+off; verify continuous free motion, hold Command to snap (adaptive when off),
+press/release Command without moving, then release with either modifier state.
+Check crop/reveal and unchanged waveform landmarks, opposite edge and fade shape,
+one Undo/Redo, click-only no-op, Escape cancellation and finite source limits.
+No Mac job, app replacement, save/quit or delivery was performed by this lane.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -4627,7 +4640,6 @@ callback allocation, locks or final PCM disposal. Browser layout and transport
 integration remain canonical Pulse2664 / PR280. Source does not establish that
 the reported endless audition is a backend loop; native listening remains open.
 
-
 ## compact browser audition — pulse2664 / PR280, 17 october 2026
 
 Replace the overflowing bottom preview column with one 22 px auto/Play-Stop/mini
@@ -4641,3 +4653,23 @@ cover width bounds, focus, toggle/manual semantics, completion, cancellation,
 actual Client-to-callback silence and list-boundary retrigger prevention. Native
 layout/listening and broader historical scrub/playhead wishlist remain open;
 Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
+
+
+## browser waveform cache stability — pulse2778 / PR384
+
+Visible row composition no longer mutates the16-entry metadata cache. Selected
+waveform, in-flight and pending keys stay protected; failed hover previews do not
+retry automatically. Reproduced selected-cache loss before repair; real pointer
+hover/selection regression checks no repeated preparation/audition, stable metadata,
+unchanged project state and surrounding lane geometry/style. Native flicker
+acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## deliberate sample insertion — pulse2780 / PR386
+
+Sample-result double-click no longer imports; consume its bubble after ordinary
+selection/automatic audition. Actual second-mouse-down regression with a valid
+target track failed before repair, and verifies no import/canonical mutation with
+auto on/off while retaining manual Right/search focus and explicit Enter import.
+Existing deliberate drag/drop coverage remains required. Other file/device
+handlers unchanged. Native double-click behavior remains coordinator-serial.
