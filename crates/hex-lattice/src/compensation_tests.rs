@@ -75,6 +75,56 @@ fn instance(
     }
 }
 
+#[test]
+fn paired_taps_bracket_whole_entry_and_preserve_bypass_pcm() {
+    for owner in [
+        ProcessorChainOwner::Track(1),
+        ProcessorChainOwner::Return(1),
+    ] {
+        for bypassed in [false, true] {
+            let make_chain = || {
+                let mut prepared = instance(9, None, bypassed);
+                prepared.owner = owner;
+                prepared.matrix = StereoMatrix::new([[0.5, 0.0], [0.0, -0.5]]).unwrap();
+                let mut chain = NativeRuntimeChain::new(vec![prepared]).unwrap();
+                chain.entries[0].input_gain = 2.0;
+                chain.entries[0].output_gain = 0.25;
+                chain
+            };
+            let input = [[0.5, -0.25], [0.0, 0.0], [-0.5, 0.25]];
+            let mut expected = input;
+            make_chain().process_block(&mut expected);
+            let mut actual = input;
+            let mut observations = Vec::new();
+            make_chain()
+                .process_range_tapped_with_clock(
+                    0..1,
+                    &mut actual,
+                    17,
+                    Some(&Clock),
+                    &mut |got_owner, device, _, phase, offset, audio| {
+                        assert_eq!((got_owner, device, offset), (owner, 9, 17));
+                        observations.push((phase, audio.to_vec()));
+                    },
+                )
+                .unwrap();
+            assert_eq!(actual, expected, "observation cannot change PCM");
+            assert_eq!(
+                observations,
+                vec![
+                    (NodeSignalPhase::Input, input.to_vec()),
+                    (NodeSignalPhase::Output, actual.to_vec()),
+                ]
+            );
+            if bypassed {
+                assert_eq!(actual, input);
+            } else {
+                assert_eq!(actual, [[0.125, 0.0625], [0.0, 0.0], [-0.125, -0.0625]]);
+            }
+        }
+    }
+}
+
 fn fixed(
     id: u64,
     latency: Option<u32>,

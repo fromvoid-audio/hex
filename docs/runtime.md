@@ -781,3 +781,14 @@ newest-request isolation; no callback allocation, lock, PCM disposal or project
 transport change is added. The original backend is already a finite one-shot;
 these observations do not establish that the user's apparent endless audition
 was a backend audio loop. Browser UI integration remains Pulse2664 / PR280.
+
+
+Browser waveform-position audition (Pulse2779 / PR385) moves the existing finite
+PCM owner with a validated starting cursor, resolved on the background/control
+side against the actual output-rate decoded length. Start at exact end completes
+silently. Callback mixing remains the same bounded slice sum; it publishes one
+scalar absolute position after rendering alongside generation-scoped start/end.
+One additional constructor atomic is included in channel memory accounting. UI
+snapshots use real rendered progress, not elapsed wall time; no callback buffer
+copy/slicing allocation, locks, IO, new stream or project transport seek is added.
+Stop/new selection/new request retain the existing generation invalidation.

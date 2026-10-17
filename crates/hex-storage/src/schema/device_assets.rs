@@ -1,16 +1,10 @@
-//! Schema30 preserves host-owned device references over the strict schema29 body.
+//! Required bounded device asset manifest in the coherent current envelope.
 use super::*;
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, MAX_DEVICE_ASSET_REFERENCES,
 };
 use std::collections::BTreeMap;
 
-#[derive(Serialize)]
-pub(crate) struct DocumentV30<'a> {
-    #[serde(flatten)]
-    base: super::fade_shapes::DocumentV29<'a>,
-    device_assets: Vec<DeviceAssets>,
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeviceAssets {
@@ -52,8 +46,8 @@ fn bounded_references<'de, D: serde::Deserializer<'de>>(
     }
     decoder.deserialize_seq(References)
 }
-#[derive(Deserialize)]
-struct BoundedDevices(#[serde(deserialize_with = "bounded_devices")] Vec<DeviceAssets>);
+#[derive(Serialize, Deserialize)]
+pub(super) struct Manifest(#[serde(deserialize_with = "bounded_devices")] Vec<DeviceAssets>);
 fn bounded_devices<'de, D: serde::Deserializer<'de>>(
     decoder: D,
 ) -> Result<Vec<DeviceAssets>, D::Error> {
@@ -105,12 +99,11 @@ pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
     }
     Ok(())
 }
-impl<'a> DocumentV30<'a> {
-    pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
+impl Manifest {
+    pub(super) fn from_project(project: &Project) -> Result<Self, StorageError> {
         project
             .validate_device_asset_references()
             .map_err(|e| StorageError::Invalid(e.0))?;
-        let base = super::fade_shapes::DocumentV29::for_asset_envelope(project)?;
         let device_assets = devices(project)
             .map(|device| DeviceAssets {
                 device: device.id().value(),
@@ -125,31 +118,11 @@ impl<'a> DocumentV30<'a> {
                     .collect(),
             })
             .collect();
-        Ok(Self {
-            base,
-            device_assets,
-        })
+        Ok(Self(device_assets))
     }
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-        let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-        let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
-        let object = value
-            .as_object_mut()
-            .ok_or(StorageError::Invalid("invalid device asset envelope"))?;
-        if object.get("version").and_then(|v| v.as_u64()) != Some(30) {
-            return Err(StorageError::Invalid(
-                "invalid device asset envelope version",
-            ));
-        }
-        let manifest: BoundedDevices = serde_json::from_value(
-            object
-                .remove("device_assets")
-                .ok_or(StorageError::Invalid("device asset manifest is missing"))?,
-        )?;
-        object.insert("version".into(), 29.into());
-        let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
+    pub(super) fn apply(self, snapshot: &mut Snapshot) -> Result<(), StorageError> {
         let mut bindings = BTreeMap::new();
-        for row in manifest.0 {
+        for row in self.0 {
             let references = row
                 .references
                 .into_iter()
@@ -168,7 +141,6 @@ impl<'a> DocumentV30<'a> {
                 ));
             }
         }
-        let mut snapshot = base.snapshot();
         for track in &mut snapshot.tracks {
             for device in track.devices.iter_mut().chain(track.instrument.iter_mut()) {
                 apply(device, &mut bindings)?;
@@ -184,7 +156,7 @@ impl<'a> DocumentV30<'a> {
                 "device asset manifest references a missing device",
             ));
         }
-        Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+        Ok(())
     }
 }
 fn apply(

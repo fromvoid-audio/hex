@@ -15,6 +15,8 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Replace validated project tuning and audition settings in one history step.
+    SetTuning(hex_tuning::ProjectTuning),
     /// Event IDs come from the clip/revision-scoped editable_audio_events view.
     EditAudioEvents {
         clip: ClipId,
@@ -1191,6 +1193,10 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::SetTuning(tuning) => {
+                self.tuning = tuning;
+                Ok(Created::None)
+            }
             Command::EditAudioEvents { clip, operation } => {
                 crate::audio_events::apply(self, clip, operation)?;
                 Ok(Created::None)

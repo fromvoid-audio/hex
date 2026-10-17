@@ -196,13 +196,23 @@ impl Client {
         generation: u64,
         audio: hex_engine::Audio,
     ) -> Result<(), crate::sample_preview::PublishRefusal> {
+        self.preview_publish_from(generation, audio, 0)
+    }
+    pub fn preview_publish_from(
+        &mut self,
+        generation: u64,
+        audio: hex_engine::Audio,
+        frame: usize,
+    ) -> Result<(), crate::sample_preview::PublishRefusal> {
         let Some(endpoints) = self.endpoints.owner_mut() else {
             return Err(crate::sample_preview::PublishRefusal {
                 reason: Invalid("audio client is closed"),
                 audio,
             });
         };
-        endpoints.sample_preview.publish(generation, audio)
+        endpoints
+            .sample_preview
+            .publish_from(generation, audio, frame)
     }
     pub fn preview_cancel(&mut self) {
         if let Some(e) = self.endpoints.owner_mut() {
@@ -269,6 +279,14 @@ impl Client {
             .spectrum_reader
             .as_mut()?
             .try_latest()
+    }
+    /// One fresh, aligned pair; input is absent for legacy output-only captures.
+    pub fn spectrum_latest_pair(&mut self) -> Option<crate::spectrum_worker::PublishedSpectra> {
+        self.endpoints
+            .owner_mut()?
+            .spectrum_reader
+            .as_mut()?
+            .try_latest_pair()
     }
     pub fn spectrum_desired(&self) -> Option<spectrum_target::SpectrumTarget> {
         self.endpoints

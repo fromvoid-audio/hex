@@ -1,6 +1,5 @@
 //! Compact pinned return/mix controls shared by Arrangement and track headers.
 use super::EditorView;
-use super::tracks::TRACK_ROW_HEIGHT;
 use crate::theme;
 use gpui::{Context, Div, ElementId, div, prelude::*, px, rgb};
 use hex_project::{Command, Track};
@@ -40,9 +39,14 @@ impl EditorView {
             return None;
         };
         let body = self.arrangement_bounds?;
-        let scroll_y = f32::from(self.track_scroll.0.borrow().base_handle.offset().y);
-        let expected_top = body.top + track_index as f32 * TRACK_ROW_HEIGHT + scroll_y;
-        let expected_bottom = expected_top + TRACK_ROW_HEIGHT;
+        let scroll_y = f32::from(self.track_scroll.offset().y);
+        let expected_top = body.top
+            + state.project.tracks()[..track_index]
+                .iter()
+                .map(|track| self.track_height(track.id()))
+                .sum::<f32>()
+            + scroll_y;
+        let expected_bottom = expected_top + self.track_height(track_id);
         let body_bottom = body.top + body.height;
         let row_is_visible = expected_bottom > body.top && expected_top < body_bottom;
         if !row_is_visible {
@@ -75,13 +79,13 @@ impl EditorView {
         let window_bounds = window.bounds();
         let window_width = f32::from(window_bounds.size.width);
         let window_height = f32::from(window_bounds.size.height);
-        let left = (lane.left + lane.width + super::tracks::TRACK_HEADER_WIDTH - 245.0)
+        let left = (lane.left + lane.width + self.track_header_width() - 245.0)
             .clamp(0.0, (window_width - 245.0).max(0.0));
         let above = lane.top - menu_height - 1.0;
         let top = if above >= 0.0 {
             above
         } else {
-            lane.top + TRACK_ROW_HEIGHT + 1.0
+            lane.top + self.track_height(track_id) + 1.0
         }
         .clamp(0.0, (window_height - menu_height).max(0.0));
         Some(

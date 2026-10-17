@@ -24,9 +24,9 @@ use std::{
 
 mod layout;
 
-const DEFAULT_WIDTH: f32 = 480.0;
+pub(super) const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
-const MIN_WORKSPACE_WIDTH: f32 = 560.0;
+pub(super) const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
 const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
@@ -45,6 +45,7 @@ struct PlaybackPreviewRequest {
     generation: u64,
     output_generation: u64,
     output_identity: u64,
+    start_fraction: f64,
     path: PathBuf,
     sample_rate: u32,
 }
@@ -55,7 +56,7 @@ struct PreviewRequest {
     slot: PreviewSlot,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PreviewSlot {
     metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
     error: Rc<RefCell<Option<String>>>,
@@ -176,7 +177,12 @@ pub(super) struct BrowserState {
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
+    playback_fraction: f32,
+    waveform_bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
+    preview_selected: Option<PreviewKey>,
+    #[cfg(test)]
+    preview_preparations: usize,
     preview_in_flight: Option<PreviewRequest>,
     preview_pending: Option<PreviewRequest>,
     device_catalog: Option<
@@ -243,9 +249,14 @@ impl BrowserState {
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
+            playback_fraction: 0.0,
+            waveform_bounds: Rc::new(Cell::new(None)),
             playback_in_flight: false,
             playback_pending: None,
             preview_cache: HashMap::new(),
+            preview_selected: None,
+            #[cfg(test)]
+            preview_preparations: 0,
             preview_in_flight: None,
             preview_pending: None,
             device_catalog: None,
@@ -534,16 +545,27 @@ impl EditorView {
         self.browser.playback_phase = Phase::Idle;
         self.browser.playback_output = None;
         self.browser.playback_path = None;
+        self.browser.playback_fraction = 0.0;
         if let Some(audio) = self.audio.as_mut() {
             audio.control.preview_cancel();
         }
     }
 
     fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.play_browser_sample_from(path, 0.0, cx);
+    }
+
+    fn play_browser_sample_from(&mut self, path: PathBuf, fraction: f64, cx: &mut Context<Self>) {
+        let fraction = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         if self.browser.playback_output.is_some() {
             self.cancel_browser_sample_playback();
         }
         self.browser.playback_phase = Phase::Unavailable;
+        self.browser.playback_fraction = fraction as f32;
         self.status = "sample preview unavailable".into();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("sample preview is unavailable in verified streaming mode".into());
@@ -584,6 +606,7 @@ impl EditorView {
             output_identity,
             path,
             sample_rate: audio.sample_rate,
+            start_fraction: fraction,
         };
         self.browser.playback_phase = Phase::Preparing;
         self.browser.playback_output = Some((output_identity, output_generation));
@@ -620,9 +643,11 @@ impl EditorView {
                     })
                 {
                     let admitted = result.and_then(|pcm| {
+                        let frame =
+                            audition::frame_at_fraction(pcm.frames().len(), request.start_fraction);
                         audio
                             .control
-                            .preview_publish(request.output_generation, pcm)
+                            .preview_publish_from(request.output_generation, pcm, frame)
                             .map_err(|error| error.to_string())
                     });
                     match admitted {
@@ -673,24 +698,52 @@ impl EditorView {
     }
 
     pub(super) fn poll_browser_sample_playback(&mut self) -> bool {
-        let Some((identity, generation)) = self.browser.playback_output else {
+        let Some((identity, _)) = self.browser.playback_output else {
             return false;
         };
-        let phase = self
+        let snapshot = self
             .audio
             .as_ref()
             .filter(|audio| audio.control.output_identity() == Some(identity))
-            .and_then(|audio| audio.control.preview_snapshot())
-            .map_or(Phase::Unavailable, |snapshot| {
-                if snapshot.generation == generation
-                    || (snapshot.generation == 0 && snapshot.phase == Phase::Idle)
+            .and_then(|audio| audio.control.preview_snapshot());
+        self.accept_browser_sample_snapshot(snapshot)
+    }
+
+    fn accept_browser_sample_snapshot(
+        &mut self,
+        snapshot: Option<hex_audio::sample_preview::Snapshot>,
+    ) -> bool {
+        let Some((_, generation)) = self.browser.playback_output else {
+            return false;
+        };
+        let mut progress_changed = false;
+        let phase = snapshot.map_or(Phase::Unavailable, |snapshot| {
+            if snapshot.generation == generation {
+                if snapshot.frames > 0
+                    && matches!(
+                        snapshot.phase,
+                        Phase::Preparing | Phase::Playing | Phase::Finished
+                    )
                 {
-                    snapshot.phase
-                } else {
-                    Phase::Unavailable
+                    let fraction =
+                        (snapshot.frame as f64 / snapshot.frames as f64).clamp(0.0, 1.0) as f32;
+                    let width = self
+                        .browser
+                        .waveform_bounds
+                        .get()
+                        .map_or(1.0, |bounds| f32::from(bounds.size.width).max(1.0));
+                    progress_changed = (fraction * width).floor()
+                        != (self.browser.playback_fraction * width).floor();
+                    self.browser.playback_fraction = fraction;
                 }
-            });
-        self.accept_browser_sample_phase(phase)
+                snapshot.phase
+            } else if snapshot.generation == 0 && snapshot.phase == Phase::Idle {
+                Phase::Idle
+            } else {
+                Phase::Unavailable
+            }
+        });
+        self.accept_browser_sample_phase(phase) || progress_changed
     }
 
     fn accept_browser_sample_phase(&mut self, phase: Phase) -> bool {
@@ -717,9 +770,15 @@ impl EditorView {
     }
 
     fn browser_selection_audition(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.browser.playback_output.is_some() && self.browser.playback_path != path {
-            self.cancel_browser_sample_playback();
-            self.status = "sample preview stopped".into();
+        if self.browser.playback_path != path {
+            if self.browser.playback_output.is_some() {
+                self.cancel_browser_sample_playback();
+                self.status = "sample preview stopped".into();
+            } else {
+                self.browser.playback_path = None;
+                self.browser.playback_fraction = 0.0;
+                self.browser.playback_phase = Phase::Idle;
+            }
         }
         if self.browser.auto_audition
             && let Some(path) = path
@@ -733,29 +792,32 @@ impl EditorView {
         if let Some(metadata) = self.browser.preview_cache.get(&key) {
             return metadata.clone();
         }
-        if self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY {
-            let protected = self
-                .browser
-                .preview_in_flight
-                .iter()
-                .chain(self.browser.preview_pending.iter())
-                .map(|request| &request.key);
-            if let Some(evicted) = self
-                .browser
-                .preview_cache
-                .keys()
-                .find(|candidate| !protected.clone().any(|key| key == *candidate))
-                .cloned()
-            {
-                self.browser.preview_cache.remove(&evicted);
-            }
-        }
-        let slot = PreviewSlot {
-            metadata: Rc::new(RefCell::new(None)),
-            error: Rc::new(RefCell::new(None)),
-        };
+        self.evict_browser_preview_slot();
+        let slot = PreviewSlot::default();
         self.browser.preview_cache.insert(key, slot.clone());
         slot
+    }
+
+    fn evict_browser_preview_slot(&mut self) {
+        if self.browser.preview_cache.len() < PREVIEW_CACHE_CAPACITY {
+            return;
+        }
+        let protected = self
+            .browser
+            .preview_in_flight
+            .iter()
+            .chain(self.browser.preview_pending.iter())
+            .map(|request| &request.key)
+            .chain(self.browser.preview_selected.iter());
+        if let Some(evicted) = self
+            .browser
+            .preview_cache
+            .keys()
+            .find(|candidate| !protected.clone().any(|key| key == *candidate))
+            .cloned()
+        {
+            self.browser.preview_cache.remove(&evicted);
+        }
     }
 
     fn request_browser_audio_preview(
@@ -765,7 +827,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Rc<RefCell<Option<Rc<AudioPreview>>>> {
         let slot = self.browser_preview_cell(path.clone(), sample_rate);
-        if slot.metadata.borrow().is_some() {
+        if slot.metadata.borrow().is_some() || slot.error.borrow().is_some() {
             return slot.metadata;
         }
         self.queue_browser_audio_preview(PreviewKey { path, sample_rate }, slot.clone(), cx);
@@ -785,24 +847,8 @@ impl EditorView {
             metadata: drag.metadata.clone(),
             error: drag.metadata_error.clone(),
         };
-        if !self.browser.preview_cache.contains_key(&key)
-            && self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY
-        {
-            let protected = self
-                .browser
-                .preview_in_flight
-                .iter()
-                .chain(self.browser.preview_pending.iter())
-                .map(|request| &request.key);
-            if let Some(evicted) = self
-                .browser
-                .preview_cache
-                .keys()
-                .find(|candidate| !protected.clone().any(|item| item == *candidate))
-                .cloned()
-            {
-                self.browser.preview_cache.remove(&evicted);
-            }
+        if !self.browser.preview_cache.contains_key(&key) {
+            self.evict_browser_preview_slot();
         }
         self.browser.preview_cache.insert(key.clone(), slot.clone());
         *slot.metadata.borrow_mut() = None;
@@ -853,6 +899,10 @@ impl EditorView {
     }
 
     fn start_browser_audio_preview(&mut self, request: PreviewRequest, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.browser.preview_preparations += 1;
+        }
         self.browser.preview_in_flight = Some(request.clone());
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
@@ -918,7 +968,7 @@ impl EditorView {
             let state = self.state.as_ref()?;
             let body = self.arrangement_bounds?;
             let viewport = self.visible_viewport(state.timeline_frames);
-            let timeline_width = body.width - super::tracks::TRACK_HEADER_WIDTH;
+            let timeline_width = body.width - self.track_header_width();
             if !timeline_width.is_finite() || timeline_width <= 0.0 || viewport.length == 0 {
                 return None;
             }
@@ -1807,7 +1857,17 @@ impl EditorView {
                     browser_generation,
                     snap_grid,
                 )| {
-                    let slot = self.browser_preview_cell(path.clone(), sample_rate);
+                    // Rendering a row must not fill/evict the metadata cache.
+                    // Hover/drag admission owns preparation, not composition.
+                    let slot = self
+                        .browser
+                        .preview_cache
+                        .get(&PreviewKey {
+                            path: path.clone(),
+                            sample_rate,
+                        })
+                        .cloned()
+                        .unwrap_or_default();
                     let viewport = self.visible_viewport(timeline_frames);
                     drag::BrowserAudioDrag {
                         project_generation,
@@ -1877,7 +1937,11 @@ impl EditorView {
                             EntryKind::Directory => {
                                 view.request_browser_scan(click_path.clone(), cx)
                             }
-                            EntryKind::WaveAudio => view.import_browser_audio(click_path.clone()),
+                            EntryKind::WaveAudio => {
+                                // Sample double-click remains selection/audition.
+                                // Import is an explicit Enter or drag/drop action.
+                                cx.stop_propagation();
+                            }
                             EntryKind::Project => view.open_browser_project(click_path.clone(), cx),
                         }
                     }

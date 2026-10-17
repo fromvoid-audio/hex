@@ -1848,15 +1848,15 @@ fn vertical_drag_scroll_invalidates_old_rows_before_fast_release(cx: &mut TestAp
         view.state.as_ref().expect("project state").revision
     });
     editor.update(cx, |view, cx| {
-        let before_offset = view.track_scroll.0.borrow().base_handle.offset().y;
+        let before_offset = view.track_scroll.offset().y;
         let generation = view.drag_layout_generation;
         let now = Instant::now();
         let _ = view.tick_clip_gesture_autoscroll(now, cx);
-        if view.track_scroll.0.borrow().base_handle.offset().y == before_offset {
+        if view.track_scroll.offset().y == before_offset {
             assert!(view.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
         }
         assert!(
-            view.track_scroll.0.borrow().base_handle.offset().y < before_offset,
+            view.track_scroll.offset().y < before_offset,
             "bottom edge scrolls the actual UniformList"
         );
         assert!(view.drag_layout_generation > generation);
@@ -1945,12 +1945,12 @@ fn vertical_drag_scroll_retargets_stationary_clip_before_release(cx: &mut TestAp
         (old_track, Instant::now())
     });
     editor.update(cx, |view, cx| {
-        let offset = view.track_scroll.0.borrow().base_handle.offset().y;
+        let offset = view.track_scroll.offset().y;
         let mut moved = false;
         for tick in 0..4 {
             let now = scroll_tick + Duration::from_millis(tick * 50);
             let _ = view.tick_clip_gesture_autoscroll(now, cx);
-            if view.track_scroll.0.borrow().base_handle.offset().y != offset {
+            if view.track_scroll.offset().y != offset {
                 moved = true;
                 break;
             }
