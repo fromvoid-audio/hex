@@ -10,10 +10,20 @@ navigation. See docs/sample-library.md for bounds and cache recovery contracts.
 
 Source evidence: eight hex-library tests pass, including cache roundtrip/corruption,
 native paths, overlapping roots, depth limits and file reconciliation. Integrated
-UI compilation passes. Focused browser interaction tests, strict Clippy and full
-local CI are being run on the final candidate; record their actual results in the
-PR/Pulse evidence. Native macOS visual/listening/restart acceptance remains open;
+UI compilation, all 30 focused browser tests and all 20 local CI checks passed on
+initial source 8cdc6ef4. Current-main integration preserves flexible EQ and the
+outward tag editor/resizable picker; both browser test groups and dated note
+sections are retained. Final integration checks are recorded in PR/Pulse evidence. Native macOS visual/listening/restart acceptance remains open;
 no exact Live parity, extra audio codec, or large-library timing claim.
+
+## browser outward tag editor and resizable picker — 17 october 2026
+
+The tag editor adds a right column without consuming results/preview width.
+The picker has its own drag divider, an icons-only mode and lowercase hover
+labels for collections, sections and places. Width/settings remain session-only.
+See [browser layout](docs/browser-layout.md) for the finite native checklist.
+Automated validation results are recorded with this change; native macOS
+resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
 
 ## held-clip intersection accent — #2696 / PR314, 17 october 2026
 
@@ -88,6 +98,19 @@ runtimes must declare all owned capacities; see [runtime bounds](docs/stateful-l
 Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
 The parent EQ redesign, per-node automation, full final-source local CI and any
 native/user-test delivery remain separate work; this entry does not claim them.
+
+## streaming transport and native acceptance ledger — pulse2546 / PR241, 17 october 2026
+
+- One connected VerifiedStreaming adapter control exercises actual mixed-rate
+  worker PCM, direct seek, unchanged applied source/domain, Pause and priority
+  Stop with a full command queue; real callback entries retain allocation probes.
+- [Native validation ledger](docs/streaming-native-validation.md) maps all eight
+  original24 criteria plus the finite edit/Undo/save/reopen/catalog/transport/fault/
+  shutdown matrix to owning source tests and separate unperformed native cases.
+  No provider/cap/production behavior changes or manual merge gate are introduced.
+- Exact final local CI and stable optimized delivery are recorded externally.
+  Physical deadlines, listening, GUI interaction and backend faults remain
+  unverified; source merge and installation do not complete original24 acceptance.
 
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
@@ -1540,6 +1563,110 @@ remain separate from time editing and DSP.
 
 Publication license, release distribution and additional platforms remain separate
 future decisions. No release or broad compatibility claim is implied by this list.
+
+## dense UI and accessibility — issue29 / PR188 evidence
+
+Historical source checkpoints below retain their original verification and native
+acceptance boundaries. Pulse owns the current issue status.
+
+## dense controls and accessibility integration — #29 / PR188, 16 october 2026
+
+Integrated current main into the canonical branch while preserving its current
+schema25, input/output gain, keyboard, streamed-demand and capture contracts.
+Windowed device cards/rows, focus ownership, output-meter source snapshots and
+the excluded GPUI accessibility boundary remain separate from audio behavior.
+Whole-device snapshot gestures now pin their rows; a focused regression checks
+that active rows remain mounted. Input- and output-gain controls retain their
+identity across scrolling; existing Track/Return regressions failed before
+that reconciler repair and now pass. Windowed bodies use the shared widget surface
+with a single content inset, checked scroll extent and a source-guard negative
+control against replacing that surface. Current source checks are retained in
+the PR; exact Mac compilation, the three AppKit lifecycle tests and actual
+AX/VoiceOver/input/paint acceptance remain required. No native acceptance claim.
+
+## accessibility/cache composition — #29 / PR188, 16 october 2026
+
+After merging the independent cache optimization PR264, integrated main5607b14c
+into the accessibility candidate. Cached views now retain both current-draw
+epoch invalidation and invalid-accessibility-snapshot recovery. Reconstructed
+the combined GPUI delta against the exact verified original archive; applying
+the patch reproduces every recorded source hash. The rendered cached AX recovery
+regression passes; final full combined CI is retained with PR188. Actual Mac
+compilation, three AppKit tests and native accessibility acceptance remain open.
+
+## 17 October 2026 — issue29 macOS accessibility verification
+
+Continued canonical PR188 locally. The AppKit backend compiles; the three original
+native accessibility tests and a new real-object selector regression pass with
+Hex's macos-blade features. The regression fails before correcting the SDK boolean
+getter selectors and passes afterward, covering enabled/focused updates and hidden
+revoked elements. External GPUI diff/provenance remain tied to the verified0.2.2
+archive; no Hex unsafe boundary or renderer changes. See docs/native-accessibility.md.
+Exact-final full local CI and optimized stable-path delivery are recorded on
+PR188/Pulse29. Real Inspector/VoiceOver, close/veto, popup choices and input/paint
+acceptance remain unverified; this entry does not claim whole-ticket completion.
+
+## current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `ebb55d08`, preserving the streaming constructor/status contracts,
+Vector global panel and state-aware owned descriptors alongside retained windowed
+controls and accessibility admission. Hidden-row reconciliation compares owned
+descriptors and retires changed ranges plus pending values under unchanged IDs;
+the Track/Return/instrument regressions now cover that case. Both prior histories
+remain below.
+
+The combined MIDI/menu and248px meter layout initially collapsed the status
+message at880x540. A50px message minimum preserves its space while bounded status
+fields shrink; the existing menu regression now checks stable message/revision
+bounds. All40 focused row/window/accessibility/meter/header/navigation/algorithm/
+project-replacement/controller tests pass, as do UI test compilation, formatting,
+architecture, UI-style and device-composition guards. Exact integrated-source full
+local CI, commit, merge and optimized delivery remain separate primary work;
+these source/scene checks do not establish native acceptance.
+
+## second current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `f0ef237d` after candidate `37b7832e`, preserving clip conversion,
+Arrangement clip painting, track-header hover and source-case batch errors beside
+PR188's window-aware retained controls and accessibility/cache epochs. The new
+conversion selection helper and window-bearing detail-view signature coexist;
+paint previews remain outside cached content and retain live composition.
+
+All56 focused clip-paint/detail/cache/error/project-replacement/accessibility/
+row/window/meter/controller tests pass. UI test compilation, architecture, style,
+device-layout, formatting and diff checks pass. No additional behavior repair was
+needed. Prior exact-source CI remains historical; the combined candidate still
+requires its own commit and full local CI before merge. Optimized delivery and
+native acceptance remain separate evidence.
+
+## browser/name accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `2fa584cf` after candidate `4c0bcbc3`, preserving PR294's split
+browser and PR276's schema26/inline clip names alongside PR188. Auto-merges retain
+name-draft reconciliation, keyboard ownership and cache bypass during editing;
+status minima, meter snapshots, accessibility guards and source-case error surfaces
+remain intact. Both todo histories are preserved. No additional repair was needed.
+
+All21 targeted browser geometry/resize/search, clip-name, controller-layout,
+editor-meter, accessibility, clip-cache and error-display tests pass. UI test
+compilation, architecture/style/device-layout guards, formatting and diff checks
+pass. Prior full CI is historical; exact combined-source full CI and any merge or
+optimized delivery remain primary work. These checks do not establish native
+visual/input acceptance.
+
+## fourth current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `153cc4df` after candidate `bb817c72`, preserving browser picker/
+editor sizing, bidirectional clip painting, held-clip intersection accents and
+adaptive snapping alongside the retained accessibility/cache implementation.
+No runtime repair was needed. All six earlier PR188 evidence entries are retained
+here near the original dense-UI checklist; current main's remaining history,
+including its trailing entries, stays intact.
+
+All11 focused browser sizing, cache geometry, clip-paint, drop-intersection and
+adaptive-toggle tests pass. UI test compilation, architecture/style/device-layout
+guards, formatting and diff checks pass. Exact combined-source full CI, commit,
+merge and optimized delivery remain primary work; native acceptance is separate.
 
 ## storage recovery and retained CI evidence
 
@@ -3952,6 +4079,37 @@ see docs/browser-layout.md for scope and native review checklist. Full functiona
 follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
 Command-F. Tag assignment/filtering, collections and history remain pending.
 
+## 17 October 2026 — sparse eq (Pulse #2654 / PR #270)
+
+- New-insert `eq` supports 64 stable-ID nodes, direct graph creation/drag,
+  shape/Q/12–48 db/oct controls and EQ-owned beat-curve automation. Existing EQ8
+  panels and codec remain supported, with an explicit five-bank lossless upgrade.
+- Atomic source-state/allocator reservation and preset node high-water marks
+  preserve targeting through delete/undo/new additions. EQ automation travels in
+  strict bounded opaque state; no general automation storage schema was added.
+- Focused codec/DSP/legacy PCM, canonical reservation, rendered gesture/automation/
+  upgrade and real renderer clock tests passed during implementation; exact final
+  full local CI and optimized/native delivery are coordinator-owned and pending
+  until their candidate evidence is recorded. See docs/eq.md for limitations and
+  the finite native checklist. Headless evidence is not native/listening acceptance.
+
+
+EQ #2654 final integration evidence: feature source `238bcb858426cc0caa192463d4395578be7030f2`
+includes merged metadata #2657/PR273 and current main. Targeted device, rendered
+UI, engine arrangement/loop/seek/export, identity reservation, legacy-layout and
+actual callback allocation checks pass. The release profile above is recorded
+in `docs/performance.md`; full exact-candidate local CI and stable optimized
+installation remain coordinator work. Native user checklist: `docs/eq.md`.
+
+Final EQ UI review also reproduced and repaired automation-point selection
+retargeting after deletion and insertion before the selected point. A canonical
+opaque-state key clears index-based selection after any authored edit or
+undo/redo while preserving local drag previews. The rendered two-point fixture
+now checks neighbor preservation and selection/history behavior; finite page
+navigation and Q32.32 endpoint checks cover extreme page values. Targeted
+rendered tests and the page-boundary regression pass; final full CI remains
+required on the committed integration candidate.
+
 ## 17 october 2026 — track header hover
 
 Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
@@ -3963,6 +4121,22 @@ then leave and confirm the original background returns. Pulse #2663 tracks the r
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
 
+Full EQ CI caught an early-failure regression in the new compensated arrangement
+beat stamp. The ordinary path already treats unrepresentable beats as unavailable;
+the compensated stamp now preserves that optional clock contract without losing
+exact frame identity. The original late-failure rollback regression is retained
+unchanged, with an added origin-clock unavailable-beat assertion. Final CI must
+be rerun on this repair; the earlier failed report is not merge evidence.
+
+The final rendered EQ workflow regression also reproduces and repairs removing
+the last node while its automation editor is open. Canonical-state changes now
+persist valid node selection and leave automation mode when that target is gone,
+while pending node creation retains optimistic selection until publication.
+Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
+new-node controls pass in the rendered fixture, alongside strict UI Clippy and
+page-boundary checks. The prior full run was interrupted for this repair; only
+the next unchanged full candidate may supply merge evidence.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -3970,3 +4144,13 @@ merge after the missing Rust/native validation was disclosed.
 - Future context-menu size selection: Pulse #2694, Hex 0.1.
 - Native zoom/snap/toggle acceptance remains pending; automated evidence is
   recorded with the focused PR.
+
+## 17 october 2026 — pulse2698 / PR316: fetch, verify and launch desktop
+
+- Root `./launch` requires a clean main checkout, fetches and fast-forwards only
+  to `origin/main`, records the current main commit's associated PR revision,
+  runs full local CI, installs the optimized app through the supported stable
+  path, verifies its source receipt, and opens that exact app.
+- Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
+  fetch/CI/package failures, and successful operation order. Native UI and
+  listening acceptance remain user checks after launch.

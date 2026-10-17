@@ -23,8 +23,8 @@ native visual acceptance remains pending.
 
 The Operator body forms one Tab group. Tab walks the currently rendered controls
 in layout order, and Shift-Tab reverses that order and wraps within the group.
-The shell visits d, c, b, a: each oscillator selector followed by its available
-controls, while the squares stay visually at the far right. Focusing a square
+The shell visits d, c, b, a: each row traverses coarse/frequency, fine, fixed,
+level, then its oscillator square, which stays visually at the far right. Focusing a square
 selects its oscillator context; its thicker focus border remains distinct from
 selection. The detail pane contributes its visible envelope, lfo or
 oscillator controls and page selectors; the preview contributes its available

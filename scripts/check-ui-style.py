@@ -36,6 +36,8 @@ widgets = (
     # Algorithm diagrams have no text; global controls normalize captions.
     'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
+    # Output meter labels are routed through theme::text in the component.
+    'crate::output_meter::render(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',
     'hex_widgets::device_section(', 'hex_widgets::device_layout(',
@@ -51,7 +53,7 @@ widgets = (
     # Split browser components normalize every caption at their boundary.
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
-    'editor)', 'sidebar)', 'panel.w_full(',
+    'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
     # Sample source filters route labels through theme::text.
