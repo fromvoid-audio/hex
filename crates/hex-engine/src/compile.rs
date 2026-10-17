@@ -488,9 +488,7 @@ fn compile_project_inner<'a>(
                     .checked_add(definition.declared_runtime_bytes())
                     .ok_or(Invalid("stateful device runtime budget overflow"))?;
                 if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                    || stateful_bytes
-                        > hex_lattice::MAX_STATEFUL_PROCESSORS
-                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                    || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES
                 {
                     return Err(Invalid(
                         "stateful device runtime exceeds its bounded budget",
@@ -561,9 +559,7 @@ fn compile_project_inner<'a>(
                     .checked_add(definition.declared_runtime_bytes())
                     .ok_or(Invalid("stateful device runtime budget overflow"))?;
                 if stateful_count > hex_lattice::MAX_STATEFUL_PROCESSORS
-                    || stateful_bytes
-                        > hex_lattice::MAX_STATEFUL_PROCESSORS
-                            * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES
+                    || stateful_bytes > hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES
                 {
                     return Err(Invalid(
                         "stateful device runtime exceeds its bounded budget",

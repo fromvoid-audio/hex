@@ -70,7 +70,9 @@ fn instrument_memory_budget_rejects_overflow_and_over_budget_before_construction
 #[test]
 fn instrument_memory_budget_preserves_combined_count_bytes_and_overflow_checks() {
     let cap = MAX_STATEFUL_RUNTIME_PAIR_BYTES;
-    let effect_pair = hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES * 2;
+    // The aggregate pool still admits 256 historical 4 KiB twins, even
+    // though an individual effect may now declare more.
+    let effect_pair = (hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES / 256) * 2;
     assert_eq!(cap, 2 * 1024 * 1024);
     assert!(validate_mutable_graph_budget(255, 255 * effect_pair, 1, effect_pair).is_ok());
     assert!(validate_mutable_graph_budget(1, effect_pair, 1, cap - effect_pair).is_ok());

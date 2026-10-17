@@ -47,8 +47,16 @@ graph and sound for a bounded retry. Only groups referenced by active copied
 releases consume transferred tail capacity. Completed owners stay parked until
 control-side graph retirement; callbacks never perform their final destruction.
 
-Initial admission caps are 256 active stateful processors, 256 captured-tail
-processors, 256 tail groups and 4096 declared runtime bytes per processor twin.
+Admission caps remain 256 active stateful processors, 256 captured-tail
+processors and 256 tail groups. Effects allow at most 65,536 declared bytes per
+runtime twin, with a separate unchanged 1,048,576-byte aggregate declaration cap
+per runtime bank (2 MiB for primary and scratch together). Increasing the
+per-instance limit does not multiply the aggregate pool. Every declaration must
+include the runtime object and all owned heap storage, including reserved buffer
+capacities and nested allocations; `size_of` alone suffices only for inline
+runtimes. Immutable shared prepared configuration remains separate. Current EQ8
+still declares its unchanged 3,792-byte inline runtime; the larger bound is a
+prerequisite for future devices, not admission or implementation of a new EQ.
 The per-twin bound applies to effects. Mutable instruments instead declare their
 own object/buffer requirements and draw from the unchanged 2 MiB aggregate
 active-pair pool and separate 2 MiB retained-tail pool; see

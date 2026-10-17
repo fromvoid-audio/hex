@@ -1,8 +1,5 @@
 //! Registered analytic instrument preparation and compact immutable note samplers.
-use super::{
-    MAX_NATIVE_DEVICE_TYPES, MAX_PARAMETERS_PER_DEVICE, PreparedMutableInstrumentRuntime,
-    StereoFrame,
-};
+use super::{MAX_NATIVE_DEVICE_TYPES, PreparedMutableInstrumentRuntime, StereoFrame};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
 };
@@ -262,21 +259,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             {
                 return Err(DeviceContractError::DuplicateDeviceType);
             }
-            if definition.descriptors().len() > MAX_PARAMETERS_PER_DEVICE {
-                return Err(DeviceContractError::InvalidDescriptor);
-            }
-            for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
-                descriptor.validate_descriptor()?;
-                if descriptor.id.value() >= u32::MAX - 1 {
-                    return Err(DeviceContractError::InvalidDescriptor);
-                }
-                if definition.descriptors()[..parameter_index]
-                    .iter()
-                    .any(|prior| prior.id == descriptor.id)
-                {
-                    return Err(DeviceContractError::InvalidDescriptor);
-                }
-            }
+            hex_lattice_contract::validate_parameter_descriptors(definition.descriptors())?;
         }
         Ok(Self { definitions })
     }
@@ -327,7 +310,9 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .validate_current(definition, definition.migrate_state(state)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
-        snapshot.validate(definition.descriptors())?;
+        snapshot.validate(&hex_lattice_contract::validated_state_descriptors(
+            definition, &current,
+        )?)?;
         let patched = definition.patch_parameters(&current, snapshot)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
@@ -347,8 +332,8 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .validate_current(definition, definition.migrate_state(state)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
-        let descriptor = definition
-            .descriptors()
+        let descriptors = hex_lattice_contract::validated_state_descriptors(definition, &current)?;
+        let descriptor = descriptors
             .iter()
             .find(|descriptor| descriptor.id == parameter)
             .ok_or(DeviceContractError::UnknownParameter)?;
@@ -386,6 +371,10 @@ impl<'a> NativeInstrumentRegistry<'a> {
         if state.state_version() != definition.state_version() {
             return Err(DeviceContractError::UnsupportedStateVersion);
         }
+        // Validate descriptors once. Current values are checked on read,
+        // patch, and presentation so large state codecs are not decoded once
+        // per control at every registry boundary.
+        hex_lattice_contract::validated_state_descriptors(definition, &state)?;
         Ok(state)
     }
 }

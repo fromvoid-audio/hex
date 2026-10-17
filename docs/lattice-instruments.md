@@ -370,7 +370,7 @@ gap.
 ### variable-size mutable runtime admission
 
 Pulse #2589 / [PR242](https://github.com/PORTALSURFER/hex/pull/242) separates
-instrument memory requirements from the effect-only 4 KiB per-twin ceiling.
+instrument memory requirements from the effect-only 64 KiB per-twin ceiling.
 `PreparedMutableInstrumentRuntime::declared_twin_bytes` specifies the runtime
 object plus all owned fixed buffers for one copy. The engine checks twice that
 declaration before constructing either committed or scratch runtime and checks
@@ -379,11 +379,12 @@ instrument consumes more of the existing aggregate pool; it does not receive a
 new fixed allowance or a free shared-root allocation.
 
 Active mutable instrument pairs and stateful effect pairs together retain the
-256-instance and 2 MiB declared DSP-storage limits. Prepared-revision validation
+256-instance and 2 MiB declared DSP-storage limits. Each effect bank also keeps
+its independent 1 MiB aggregate declared-byte cap. Prepared-revision validation
 and playback construction sum checked paired declarations before constructing
 instrument runtimes. A single instrument may consume the whole pool, leaving no
 bytes for another stateful device. Effects and Return effects retain their
-independent 4 KiB per-twin checks. Voice/event limits, codecs and DSP laws do not
+independent 64 KiB per-twin checks. Voice/event limits, codecs and DSP laws do not
 change. This policy permits memory requirements above 8 KiB per instrument pair;
 it does not admit the unfinished Operator filter or raise Operator polyphony.
 

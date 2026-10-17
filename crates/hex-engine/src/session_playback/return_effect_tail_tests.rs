@@ -1068,8 +1068,7 @@ fn return_tails_share_exact_processor_paired_byte_and_entry_ceilings() {
     let bank = &playback.return_effect_tails;
     let buses = &[];
     let chains = &[];
-    let bytes_cap =
-        2 * hex_lattice::MAX_STATEFUL_PROCESSORS * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES;
+    let bytes_cap = 2 * hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES;
     let mut processors = hex_lattice::MAX_STATEFUL_PROCESSORS - 1;
     let mut bytes = bytes_cap - 2 * hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES;
     let mut entries = 4_095;

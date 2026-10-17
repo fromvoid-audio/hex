@@ -1,8 +1,8 @@
 //! Validated stereo DSP primitives and the registered native processor seam.
 mod meter;
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, MAX_PARAMETERS_PER_DEVICE,
-    NativeDeviceMetadata, NativeDeviceState,
+    DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
+    NativeDeviceState,
 };
 pub use meter::DeviceMeter;
 use std::any::Any as StdAny;
@@ -72,6 +72,11 @@ pub use instrument_runtime::{
 /// audio-interface latency and intended effect tails are not declared here.
 pub trait PreparedNativeProcessor: Send + Sync {
     fn runtime_version(&self) -> u32;
+    /// Total bytes owned by one runtime: object plus every heap allocation,
+    /// including reserved capacities, buffers and nested owned allocations.
+    /// `size_of` alone is sufficient only for an entirely inline runtime.
+    /// Immutable shared prepared configuration is accounted separately. The
+    /// host charges this declaration for both primary and scratch twins.
     fn declared_runtime_bytes(&self) -> usize;
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime>;
 
@@ -216,7 +221,10 @@ pub trait NativeProcessorAudition: Send {
 pub const MAX_STATEFUL_PROCESSORS: usize = 256;
 /// Maximum control-declared storage for one effect runtime twin. Mutable
 /// instrument limits are supplied separately by the engine's aggregate policy.
-pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 4_096;
+pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
+/// Aggregate declared bytes in one runtime bank, counting one twin per instance.
+/// The actual paired runtime storage doubles this bound (2 MiB).
+pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 1_048_576;
 
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
 /// canonical project allocator, while this tag keeps track and return owners
@@ -486,7 +494,7 @@ impl NativeRuntimeChain {
                         .checked_add(bytes)
                         .ok_or(DeviceContractError::RuntimeBudgetExceeded)?;
                     if stateful_count > MAX_STATEFUL_PROCESSORS
-                        || declared_bytes > MAX_STATEFUL_PROCESSORS * MAX_PROCESSOR_RUNTIME_BYTES
+                        || declared_bytes > MAX_PROCESSOR_BANK_RUNTIME_BYTES
                     {
                         return Err(DeviceContractError::RuntimeBudgetExceeded);
                     }
@@ -1269,21 +1277,7 @@ impl<'a> NativeDeviceRegistry<'a> {
             }) {
                 return Err(DeviceContractError::DuplicateDeviceType);
             }
-            if definition.descriptors().len() > MAX_PARAMETERS_PER_DEVICE {
-                return Err(DeviceContractError::InvalidDescriptor);
-            }
-            for (parameter_index, descriptor) in definition.descriptors().iter().enumerate() {
-                descriptor.validate_descriptor()?;
-                if descriptor.id.value() >= u32::MAX - 1 {
-                    return Err(DeviceContractError::InvalidDescriptor);
-                }
-                if definition.descriptors()[..parameter_index]
-                    .iter()
-                    .any(|prior| prior.id == descriptor.id)
-                {
-                    return Err(DeviceContractError::InvalidDescriptor);
-                }
-            }
+            hex_lattice_contract::validate_parameter_descriptors(definition.descriptors())?;
         }
         Ok(Self { definitions })
     }
@@ -1329,7 +1323,9 @@ impl<'a> NativeDeviceRegistry<'a> {
             .validate_current(definition, definition.migrate_state(state)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
-        snapshot.validate(definition.descriptors())?;
+        snapshot.validate(&hex_lattice_contract::validated_state_descriptors(
+            definition, &current,
+        )?)?;
         let patched = definition.patch_parameters(&current, snapshot)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
@@ -1349,8 +1345,8 @@ impl<'a> NativeDeviceRegistry<'a> {
             .validate_current(definition, definition.migrate_state(state)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
-        let descriptor = definition
-            .descriptors()
+        let descriptors = hex_lattice_contract::validated_state_descriptors(definition, &current)?;
+        let descriptor = descriptors
             .iter()
             .find(|descriptor| descriptor.id == parameter)
             .ok_or(DeviceContractError::UnknownParameter)?;
@@ -1416,6 +1412,11 @@ impl<'a> NativeDeviceRegistry<'a> {
         if state.state_version() != definition.state_version() {
             return Err(DeviceContractError::UnsupportedStateVersion);
         }
+        // Validate the complete state-owned descriptor set once at this
+        // boundary. Parameter values are checked when read, patched, or
+        // presented; eagerly reading every value here would repeatedly decode
+        // large device states (for example, once per Operator control).
+        hex_lattice_contract::validated_state_descriptors(definition, &state)?;
         Ok(state)
     }
 }
