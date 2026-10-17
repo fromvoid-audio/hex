@@ -5,6 +5,67 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetSlot};
 
+#[test]
+fn compact_key_table_preserves_every_full_coefficient_and_stays_under_context_cap() {
+    let pcm = [1.0_f32; 12];
+    let view = view(&pcm);
+    let mut frequencies = *hex_lattice::TuningTable::default().frequencies();
+    frequencies[61] = frequencies[60] * 1.3;
+    let tuning = hex_lattice::TuningTable::new(frequencies).unwrap();
+    for mode in [
+        Mode::Classic {
+            loop_region: Some(Region { start: 3, end: 7 }),
+        },
+        Mode::OneShot {
+            gate: GateMode::Gate,
+        },
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        Mode::Slice {
+            starts: &[1, 3, 7],
+            base_note: 60,
+            gate: GateMode::Trigger,
+        },
+    ] {
+        for reverse in [false, true] {
+            let mut settings = Settings::new(Region { start: 1, end: 10 });
+            settings.mode = mode;
+            settings.reverse = reverse;
+            settings.pan = -0.25;
+            settings.gain = 0.375;
+            settings.envelope.release_seconds = 0.125;
+            let plan = PreparedSamplerPlan::new(
+                SampleShape::new(12, 8_000, SampleChannels::Mono).unwrap(),
+                44_100,
+                settings,
+            )
+            .unwrap();
+            let compact = plan
+                .bind_source_on_control(view)
+                .unwrap()
+                .prepare_runtime_on_control(16, 259, &tuning)
+                .unwrap();
+            for pitch in 0..128 {
+                assert_eq!(
+                    compact.note(pitch),
+                    plan.prepare_tuned_voice_coefficients(pitch, 127, &tuning)
+                        .unwrap()
+                );
+            }
+            assert!(
+                std::mem::size_of_val(&compact) <= hex_lattice::MAX_SHARED_ANALYTIC_CONTEXT_BYTES
+            );
+            assert_eq!(
+                compact.control_storage_declaration(),
+                hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                    bytes: std::mem::size_of_val(&compact)
+                }
+            );
+        }
+    }
+}
+
 fn view(pcm: &[f32]) -> DeviceResourceView<'_> {
     DeviceResourceView {
         slot: DeviceAssetSlot::new(1).unwrap(),
@@ -229,4 +290,38 @@ fn project_tuning_velocity_amount_and_gated_release_reach_actual_mutable_samples
         .unwrap()
         .create_runtime();
     assert!(!neutral.can_copy_history_from(original.as_ref()));
+}
+
+#[test]
+fn concert_reference_retunes_assigned_root_instead_of_canceling_with_it() {
+    let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let neutral = hex_lattice::TuningTable::default();
+    let tuning = hex_lattice::TuningTable::new(neutral.frequencies().map(|hz| hz * 2.0)).unwrap();
+    let settings = Settings::new(Region { start: 0, end: 6 });
+    let plan = PreparedSamplerPlan::new(
+        SampleShape::new(6, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap();
+    // Disabled tuning preserves the exact original scalar law, not a new
+    // quotient/log approximation of equal temperament.
+    for key in 0..128 {
+        assert_eq!(
+            plan.prepare_tuned_voice_coefficients(key, 127, &neutral)
+                .unwrap(),
+            plan.prepare_voice_coefficients(key, 127).unwrap()
+        );
+    }
+    let prepared = plan
+        .bind_source_on_control(views[0])
+        .unwrap()
+        .prepare_runtime_on_control(4, 259, &tuning)
+        .unwrap();
+    let mut runtime = pair(&prepared);
+    let mut output = [[0.0; 2]; 5];
+    process(&mut runtime, &[on(0, 1, 60)], &mut output, &resources);
+    assert_eq!(output, [[1.0; 2], [5.0; 2], [9.0; 2], [0.0; 2], [0.0; 2]]);
 }

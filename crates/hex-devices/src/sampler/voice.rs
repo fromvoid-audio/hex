@@ -20,6 +20,25 @@ pub struct VoiceCoefficients {
 }
 
 impl VoiceCoefficients {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self {
+            expected_frames,
+            channels,
+            region,
+            loop_offsets,
+            reverse,
+            step,
+            channel_gain,
+            gate,
+            envelope,
+        } = self;
+        let _: (&usize, &SampleChannels, &Region, &Option<(usize, usize)>) =
+            (expected_frames, channels, region, loop_offsets);
+        let _: (&bool, &u64, &[f64; 2], &GateMode) = (reverse, step, channel_gain, gate);
+        let Region { start, end } = region;
+        let _: (&usize, &usize) = (start, end);
+        envelope.audit_scalar_storage();
+    }
     /// Zero fixed buffering/lookahead; source resampling and envelope timing
     /// do not introduce a block of host latency.
     pub const fn algorithmic_latency_frames(&self) -> u32 {

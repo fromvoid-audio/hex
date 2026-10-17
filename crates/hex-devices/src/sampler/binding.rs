@@ -11,6 +11,27 @@ pub(super) struct SourceKey {
     shape: SampleShape,
 }
 impl SourceKey {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self {
+            slot,
+            identity,
+            shape,
+        } = self;
+        let hex_lattice::DeviceResourceIdentity {
+            asset,
+            content,
+            derivation_version,
+            derivation,
+        } = identity;
+        let _: (u32, u64, &[u8; 32], &u32, &[u8; 32]) = (
+            slot.value(),
+            asset.value(),
+            content,
+            derivation_version,
+            derivation,
+        );
+        shape.audit_scalar_storage();
+    }
     pub(super) fn matches(self, view: DeviceResourceView<'_>) -> bool {
         self.slot == view.slot
             && self.identity == view.identity

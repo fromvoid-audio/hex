@@ -90,7 +90,10 @@ retain the exact source configuration for current, carried and outgoing voices.
 This adapter boundary does not register the device or open resource processing.
 
 `BoundSamplerPlan::prepare_runtime_on_control` now prepares a fixed 128-key
-coefficient table against the actual project tuning. A mutable lattice runtime
+step/region table plus shared scalar coefficients against the actual project
+tuning. Every reconstructed key is tested against the full scalar plan across
+modes, reverse and non-neutral tuning. The complete factory remains under the
+existing 4 KiB context cap. A mutable lattice runtime
 uses at most 32 scalar voice slots, caller-bounded events and borrowed original
 PCM; no pitch exponentiation or PCM scan occurs in processing. Its declared twin
 storage includes the complete key table and active state, under the existing
@@ -99,6 +102,22 @@ same-offset events retain caller order, and unsupported capacity/source batches
 refuse before the paired runtime or output changes. Speculative rollback and
 history copying use the existing lattice runtime pair. Exact source/configuration
 identity governs history compatibility; identity is never a lease.
+
+The assigned root is calibrated in neutral 12-TET. Effective project frequencies
+retune it, including changes to concert-reference Hz; dividing by a moving
+project-tuned root would incorrectly cancel those changes. Neutral tuning keeps
+the exact original scalar law. Slice keys select regions rather than pitches.
+
+The existing engine `SharedContextOwner` can construct and retain a concrete
+`OwnedShared<PreparedSamplerRuntime>` child beside its actual source configuration.
+Its fixed scalar leaf audit is exhaustive; no arbitrary trait object or old Arc
+receives a declaration. Body/header, marker decode temporary and existing owner
+metadata are quoted before construction under unchanged caps. Selected storage
+traversal includes that physical child and every actual alias. Tests refuse an
+omitted factory alias and exact-minus-one budgets and retain actual PCM after
+source/model retirement. Removing the entire factory visitor fails the negative
+oracle; byte-restored source passes. This constructor is not whole-graph peak,
+custody, publication or saturated-reaper proof and does not open registry access.
 
 This is still an unregistered runtime slice. Voice stealing/retrigger/glide,
 filter/LFO/modulation, high-quality resampling and warp, authored state/loading,

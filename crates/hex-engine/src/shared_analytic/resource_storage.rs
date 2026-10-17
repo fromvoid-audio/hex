@@ -158,6 +158,7 @@ pub(crate) fn visit_owner_contents<'a>(
         context,
         resources,
         state_storage,
+        sampler_factory,
     } = owner.as_ref();
     let SharedContextIdentity {
         tuning: _,
@@ -168,8 +169,22 @@ pub(crate) fn visit_owner_contents<'a>(
         state,
         sample_rate: _,
     } = identity;
-    if context.is_some() || *declared_bytes != 0 {
+    if context.is_some() {
         return Err(AudioStorageError::UnknownStorage);
+    }
+    match sampler_factory {
+        Some((factory, _)) if identity.device_type == hex_devices::sampler::state::TYPE_ID => {
+            if factory.control_storage_declaration()
+                != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+                    bytes: *declared_bytes,
+                })
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+        }
+        None if *declared_bytes == 0
+            && identity.device_type != hex_devices::sampler::state::TYPE_ID => {}
+        _ => return Err(AudioStorageError::UnknownStorage),
     }
     let storage = state_storage
         .as_ref()
@@ -188,6 +203,15 @@ pub(crate) fn visit_owner_contents<'a>(
     if !visited {
         visit_state(state, storage, ledger)?;
         resources.visit_storage(ledger)?;
+        if let Some((factory, handle)) = sampler_factory {
+            ledger.shared(
+                factory.arc(),
+                factory.parts(),
+                Owner::exclusive(factory),
+                *handle,
+                None,
+            )?;
+        }
     }
     Ok(())
 }
@@ -259,16 +283,18 @@ pub(crate) fn visit_table_contents<'a>(
     } = table.as_ref();
     let _: &[f64; 128] = tuning.frequencies();
     let _: u64 = tuning_identity.0;
-    if *payload_bytes != 0 {
-        // Deep provider contexts are still opaque. A declared count cannot
-        // certify their actual allocation graph.
-        return Err(AudioStorageError::UnknownStorage);
-    }
     ledger.vec(owners)?;
     ledger.vec(ids)?;
     ledger.vec(mutable_continuations)?;
     for owner in owners {
         visit_owner_contents(owner, ledger)?;
+    }
+    let actual = owners
+        .iter()
+        .try_fold(0usize, |sum, owner| sum.checked_add(owner.declared_bytes))
+        .ok_or(AudioStorageError::Overflow)?;
+    if actual != *payload_bytes {
+        return Err(AudioStorageError::SourceMismatch);
     }
     Ok(())
 }

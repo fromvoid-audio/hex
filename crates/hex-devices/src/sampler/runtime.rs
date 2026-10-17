@@ -9,16 +9,62 @@ use std::any::Any;
 pub const MAX_SAMPLER_RUNTIME_VOICES: usize = 32;
 const MAX_EVENTS: usize = 1024;
 
+#[derive(Clone, Copy, Default, PartialEq)]
+struct PreparedKey {
+    step: u64,
+    start: u32,
+    end: u32,
+}
+
 /// Control-prepared key table and original source binding, without PCM/markers.
 /// Not registry admission: the actual owner graph must still qualify separately.
 #[derive(Clone, PartialEq)]
 pub struct PreparedSamplerRuntime {
-    notes: [Option<VoiceCoefficients>; 128],
+    notes: [PreparedKey; 128],
+    common: VoiceCoefficients,
     source: binding::SourceKey,
     voices: usize,
     tail: u64,
     velocity_amount: f64,
     max_events: usize,
+}
+impl PreparedSamplerRuntime {
+    /// Narrow fixed-leaf declaration for this actual sampler factory. This is
+    /// not a declaration for arbitrary trait objects, wrappers or source owners.
+    /// The host separately retains and charges its owning allocation and PCM.
+    pub fn control_storage_declaration(&self) -> hex_lattice::PreparedStorageDeclaration {
+        let Self {
+            notes,
+            common,
+            source,
+            voices,
+            tail,
+            velocity_amount,
+            max_events,
+        } = self;
+        let _: &[PreparedKey; 128] = notes;
+        let _: (&usize, &u64, &f64, &usize) = (voices, tail, velocity_amount, max_events);
+        source.audit_scalar_storage();
+        common.audit_scalar_storage();
+        for PreparedKey { step, start, end } in notes {
+            let _: (&u64, &u32, &u32) = (step, start, end);
+        }
+        hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
+            bytes: std::mem::size_of::<Self>(),
+        }
+    }
+    fn note(&self, pitch: u8) -> Option<VoiceCoefficients> {
+        let key = self.notes.get(usize::from(pitch))?;
+        (key.step != 0).then(|| {
+            let mut note = self.common;
+            note.step = key.step;
+            note.region = Region {
+                start: key.start as usize,
+                end: key.end as usize,
+            };
+            note
+        })
+    }
 }
 impl BoundSamplerPlan<'_> {
     pub fn prepare_runtime_on_control(
@@ -32,14 +78,21 @@ impl BoundSamplerPlan<'_> {
         {
             return Err(Invalid("sampler voice count exceeds its fixed capacity"));
         }
-        let mut notes = [None; 128];
+        let mut notes = [PreparedKey::default(); 128];
+        let mut common = None;
         let mut tail = 0;
         for (pitch, entry) in notes.iter_mut().enumerate() {
             // Velocity scaling is applied below using the original linear law.
-            *entry = self
+            let voice = self
                 .plan
                 .prepare_tuned_voice_coefficients(pitch as u8, 127, tuning)?;
-            if let Some(voice) = entry {
+            if let Some(voice) = voice {
+                common.get_or_insert(voice);
+                *entry = PreparedKey {
+                    step: voice.step,
+                    start: voice.region.start as u32,
+                    end: voice.region.end as u32,
+                };
                 tail = tail.max(match voice.gate {
                     GateMode::Trigger => voice
                         .natural_frames()
@@ -50,6 +103,7 @@ impl BoundSamplerPlan<'_> {
         }
         Ok(PreparedSamplerRuntime {
             notes,
+            common: common.ok_or(Invalid("sampler needs at least one mapped key"))?,
             source: self.source,
             voices,
             tail,
@@ -111,7 +165,7 @@ impl SamplerRuntime {
         }
         for entry in active.iter_mut() {
             let Some(voice) = entry else { continue };
-            let Some(note) = self.prepared.notes[usize::from(voice.pitch)] else {
+            let Some(note) = self.prepared.note(voice.pitch) else {
                 *entry = None;
                 continue;
             };
@@ -163,7 +217,7 @@ impl SamplerRuntime {
                 {
                     return Err(Error::InvalidEventBatch);
                 }
-                if velocity == 0 || self.prepared.notes[usize::from(pitch)].is_none() {
+                if velocity == 0 || self.prepared.note(pitch).is_none() {
                     return Ok(());
                 }
                 let entry = active[..self.prepared.voices]
@@ -240,7 +294,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
                 next += 1;
             }
             for voice in active.iter().flatten() {
-                let Some(mut note) = self.prepared.notes[usize::from(voice.pitch)] else {
+                let Some(mut note) = self.prepared.note(voice.pitch) else {
                     continue;
                 };
                 for channel_gain in &mut note.channel_gain {

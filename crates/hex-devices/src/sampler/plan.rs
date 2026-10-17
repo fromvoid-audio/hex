@@ -15,6 +15,17 @@ pub struct SampleShape {
     channels: SampleChannels,
 }
 impl SampleShape {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self {
+            frames,
+            sample_rate,
+            channels,
+        } = self;
+        let _: (&usize, &u32) = (frames, sample_rate);
+        match channels {
+            SampleChannels::Mono | SampleChannels::Stereo => {}
+        }
+    }
     pub fn new(frames: usize, sample_rate: u32, channels: SampleChannels) -> Result<Self, Invalid> {
         if frames == 0 || frames > MAX_SAMPLE_FRAMES || !(8_000..=192_000).contains(&sample_rate) {
             return Err(Invalid("sample shape exceeds bounded source domain"));
@@ -109,20 +120,23 @@ impl<'a> PreparedSamplerPlan<'a> {
         self.prepare_voice_with_transpose(note, velocity, None)
     }
 
-    /// Project tuning changes the pitch ratio relative to the authored root
-    /// note. Slice keys continue selecting source regions rather than pitches.
+    /// Project tuning changes the pitch ratio from the sample's assigned root
+    /// in neutral 12-TET. A concert-reference change must retune the root key
+    /// too, rather than canceling against a moving project-tuned root. Slice
+    /// keys continue selecting source regions rather than pitches.
     pub fn prepare_tuned_voice_coefficients(
         self,
         note: u8,
         velocity: u8,
         tuning: &hex_lattice::TuningTable,
     ) -> Result<Option<VoiceCoefficients>, Invalid> {
+        if tuning.is_neutral() {
+            return self.prepare_voice_coefficients(note, velocity);
+        }
         let frequency = tuning
             .frequency(note)
             .map_err(|_| Invalid("sampler tuning note unavailable"))?;
-        let root = tuning
-            .frequency(self.settings.root_note)
-            .map_err(|_| Invalid("sampler tuning root unavailable"))?;
+        let root = 440.0 * 2_f64.powf((f64::from(self.settings.root_note) - 69.0) / 12.0);
         let transpose = 12.0 * (frequency / root).log2();
         self.prepare_voice_with_transpose(note, velocity, Some(transpose))
     }

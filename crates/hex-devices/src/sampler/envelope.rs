@@ -48,6 +48,15 @@ pub(super) struct PreparedEnvelope {
 }
 
 impl PreparedEnvelope {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self {
+            attack,
+            decay,
+            sustain,
+            release,
+        } = self;
+        let _: (&u64, &u64, &f64, &u64) = (attack, decay, sustain, release);
+    }
     pub(super) const fn release_frames(self) -> u64 {
         self.release
     }
