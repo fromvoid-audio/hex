@@ -212,3 +212,6 @@ numeric gesture and double-click reset lifecycle.
 Windowed generic bodies retain the shared surface and rounded corners while
 placing the standard inset inside their scroll content. The editor owns row
 visibility, offsets and gesture pins; the widget owns chrome and that inset.
+
+`WideMicroDial` retains shared micro-dial editing and height with a 74-pixel
+width for full frequency values and units. It does not change numeric codecs.

@@ -1,3 +1,14 @@
+## eq panel geometry — #2731 / PR344, 17 october 2026
+
+Sized the toolbar/footer for full shared controls, kept fixed control widths,
+added the reusable wide frequency micro dial and compact boolean button, and
+moved remove alongside selected-node controls. Automation telemetry now lives
+in its own field/page row. A rendered regression fails before and passes after
+at 880/1500-pixel windows in response and automation modes, checking containment,
+nonoverlap, action/readout bounds and usable graph height. Full exact-source CI
+and optimized native visual/input acceptance remain required.
+See [layout contract](docs/eq.md#panel-layout).
+
 ## eq analyzer readability — #2736 / PR347, 17 october 2026
 
 Sub-bin logarithmic bands interpolate existing stereo power instead of repeating

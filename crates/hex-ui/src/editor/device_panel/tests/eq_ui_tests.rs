@@ -74,6 +74,128 @@ fn plot(
 }
 
 #[gpui::test]
+fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut TestAppContext) {
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    let node = editor.read_with(cx, |view, _| read(view, device).nodes[0].id);
+    for automation in [false, true] {
+        if automation {
+            let toggle = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+            visual.simulate_click(toggle.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        for width in [880.0, 1500.0] {
+            visual.simulate_resize(size(px(width), px(650.0)));
+            visual.run_until_parked();
+            let toolbar = visual.debug_bounds(selector("eq-toolbar", device)).unwrap();
+            let footer = visual.debug_bounds(selector("eq-footer", device)).unwrap();
+            let control_bounds =
+                |visual: &mut VisualTestContext, parameter: hex_lattice_contract::ParameterId| {
+                    visual
+                        .debug_bounds(Box::leak(
+                            format!("eq-control-{}-{}", device.value(), parameter.value())
+                                .into_boxed_str(),
+                        ))
+                        .unwrap()
+                };
+            let out = control_bounds(&mut visual, hex_engine::eq::OUTPUT_GAIN);
+            assert!(
+                out.top() >= toolbar.top() && out.bottom() <= toolbar.bottom(),
+                "the output dial and value must fit inside the toolbar at {width}px"
+            );
+            let mut previous = None;
+            for field in [
+                hex_engine::eq::NodeParameter::Enabled,
+                hex_engine::eq::NodeParameter::Kind,
+                hex_engine::eq::NodeParameter::Frequency,
+                hex_engine::eq::NodeParameter::Gain,
+                hex_engine::eq::NodeParameter::Q,
+                hex_engine::eq::NodeParameter::Slope,
+            ] {
+                let bounds = control_bounds(&mut visual, node.parameter(field).unwrap());
+                assert!(bounds.top() >= footer.top() && bounds.bottom() <= footer.bottom());
+                assert!(bounds.left() >= footer.left() && bounds.right() <= footer.right());
+                if let Some(right) = previous {
+                    assert!(bounds.left() >= right, "selected controls must not overlap");
+                }
+                previous = Some(bounds.right());
+            }
+            let graph = visual
+                .debug_bounds(selector("eq-response", device))
+                .unwrap();
+            assert!(toolbar.bottom() <= graph.top());
+            assert!(graph.bottom() <= footer.top());
+            assert!(graph.size.height >= px(if automation { 48.0 } else { 60.0 }));
+            let frequency = control_bounds(
+                &mut visual,
+                node.parameter(hex_engine::eq::NodeParameter::Frequency)
+                    .unwrap(),
+            );
+            assert!(
+                frequency.size.width >= px(74.0),
+                "full frequency text and units need the wide micro dial"
+            );
+            for prefix in ["eq-auto", "eq-remove"] {
+                let bounds = visual.debug_bounds(selector(prefix, device)).unwrap();
+                assert!(bounds.left() >= previous.unwrap() && bounds.right() <= footer.right());
+                assert!(bounds.top() >= footer.top() && bounds.bottom() <= footer.bottom());
+                previous = Some(bounds.right());
+            }
+            let mut right = toolbar.left();
+            for name in [
+                format!(
+                    "eq-control-{}-{}",
+                    device.value(),
+                    hex_engine::eq::MODE.value()
+                ),
+                format!(
+                    "eq-control-{}-{}",
+                    device.value(),
+                    hex_engine::eq::OUTPUT_GAIN.value()
+                ),
+                format!("eq-bank-{}-0", device.value()),
+                format!("eq-bank-{}-1", device.value()),
+                format!("eq-bank-{}-2", device.value()),
+                format!("eq-bank-{}-3", device.value()),
+                format!("eq-bank-{}-4", device.value()),
+                format!("eq8-spectrum-{}", device.value()),
+                format!("eq-spectrum-input-{}", device.value()),
+                format!("eq-audition-{}", device.value()),
+            ] {
+                let bounds = visual
+                    .debug_bounds(Box::leak(name.into_boxed_str()))
+                    .unwrap();
+                assert!(
+                    bounds.left() >= right && bounds.right() <= toolbar.right(),
+                    "toolbar controls fit without overlap"
+                );
+                assert!(bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom());
+                right = bounds.right();
+            }
+            if automation {
+                let row = visual
+                    .debug_bounds(selector("eq-automation-toolbar", device))
+                    .unwrap();
+                let value = visual
+                    .debug_bounds(selector("eq-playhead", device))
+                    .unwrap();
+                assert!(row.bottom() <= graph.top());
+                assert!(value.left() >= row.left() && value.right() <= row.right());
+                assert!(value.top() >= row.top() && value.bottom() <= row.bottom());
+            }
+        }
+    }
+}
+
+#[gpui::test]
 fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);
     let (handle, editor) = actor_editor_window(cx, service, state, track);

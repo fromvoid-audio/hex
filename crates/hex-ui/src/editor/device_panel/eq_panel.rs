@@ -229,10 +229,11 @@ pub(super) fn render_body(
         type_id: eq::EQ_TYPE_ID,
     };
     let mut toolbar = div()
+        .debug_selector(move || format!("eq-toolbar-{}", device.value()))
         .flex()
         .items_center()
         .gap(px(3.0))
-        .h(px(18.0))
+        .h(px(40.0))
         .text_size(px(8.0))
         .flex_shrink_0();
     toolbar = toolbar.child(control(
@@ -253,6 +254,9 @@ pub(super) fn render_body(
         eq::OUTPUT_GAIN,
         "out",
     ));
+    toolbar = toolbar.child(hex_widgets::device_divider(theme::device_style(
+        theme::DeviceStyleRole::Layout,
+    )));
     for (index, label) in ["st", "l", "r", "m", "s"].into_iter().enumerate() {
         toolbar = toolbar.child(
             action_button(
@@ -275,20 +279,9 @@ pub(super) fn render_body(
         );
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
-    if let Some(id) = selected {
-        toolbar = toolbar.child(
-            action_button(
-                format!("eq-remove-{}", device.value()),
-                "remove",
-                "remove selected node and its automation",
-                theme::DeviceActionRole::Normal,
-                true,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                edit(view, cx, device, 0, move |s, _| s.remove(id));
-            })),
-        );
-    }
+    toolbar = toolbar.child(hex_widgets::device_divider(theme::device_style(
+        theme::DeviceStyleRole::Layout,
+    )));
     toolbar = toolbar.child(spectrum_toggle(view, cx, device, owner, eq::EQ_TYPE_ID));
     let show_input = view
         .device_panel
@@ -333,7 +326,13 @@ pub(super) fn render_body(
             cx.notify();
         })),
     );
-    let mut bottom = div().flex().items_center().gap(px(2.0)).h(px(36.0));
+    let mut bottom = div()
+        .debug_selector(move || format!("eq-footer-{}", device.value()))
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .h(px(40.0))
+        .flex_shrink_0();
     if let Some(id) = selected {
         for (field, label) in [
             (NodeParameter::Enabled, "on"),
@@ -382,21 +381,29 @@ pub(super) fn render_body(
                 cx.notify();
             })),
         );
+        bottom = bottom.child(
+            action_button(
+                format!("eq-remove-{}", device.value()),
+                "remove",
+                "remove selected node and its automation",
+                theme::DeviceActionRole::Normal,
+                true,
+            )
+            .on_click(cx.listener(move |view, _, _, cx| {
+                edit(view, cx, device, 0, move |s, _| s.remove(id));
+            })),
+        );
     } else {
         bottom = bottom.child(theme::text(
             "click the response to add a node · select and drag to edit",
         ));
-    }
-    if let Some(id) = selected {
-        if let Some(field) = automation {
-            bottom = bottom.child(theme::text(playhead_readout(view, &state, id, field)));
-        }
     }
     if automation.is_none() {
         toolbar = toolbar.child(theme::text("authored response"));
     }
     if let Some(field) = automation {
         let mut controls = div()
+            .debug_selector(move || format!("eq-automation-toolbar-{}", device.value()))
             .flex()
             .items_center()
             .gap(px(2.0))
@@ -472,10 +479,18 @@ pub(super) fn render_body(
                 })),
             );
         }
+        if let Some(id) = selected {
+            controls = controls.child(
+                div()
+                    .debug_selector(move || format!("eq-playhead-{}", device.value()))
+                    .flex_shrink_0()
+                    .child(theme::text(playhead_readout(view, &state, id, field))),
+            );
+        }
         toolbar = div()
             .flex()
             .flex_col()
-            .h(px(34.0))
+            .h(px(56.0))
             .flex_shrink_0()
             .child(toolbar)
             .child(controls);
@@ -579,13 +594,13 @@ fn control(
         device,
         identity,
         parameter,
-        if matches!(
-            parameter.descriptor.kind,
-            hex_lattice_contract::ParameterKind::Float { .. }
-        ) {
-            ControlPresentation::MiniDial
-        } else {
-            ControlPresentation::CompactSelector
+        match parameter.descriptor.kind {
+            hex_lattice_contract::ParameterKind::Float { .. } if label == "freq" => {
+                ControlPresentation::WideMicroDial
+            }
+            hex_lattice_contract::ParameterKind::Float { .. } => ControlPresentation::MiniDial,
+            hex_lattice_contract::ParameterKind::Bool => ControlPresentation::CompactButton,
+            _ => ControlPresentation::CompactSelector,
         },
         ControlText {
             label: Some(label),
@@ -595,6 +610,8 @@ fn control(
     .id(ElementId::Name(
         format!("eq-control-{}-{}", device.value(), id.value()).into(),
     ))
+    .debug_selector(move || format!("eq-control-{}-{}", device.value(), id.value()))
+    .flex_shrink_0()
 }
 fn current(view: &EditorView, device: DeviceId) -> Option<NativeDeviceState> {
     Some(view.state.as_ref()?.project.device(device)?.state().clone())
