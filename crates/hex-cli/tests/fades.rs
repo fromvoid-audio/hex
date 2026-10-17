@@ -200,3 +200,46 @@ fn endpoint_only_fades_save_prepare_and_export_silence() {
         assert_stereo_pcm(&bytes, &expected);
     }
 }
+
+#[test]
+fn lower_fade_resize_save_reopen_exports_the_resized_boundary_and_one_step_history() {
+    let fixture = Fixture::new(13);
+    let (mut editor, clip) = fixture.editor(13);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 6,
+            fade_out: 5,
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipFadeEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 2,
+        })
+        .unwrap();
+    let left = fixture.render(editor.project(), "left");
+    assert_stereo_pcm(
+        &left,
+        &[
+            0, 0, 0, 2731, 5461, 8192, 8192, 8192, 8192, 6144, 4096, 2048, 0,
+        ],
+    );
+    editor
+        .execute(Command::TrimClipFadeEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 11,
+        })
+        .unwrap();
+    let resized = fixture.render(editor.project(), "both");
+    assert_stereo_pcm(
+        &resized,
+        &[0, 0, 0, 2731, 5461, 8192, 8192, 8192, 8192, 4096, 0],
+    );
+    assert!(editor.undo());
+    assert_eq!(fixture.render(editor.project(), "undo-resize"), left);
+    assert!(editor.redo());
+    assert_eq!(fixture.render(editor.project(), "redo-resize"), resized);
+}
