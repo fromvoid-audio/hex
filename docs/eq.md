@@ -55,6 +55,22 @@ legacy S shelves require that edit before gain/Q/shape automation. Already inval
 enabled legacy S/gain combinations fail preparation visibly; disabled authored
 values remain preserved.
 
+## Panel layout
+
+The forty-pixel top row contains mode/output controls, channel banks/count and
+analyzer/listen controls, separated by shared theme dividers. The forty-pixel
+footer keeps selected-node controls, automate and remove together. Frequency
+uses a reusable 74-pixel micro dial so full values and units fit; other controls
+keep the shared compact dial, selector and button presentations. The shared host
+[bindings](native-device-bindings.md) own their identity, gesture and retirement
+behavior; panel composition supplies presentation only. Control widths
+never shrink into neighboring labels or readouts. EQ text actions use intrinsic
+nonwrapping label widths plus padding, retaining the shared action paint and
+minimum size. The rendered regression shapes complete labels with the bundled
+font instead of checking only their containers. Automation adds a separate
+sixteen-pixel row containing its field/page controls and playhead readout, while
+the response/automation plot retains the remaining height.
+
 ## EQ-owned arrangement automation
 
 The **automate** button edits the selected node's frequency, gain, Q, shape,

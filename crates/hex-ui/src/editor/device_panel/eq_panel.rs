@@ -17,6 +17,22 @@ const CUT_CREATION_EDGE: f32 = 0.05;
 // unsigned Q32.32. The following page would end at 2^64 and overflow.
 const MAX_AUTOMATION_PAGE: u32 = (1 << 28) - 2;
 
+// Content geometry only: preserve shared device-action paint and tooltip/input
+// behavior, while giving complete labels their intrinsic width and padding.
+fn text_action_button(
+    id: String,
+    label: &'static str,
+    tooltip: &'static str,
+    role: theme::DeviceActionRole,
+    selected: bool,
+) -> Stateful<Div> {
+    action_button(id, label, tooltip, role, selected)
+        .w_auto()
+        .min_w(px(hex_widgets::DEVICE_HEADER_ACTION_SIZE))
+        .px(px(3.0))
+        .whitespace_nowrap()
+}
+
 fn change_automation_page(page: u32, delta: i32) -> u32 {
     page.saturating_add_signed(delta).min(MAX_AUTOMATION_PAGE)
 }
@@ -229,10 +245,11 @@ pub(super) fn render_body(
         type_id: eq::EQ_TYPE_ID,
     };
     let mut toolbar = div()
+        .debug_selector(move || format!("eq-toolbar-{}", device.value()))
         .flex()
         .items_center()
         .gap(px(3.0))
-        .h(px(18.0))
+        .h(px(40.0))
         .text_size(px(8.0))
         .flex_shrink_0();
     toolbar = toolbar.child(control(
@@ -253,9 +270,12 @@ pub(super) fn render_body(
         eq::OUTPUT_GAIN,
         "out",
     ));
+    toolbar = toolbar.child(hex_widgets::device_divider(theme::device_style(
+        theme::DeviceStyleRole::Layout,
+    )));
     for (index, label) in ["st", "l", "r", "m", "s"].into_iter().enumerate() {
         toolbar = toolbar.child(
-            action_button(
+            text_action_button(
                 format!("eq-bank-{}-{index}", device.value()),
                 label,
                 "select authored channel bank",
@@ -275,20 +295,9 @@ pub(super) fn render_body(
         );
     }
     toolbar = toolbar.child(theme::text(format!("{} / 64", state.nodes.len())));
-    if let Some(id) = selected {
-        toolbar = toolbar.child(
-            action_button(
-                format!("eq-remove-{}", device.value()),
-                "remove",
-                "remove selected node and its automation",
-                theme::DeviceActionRole::Normal,
-                true,
-            )
-            .on_click(cx.listener(move |view, _, _, cx| {
-                edit(view, cx, device, 0, move |s, _| s.remove(id));
-            })),
-        );
-    }
+    toolbar = toolbar.child(hex_widgets::device_divider(theme::device_style(
+        theme::DeviceStyleRole::Layout,
+    )));
     toolbar = toolbar.child(spectrum_toggle(view, cx, device, owner, eq::EQ_TYPE_ID));
     let show_input = view
         .device_panel
@@ -296,7 +305,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|panel| panel.show_input);
     toolbar = toolbar.child(
-        action_button(
+        text_action_button(
             format!("eq-spectrum-input-{}", device.value()),
             "input",
             "show actual pre-eq input spectrum; output stays visible",
@@ -316,7 +325,7 @@ pub(super) fn render_body(
         .get(&device)
         .is_some_and(|p| p.armed);
     toolbar = toolbar.child(
-        action_button(
+        text_action_button(
             format!("eq-audition-{}", device.value()),
             "listen",
             "hold a node to audition its filter",
@@ -333,7 +342,13 @@ pub(super) fn render_body(
             cx.notify();
         })),
     );
-    let mut bottom = div().flex().items_center().gap(px(2.0)).h(px(36.0));
+    let mut bottom = div()
+        .debug_selector(move || format!("eq-footer-{}", device.value()))
+        .flex()
+        .items_center()
+        .gap(px(2.0))
+        .h(px(40.0))
+        .flex_shrink_0();
     if let Some(id) = selected {
         for (field, label) in [
             (NodeParameter::Enabled, "on"),
@@ -356,7 +371,7 @@ pub(super) fn render_body(
             }
         }
         bottom = bottom.child(
-            action_button(
+            text_action_button(
                 format!("eq-auto-{}", device.value()),
                 if automation.is_some() {
                     "response"
@@ -382,21 +397,29 @@ pub(super) fn render_body(
                 cx.notify();
             })),
         );
+        bottom = bottom.child(
+            text_action_button(
+                format!("eq-remove-{}", device.value()),
+                "remove",
+                "remove selected node and its automation",
+                theme::DeviceActionRole::Normal,
+                true,
+            )
+            .on_click(cx.listener(move |view, _, _, cx| {
+                edit(view, cx, device, 0, move |s, _| s.remove(id));
+            })),
+        );
     } else {
         bottom = bottom.child(theme::text(
             "click the response to add a node · select and drag to edit",
         ));
-    }
-    if let Some(id) = selected {
-        if let Some(field) = automation {
-            bottom = bottom.child(theme::text(playhead_readout(view, &state, id, field)));
-        }
     }
     if automation.is_none() {
         toolbar = toolbar.child(theme::text("authored response"));
     }
     if let Some(field) = automation {
         let mut controls = div()
+            .debug_selector(move || format!("eq-automation-toolbar-{}", device.value()))
             .flex()
             .items_center()
             .gap(px(2.0))
@@ -411,7 +434,7 @@ pub(super) fn render_body(
             (NodeParameter::Enabled, "on"),
         ] {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-field-{}-{label}", device.value()),
                     label,
                     "select automation parameter",
@@ -430,7 +453,7 @@ pub(super) fn render_body(
         }
         for (delta, label) in [(-1, "←"), (1, "→")] {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-page-{}-{delta}", device.value()),
                     label,
                     "show previous or next sixteen quarter-note beats",
@@ -454,7 +477,7 @@ pub(super) fn render_body(
         )));
         if let (Some(id), Some(point)) = (selected, selected_point) {
             controls = controls.child(
-                action_button(
+                text_action_button(
                     format!("eq-auto-delete-{}", device.value()),
                     "− point",
                     "remove selected automation point",
@@ -472,10 +495,18 @@ pub(super) fn render_body(
                 })),
             );
         }
+        if let Some(id) = selected {
+            controls = controls.child(
+                div()
+                    .debug_selector(move || format!("eq-playhead-{}", device.value()))
+                    .flex_shrink_0()
+                    .child(theme::text(playhead_readout(view, &state, id, field))),
+            );
+        }
         toolbar = div()
             .flex()
             .flex_col()
-            .h(px(34.0))
+            .h(px(56.0))
             .flex_shrink_0()
             .child(toolbar)
             .child(controls);
@@ -579,13 +610,13 @@ fn control(
         device,
         identity,
         parameter,
-        if matches!(
-            parameter.descriptor.kind,
-            hex_lattice_contract::ParameterKind::Float { .. }
-        ) {
-            ControlPresentation::MiniDial
-        } else {
-            ControlPresentation::CompactSelector
+        match parameter.descriptor.kind {
+            hex_lattice_contract::ParameterKind::Float { .. } if label == "freq" => {
+                ControlPresentation::WideMicroDial
+            }
+            hex_lattice_contract::ParameterKind::Float { .. } => ControlPresentation::MiniDial,
+            hex_lattice_contract::ParameterKind::Bool => ControlPresentation::CompactButton,
+            _ => ControlPresentation::CompactSelector,
         },
         ControlText {
             label: Some(label),
@@ -595,6 +626,8 @@ fn control(
     .id(ElementId::Name(
         format!("eq-control-{}-{}", device.value(), id.value()).into(),
     ))
+    .debug_selector(move || format!("eq-control-{}-{}", device.value(), id.value()))
+    .flex_shrink_0()
 }
 fn current(view: &EditorView, device: DeviceId) -> Option<NativeDeviceState> {
     Some(view.state.as_ref()?.project.device(device)?.state().clone())
