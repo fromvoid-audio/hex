@@ -7,6 +7,19 @@ plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
+## startup and explicit test mode
+
+`./launch` starts the supported installed optimized app, with bundle integrity and
+release-profile verification. It does not invoke Git, run CI, build, replace the
+app or claim a Cargo target lock. Existing running apps are activated normally;
+startup neither quits them nor changes projects/settings. Missing or unsupported
+artifacts produce an actionable `./launch --test` instruction.
+
+`./launch --test` explicitly opts into updating clean main, full local CI and the
+optimized build/install workflow below, then opens the verified app. Save and quit
+before that mode. The flag survives source-update re-exec so requested tests
+cannot fall through to ordinary startup.
+
 ## repository-owned build and install
 
 Review the focused PR and run `python3 scripts/local-ci.py` on its clean final

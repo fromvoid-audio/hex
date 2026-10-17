@@ -1,3 +1,34 @@
+## portable sample catalog fixtures — #2723 / PR339, 17 october 2026
+
+The original Unix invalid-byte filename fixture reproduced macOS OS92 before
+scanner execution. Valid native UTF-8 paths now exercise real Unix scan/cache
+roundtrip and symlink cycle/alias exclusion. A filesystem-independent catalog
+roundtrip preserves original non-UTF8 bytes on all Unix targets; Linux retains
+the original real invalid-byte filename fixture. No production path handling
+changes. Focused red/green and full local-CI evidence are recorded with PR339.
+Linux execution remains separately reported rather than inferred from macOS.
+
+## shared stereo/gain kernels — #2671 / PR288, 17 october 2026
+
+Real production stereo kernels move to dependency-free hex-dsp with Lattice API
+reexports. Gate/Saturator share validated amplitude/decibel units on control.
+Kernel/device/lattice and authoring fixtures plus affected Clippy/architecture
+checks pass; before/after release PCM digests match in all five admitted cases.
+See [source/profile evidence](docs/native-dsp.md). Full exact final-source local
+CI remains required; broader DSP families and native/reference qualification
+remain open. No host cap or device-law changes.
+
+## native device authoring bootstrap — #2670 / PR285, 17 october 2026
+
+Opt-in Lattice conformance helpers exercise codecs, state-aware parameters,
+transactional effect histories and analytic/shared/mutable instrument classes.
+Registry-discovered defaults pass at five rates; broken-provider fixtures prove
+sensitivity. Standalone JSON report includes actual descriptors/defaults/ranges.
+See [authoring](docs/native-device-authoring.md). Full final-source local CI is
+required for this Rust slice; native/reference acceptance and two-new-device/UI
+adapter production proofs remain open. No device DSP or host budget changes.
+
+
 ## nested audio events — pulse2692 / PR308, 17 october 2026
 
 Arrangement audio clips retain their outer editing behavior while a lower event
@@ -40,6 +71,35 @@ labels for collections, sections and places. Width/settings remain session-only.
 See [browser layout](docs/browser-layout.md) for the finite native checklist.
 Automated validation results are recorded with this change; native macOS
 resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
+
+## 17 october 2026 — indexed samples library (Pulse #2699 / PR317)
+
+Samples combines WAVs recursively discovered in Music and added places, with
+source-folder filters and multi-term path search. A bounded native-path database
+restores cached results then reconciles in background at startup, folder addition,
+manual refresh and 30-second intervals. Deleted/renamed files reconcile; offline
+folders and limits are visible. Existing preview/import/drag paths and the merged
+sidebar/tag/bottom-preview composition are preserved. Projects retains folder
+navigation. See docs/sample-library.md for bounds and cache recovery contracts.
+
+Source evidence: eight hex-library tests pass, including cache roundtrip/corruption,
+native paths, overlapping roots, depth limits and file reconciliation. Integrated
+UI compilation, all 30 focused browser tests and all 20 local CI checks passed on
+initial source 8cdc6ef4. Current-main integration preserves flexible EQ and the
+outward tag editor/resizable picker; both browser test groups and dated note
+sections are retained. Schema27/shared colors from PR315 are preserved. Final
+integration checks are recorded in PR/Pulse evidence. Native macOS
+visual/listening/restart acceptance remains open;
+no exact Live parity, extra audio codec, or large-library timing claim.
+
+Global search composition follows PR275's verified BrowserItemKey interface:
+All merges indexed WAVs with bounded current-folder files by original path,
+retaining outside-root WAVs; devices share file counts/ordering for preview and
+activation. Folder/catalog publication preserves selection by identity, and
+unchanged catalogs retain result snapshots. Live catalog publication supersedes
+a pending disk-cache bootstrap. Combined-file/cache regressions and all 41 browser
+tests pass at the source milestone; final exact full-CI evidence belongs to
+PR317/Pulse2699. Native appearance/listening/restart acceptance remains separate.
 
 ## held-clip intersection accent — #2696 / PR314, 17 october 2026
 
@@ -187,6 +247,26 @@ Pulse2679 retains the complete user request; PR296 is its first focused kernel
 prerequisite. Linux cannot run the installed macOS Live reference or provide
 native macOS listening/visual evidence. Full local CI and final PR evidence
 are recorded on the ticket; targeted checks do not authorize merge.
+
+## Global browser search — #2659 / PR275, 17 october 2026
+
+Command-F opens the browser in `all`, focuses search and selects the previous
+query. Cached name filtering combines current-folder supported files and native
+devices; category filters, dragging and sample preview remain available. Search is
+bounded/nonrecursive, matching the current library contract; no all-place index
+or Live parity claim. See docs/browser-places.md for the native user checklist.
+Focused browser tests pass, including global focus/query replacement, first-arrow
+selection, selection identity across scan completion, Session device-click focus
+and category scroll reset. Follow-up regressions cover IME whole-query replacement,
+caret movement preserving manual scroll, search clicks restoring text mode without
+scroll reset, category clicks retaining Session browser focus, empty-query Escape
+restoring caret mode, and device highlights waiting for result focus. Unfinished gain numeric drafts refuse search without
+losing focus or text; Escape then Command-F restores normal search. Native-device
+and return-send numeric edits use the existing finalization barrier before search:
+invalid drafts retain focus, while repaired valid values commit before filtering. The browser
+and gain-lane suites pass, with existing drag/preview coverage preserved.
+Full runner results are recorded in the PR and Pulse; native acceptance remains
+pending.
 
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
@@ -4218,3 +4298,14 @@ lock, scope, source and artifact checks. Real-Cargo regression fails before the
 fix and verifies added dependency output plus removal/rename/version-change
 refusals and preserved external/dev artifacts. Final exact checks and actual
 merged-source launch evidence remain recorded on PR320/Pulse2704.
+
+## fast normal startup with explicit test mode — pulse2705 / PR321, 17 october 2026
+
+The user changed normal `./launch` to open the supported installed optimized app
+without Git/update/build/CI dispatch or Cargo locks. `--test` retains clean-main
+update, exact full local checks and optimized guarded delivery/start, preserving
+that flag across updated-source re-exec. Installed identity/hash/signature/release
+checks remain, with one setup instruction for missing/unsupported apps; startup
+activates an existing process without forcing quit or changing user state.
+Targeted mode/error/configuration regressions and final source/build/actual-start
+evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.

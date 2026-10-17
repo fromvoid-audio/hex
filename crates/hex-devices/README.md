@@ -45,7 +45,7 @@ device state or changing the ordinary EQ cascade.
 
 ## Dependencies
 
-This crate depends on the standard library, `hex-lattice`, and
+This crate depends on the standard library, `hex-lattice`, `hex-dsp` and
 `hex-lattice-contract` for validated linear stereo coefficients and the native
 device codec/metadata contract. The caller supplies the project sample rate and
 absolute note-relative frame positions; Utility and Saturator process
@@ -76,3 +76,7 @@ track mixing, manage MIDI state, access audio devices, or host external plugins.
 FM4 uses an original bounded state codec; it does not select Live algorithm
 numbers or implement feedback/chase/polyphony. See
 [FM4 contract](../../docs/fm4.md).
+
+The `device_conformance` example and registry-discovered authoring test use the
+opt-in lattice test helpers without a desktop, project, GPUI or CPAL. See
+[authoring](../../docs/native-device-authoring.md) for JSON reports and limits.
