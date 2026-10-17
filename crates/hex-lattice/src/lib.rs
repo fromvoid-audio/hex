@@ -8,6 +8,7 @@ use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
     NativeDeviceState,
 };
+pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::DeviceMeter;
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
@@ -71,10 +72,10 @@ mod instrument;
 mod instrument_pair;
 mod instrument_runtime;
 pub use instrument::{
-    ANALYTIC_NOTE_PAYLOAD_WORDS, MAX_SHARED_ANALYTIC_CONTEXT_BYTES, NativeInstrumentDefinition,
-    NativeInstrumentRegistry, PreparedAnalyticNote, PreparedNativeInstrument,
-    PreparedSharedAnalyticContext, PreparedSharedAnalyticNote, PreparedStorageDeclaration,
-    SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
+    ANALYTIC_NOTE_PAYLOAD_WORDS, AnalyticNoteContinuation, MAX_SHARED_ANALYTIC_CONTEXT_BYTES,
+    NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
+    PreparedNativeInstrument, PreparedSharedAnalyticContext, PreparedSharedAnalyticNote,
+    PreparedStorageDeclaration, SHARED_ANALYTIC_NOTE_PAYLOAD_WORDS,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,

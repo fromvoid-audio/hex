@@ -98,6 +98,7 @@ mod track_selection_ui_test;
 mod tracks;
 mod transport;
 mod trim;
+mod tuning;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
@@ -148,6 +149,7 @@ struct PendingPlayback {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
 }
 
 struct PendingResidentPublication {
@@ -160,6 +162,7 @@ struct PendingResidentPublication {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
 }
 
 enum PendingEditorAudioResult {
@@ -207,6 +210,7 @@ struct PlaybackCandidate {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+    tuning_preview_identity: Option<hex_session::service::TuningPreviewIdentity>,
 }
 
 #[derive(Clone, Copy)]
@@ -246,6 +250,10 @@ actions!(
         RecoverSavedProject,
         RecoverPreviousSave,
         OpenSettings,
+        OpenTuning,
+        CloseTuning,
+        CommitTuningName,
+        CancelTuningName,
         SaveProject,
         SaveAsProject,
         ExportProject,
@@ -311,6 +319,7 @@ const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 fn bind_editor_keys(cx: &mut App) {
     device_panel::bind_operator_keys(cx);
     clip_name::bind_keys(cx);
+    tuning::library::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -396,6 +405,12 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-s", SaveProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-e", ExportProject, Some("hex_editor")),
+        KeyBinding::new("cmd-alt-t", OpenTuning, None),
+        KeyBinding::new("escape", CloseTuning, Some("hex_tuning")),
+        KeyBinding::new("enter", CommitTuningName, Some("hex_tuning_name")),
+        KeyBinding::new("escape", CancelTuningName, Some("hex_tuning_name")),
+        KeyBinding::new("cmd-z", Undo, Some("hex_tuning")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_tuning")),
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
@@ -652,6 +667,7 @@ pub(super) struct EditorView {
     browser: browser::BrowserState,
     recent_projects: RecentProjectsState,
     theme_settings: theme_settings::ThemeSettingsState,
+    tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
@@ -781,12 +797,16 @@ impl EditorView {
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
             if window.window_handle().window_id() == keyboard_window_id
                 && let Some(entity) = keyboard_entity.upgrade()
-                && entity.read(cx).computer_keyboard_accepts(
+                && (entity.read(cx).tuning_audition_accepts(
+                    &event.keystroke.key,
+                    event.keystroke.modifiers,
+                    window,
+                ) || entity.read(cx).computer_keyboard_accepts(
                     &event.keystroke.key,
                     event.keystroke.modifiers,
                     window,
                     cx,
-                )
+                ))
             {
                 cx.stop_propagation();
             }
@@ -818,6 +838,7 @@ impl EditorView {
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.cancel_tuning_audition();
                 view.cancel_fade_gesture(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
@@ -1010,6 +1031,7 @@ impl EditorView {
             browser,
             recent_projects,
             theme_settings,
+            tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
             clip_paint_gesture: None,

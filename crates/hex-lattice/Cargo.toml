@@ -12,5 +12,6 @@ workspace = true
 conformance = []
 
 [dependencies]
+hex-tuning = { path = "../hex-tuning" }
 hex-dsp = { path = "../hex-dsp" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }

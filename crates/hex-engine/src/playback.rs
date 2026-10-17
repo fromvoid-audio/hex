@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 mod candidate_storage;
 mod metronome;
+mod tuning_audition;
 use metronome::Metronome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +294,7 @@ impl PlaybackHandoffError {
 /// Playback graph, with the legacy finite renderer kept as the compatibility path.
 pub struct Playback {
     metronome: Option<Box<Metronome>>,
+    tuning_audition: Option<Box<crate::tuning_audition::Runtime>>,
     project: Arc<Project>,
     prepared_revision: Option<Arc<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
@@ -344,6 +346,46 @@ impl Playback {
         track: hex_project::TrackId,
         input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
     ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard_impl(project, track, input, None)
+    }
+    /// Reuse a checked tuning-only family and its exact physical lease. The
+    /// caller prepares that family through PreparedRevision::prepare_tuning_from.
+    pub fn prepare_computer_keyboard_for_tuning(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        hint: &crate::computer_keyboard::ComputerKeyboardTuningHint,
+    ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard_impl(project, track, input, Some(hint))
+    }
+    /// Controller-only publication retains the same checked lease promotion
+    /// hint after a tuned Operator has returned to neutral through Undo.
+    pub fn prepare_computer_keyboard_for_controller_activation_with_tuning_hint(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        hint: &crate::computer_keyboard::ComputerKeyboardTuningHint,
+    ) -> Result<(), Invalid> {
+        self.prepare_computer_keyboard_for_tuning(project, track, input, hint)
+    }
+    pub fn computer_keyboard_tuning_hint(
+        &self,
+    ) -> Option<crate::computer_keyboard::ComputerKeyboardTuningHint> {
+        self.session_runtime
+            .as_ref()?
+            .computer_keyboard
+            .as_ref()?
+            .tuning_hint()
+    }
+    fn prepare_computer_keyboard_impl(
+        &mut self,
+        project: &hex_project::Project,
+        track: hex_project::TrackId,
+        input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
+        hint: Option<&crate::computer_keyboard::ComputerKeyboardTuningHint>,
+    ) -> Result<(), Invalid> {
         let canonical = project
             .tracks()
             .iter()
@@ -371,9 +413,26 @@ impl Playback {
                 "computer keyboard monitoring is unavailable with positive latency devices",
             ));
         }
-        let candidate = Box::new(crate::computer_keyboard::ComputerKeyboardRuntime::prepare(
-            project, track, input,
-        )?);
+        let family = self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid(
+                "computer keyboard requires prepared revision provenance",
+            ))?
+            .tuning_family();
+        if self.project.shared_contexts().tuning()
+            != &project.tuning().table().map_err(|e| Invalid(e.0))?
+        {
+            return Err(Invalid("computer keyboard tuning does not match playback"));
+        }
+        let mut candidate = Box::new(if let Some(hint) = hint {
+            crate::computer_keyboard::ComputerKeyboardRuntime::prepare_for_tuning(
+                project, track, input, family, hint,
+            )?
+        } else {
+            crate::computer_keyboard::ComputerKeyboardRuntime::prepare(project, track, input)?
+        });
+        candidate.set_tuning_family(family);
         let previous = runtime.computer_keyboard.replace(candidate);
         if runtime.validate_candidate_runtime_storage(0).is_err() {
             runtime.computer_keyboard = previous;
@@ -455,6 +514,7 @@ impl Playback {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             metronome,
+            tuning_audition,
             project: _,
             prepared_revision,
             session_runtime,
@@ -465,6 +525,9 @@ impl Playback {
             performance_clock_exhausted: _,
             playing: _,
         } = self;
+        if tuning_audition.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
         visit(9, 0, true)?; // actual Project handle
         visit(10, 0, prepared_revision.is_some())?;
         visit(11, 0, metronome.is_some())?;
@@ -486,6 +549,7 @@ impl Playback {
         let metronome = None;
         Self {
             metronome,
+            tuning_audition: None,
             project,
             prepared_revision: None,
             session_runtime: None,
@@ -563,6 +627,7 @@ impl Playback {
         let playing = runtime.playing();
         Self {
             metronome,
+            tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime: Some(Box::new(runtime)),
@@ -602,6 +667,7 @@ impl Playback {
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
             metronome,
+            tuning_audition: None,
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime,
@@ -902,6 +968,7 @@ impl Playback {
             )
         ) {
             self.cancel_computer_keyboard();
+            self.cancel_tuning_audition();
         }
         match action {
             PlaybackAction::SetMetronome(enabled) => {
@@ -1055,6 +1122,14 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
+        let continued_audition = match (&self.tuning_audition, &previous.tuning_audition) {
+            (Some(next), Some(old)) if next.shares_live_lease(old) => {
+                Some(next.continued_synth(old).map_err(|_| {
+                    PlaybackHandoffError::Session(crate::SessionPlaybackError::DeviceRuntime)
+                })?)
+            }
+            _ => None,
+        };
         let preserve_keyboard = match (
             self.session_runtime
                 .as_ref()
@@ -1070,7 +1145,13 @@ impl Playback {
                     .as_ref()
                     .zip(previous.prepared_revision.as_ref())
                     .is_some_and(|(next, old)| Arc::ptr_eq(next, old));
-                if !exact_revision || !next.can_preserve_from(old) {
+                let tuning_revision = next.tuning_preservation_matches(old)
+                    && self
+                        .prepared_revision
+                        .as_ref()
+                        .zip(previous.prepared_revision.as_ref())
+                        .is_some_and(|(next, old)| next.tuning_family() == old.tuning_family());
+                if (!exact_revision && !tuning_revision) || !next.can_preserve_from(old) {
                     return Err(PlaybackHandoffError::Session(
                         crate::SessionPlaybackError::DeviceRuntime,
                     ));
@@ -1140,6 +1221,14 @@ impl Playback {
             }
         }
         self.inherit_metronome(previous);
+        if let (Some(continued), Some(next), Some(old)) = (
+            continued_audition,
+            self.tuning_audition.as_mut(),
+            previous.tuning_audition.as_mut(),
+        ) {
+            next.preserve_from(old, continued);
+        }
+        previous.cancel_tuning_audition();
         if preserve_keyboard {
             if let (Some(next), Some(old)) = (
                 self.session_runtime
@@ -1186,6 +1275,7 @@ impl Playback {
                 .render_with_post_node_observer(output, observer)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
+            self.mix_tuning_audition(output);
             return Ok(());
         }
         if self.session_unavailable.is_some()
@@ -1218,6 +1308,7 @@ impl Playback {
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
         self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
         Ok(())
     }
 
@@ -1266,6 +1357,7 @@ impl Playback {
                 .render_with_pages(output, pages)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
+            self.mix_tuning_audition(output);
             return Ok(());
         }
         self.render_pages_fallback(output, pages)
@@ -1290,6 +1382,7 @@ impl Playback {
                 .render_with_pages_and_post_node_observer(output, pages, observer)
                 .map_err(|error| Invalid(error.diagnostic_message()))?;
             self.mix_metronome(start, playing, output);
+            self.mix_tuning_audition(output);
             return Ok(());
         }
         if observer.is_some() {
@@ -1334,6 +1427,7 @@ impl Playback {
         self.performance_frame = next_performance;
         self.performance_clock_exhausted = clock_exhausted;
         self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
         Ok(())
     }
 

@@ -830,7 +830,7 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFeedbackRuntime {
 #[test]
 fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     let sampler_bytes = std::mem::size_of::<hex_lattice::PreparedAnalyticNote>();
-    assert_eq!(sampler_bytes, 344);
+    assert_eq!(sampler_bytes, 352);
     let added_sampler_bytes = sampler_bytes - 40;
     let release_capacity = super::SESSION_RELEASE_CAPACITY;
     let release_entries_bytes = release_capacity
@@ -866,12 +866,14 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     );
     #[cfg(target_pointer_width = "64")]
     {
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 480);
-        assert_eq!(span_buffer_bytes, 82_952);
-        assert_eq!(current_bytes, 15_811_592);
+        // Sampler authority adds eight bytes; tuning custody uses existing
+        // padding. The admission ceilings remain unchanged.
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
+        assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
+        assert_eq!(current_bytes, 16_075_272);
         assert_eq!(shared_owner_slots, 131_072);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_335_880);
+        assert_eq!(scoped_bytes, 16_599_560);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_sampler_bytes)

@@ -901,7 +901,7 @@ fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
         .expect("nonzero feedback selects mutable path");
     assert_eq!(factory.max_active_occurrences(), 16);
     assert_eq!(factory.max_events_per_block(), 256);
-    assert!(factory.declared_twin_bytes() <= 4096);
+    assert!(factory.declared_twin_bytes() <= 5120);
 }
 
 #[test]

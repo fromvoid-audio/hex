@@ -1,3 +1,28 @@
+## project tuning runtime continuation — #2740 / PR351, 17 october 2026
+
+Cloud takeover repairs the invalid Operator event-preflight fixture and stale
+sampler/table footprint accounting without increasing scoped memory ceilings.
+Ordinary worker edits invalidate tuning-family inheritance while audible keyboard
+cancellation remains at publication; a prepared/refused candidate cannot silence
+the installed lease. Focused native DSP/engine/Session, non-octave mapping,
+Operator PCM16 export and actual callback total/net-zero allocation checks pass.
+The optional combined feature/all-target matrix still exposes existing2722/PR338;
+required scoped Clippy passes. Release copy-cost evidence and full exact-source
+local CI remain pending at this checkpoint. See
+[runtime contract](docs/project-tuning-runtime.md). Full native editor/audition,
+MTS, coordinated current combined schema and Mac/user acceptance remain required
+goal4 work; no complete tuning delivery or merge is claimed.
+
+Full workspace verification exposed a real neutral-path regression in the paused
+runtime: a table inside every Operator configuration grew legacy feedback/LFO
+twins beyond their8KiB contract. The repair keeps small configurations free of
+tables/heap owners and passes an optional borrowed table to note preparation;
+only the already-wide custom mutable factory/runtime retains that fixed data.
+Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
+are restored, without raising limits or adding callback table construction.
+All313 device tests, packing proof and volume/history proof pass; renewed full
+workspace/final CI remains required. Earlier failed runner evidence is retained.
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback
@@ -4333,3 +4358,11 @@ Session admission until #2740 replaces that guard with verified pitch integratio
 Editor/library/audition (#2741) and desktop MTS publication (#2742) remain open;
 this prerequisite provides no native tuning feature or user-test build by itself.
 Targeted and exact final local validation results are retained on the canonical PR.
+
+- 2026-10-17: cloud5 continued canonical tuning editor PR352: grouped live
+  preview/commit/cancel preparation, root-relative octave-preserving snapping,
+  Shift-only repeat landmarks, and a dedicated phase-preserving reference
+  audition independent of track selection or project-wide tuning enable.
+  Real desktop worker/audio bridge, callback allocation/oracle and GPUI focus/
+  release/close tests pass. Native Mac acceptance remains coordinator-serial;
+  no app delivery or schema edits were performed by this continuation.

@@ -79,6 +79,7 @@ enum Sampler {
 }
 #[derive(Clone, Copy)]
 struct Voice {
+    inline_override: Option<PreparedAnalyticNote>,
     key: usize,
     token: u64,
     sampler: usize,
@@ -134,6 +135,15 @@ impl hex_lattice::NativeInstrumentClock for KeyboardClock<'_> {
 
 /// Selected-track pool, owned by its ordinary prepared graph and retired with it.
 /// Authored voices and live voices deliberately have independent mutable pools.
+/// Control-only, lease-scoped continuation hint. Its private proof is obtained
+/// from an engine-prepared playback; it cannot authorize another project family.
+pub struct ComputerKeyboardTuningHint {
+    family: crate::prepared_revision::TuningContinuationFamily,
+    track: TrackId,
+    input: Arc<ComputerKeyboardInput>,
+    promoted: bool,
+}
+
 pub(crate) struct ComputerKeyboardRuntime {
     track: TrackId,
     instrument_id: Option<hex_project::DeviceId>,
@@ -143,6 +153,10 @@ pub(crate) struct ComputerKeyboardRuntime {
     supported: [bool; NOTES],
     context: Option<Box<dyn PreparedSharedAnalyticContext>>,
     mutable: Option<NativeInstrumentRuntimePair>,
+    retarget: Option<Box<dyn hex_lattice::PreparedInstrumentHistoryRetarget>>,
+    tuning_family: Option<crate::prepared_revision::TuningContinuationFamily>,
+    tuning_preservation: bool,
+    tuning: hex_lattice::TuningTable,
     release_frames: u64,
     primary: [Option<Voice>; VOICES],
     scratch: [Option<Voice>; VOICES],
@@ -176,10 +190,15 @@ impl ComputerKeyboardRuntime {
         let registry = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("instrument registry is unavailable"))?;
         let instrument = registry
-            .prepare_instrument(device.state(), project.sample_rate())
+            .prepare_instrument_with_tuning(
+                device.state(),
+                project.sample_rate(),
+                &project.tuning().table().map_err(|e| Invalid(e.0))?,
+            )
             .map_err(|_| Invalid("computer keyboard instrument preparation failed"))?;
         let mut runtime =
             Self::prepare_instrument(track, input, project.sample_rate(), instrument.as_ref())?;
+        runtime.tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
         runtime.instrument_id = Some(device.id());
         Ok(runtime)
     }
@@ -190,9 +209,37 @@ impl ComputerKeyboardRuntime {
         sample_rate: u32,
         instrument: &dyn hex_lattice::PreparedNativeInstrument,
     ) -> Result<Self, Invalid> {
-        let factory = instrument
-            .prepare_mutable_runtime()
-            .map_err(|_| Invalid("computer keyboard runtime preparation failed"))?;
+        Self::prepare_instrument_with_continuation(track, input, sample_rate, instrument, false)
+    }
+    fn prepare_instrument_with_continuation(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        instrument: &dyn hex_lattice::PreparedNativeInstrument,
+        promoted: bool,
+    ) -> Result<Self, Invalid> {
+        let continuation = if promoted {
+            instrument
+                .prepare_mutable_continuation_runtime()
+                .map_err(|_| Invalid("computer keyboard continuation preparation failed"))?
+        } else {
+            None
+        };
+        let factory = match continuation {
+            Some(factory) => Some(factory),
+            None => instrument
+                .prepare_mutable_runtime()
+                .map_err(|_| Invalid("computer keyboard runtime preparation failed"))?,
+        };
+        let retarget = factory
+            .as_ref()
+            .map(|factory| factory.prepare_history_retarget_target())
+            .transpose()
+            .map_err(|_| Invalid("computer keyboard retarget preparation failed"))?
+            .and_then(|preparation| match preparation {
+                hex_lattice::InstrumentHistoryRetargetPreparation::Prepared(proof) => Some(proof),
+                _ => None,
+            });
         let mutable = factory
             .as_ref()
             .map(|factory| {
@@ -290,6 +337,10 @@ impl ComputerKeyboardRuntime {
             supported,
             context,
             mutable,
+            retarget,
+            tuning_family: None,
+            tuning_preservation: false,
+            tuning: Default::default(),
             release_frames,
             primary: [None; VOICES],
             scratch: [None; VOICES],
@@ -313,8 +364,75 @@ impl ComputerKeyboardRuntime {
         }
         Ok(result)
     }
+    pub(crate) fn set_tuning_family(
+        &mut self,
+        family: crate::prepared_revision::TuningContinuationFamily,
+    ) {
+        self.tuning_family = Some(family);
+    }
+    pub(crate) fn tuning_hint(&self) -> Option<ComputerKeyboardTuningHint> {
+        Some(ComputerKeyboardTuningHint {
+            family: self.tuning_family?,
+            track: self.track,
+            input: Arc::clone(&self.input),
+            promoted: self.mutable.is_some(),
+        })
+    }
+    pub(crate) fn prepare_for_tuning(
+        project: &hex_project::Project,
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        family: crate::prepared_revision::TuningContinuationFamily,
+        hint: &ComputerKeyboardTuningHint,
+    ) -> Result<Self, Invalid> {
+        if hint.family != family
+            || hint.track != track
+            || !Arc::ptr_eq(&hint.input, &input)
+            || input.is_cancelled()
+        {
+            return Err(Invalid("computer keyboard tuning lease is stale"));
+        }
+        let device = project
+            .track(track)
+            .and_then(|track| track.instrument())
+            .filter(|device| !device.bypassed())
+            .ok_or(Invalid("computer keyboard instrument is unavailable"))?;
+        let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
+        let registry = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("instrument registry is unavailable"))?;
+        let instrument = registry
+            .prepare_instrument_with_tuning(device.state(), project.sample_rate(), &tuning)
+            .map_err(|_| Invalid("computer keyboard tuning preparation failed"))?;
+        let mut result = Self::prepare_instrument_with_continuation(
+            track,
+            input,
+            project.sample_rate(),
+            instrument.as_ref(),
+            hint.promoted,
+        )?;
+        result.instrument_id = Some(device.id());
+        result.tuning = tuning;
+        result.tuning_family = Some(family);
+        result.tuning_preservation = true;
+        result.preserve_on_handoff = true;
+        Ok(result)
+    }
+    pub(crate) fn tuning_preservation_matches(&self, previous: &Self) -> bool {
+        self.tuning_preservation
+            && self.tuning_family.is_some()
+            && self.tuning_family == previous.tuning_family
+            && self.track == previous.track
+            && self.instrument_id == previous.instrument_id
+            && Arc::ptr_eq(&self.input, &previous.input)
+    }
+
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
         std::mem::size_of::<Self>()
+            .checked_add(
+                self.retarget
+                    .as_ref()
+                    .map_or(0, |proof| proof.declared_fixed_storage_bytes()),
+            )?
             .checked_add(
                 std::mem::size_of::<ComputerKeyboardInput>() + 2 * std::mem::size_of::<usize>(),
             )?
@@ -383,32 +501,141 @@ impl ComputerKeyboardRuntime {
             && Arc::ptr_eq(&self.input, &previous.input)
             && !self.input.is_cancelled()
     }
-    pub(crate) fn can_preserve_from(&self, previous: &Self) -> bool {
-        self.requests_preservation_from(previous)
-            && !previous.lease_detached
-            && !previous.faulted
-            && self.track == previous.track
-            && self.instrument_id == previous.instrument_id
-            && self.supported == previous.supported
-            && self.release_frames == previous.release_frames
-            && self.samplers.len() == previous.samplers.len()
-            && match (&self.mutable, &previous.mutable) {
-                (Some(next), Some(old)) => next.can_inherit_from(old),
-                (None, None) => true,
-                _ => false,
+    fn continued_voices(&self, previous: &Self) -> Result<[Option<Voice>; VOICES], Invalid> {
+        let mut voices = previous.primary;
+        for voice in voices.iter_mut().flatten() {
+            if !self.supported.get(voice.sampler).copied().unwrap_or(false) {
+                return Err(Invalid(
+                    "held computer keyboard pitch is unsupported by tuning",
+                ));
             }
-    }
-    /// Copy fixed committed state only after exact-source and pair preflight.
-    /// The retired owner retains its storage but loses the authority to cancel
-    /// or read this physical-key lease after successful publication.
-    pub(crate) fn preserve_from(&mut self, previous: &mut Self) -> Result<(), Invalid> {
-        if let (Some(next), Some(old)) = (&mut self.mutable, &previous.mutable) {
-            next.inherit_from(old).map_err(|_| {
-                Invalid("computer keyboard controller history could not be inherited")
-            })?;
+            if self.mutable.is_none() && self.tuning != previous.tuning {
+                let target = self.samplers.get(voice.sampler).copied().flatten();
+                let source = voice
+                    .inline_override
+                    .map(Sampler::Inline)
+                    .or_else(|| previous.samplers.get(voice.sampler).copied().flatten());
+                match (target, source) {
+                    (Some(Sampler::Inline(target)), Some(Sampler::Inline(source))) => {
+                        voice.inline_override =
+                            Some(target.continue_from(&source, voice.age).map_err(|_| {
+                                Invalid("computer keyboard pitch continuation was refused")
+                            })?);
+                    }
+                    _ => {
+                        return Err(Invalid(
+                            "computer keyboard pitch continuation is unsupported",
+                        ));
+                    }
+                }
+            }
         }
-        self.primary = previous.primary;
-        self.scratch = previous.primary;
+        Ok(voices)
+    }
+    fn analytic_seeds(
+        previous: &Self,
+    ) -> Option<([hex_lattice::NativeInstrumentAnalyticSeed; VOICES], usize)> {
+        let mut notes = [hex_lattice::NativeInstrumentAnalyticSeed::default(); VOICES];
+        let mut len = 0;
+        for voice in previous.primary.iter().flatten() {
+            let Some(Sampler::Shared(note)) =
+                previous.samplers.get(voice.sampler).copied().flatten()
+            else {
+                return None;
+            };
+            notes[len] = hex_lattice::NativeInstrumentAnalyticSeed {
+                occurrence_id: voice.id,
+                note,
+                age_frames: voice.age,
+                gate_frame: voice.gate,
+            };
+            len += 1;
+        }
+        Some((notes, len))
+    }
+    pub(crate) fn can_preserve_from(&self, previous: &Self) -> bool {
+        if !self.requests_preservation_from(previous)
+            || previous.lease_detached
+            || previous.faulted
+            || self.track != previous.track
+            || self.instrument_id != previous.instrument_id
+            || self.release_frames != previous.release_frames
+            || self.continued_voices(previous).is_err()
+        {
+            return false;
+        }
+        match (&self.mutable, &previous.mutable) {
+            (Some(next), Some(old)) => {
+                next.can_inherit_from(old)
+                    || (self.tuning_preservation_matches(previous)
+                        && self
+                            .retarget
+                            .as_ref()
+                            .is_some_and(|proof| next.can_retarget_from(old, proof.as_ref())))
+            }
+            (None, None) => self.samplers.len() == previous.samplers.len(),
+            (Some(next), None) if self.tuning_preservation_matches(previous) => {
+                let Some(context) = previous.context.as_deref() else {
+                    return false;
+                };
+                let Some((notes, len)) = Self::analytic_seeds(previous) else {
+                    return false;
+                };
+                let Ok(source_id) = hex_lattice::AnalyticContinuationId::new(1) else {
+                    return false;
+                };
+                next.can_import_analytic_history(&hex_lattice::AnalyticInstrumentHistory {
+                    source: context,
+                    source_id,
+                    transition: None,
+                    performance_frame: previous.age,
+                    voices: &notes[..len],
+                })
+            }
+            _ => false,
+        }
+    }
+    /// Every provider and both twins are checked before the input lease changes.
+    pub(crate) fn preserve_from(&mut self, previous: &mut Self) -> Result<(), Invalid> {
+        if !self.can_preserve_from(previous) {
+            return Err(Invalid("computer keyboard continuation was refused"));
+        }
+        let voices = self.continued_voices(previous)?;
+        match (&mut self.mutable, &previous.mutable) {
+            (Some(next), Some(old)) => {
+                if next.can_inherit_from(old) {
+                    next.inherit_from(old)
+                } else {
+                    let proof = self
+                        .retarget
+                        .as_deref()
+                        .ok_or(Invalid("computer keyboard retarget proof is missing"))?;
+                    next.retarget_from(old, proof)
+                }
+                .map_err(|_| Invalid("computer keyboard mutable history was refused"))?;
+            }
+            (Some(next), None) => {
+                let context = previous
+                    .context
+                    .as_deref()
+                    .ok_or(Invalid("computer keyboard source context is missing"))?;
+                let (notes, len) = Self::analytic_seeds(previous)
+                    .ok_or(Invalid("computer keyboard source notes are unsupported"))?;
+                let source_id = hex_lattice::AnalyticContinuationId::new(1)
+                    .map_err(|_| Invalid("computer keyboard source identity is invalid"))?;
+                next.import_analytic_history(&hex_lattice::AnalyticInstrumentHistory {
+                    source: context,
+                    source_id,
+                    transition: None,
+                    performance_frame: previous.age,
+                    voices: &notes[..len],
+                })
+                .map_err(|_| Invalid("computer keyboard analytic history was refused"))?;
+            }
+            _ => {}
+        }
+        self.primary = voices;
+        self.scratch = voices;
         self.desired = previous.desired;
         self.next_id = previous.next_id;
         self.scratch_next_id = previous.next_id;
@@ -586,6 +813,7 @@ impl ComputerKeyboardRuntime {
                     .checked_add(1)
                     .ok_or(Invalid("computer keyboard identity exhausted"))?;
                 *slot = Some(Voice {
+                    inline_override: None,
                     key,
                     token,
                     sampler,
@@ -609,7 +837,11 @@ impl ComputerKeyboardRuntime {
                 .map_err(|_| Invalid("computer keyboard runtime refused a note block"))?;
         } else {
             for voice in self.scratch.iter().flatten() {
-                let Some(sampler) = self.samplers[voice.sampler] else {
+                let Some(sampler) = voice
+                    .inline_override
+                    .map(Sampler::Inline)
+                    .or(self.samplers[voice.sampler])
+                else {
                     continue;
                 };
                 for (offset, target) in output.iter_mut().enumerate() {
@@ -1392,3 +1624,7 @@ mod pitch_domain_tests {
 #[cfg(test)]
 #[path = "computer_keyboard_clock_admission_tests.rs"]
 mod clock_admission_tests;
+
+#[cfg(test)]
+#[path = "computer_keyboard/tuning_tests.rs"]
+mod tuning_tests;

@@ -334,6 +334,7 @@ fn status_slot(
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.reconcile_clip_name(window, cx);
+        self.sync_tuning(cx);
         self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
@@ -388,6 +389,8 @@ impl Render for EditorView {
             .track_focus(&self.focus)
             .key_context(if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
+            } else if self.tuning.open {
+                "hex_tuning"
             } else if self.theme_settings.open {
                 "hex_theme_settings"
             } else if self.controller_input_is_open() {
@@ -426,6 +429,7 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
+                    view.tuning.shift = event.modifiers.shift;
                     view.refresh_drag_modifiers(
                         event.modifiers.platform,
                         event.modifiers.alt,
@@ -478,11 +482,17 @@ impl Render for EditorView {
                 }),
             )
             .capture_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if !view.fade_key_down(event, window, cx) {
+                if !view.tuning_audition_down(event, window, cx)
+                    && !view.fade_key_down(event, window, cx)
+                {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                if view.tuning_audition_up(&event.keystroke.key) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
                 if event.keystroke.key == "f" && view.fade_key_held {
                     view.fade_key_held = false;
                     cx.notify();
@@ -515,6 +525,22 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
+            .on_action(cx.listener(|view, _: &super::OpenTuning, window, cx| {
+                view.open_tuning(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CloseTuning, window, cx| {
+                view.close_tuning(window, cx);
+            }))
+            .on_action(
+                cx.listener(|view, _: &super::CommitTuningName, window, cx| {
+                    view.commit_tuning_name(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &super::CancelTuningName, window, cx| {
+                    view.cancel_tuning_name(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &super::OpenSettings, window, cx| {
                 view.open_theme_settings(window, cx);
             }))
@@ -1068,5 +1094,6 @@ impl Render for EditorView {
             .children(self.context_menu_overlay(window, cx))
             .children(self.controller_input_overlay(cx))
             .children(super::theme_settings::overlay(self, cx))
+            .children(self.tuning_overlay(cx))
     }
 }

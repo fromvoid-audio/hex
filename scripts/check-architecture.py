@@ -16,11 +16,11 @@ ALLOWED = {
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract', 'hex-tuning'},
-    'hex-lattice': {'hex-lattice-contract', 'hex-dsp'},
+    'hex-lattice': {'hex-lattice-contract', 'hex-dsp', 'hex-tuning'},
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning'},
-    'hex-session': {'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
+    'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
@@ -30,7 +30,7 @@ ALLOWED = {
     'hex-widgets': set(),
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
-    'hex-ui': {'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
+    'hex-ui': {'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
     'hex-desktop': {'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media'},
@@ -40,10 +40,12 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    'hex-engine': {'hex-tuning'},
+    'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
     'hex-desktop': {'hex-project'},
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
-    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning'},
+    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},

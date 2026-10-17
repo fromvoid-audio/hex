@@ -3,6 +3,8 @@
 
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
+#[path = "callback_allocations/project_tuning.rs"]
+mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;

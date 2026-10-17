@@ -10,6 +10,7 @@ pub mod operator_state;
 pub mod operator_waveform;
 pub mod sampler;
 pub mod saturator;
+pub mod tuning_audition;
 pub mod utility;
 pub mod utility_filters;
 
@@ -73,6 +74,7 @@ static SINE_INSTRUMENT: SineInstrumentDefinition = SineInstrumentDefinition;
 struct SineInstrumentDefinition;
 struct PreparedSineInstrument {
     sample_rate: u32,
+    tuning: hex_lattice::TuningTable,
 }
 
 impl NativeDeviceMetadata for SineInstrumentDefinition {
@@ -129,10 +131,28 @@ impl NativeInstrumentDefinition for SineInstrumentDefinition {
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
+        self.prepare_instrument_with_tuning(
+            _state,
+            sample_rate,
+            &hex_lattice::TuningTable::default(),
+        )
+    }
+    fn prepare_instrument_with_tuning(
+        &self,
+        _state: &NativeDeviceState,
+        sample_rate: u32,
+        tuning: &hex_lattice::TuningTable,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
         // Materialize the immutable lookup table on the control side before
         // any callback can invoke the sampler's function pointer.
         let _ = shared_sine_table();
-        Ok(Box::new(PreparedSineInstrument { sample_rate }))
+        Ok(Box::new(PreparedSineInstrument {
+            sample_rate,
+            tuning: *tuning,
+        }))
     }
 }
 
@@ -146,19 +166,45 @@ impl PreparedNativeInstrument for PreparedSineInstrument {
         pitch: u8,
         velocity: u8,
     ) -> Result<PreparedAnalyticNote, DeviceContractError> {
+        let frequency = self
+            .tuning
+            .frequency(pitch)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         let voice = shared_sine_table()
-            .prepare_voice(self.sample_rate, pitch, velocity)
+            .prepare_voice_frequency(self.sample_rate, frequency, velocity)
             .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         let mut payload = [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS];
         payload[0] = voice.phase_step;
         payload[1] = u64::from(voice.amplitude.to_bits());
         payload[2] = voice.attack_frames;
-        Ok(PreparedAnalyticNote::new(
-            payload,
-            voice.release_frames,
-            sample_sine_note,
-        ))
+        Ok(
+            PreparedAnalyticNote::new(payload, voice.release_frames, sample_sine_note)
+                .with_continuation(&SINE_CONTINUATION),
+        )
     }
+}
+
+static SINE_CONTINUATION: hex_lattice::AnalyticNoteContinuation =
+    hex_lattice::AnalyticNoteContinuation::new(continue_sine_note);
+fn continue_sine_note(
+    source: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+    target: &[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
+    age: u64,
+) -> Result<[u64; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError> {
+    if source
+        .iter()
+        .zip(target)
+        .enumerate()
+        .any(|(i, (a, b))| i != 0 && i != 3 && a != b)
+        || [source[0], target[0]]
+            .iter()
+            .any(|step| *step == 0 || *step >= (1u64 << 63))
+    {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    let mut next = *target;
+    next[3] = source[3].wrapping_add(source[0].wrapping_sub(target[0]).wrapping_mul(age));
+    Ok(next)
 }
 
 fn sample_sine_note(
@@ -176,7 +222,7 @@ fn sample_sine_note(
     let Some(table) = shared_sine_table_if_prepared() else {
         return [0.0; 2];
     };
-    let sample = table.sample(voice, age_frames, gate_frames);
+    let sample = table.sample_with_phase_offset(voice, age_frames, gate_frames, payload[3]);
     [sample, sample]
 }
 
@@ -245,7 +291,18 @@ impl SineTable {
             return Err(Invalid("invalid instrument sample rate or velocity"));
         }
         let frequency = 440.0_f64 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
-        if !frequency.is_finite() || frequency >= f64::from(sample_rate) * 0.5 {
+        self.prepare_voice_frequency(sample_rate, frequency, velocity)
+    }
+    fn prepare_voice_frequency(
+        &self,
+        sample_rate: u32,
+        frequency: f64,
+        velocity: u8,
+    ) -> Result<PreparedVoice, Invalid> {
+        if !(8_000..=192_000).contains(&sample_rate) || !(1..=127).contains(&velocity) {
+            return Err(Invalid("invalid instrument sample rate or velocity"));
+        }
+        if !frequency.is_finite() || frequency <= 0.0 || frequency >= f64::from(sample_rate) * 0.5 {
             return Err(Invalid("instrument pitch must be below nyquist"));
         }
         let phase_per_frame = frequency / f64::from(sample_rate);
@@ -266,6 +323,15 @@ impl SineTable {
     /// Produce one sample from a voice whose note began at relative frame zero.
     /// `gate_frames` marks note-off; output is zero at the exclusive release end.
     pub fn sample(&self, voice: PreparedVoice, relative_frame: u64, gate_frames: u64) -> f32 {
+        self.sample_with_phase_offset(voice, relative_frame, gate_frames, 0)
+    }
+    fn sample_with_phase_offset(
+        &self,
+        voice: PreparedVoice,
+        relative_frame: u64,
+        gate_frames: u64,
+        phase_offset: u64,
+    ) -> f32 {
         let release_end = gate_frames.saturating_add(voice.release_frames);
         if relative_frame >= release_end {
             return 0.0;
@@ -278,7 +344,10 @@ impl SineTable {
                 (relative_frame - gate_frames) as f32 / voice.release_frames as f32;
             attack_at_gate * (1.0 - release_progress).max(0.0)
         };
-        let phase = voice.phase_step.wrapping_mul(relative_frame);
+        let phase = voice
+            .phase_step
+            .wrapping_mul(relative_frame)
+            .wrapping_add(phase_offset);
         self.sample_phase(phase) * amplitude * voice.amplitude
     }
 
@@ -367,7 +436,7 @@ mod tests {
         let state = registry.default_state(SINE_INSTRUMENT_TYPE_ID).unwrap();
         let prepared = registry.prepare_instrument(&state, 48_000).unwrap();
         let note = prepared.prepare_note(69, 100).unwrap();
-        assert_eq!(std::mem::size_of_val(&note), 344);
+        assert_eq!(std::mem::size_of_val(&note), 352);
         for gate in [1, 24_000, 48_000] {
             for age in [
                 0,
@@ -391,3 +460,6 @@ mod tests {
 mod operator_filter;
 #[cfg(test)]
 mod operator_harmonics;
+
+#[cfg(test)]
+mod project_tuning_tests;
