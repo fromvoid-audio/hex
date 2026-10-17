@@ -6,6 +6,17 @@ use crate::{
     audio_storage::{Location, Owner},
 };
 impl SessionPlayback {
+    pub(crate) fn visit_inline_resource_owners_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        crate::shared_analytic::resource_storage::visit_revision(&self.revision, ledger, role)?;
+        for owner in self.retained_contexts.iter().flatten() {
+            crate::shared_analytic::resource_storage::visit_owner(owner, ledger, role)?;
+        }
+        Ok(())
+    }
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,

@@ -88,7 +88,7 @@ impl ScopedMidiNote {
     pub(crate) fn sample(
         &self,
         contexts: &SharedAnalyticContextTable,
-        retained: &[Option<Arc<SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         age: u64,
         gate: u64,
     ) -> Option<Frame> {
@@ -101,7 +101,7 @@ impl ScopedMidiNote {
     pub(crate) fn sample_at(
         &self,
         contexts: &SharedAnalyticContextTable,
-        retained: &[Option<Arc<SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
         performance_frame: u64,
         age: u64,
@@ -110,9 +110,10 @@ impl ScopedMidiNote {
         if let Some(scope) = self.scope {
             let owner = match scope.context {
                 SharedContextRef::Revision(index) => contexts.owner(index),
-                SharedContextRef::Retained(index) => {
-                    retained.get(usize::from(index)).and_then(Option::as_deref)
-                }
+                SharedContextRef::Retained(index) => retained
+                    .get(usize::from(index))
+                    .and_then(Option::as_deref)
+                    .map(Arc::as_ref),
             }
             .filter(|owner| owner.id() == scope.id && owner.is_inline_resource_scope())
             .ok_or(Invalid(

@@ -45,7 +45,7 @@ fn owner(
     lease: PreparedDeviceResourceLease,
     track: TrackId,
     device: DeviceId,
-) -> Arc<SharedContextOwner> {
+) -> crate::shared_analytic::SharedContextLease {
     let context = DevicePreparationContext {
         sample_rate: 48_000,
         tuning: &hex_lattice::TuningTable::default(),
@@ -54,7 +54,7 @@ fn owner(
     let note = hex_lattice::conformance::resource_pcm::prepare_note(&state, &context, 0).unwrap();
     let context = Box::new(PcmContext(note));
     let bytes = context.declared_context_bytes();
-    Arc::new(SharedContextOwner::from_prepared_on_control(
+    crate::owned_shared::OwnedShared::new_owned(SharedContextOwner::from_prepared_on_control(
         SharedContextId::fresh().unwrap(),
         SharedContextIdentity {
             tuning: TuningIdentity::default(),
@@ -76,7 +76,7 @@ fn inline_owner(
     lease: PreparedDeviceResourceLease,
     track: TrackId,
     device: DeviceId,
-) -> (Arc<SharedContextOwner>, InlinePcm) {
+) -> (crate::shared_analytic::SharedContextLease, InlinePcm) {
     let note = hex_lattice::conformance::resource_pcm::prepare_note(
         &state,
         &DevicePreparationContext {
@@ -87,19 +87,23 @@ fn inline_owner(
         0,
     )
     .unwrap();
-    let owner = Arc::new(SharedContextOwner::from_inline_resources_on_control(
-        SharedContextId::fresh().unwrap(),
-        SharedContextIdentity {
-            tuning: TuningIdentity::default(),
-            resource_scope: 0,
-            track,
-            device,
-            device_type: state.type_id(),
-            state,
-            sample_rate: 48_000,
-        },
-        lease,
-    ));
+    let owner = crate::owned_shared::OwnedShared::new_owned(
+        SharedContextOwner::from_inline_resources_on_control(
+            SharedContextId::fresh().unwrap(),
+            SharedContextIdentity {
+                tuning: TuningIdentity::default(),
+                resource_scope: 0,
+                track,
+                device,
+                device_type: state.type_id(),
+                state,
+                sample_rate: 48_000,
+            },
+            lease,
+            4096,
+        )
+        .unwrap(),
+    );
     (owner, InlinePcm(note))
 }
 
@@ -386,4 +390,222 @@ fn unchanged_authored_state_cannot_reuse_a_context_from_another_actual_source_ro
     assert_ne!(old.identity.resource_scope, target.identity.resource_scope);
     assert!(!old.compatible_identity(&target.identity));
     assert!(target.continue_from(&old, None, 0).unwrap().is_none());
+}
+
+#[test]
+fn fresh_inline_owner_inventory_separates_canonical_metadata_and_requires_every_actual_alias() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let ids = fixtures::ids();
+    let Some(bank) = fixtures::bank(&ids) else {
+        return;
+    };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &fixtures::specs(&ids),
+        fixtures::limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let source = DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "metadata owner".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let canonical = fixtures::state(ids[0]);
+    let canonical_alias = canonical.clone();
+    let (current, _) = inline_owner(
+        canonical.clone(),
+        source.prepare_lease_on_control(&canonical, 4096).unwrap(),
+        track,
+        device,
+    );
+    assert_eq!(current.identity.state, canonical);
+    assert!(
+        !current
+            .identity
+            .state
+            .shares_payload_storage_with(&canonical)
+    );
+    assert!(
+        !current
+            .identity
+            .state
+            .shares_asset_reference_storage_with(&canonical)
+    );
+    assert!(canonical.shares_payload_storage_with(&canonical_alias));
+    assert!(canonical.shares_asset_reference_storage_with(&canonical_alias));
+    let state = fixtures::state(ids[1]);
+    let (carried, _) = inline_owner(
+        state.clone(),
+        source.prepare_lease_on_control(&state, 4096).unwrap(),
+        track,
+        device,
+    );
+    let archive = current.clone();
+    let reservation = AudioStorageLedgerReservation {
+        data_rows: 128,
+        handle_rows: 64,
+        root_rows: 16,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let collect = |reservation| {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+        ledger.borrow_device_resource_bank_on_control(&source, AudioStorageRole::Caller)?;
+        resource_storage::visit_owner(&current, &mut ledger, AudioStorageRole::Current)?;
+        resource_storage::visit_owner(&carried, &mut ledger, AudioStorageRole::Predecessor)?;
+        assert!(ledger.validate_closed_shared_handles().is_err()); // actual archive alias omitted
+        let before = ledger.summary()?;
+        resource_storage::visit_owner(&archive, &mut ledger, AudioStorageRole::Archive)?;
+        ledger.validate_closed_shared_handles()?;
+        let summary = ledger.summary()?;
+        assert_eq!(
+            summary.data_bytes - before.data_bytes,
+            std::mem::size_of::<SharedContextLease>()
+        );
+        assert_eq!(summary.data_allocations, before.data_allocations);
+        Ok::<_, crate::AudioStorageError>(summary)
+    };
+    let summary = collect(reservation).unwrap();
+    let mut exact = reservation;
+    exact.max_retained_bytes = summary.retained_bytes;
+    exact.max_construction_peak_bytes = summary.construction_peak_bytes;
+    assert_eq!(collect(exact).unwrap(), summary);
+    exact.max_retained_bytes -= 1;
+    assert!(collect(exact).is_err());
+    assert!(summary.require_complete().is_err());
+    let leaked_metadata = current.identity.state.clone();
+    assert!(collect(reservation).is_err()); // metadata alias also must remain accounted
+    drop(leaked_metadata);
+    collect(reservation).unwrap();
+    drop(archive);
+    drop(source);
+    assert_eq!(
+        current.resources().get(0).unwrap().pcm.frame(0),
+        Some([0.25, -0.75])
+    );
+    assert_eq!(
+        carried.resources().get(0).unwrap().pcm.frame(0),
+        Some([0.5; 2])
+    );
+}
+
+#[test]
+fn raw_outer_arc_and_opaque_provider_context_cannot_gain_native_inline_metadata_proof() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    let ids = fixtures::ids();
+    let Some(bank) = fixtures::bank(&ids) else {
+        return;
+    };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &fixtures::specs(&ids),
+        fixtures::limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let source = DeviceResourceBank::try_new_on_control(
+        bank,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "refused metadata".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let state = fixtures::state(ids[0]);
+    let opaque = owner(
+        state.clone(),
+        source.prepare_lease_on_control(&state, 4096).unwrap(),
+        track,
+        device,
+    );
+    let untracked = crate::owned_shared::OwnedShared::untracked(Arc::new(
+        SharedContextOwner::from_inline_resources_on_control(
+            SharedContextId::fresh().unwrap(),
+            SharedContextIdentity {
+                tuning: TuningIdentity::default(),
+                resource_scope: 0,
+                track,
+                device,
+                device_type: state.type_id(),
+                state: state.clone(),
+                sample_rate: 48_000,
+            },
+            source.prepare_lease_on_control(&state, 4096).unwrap(),
+            4096,
+        )
+        .unwrap(),
+    ));
+    for owner in [&opaque, &untracked] {
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+                data_rows: 128,
+                handle_rows: 64,
+                root_rows: 16,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            })
+            .unwrap();
+        let capacity = ledger.metadata_capacity_bytes();
+        assert_eq!(
+            ledger.mutate(|ledger| resource_storage::visit_owner(
+                owner,
+                ledger,
+                AudioStorageRole::FailedConstruction
+            )),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
+        assert_eq!(
+            ledger.summary(),
+            Err(crate::AudioStorageError::UnknownStorage)
+        );
+        assert_eq!(ledger.metadata_capacity_bytes(), capacity);
+    }
+    assert_eq!(
+        source
+            .borrow_original_source_on_control(ids[0], 4096)
+            .unwrap()
+            .view()
+            .unwrap()
+            .resident_frames()
+            .unwrap()[0],
+        [0.25, -0.75]
+    );
 }

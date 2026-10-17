@@ -395,3 +395,40 @@ scan per configured host. Unverified scopes retain full PCM validation. Missing
 or mismatched slots and zero output rate refuse before a runtime factory runs;
 original source rate remains independent of project/output rate. This validation
 hook is control-only and conveys no publication authority.
+
+## retained context metadata custody
+
+Current/retained context handles now preserve their actual `OwnedShared`
+constructor receipt when cloned or moved. No old Arc is adopted. Inline resource
+owners make a bounded fresh copy of current state payload/bindings before
+capturing their allocation declarations. This is current metadata preparation,
+not historical project/preset conversion. Empty payloads use an explicit fresh
+zero-array Arc constructor and unsize that same allocation. The same original
+PCM lease remains in the host owner; provider coefficients acquire no PCM owner.
+
+Payload and asset-binding allocations have distinct ledger domains, even when
+stored in the same state value. Read-only observations expose neither Arc. A
+payload alias cannot supply a binding handle or satisfy its closure. Equal
+replacement bindings retain their own separate allocation. Removing the domain
+guard or substituting caller state metadata fails independent negative oracles;
+restored source passes. Raw outer Arcs and opaque provider contexts remain
+Unknown. A refused public inventory is invalidated under the existing ledger
+policy and has no reusable partial total.
+
+Selected revision/Session inline-owner inventories visit actual immutable
+current and retained fields, nested state metadata, scope buffers, original
+roots and every physical alias. They can close the selected metadata/PCM union
+and refuse missing caller/archived metadata owners or exact-budget overflow.
+They do not declare table/vector spare capacity, mutable/effect runtimes or the
+whole graph known, permit concurrent active-runtime borrowing, prove saturated
+reaper retirement or open registry processing. Enclosing graph visitors can
+reuse the contents visitor without charging embedded owner headers twice.
+
+Actual owner handle receipt storage doubles a retained slot from8to16bytes on
+the measured64-bit source. Current release/span storage remains16,601,096bytes;
+scoped storage is17,256,456bytes and the256-owner table handle/index/header
+charge is9,304bytes. Fixed16/18/36MiB and context payload caps remain unchanged.
+Only the matching source layout model/header assertions changed; no harmonic
+stack fixture or behavioral assertion was weakened. Whole-host resource
+preparation, atomic publication and actual reaper/final-drop qualification
+remain in progress under389, before usable sampler2679 and full goal3.

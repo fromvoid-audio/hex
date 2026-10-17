@@ -52,8 +52,16 @@ impl AudioRootStorageSummary {
     }
 }
 type SharedCounts = fn(&dyn Any) -> Option<(usize, usize)>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnerDomain {
+    Exclusive,
+    Shared,
+    DevicePayload,
+    DeviceAssetReferences,
+}
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
+    domain: OwnerDomain,
     value: &'a dyn Any,
     compare: fn(&dyn Any, &dyn Any) -> bool,
     counts: Option<SharedCounts>,
@@ -61,6 +69,7 @@ pub(crate) struct Owner<'a> {
 impl<'a> Owner<'a> {
     pub(crate) fn exclusive<T: 'static>(value: &'a T) -> Self {
         Self {
+            domain: OwnerDomain::Exclusive,
             value,
             counts: None,
             compare: |a, b| {
@@ -72,6 +81,7 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn shared<T: 'static + ?Sized>(value: &'a Arc<T>) -> Self {
         Self {
+            domain: OwnerDomain::Shared,
             value,
             counts: Some(|value| {
                 value
@@ -87,6 +97,7 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
         Self {
+            domain: OwnerDomain::DevicePayload,
             value,
             counts: Some(|value| {
                 value
@@ -103,8 +114,30 @@ impl<'a> Owner<'a> {
             },
         }
     }
+    pub(crate) fn device_asset_references(
+        value: &'a hex_lattice_contract::NativeDeviceState,
+    ) -> Self {
+        Self {
+            domain: OwnerDomain::DeviceAssetReferences,
+            value,
+            counts: Some(|value| {
+                value
+                    .downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .and_then(|state| {
+                        state
+                            .asset_reference_storage_observation()
+                            .map(|(_, strong, weak)| (strong, weak))
+                    })
+            }),
+            compare: |a, b| {
+                a.downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .zip(b.downcast_ref::<hex_lattice_contract::NativeDeviceState>())
+                    .is_some_and(|(a, b)| a.shares_asset_reference_storage_with(b))
+            },
+        }
+    }
     fn same(self, other: Self) -> bool {
-        (self.compare)(self.value, other.value)
+        self.domain == other.domain && (self.compare)(self.value, other.value)
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -592,3 +625,7 @@ impl<'a> AudioRootStorageLedger<'a> {
 pub fn audio_storage_constructor_layout_supported() -> bool {
     crate::pcm_arc::native_layout_known()
 }
+
+#[cfg(test)]
+#[path = "audio_storage/state_metadata_tests.rs"]
+mod state_metadata_tests;

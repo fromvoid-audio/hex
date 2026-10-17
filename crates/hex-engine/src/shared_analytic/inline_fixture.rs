@@ -23,7 +23,7 @@ impl PreparedNativeInstrument for Instrument {
 }
 pub struct InlineResourceHostFixture {
     table: Arc<SharedAnalyticContextTable>,
-    retained: Vec<Option<Arc<SharedContextOwner>>>,
+    retained: Vec<Option<crate::shared_analytic::SharedContextLease>>,
     current: ScopedMidiNote,
     carried: crate::midi_template::MidiReleaseVoice,
 }
@@ -51,18 +51,47 @@ impl InlineResourceHostFixture {
             .and_then(hex_project::Track::instrument)
             .ok_or(Invalid("fixture instrument missing"))?
             .id();
-        let prepare = |configuration: InlineResourceFixtureConfiguration| -> Result<(Arc<SharedContextOwner>, ScopedMidiNote), Invalid> {
-            hex_lattice::DevicePreparationContext { sample_rate, tuning: &hex_lattice::TuningTable::default(), resources: &configuration.resources }
-                .validate_for(&configuration.state).map_err(|_| Invalid("fixture scope mismatch"))?;
-            if configuration.state.asset_references().is_empty() { return Err(Invalid("fixture requires resource references")); }
-            let owner = Arc::new(SharedContextOwner::from_inline_resources_on_control(SharedContextId::fresh()?, SharedContextIdentity {
-                tuning: TuningIdentity::default(), resource_scope: 0, track, device,
-                device_type: configuration.state.type_id(), state: configuration.state, sample_rate,
-            }, configuration.resources));
+        let prepare = |configuration: InlineResourceFixtureConfiguration| -> Result<
+            (crate::shared_analytic::SharedContextLease, ScopedMidiNote),
+            Invalid,
+        > {
+            hex_lattice::DevicePreparationContext {
+                sample_rate,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &configuration.resources,
+            }
+            .validate_for(&configuration.state)
+            .map_err(|_| Invalid("fixture scope mismatch"))?;
+            if configuration.state.asset_references().is_empty() {
+                return Err(Invalid("fixture requires resource references"));
+            }
+            let owner = crate::owned_shared::OwnedShared::new_owned(
+                SharedContextOwner::from_inline_resources_on_control(
+                    SharedContextId::fresh()?,
+                    SharedContextIdentity {
+                        tuning: TuningIdentity::default(),
+                        resource_scope: 0,
+                        track,
+                        device,
+                        device_type: configuration.state.type_id(),
+                        state: configuration.state,
+                        sample_rate,
+                    },
+                    configuration.resources,
+                    4096,
+                )?,
+            );
             let mut keys = PreparedMidiNoteBank::empty_keys();
             PreparedMidiNoteBank::add_key(&mut keys, 60, 127)?;
-            let bank = PreparedMidiNoteBank::prepare(&mut keys, &Instrument(configuration.note), None, Some((0, &owner)))?;
-            let note = bank.sampler(bank.index(60, 127).ok_or(Invalid("fixture note missing"))?).ok_or(Invalid("fixture sampler missing"))?;
+            let bank = PreparedMidiNoteBank::prepare(
+                &mut keys,
+                &Instrument(configuration.note),
+                None,
+                Some((0, &owner)),
+            )?;
+            let note = bank
+                .sampler(bank.index(60, 127).ok_or(Invalid("fixture note missing"))?)
+                .ok_or(Invalid("fixture sampler missing"))?;
             Ok((owner, note))
         };
         let (current_owner, current) = prepare(current)?;

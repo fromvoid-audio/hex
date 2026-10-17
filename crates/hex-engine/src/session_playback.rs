@@ -347,7 +347,7 @@ pub struct SessionPlayback {
     tail_output_scratch: [bool; SESSION_TAIL_GROUP_CAPACITY],
     releases: Vec<ReleaseEntry>,
     release_scratch: Vec<ReleaseEntry>,
-    retained_contexts: Vec<Option<Arc<crate::shared_analytic::SharedContextOwner>>>,
+    retained_contexts: Vec<Option<crate::shared_analytic::SharedContextLease>>,
     context_lease_plan: Vec<crate::shared_analytic::ContextLeasePlan>,
     // Fixed MAX_TRACKS slots, allocated on control and indexed by immutable
     // revision context. Actual capacities are charged in preroll accounting.

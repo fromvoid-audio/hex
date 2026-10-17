@@ -13,6 +13,7 @@ use std::sync::{
 
 #[cfg(feature = "instrument-test-support")]
 pub(crate) mod inline_fixture;
+pub(crate) mod resource_storage;
 #[cfg(test)]
 mod resource_tests;
 
@@ -48,7 +49,7 @@ pub(crate) enum ContextLeasePlanError {
 /// only read; ownership moves happen after every graph handoff preflight.
 pub(crate) fn preflight_context_lease_plan(
     plan: &mut Vec<ContextLeasePlan>,
-    retained_slots: &[Option<Arc<SharedContextOwner>>],
+    retained_slots: &[Option<crate::shared_analytic::SharedContextLease>],
 ) -> Result<(), ContextLeasePlanError> {
     plan.sort_unstable_by_key(|request| {
         let retained_first = matches!(request.source, ContextLeaseSource::Retained(_));
@@ -128,12 +129,14 @@ impl SharedContextId {
 /// One unique immutable configuration owner. Its declared byte count covers
 /// all context-owned storage; the table owner and Arc handle are accounted
 /// separately from the 2 MiB payload budget.
+pub(crate) type SharedContextLease = crate::owned_shared::OwnedShared<SharedContextOwner>;
 pub(crate) struct SharedContextOwner {
     id: SharedContextId,
     identity: SharedContextIdentity,
     declared_bytes: usize,
     context: Option<Arc<dyn PreparedSharedAnalyticContext>>,
     resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    state_storage: Option<resource_storage::InlineStateStorage>,
 }
 
 impl std::fmt::Debug for SharedContextOwner {
@@ -162,6 +165,7 @@ impl SharedContextOwner {
             identity,
             declared_bytes,
             context: Some(Arc::from(context)),
+            state_storage: None,
             resources,
         }
     }
@@ -169,15 +173,29 @@ impl SharedContextOwner {
         id: SharedContextId,
         mut identity: SharedContextIdentity,
         resources: crate::native_device_resources::PreparedDeviceResourceLease,
-    ) -> Self {
+        max_metadata_bytes: usize,
+    ) -> Result<Self, Invalid> {
         identity.resource_scope = resources.source_scope_identity();
-        Self {
+        hex_lattice::HostDeviceResourceScope::validate_configuration_on_control(
+            &resources,
+            &identity.state,
+            identity.sample_rate,
+        )
+        .map_err(|_| Invalid("inline resource owner scope mismatch"))?;
+        let (state, storage) = resource_storage::prepare_state_on_control(
+            &identity.state,
+            &resources,
+            max_metadata_bytes,
+        )?;
+        identity.state = state;
+        Ok(Self {
             id,
             identity,
             declared_bytes: 0,
             context: None,
             resources: Some(resources),
-        }
+            state_storage: Some(storage),
+        })
     }
     pub(crate) fn id(&self) -> SharedContextId {
         self.id
@@ -314,7 +332,7 @@ impl SharedContextOwner {
 pub(crate) struct SharedAnalyticContextTable {
     tuning: hex_lattice::TuningTable,
     tuning_identity: TuningIdentity,
-    owners: Vec<Arc<SharedContextOwner>>,
+    owners: Vec<crate::shared_analytic::SharedContextLease>,
     ids: Vec<(SharedContextId, u16)>,
     payload_bytes: usize,
     mutable_continuations: Vec<(TrackId, DeviceId)>,
@@ -491,9 +509,12 @@ impl SharedAnalyticContextTable {
                     id,
                     identity,
                     resources.ok_or(Invalid("inline instrument resource scope is unavailable"))?,
-                ),
+                    resource_preparation
+                        .ok_or(Invalid("inline resource preparation budget is unavailable"))?
+                        .max_scope_metadata_bytes,
+                )?,
             };
-            owners.push(Arc::new(owner));
+            owners.push(crate::owned_shared::OwnedShared::new_owned(owner));
         }
         if owners.len() > MAX_SHARED_CONTEXTS_PER_REVISION {
             return Err(Invalid("shared instrument context count limit reached"));
@@ -555,15 +576,20 @@ impl SharedAnalyticContextTable {
         self.owners
             .binary_search_by_key(&device, |owner| owner.identity.device)
             .ok()
-            .and_then(|index| self.owners.get(index).map(Arc::as_ref))
+            .and_then(|index| self.owners.get(index).map(|owner| owner.as_ref()))
     }
 
     pub(crate) fn owner(&self, index: u16) -> Option<&SharedContextOwner> {
-        self.owners.get(usize::from(index)).map(Arc::as_ref)
+        self.owners
+            .get(usize::from(index))
+            .map(|owner| owner.as_ref())
     }
 
-    pub(crate) fn clone_owner(&self, index: u16) -> Option<Arc<SharedContextOwner>> {
-        self.owners.get(usize::from(index)).map(Arc::clone)
+    pub(crate) fn clone_owner(
+        &self,
+        index: u16,
+    ) -> Option<crate::shared_analytic::SharedContextLease> {
+        self.owners.get(usize::from(index)).cloned()
     }
 
     pub(crate) fn index_for_device(&self, device: DeviceId) -> Option<u16> {
@@ -589,7 +615,9 @@ impl SharedAnalyticContextTable {
         let owner_handles = self
             .owners
             .capacity()
-            .checked_mul(std::mem::size_of::<Arc<SharedContextOwner>>())
+            .checked_mul(std::mem::size_of::<
+                crate::shared_analytic::SharedContextLease,
+            >())
             .ok_or(Invalid("shared instrument context owner size overflow"))?;
         let id_index = self
             .ids
@@ -633,7 +661,7 @@ mod tests {
             .collect()
     }
 
-    fn empty_slots() -> Vec<Option<Arc<SharedContextOwner>>> {
+    fn empty_slots() -> Vec<Option<crate::shared_analytic::SharedContextLease>> {
         (0..MAX_RETAINED_SHARED_CONTEXTS).map(|_| None).collect()
     }
 
@@ -736,17 +764,19 @@ mod tests {
     #[test]
     fn maximum_context_table_handle_and_index_layout_is_bounded() {
         let owner_handles = MAX_SHARED_CONTEXTS_PER_REVISION
-            .checked_mul(std::mem::size_of::<Arc<SharedContextOwner>>())
+            .checked_mul(std::mem::size_of::<
+                crate::shared_analytic::SharedContextLease,
+            >())
             .unwrap();
         let id_index_entries = MAX_SHARED_CONTEXTS_PER_REVISION
             .checked_mul(std::mem::size_of::<(SharedContextId, u16)>())
             .unwrap();
         let table_header = std::mem::size_of::<SharedAnalyticContextTable>();
-        assert_eq!(owner_handles, 2_048);
+        assert_eq!(owner_handles, 4_096);
         assert_eq!(id_index_entries, 4_096);
         // One table and scalar cache identity per revision, never per clip.
         assert_eq!(table_header, 80 + 1024 + 8);
-        assert_eq!(owner_handles + id_index_entries + table_header, 7_256);
+        assert_eq!(owner_handles + id_index_entries + table_header, 9_304);
     }
 
     #[test]

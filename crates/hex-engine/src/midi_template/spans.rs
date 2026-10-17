@@ -327,7 +327,7 @@ impl MidiReleaseVoice {
         &self,
         frame: u64,
         contexts: &crate::shared_analytic::SharedAnalyticContextTable,
-        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<Option<[f32; 2]>, crate::Invalid> {
         if frame < self.start_frame || frame >= self.end_frame {
@@ -478,7 +478,7 @@ impl MidiReleaseVoice {
         &self,
         frame: u64,
         contexts: &crate::shared_analytic::SharedAnalyticContextTable,
-        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
     ) -> Option<[f32; 2]> {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;

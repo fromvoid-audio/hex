@@ -158,7 +158,7 @@ impl PreparedMidiNote {
     pub(crate) fn sample(
         &self,
         contexts: &SharedAnalyticContextTable,
-        retained: &[Option<Arc<SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         age_frames: u64,
         gate_frames: u64,
     ) -> Option<Frame> {
@@ -169,7 +169,7 @@ impl PreparedMidiNote {
     pub(crate) fn sample_at(
         &self,
         contexts: &SharedAnalyticContextTable,
-        retained: &[Option<Arc<SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
         performance_frame: u64,
         age_frames: u64,
@@ -189,9 +189,10 @@ impl PreparedMidiNote {
             } => {
                 let owner = match *context {
                     SharedContextRef::Revision(index) => contexts.owner(index),
-                    SharedContextRef::Retained(index) => {
-                        retained.get(usize::from(index)).and_then(Option::as_deref)
-                    }
+                    SharedContextRef::Retained(index) => retained
+                        .get(usize::from(index))
+                        .and_then(Option::as_deref)
+                        .map(Arc::as_ref),
                 }
                 .filter(|owner| owner.id() == *id)
                 .ok_or(Invalid("shared analytic context identity is unavailable"))?;

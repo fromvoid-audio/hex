@@ -870,7 +870,7 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         .expect("fixed MIDI storage byte count is bounded");
     let shared_owner_slots = crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS
         .checked_mul(std::mem::size_of::<
-            Option<Arc<crate::shared_analytic::SharedContextOwner>>,
+            Option<crate::shared_analytic::SharedContextLease>,
         >())
         .expect("shared context slot table is bounded");
     let lease_plan_bytes = crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS
@@ -908,9 +908,9 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 504);
         assert_eq!(span_buffer_bytes, 82_952 + 192 * 16);
         assert_eq!(current_bytes, 16_601_096);
-        assert_eq!(shared_owner_slots, 131_072);
+        assert_eq!(shared_owner_slots, 262_144);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 17_125_384);
+        assert_eq!(scoped_bytes, 17_256_456);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
         .checked_sub(added_release_bytes)
@@ -3124,7 +3124,7 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
         std::mem::size_of_val(contexts.as_ref())
             + hex_project::MAX_TRACKS * std::mem::size_of::<(TrackId, hex_project::DeviceId)>()
             + contexts.context_count()
-                * (std::mem::size_of::<Arc<crate::shared_analytic::SharedContextOwner>>()
+                * (std::mem::size_of::<crate::shared_analytic::SharedContextLease>()
                     + std::mem::size_of::<(crate::shared_analytic::SharedContextId, u16,)>())
     );
 }

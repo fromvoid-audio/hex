@@ -3068,7 +3068,7 @@ impl SessionPlayback {
                     .retained_contexts
                     .get(usize::from(index))
                     .and_then(Option::as_ref)
-                    .map(Arc::clone),
+                    .cloned(),
             };
             let destination = self.retained_contexts.get_mut(usize::from(plan.target));
             match (source, destination) {

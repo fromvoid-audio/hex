@@ -324,7 +324,7 @@ impl SessionPlayback {
         )?;
         add_capacity::<ReleaseEntry>(&mut total, self.releases.capacity())?;
         add_capacity::<ReleaseEntry>(&mut total, self.release_scratch.capacity())?;
-        add_capacity::<Option<Arc<crate::shared_analytic::SharedContextOwner>>>(
+        add_capacity::<Option<crate::shared_analytic::SharedContextLease>>(
             &mut total,
             self.retained_contexts.capacity(),
         )?;
@@ -453,7 +453,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     add_vec(
         &mut total,
         crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS,
-        std::mem::size_of::<Option<Arc<crate::shared_analytic::SharedContextOwner>>>(),
+        std::mem::size_of::<Option<crate::shared_analytic::SharedContextLease>>(),
     )?;
     add_vec(
         &mut total,
