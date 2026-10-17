@@ -105,16 +105,37 @@ configured target triples without guessing `target/release` paths. It shares the
 local-CI Cargo target lock/ownership and disk-headroom safeguards. Raw Cargo
 commands do not participate in this advisory lock; avoid concurrent raw builds.
 
-Packaging retains font/GPUI licenses, verifies the native linker's ad-hoc signed
-executable with `codesign --verify --strict --ignore-resources` so an unsigned
-local bundle is not mistaken for a sealed app. Independent receipt checks still
-verify every resource, and executable signature validation also runs inside
-publication verification so invalid code preserves the prior usable app. It hashes
-every packaged file and records full provenance in
-`Contents/Resources/test-build.json`. This is local unsigned bundle packaging,
-not Developer ID signing, notarization or distribution. A copy of the full local
-CI summary and `USER-TEST.md` travel with the app. The complete CI logs remain at
-the receipt's recorded report location.
+Packaging retains font/GPUI licenses and requires the explicit existing Developer
+ID certificate SHA1 and team in `scripts/hex-test-build.json`. These are public
+identity metadata; signing uses the existing private key in the macOS keychain.
+There is no automatic identity selection or ad-hoc fallback. Missing identities,
+keychain denial and signing failures stop before publication, preserving the
+installed app. Another machine must explicitly configure its signing identity;
+changing the identity can require a new macOS permission grant.
+
+The staged app is signed with `org.portalsurfer.hex.dev` and no network timestamp.
+Strict full-bundle verification requires that identifier, the configured exact
+certificate and team, an Apple Developer ID Application certificate, and a stable
+designated requirement containing the identifier/team rather than a changing
+code hash. This keeps signing identity stable across builds; actual persistence
+of macOS folder permission across replacements still needs native acceptance.
+This is local Developer ID signing, without notarization or distribution.
+
+The sealed schema-2 `Contents/Resources/test-build.json` records provenance,
+signing policy, the input executable hash and immutable payload hashes. It is
+written before signing to avoid a signature/hash cycle. Its inventory excludes
+the executable, generated `_CodeSignature` files and receipt itself; strict
+native signature verification authenticates all of those, including the receipt.
+The adjacent `hex-test-build-receipt.json` additionally records the final complete
+file inventory and actual native signature/requirement. Both delivery modes use
+this same signing and seal policy. CI-backed bundles include the full local CI
+summary; build-only bundles include `source-verification.json`, with `source-only`
+verification, `tests: not_run` and null CI receipt fields. The selected evidence
+and `USER-TEST.md` are sealed along with the receipt. Complete CI logs, when
+present, remain at the receipt's report location. Legacy schema-1 unsigned bundles retain their original
+executable signature/resource-hash verification for normal startup. An actually
+Developer ID signed app cannot select those weaker legacy checks by editing its
+receipt. Neither format grants permissions or changes privacy settings.
 
 An advisory installation lock serializes cooperating installers at the configured
 location. The installer builds and verifies a complete bundle in the fixed
@@ -149,10 +170,17 @@ The repository full local CI runner includes installer regression tests for
 production bundle assembly from Cargo-reported custom target paths, checksum
 failure, unrelated identity/symlinks, running case aliases, serialized activation,
 interrupted publication/cleanup retry, temporary custody restoration and stale CI
-rejection. A macOS regression compiles a linker-signed fixture and verifies valid
-unsigned-bundle packaging, resource tampering rejection and invalid executable
-signature rejection even after rehashing. These deterministic filesystem tests
-do not establish native UI,
+rejection, signing configuration, signing-failure preservation and signed-receipt
+downgrade refusal. A macOS regression compiles a linker-signed fixture and verifies
+valid legacy packaging, resource tampering rejection and invalid executable
+signature rejection even after rehashing. On a machine with the configured key,
+`HEX_TEST_SIGNING_IDENTITY=4EDF56A7ADD0B4786C2EEE23A50D61620BCE7E4E python3 -m unittest discover -s scripts/tests -p test_hex_test_build.py`
+also signs two different native fixtures, checks equal designated requirements,
+rejects mismatched certificate/team, and rejects sealed CI/source-evidence and
+receipt tampering. Portable production-assembly tests cover signing failure in
+both modes and source drift during build-only signing before publication.
+Without that explicit opt-in the real keychain test is skipped. These filesystem
+tests do not establish macOS permission persistence, native UI,
 physical audio deadlines, listening quality or arbitrary crash/power-loss safety.
 The coordinator supplies the optimized app and finite checklist; the user owns
 native interaction tests while present.

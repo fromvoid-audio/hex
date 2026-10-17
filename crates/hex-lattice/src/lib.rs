@@ -535,6 +535,9 @@ impl NativeRuntimeChain {
         let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
         for instance in instances {
+            if let Some(configuration) = &instance.configuration {
+                configuration.require_asset_free_processing()?;
+            }
             if !instance.owner.is_valid() || instance.device_id == 0 || instance.sample_rate == 0 {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
@@ -1366,7 +1369,12 @@ impl<'a> NativeDeviceRegistry<'a> {
             .definition(type_id)
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let state = definition.default_state()?;
-        self.validate_current(definition, definition.migrate_state(&state)?)
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&state)?
+                .with_host_metadata_from(&state)?,
+        )
     }
     pub fn migrate_state(
         &self,
@@ -1375,9 +1383,12 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        self.validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )
     }
     pub fn patch_parameters(
         &self,
@@ -1387,17 +1398,22 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         hex_lattice_contract::validate_parameter_snapshot_for_write(
             definition, &current, snapshot,
         )?;
         let patched = definition.patch_parameters(&current, snapshot)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
 
     pub fn patch_parameter(
@@ -1409,27 +1425,35 @@ impl<'a> NativeDeviceRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         hex_lattice_contract::validate_parameter_write(definition, &current, parameter, value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
     pub fn prepare_matrix(
         &self,
         state: &NativeDeviceState,
     ) -> Result<StereoMatrix, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         definition.prepare_matrix(&current)
     }
     pub fn prepare_processor(
@@ -1437,13 +1461,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         definition.prepare_processor(&current, sample_rate)
     }
     pub fn prepare_device(
@@ -1451,13 +1478,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<PreparedNativeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
             processor: definition.prepare_processor(&current, sample_rate)?,
@@ -1468,13 +1498,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
             processor: definition.prepare_runtime_factory(&current, sample_rate)?,
@@ -1632,6 +1665,11 @@ mod tests {
             .with_input_gain_millidb(SNAPSHOT_PATCH_INPUT_GAIN)
             .unwrap()
             .with_output_gain_millidb(SNAPSHOT_PATCH_OUTPUT_GAIN)
+            .unwrap()
+            .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+                asset: hex_lattice_contract::DeviceAssetKey::new(42).unwrap(),
+            }])
             .unwrap();
         let snapshot = hex_lattice_contract::DeviceParameterSnapshot::new(&[(
             SNAPSHOT_PATCH_PARAMETER,
@@ -1643,6 +1681,7 @@ mod tests {
 
         assert_eq!(patched.input_gain_millidb(), SNAPSHOT_PATCH_INPUT_GAIN);
         assert_eq!(patched.output_gain_millidb(), SNAPSHOT_PATCH_OUTPUT_GAIN);
+        assert_eq!(patched.asset_references(), state.asset_references());
         assert_eq!(
             definition
                 .read_parameter(&patched, SNAPSHOT_PATCH_PARAMETER)
