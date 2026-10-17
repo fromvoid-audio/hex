@@ -93,7 +93,7 @@ Native calls, registration and deregistration stay on this worker, outside all
 Hex callbacks. Desired and published revision identities remain separate; MTS
 client count is native-reported, not a promise that every client consumed a table.
 
-Linux source verification includes four injected-transport ownership/lifecycle
+Linux source verification includes five injected-transport ownership/lifecycle
 tests and five actual dynamically loaded C ABI fixture tests. The fixture uses
 `-shared` on Linux and `-dynamiclib` on macOS; this does not enable the production
 system-library loader on Linux. Installed macOS runtime, signing/library validation

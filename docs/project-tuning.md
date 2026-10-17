@@ -50,7 +50,7 @@ interaction/listening item still needs the finite Mac acceptance pass.
 | audition | triangle/square/saw, level, attack, release; live pitch follows tuning with finite voice/note-off ownership | project-saved settings #2739; audio/UI #2741 implemented; native acceptance pending |
 | save project | working scale and audition settings travel with project, independent of local library; malformed data refuses safely | #2739 |
 | native playback | one table for native pitched instruments, Arrangement, Session, preview and export; explicit fixed-Hz/held-voice policy | #2740 / PR351 implemented and focused-tested; native listening pending |
-| MTS-ESP | master status/client count, safe ownership and lifecycle; compatible clients only | #2742 / PR353 pending |
+| MTS-ESP | master status/client count, safe ownership and lifecycle; compatible clients only | #2742 / PR353 implemented and fixture-tested; installed-client/signing acceptance pending |
 
 ## canonical data contract
 
