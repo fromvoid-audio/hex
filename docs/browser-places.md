@@ -62,7 +62,8 @@ focuses its search field and selects the previous query. Typing filters immediat
 by case-insensitive name across supported entries in the current folder and the
 registered native device catalog. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
-Escape clears it. Active IME composition is unmarked before selecting the whole
+Escape clears it and restores text mode even if the query was already empty.
+Category clicks retain search focus, including in Session. Active IME composition is unmarked before selecting the whole
 query. Moving the caret or text selection leaves the result viewport unchanged;
 only a changed query resets it. Clicking the search field restores caret editing
 without moving the result viewport. Device and file highlights both require result

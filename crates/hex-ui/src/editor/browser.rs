@@ -1147,6 +1147,7 @@ impl EditorView {
             .focus_handle()
             .is_focused(window)
         {
+            self.browser.reset_results();
             self.browser.search.update(cx, |input, cx| {
                 input.clear(cx);
             });

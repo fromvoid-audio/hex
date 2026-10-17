@@ -266,9 +266,13 @@ impl EditorView {
                     })))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
+                        cx.listener(move |view, _, window, cx| {
                             view.browser.section = section;
                             view.browser.reset_results();
+                            view.browser
+                                .search
+                                .update(cx, |input, _| input.focus(window));
+                            window.prevent_default();
                             cx.notify();
                         }),
                     )

@@ -355,6 +355,68 @@ fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn command_f_category_click_keeps_search_focus_in_session(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.mode = crate::editor::EditorMode::Session;
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    for category in ["samples", "devices", "projects", "all"] {
+        visual.simulate_keystrokes("cmd-f");
+        visual.simulate_input("utilit");
+        visual.run_until_parked();
+        let selector = Box::leak(format!("browser-section-{category}").into_boxed_str());
+        let bounds = visual.debug_bounds(selector).expect("category");
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.browser_key_context(window, cx),
+                    "hex_browser_search",
+                    "category {category}"
+                )
+            });
+        });
+        visual.simulate_input("y");
+        editor.read_with(visual, |view, cx| {
+            assert_eq!(view.browser.search.read(cx).content, "utility")
+        });
+    }
+    visual.simulate_keystrokes("down enter");
+    editor.read_with(visual, |view, _| {
+        assert!(view.status.contains("drag a browser device"));
+        assert!(view.last_transport_command.is_none());
+    });
+}
+
+#[gpui::test]
+fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("cmd-f down");
+    editor.read_with(visual, |view, _| assert!(view.browser.results_focused));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(!view.browser.results_focused);
+            assert_eq!(view.browser_key_context(window, cx), "hex_browser_search");
+        });
+    });
+    visual.simulate_keystrokes("right");
+    visual.simulate_input("loop");
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.playback_generation, 0);
+        assert_eq!(view.browser.search.read(cx).content, "loop");
+    });
+}
+
+#[gpui::test]
 fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
