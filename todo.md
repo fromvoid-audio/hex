@@ -10,6 +10,7 @@
 - Exact final local CI and stable optimized delivery are recorded externally.
   Physical deadlines, listening, GUI interaction and backend faults remain
   unverified; source merge and installation do not complete original24 acceptance.
+
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
 
 Native effect/instrument registries validate owned descriptors for each current
