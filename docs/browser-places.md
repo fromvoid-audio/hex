@@ -62,7 +62,10 @@ focuses its search field and selects the previous query. Typing filters immediat
 by case-insensitive name across supported entries in the current folder and the
 registered native device catalog. Samples, devices and projects remain available
 as category filters. Repeating Command-F from search/results replaces the query;
-Escape clears it. Open context/controller menus are dismissed; leaving theme
+Escape clears it. Active IME composition is unmarked before selecting the whole
+query. Moving the caret or text selection leaves the result viewport unchanged;
+only a changed query resets it. Device and file highlights both require result
+focus. Open context/controller menus are dismissed; leaving theme
 settings cancels its unsaved preview (an in-flight save must finish first).
 A clip-name draft commits using the existing blur behavior before search takes focus.
 An unfinished gain numeric draft keeps its focus and value: finish it with Enter

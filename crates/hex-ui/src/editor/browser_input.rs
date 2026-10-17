@@ -68,6 +68,7 @@ impl BrowserSearch {
     }
     pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus(window);
+        self.unmark_text(window, cx);
         self.select_all(&BrowserSelectAll, window, cx);
     }
 

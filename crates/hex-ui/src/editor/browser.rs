@@ -188,8 +188,13 @@ impl BrowserState {
             .unwrap_or_else(|| PathBuf::from("/"));
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
-        let observer = cx.observe(&search, |view, _, cx| {
-            view.browser.reset_results();
+        let mut previous_query = String::new();
+        let observer = cx.observe(&search, move |view, search, cx| {
+            let query = &search.read(cx).content;
+            if *query != previous_query {
+                previous_query.clone_from(query);
+                view.browser.reset_results();
+            }
             cx.notify();
         });
         let places = if music != home {
@@ -1867,11 +1872,13 @@ impl EditorView {
             .items_center()
             .gap_1()
             .cursor_pointer()
-            .bg(rgb(theme::color(if self.browser.selected_index == index {
-                theme::PaletteRole::Hover
-            } else {
-                theme::PaletteRole::Surface
-            })))
+            .bg(rgb(theme::color(
+                if self.browser.results_focused && self.browser.selected_index == index {
+                    theme::PaletteRole::Hover
+                } else {
+                    theme::PaletteRole::Surface
+                },
+            )))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,

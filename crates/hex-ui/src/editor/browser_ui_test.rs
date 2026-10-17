@@ -259,6 +259,102 @@ fn command_f_commits_clip_name_draft_then_routes_typing_to_browser(cx: &mut Test
 }
 
 #[gpui::test]
+fn command_f_replaces_entire_query_during_ime_composition(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "loop");
+    cx.update_window(handle, |_, window, cx| {
+        let search = editor.read(cx).browser.search.clone();
+        search.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(None, "音", Some(1..1), window, cx);
+            assert!(input.marked_text_range(window, cx).is_some());
+        });
+    })
+    .unwrap();
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "utility");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "utility");
+    });
+}
+
+#[gpui::test]
+fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("sample");
+    editor.update(visual, |view, cx| {
+        let directory = view.browser.directory.clone();
+        view.browser.listing = Some(DirectoryListing {
+            directory: directory.clone(),
+            entries: (0..50)
+                .map(|index| LibraryEntry {
+                    name: format!("sample-{index}.wav"),
+                    path: directory.join(format!("sample-{index}.wav")),
+                    kind: EntryKind::WaveAudio,
+                })
+                .collect(),
+            enumerated_entries: 50,
+            truncated: false,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(visual, |view, cx| {
+        view.browser
+            .scroll
+            .scroll_to_item_strict(20, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("browser-entry-20").is_some());
+    assert!(visual.debug_bounds("browser-entry-0").is_none());
+    visual.simulate_keystrokes("left shift-left");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("browser-entry-20").is_some(),
+        "caret movement must preserve viewport"
+    );
+    assert!(visual.debug_bounds("browser-entry-0").is_none());
+    visual.simulate_keystrokes("end backspace");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("browser-entry-0").is_some(),
+        "changed query reveals its first result"
+    );
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "sampl");
+        assert!(!view.browser.results_focused);
+    });
+}
+
+#[gpui::test]
+fn command_f_device_highlight_waits_for_result_focus(cx: &mut TestAppContext) {
+    use crate::theme;
+    cx.update(super::super::bind_editor_keys);
+    let (handle, _, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("utility");
+    visual.run_until_parked();
+    let selector = "browser-device-effect-hex.utility";
+    assert_eq!(
+        visual.rendered_background(selector),
+        Some(gpui::rgb(theme::color(theme::PaletteRole::Surface)).into())
+    );
+    visual.simulate_keystrokes("down");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_background(selector),
+        Some(gpui::rgb(theme::color(theme::PaletteRole::Hover)).into())
+    );
+}
+
+#[gpui::test]
 fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
