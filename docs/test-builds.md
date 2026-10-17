@@ -1,29 +1,45 @@
 # optimized native test delivery
 
-Every Hex change requiring user testing uses `sh scripts/bundle-macos.sh` with
+Reviewed Hex change candidates supplied for user testing use `sh scripts/bundle-macos.sh` with
 full exact-source local CI evidence, included PR revisions and a finite
 checklist. This is the native macOS workflow; Hex is not a VST3 and does not use
 plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
-## startup and explicit test mode
+## launch modes
 
-`./launch` starts the supported installed optimized app, with bundle integrity and
-release-profile verification. It does not invoke Git, run CI, build, replace the
-app or claim a Cargo target lock. Existing running apps are activated normally;
-startup neither quits them nor changes projects/settings. Missing or unsupported
-artifacts produce an actionable `./launch --test` instruction.
+`./launch` is the standard update-and-start path. It requires a clean local `main`,
+fetches `origin/main`, fast-forwards only when local main is an ancestor, builds
+that exact source, and installs and opens the verified optimized build at the
+configured stable path. Dirty, non-main, ahead or divergent checkouts are refused.
+When source update changes `launch`, it re-executes the updated entrypoint while
+preserving the selected mode.
 
-`./launch --test` explicitly opts into updating clean main, full local CI and the
-optimized build/install workflow below, then opens the verified app. Save and quit
-before that mode. The flag survives source-update re-exec so requested tests
-cannot fall through to ordinary startup.
+Default launch always fetches and invokes the optimized build, even when an app
+is installed. It neither runs tests nor requires a previous green CI report.
+Build-only delivery freezes the clean exact commit and source digest, rechecks
+them before publication, and retains source/artifact/signature verification and
+release ownership safeguards. Its receipt records `source-only` verification,
+`tests: not_run`, and no CI report; bundled `source-verification.json` is source
+evidence, never a passing test report. Cargo can reuse valid dependencies normally.
+
+`./launch --test` adds full exact-source local CI before the same build and start
+workflow. Save and quit hex before either mode. The launcher refuses to
+replace the installed app while it is running and also refuses when a raw
+`hex-desktop` executable is running, before CI or Cargo build work; it never kills
+a process. The `--test` spelling survives source-update re-exec.
+
+`./launch --open` verifies and opens the installed optimized app without Git, CI,
+Cargo or replacement. It can activate an already running installed app. Missing or
+unsupported installed artifacts direct the user to `./launch` to build the latest
+source. `--open` and `--test` cannot be combined.
 
 ## repository-owned build and install
 
 Review the focused PR and run `python3 scripts/local-ci.py` on its clean final
 commit. All required steps must pass with unchanged source digest before merge.
+This developer validation requirement is separate from the runtime launch modes.
 Build and install with this repository's command below; Pulse is a ticket manager
 and does not authorize, schedule or attest Hex builds or installation.
 
@@ -47,6 +63,14 @@ sh scripts/bundle-macos.sh \
   --included artifacts/included-test-revisions.json \
   --checklist artifacts/USER-TEST.md
 ```
+
+The default launcher uses the same repository-owned installer with `--build-only`
+instead of `--ci-report`; those options are mutually exclusive and one is required.
+This explicit mode verifies clean exact `--candidate` source before/after the
+optimized build and before publication without running or requiring CI. It does
+not change the full-CI contract of the command above. Build-only bundles carry
+source verification instead of `local-ci-summary.json`; their receipt's CI path
+and hash are null. Do not describe them as tested.
 
 `included-test-revisions.json` is a nonempty list such as:
 
@@ -103,9 +127,12 @@ written before signing to avoid a signature/hash cycle. Its inventory excludes
 the executable, generated `_CodeSignature` files and receipt itself; strict
 native signature verification authenticates all of those, including the receipt.
 The adjacent `hex-test-build-receipt.json` additionally records the final complete
-file inventory and actual native signature/requirement. A copy of the full local
-CI summary and `USER-TEST.md` travel with the app. Complete CI logs remain at the
-receipt's report location. Legacy schema-1 unsigned bundles retain their original
+file inventory and actual native signature/requirement. Both delivery modes use
+this same signing and seal policy. CI-backed bundles include the full local CI
+summary; build-only bundles include `source-verification.json`, with `source-only`
+verification, `tests: not_run` and null CI receipt fields. The selected evidence
+and `USER-TEST.md` are sealed along with the receipt. Complete CI logs, when
+present, remain at the receipt's report location. Legacy schema-1 unsigned bundles retain their original
 executable signature/resource-hash verification for normal startup. An actually
 Developer ID signed app cannot select those weaker legacy checks by editing its
 receipt. Neither format grants permissions or changes privacy settings.
@@ -149,7 +176,9 @@ valid legacy packaging, resource tampering rejection and invalid executable
 signature rejection even after rehashing. On a machine with the configured key,
 `HEX_TEST_SIGNING_IDENTITY=4EDF56A7ADD0B4786C2EEE23A50D61620BCE7E4E python3 -m unittest discover -s scripts/tests -p test_hex_test_build.py`
 also signs two different native fixtures, checks equal designated requirements,
-rejects mismatched certificate/team, and rejects sealed resource/receipt tampering.
+rejects mismatched certificate/team, and rejects sealed CI/source-evidence and
+receipt tampering. Portable production-assembly tests cover signing failure in
+both modes and source drift during build-only signing before publication.
 Without that explicit opt-in the real keychain test is skipped. These filesystem
 tests do not establish macOS permission persistence, native UI,
 physical audio deadlines, listening quality or arbitrary crash/power-loss safety.

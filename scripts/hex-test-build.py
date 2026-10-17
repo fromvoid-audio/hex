@@ -344,6 +344,18 @@ def validate_ci(report: Path, runner, candidate: str) -> dict:
     return evidence
 
 
+def validate_source(runner, candidate: str, expected: dict | None = None) -> dict:
+    """Freeze clean exact source for build-only launch; this is not CI evidence."""
+    if not runner._capture_repository_state("start_tree"):
+        raise DeliveryError("cannot identify current source")
+    current = runner.summary["start_tree"]
+    if (len(candidate) != 40 or any(char not in "0123456789abcdef" for char in candidate)
+            or current["dirty"] or current["commit"] != candidate
+            or (expected is not None and current != expected)):
+        raise DeliveryError("build-only source is dirty, changed or differs from the exact candidate")
+    return dict(current)
+
+
 def build(args) -> dict:
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
@@ -365,7 +377,16 @@ def build(args) -> dict:
         if app.exists():
             assert_identity(app)
         runner = ci.LocalCiRunner(ROOT, adopt_target=False)
-        validate_ci(args.ci_report, runner, args.candidate)
+        build_only = getattr(args, "build_only", False)
+        source_evidence = validate_source(runner, args.candidate) if build_only else None
+
+        def revalidate() -> None:
+            if build_only:
+                validate_source(runner, args.candidate, expected=source_evidence)
+            else:
+                validate_ci(args.ci_report, runner, args.candidate)
+
+        revalidate()
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:
             raise DeliveryError("include PR head revisions")
@@ -385,7 +406,7 @@ def build(args) -> dict:
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
-            validate_ci(args.ci_report, runner, args.candidate)
+            revalidate()
             workspace = install_workspace(app)
             workspace.mkdir()
             stage = workspace / "stage.app"
@@ -405,7 +426,12 @@ def build(args) -> dict:
             with (contents / "Info.plist").open("wb") as output:
                 plistlib.dump(info, output)
             (contents / "Resources/USER-TEST.md").write_text(checklist)
-            shutil.copy2(args.ci_report, contents / "Resources/local-ci-summary.json")
+            if build_only:
+                write_json(contents / "Resources/source-verification.json", {
+                    "mode": "source-only", "tests": "not_run", "source": source_evidence,
+                })
+            else:
+                shutil.copy2(args.ci_report, contents / "Resources/local-ci-summary.json")
             verify_native_executable(contents / "MacOS/hex")
             receipt = {"schema": 2, "version": version, "source": source, "candidate": args.candidate,
                        "source_sha256": runner.summary["start_tree"]["content_sha256"],
@@ -413,7 +439,10 @@ def build(args) -> dict:
                        "release_target_ownership": {key: release_ownership[key] for key in
                            ("profile", "source", "packages", "target_directory", "owner_path",
                             "lock_path", "action", "cleanup_status", "artifact")},
-                       "ci_report": str(args.ci_report.resolve()), "ci_report_sha256": sha(args.ci_report),
+                       "ci_report": None if build_only else str(args.ci_report.resolve()),
+                       "ci_report_sha256": None if build_only else sha(args.ci_report),
+                       "verification": {"mode": "source-only" if build_only else "full-ci",
+                                        "tests": "not_run" if build_only else "passed"},
                        "included": included, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "Developer ID sealed local test bundle; not notarized",
@@ -424,7 +453,7 @@ def build(args) -> dict:
             sign_bundle(stage, signing)
             verify(stage)
             verify_native_executable(contents / "MacOS/hex")
-            validate_ci(args.ci_report, runner, args.candidate)
+            revalidate()
             activate(app, stage)
             verify_native_executable(app / "Contents/MacOS/hex")
             receipt = {**receipt, "artifact_files": inventory(app, include_receipt=True),
@@ -435,8 +464,11 @@ def build(args) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ci-report", type=Path, required=True)
-    parser.add_argument("--candidate", required=True, help="full locally verified PR head")
+    verification = parser.add_mutually_exclusive_group(required=True)
+    verification.add_argument("--ci-report", type=Path, help="full exact-source local CI report")
+    verification.add_argument("--build-only", action="store_true",
+                              help="verify clean exact source and build without running or requiring tests")
+    parser.add_argument("--candidate", required=True, help="full exact candidate commit")
     parser.add_argument("--included", type=Path, required=True, help="JSON list of pr/head objects (ticket references optional)")
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
