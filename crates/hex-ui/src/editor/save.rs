@@ -98,7 +98,7 @@ impl EditorView {
                             view.begin_save_new(path);
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),
+                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
                 cx.notify();

@@ -24,14 +24,17 @@ use std::{
 };
 
 mod auto_pan_panel;
+mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
+mod eq_panel;
 mod gain_meters;
 mod gate_panel;
 mod navigation;
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
+mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod saturator_panel;
@@ -124,6 +127,8 @@ fn parameter_control_matches_identity(
 #[derive(Default)]
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
+    chain_window: chain_window::ChainWindow,
+    parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
     selected_device: Option<DeviceId>,
@@ -154,6 +159,7 @@ pub(super) struct DevicePanelState {
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphControl>,
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
+    eq_panels: HashMap<DeviceId, eq_panel::Panel>,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -211,6 +217,41 @@ impl DevicePanelState {
             })
         })
     }
+}
+
+fn cache_device_metadata(
+    panel: &mut DevicePanelState,
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
+) {
+    let current = panel
+        .views
+        .get(&device.id())
+        .is_some_and(|(cached_class, state, _)| *cached_class == class && state == device.state());
+    if !current {
+        let metadata = hex_engine::native_device_view_for_class(class, device.state())
+            .map_err(|error| error.to_string().to_lowercase());
+        panel
+            .views
+            .insert(device.id(), (class, device.state().clone(), metadata));
+    }
+}
+
+fn title_label(title: String, warning: bool) -> Div {
+    let preferred = theme::color(if warning {
+        theme::PaletteRole::Primary
+    } else {
+        theme::PaletteRole::Muted
+    });
+    div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_color(rgb(theme::readable_text(
+            theme::color(theme::PaletteRole::Surface),
+            preferred,
+        )))
+        .child(theme::text(title))
 }
 
 pub(super) fn control_style() -> ControlStyle {
@@ -308,7 +349,11 @@ pub(super) fn finalize_controls_except(
         }
     }
     if let Some(error) = first_error {
-        view.error = Some(format!("finish the device value edit: {error}").to_lowercase());
+        view.error = Some(
+            format!("finish the device value edit: {error}")
+                .to_lowercase()
+                .into(),
+        );
         false
     } else {
         true
@@ -363,7 +408,11 @@ pub(super) fn enqueue_return_edit(
     finalize_controls(view, cx) && view.enqueue_device_barrier(Request::Edit(command))
 }
 
-pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Stateful<Div> {
+pub(super) fn view(
+    view: &mut EditorView,
+    window: Option<&Window>,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
     retire_removed_send_controls(view, cx);
     if view.device_panel.generation != view.project_generation {
         // Project replacement retires the worker gesture. Drop old subscriptions
@@ -382,6 +431,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         operator_panel::envelope::cancel_all(view, cx);
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
+        view.device_panel.eq_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -393,6 +443,8 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
             let _ = audio.control.spectrum_clear();
             let _ = audio.control.audition_cancel();
         }
+        view.device_panel.chain_window = Default::default();
+        view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
         view.device_panel.selected_device = None;
         view.device_panel.generation = view.project_generation;
@@ -467,10 +519,10 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
                 }
             } else if !finalize_controls(view, cx) {
                 view.device_panel.message = Some("finish the active device value first".into());
-                return render_owner(view, cx, &state, previous);
+                return render_owner(view, window, cx, &state, previous);
             } else if view.device_gesture.snapshot().is_some() {
                 view.device_panel.message = Some("finishing device edit".into());
-                return render_owner(view, cx, &state, previous);
+                return render_owner(view, window, cx, &state, previous);
             }
         }
         view.device_panel.controls.clear();
@@ -484,6 +536,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         operator_panel::envelope::cancel_all(view, cx);
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
+        view.device_panel.eq_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
@@ -491,14 +544,16 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> State
         view.device_panel.compressor_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
+        view.device_panel.chain_window = Default::default();
+        view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
         view.device_panel.selected_device = None;
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
-        Some(DevicePanelOwner::Track(track)) => render_track(view, cx, &state, track),
+        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
         Some(DevicePanelOwner::Return(return_track)) => {
-            return_view::render(view, cx, &state, return_track)
+            return_view::render(view, window, cx, &state, return_track)
         }
         None => empty_panel("select a track or return to view devices"),
     }
@@ -523,14 +578,15 @@ fn owner_exists(state: &ViewState, owner: DevicePanelOwner) -> bool {
 
 fn render_owner(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     owner: DevicePanelOwner,
 ) -> Stateful<Div> {
     match owner {
-        DevicePanelOwner::Track(track) => render_track(view, cx, state, track),
+        DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
         DevicePanelOwner::Return(return_track) => {
-            return_view::render(view, cx, state, return_track)
+            return_view::render(view, window, cx, state, return_track)
         }
     }
 }
@@ -554,6 +610,9 @@ pub(super) fn retire_removed_eq8_graphs(
     cx: &mut Context<EditorView>,
     alive: &HashSet<DeviceId>,
 ) {
+    view.device_panel
+        .eq_panels
+        .retain(|device, _| alive.contains(device));
     let stale: Vec<_> = view
         .device_panel
         .eq8_graphs
@@ -584,7 +643,7 @@ fn clear_removed_spectrum_target(
                     device.value() == target.identity.device_id
                         && identity.class == NativeDeviceClass::Effect
                         && identity.type_id == target.identity.device_type
-                        && identity.type_id.as_str() == Ok("hex.eq8")
+                        && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq"))
                 })
         })
     }) == Some(true);
@@ -606,7 +665,7 @@ fn clear_removed_processor_audition_target(
                     device.value() == target.identity.device_id
                         && identity.class == NativeDeviceClass::Effect
                         && identity.type_id == target.identity.device_type
-                        && identity.type_id.as_str() == Ok("hex.eq8")
+                        && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq"))
                 })
         })
     }) == Some(true);
@@ -624,6 +683,7 @@ fn cancel_send_controls(view: &mut EditorView, cx: &mut Context<EditorView>) {
 
 fn render_track(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     state: &ViewState,
     track_id: TrackId,
@@ -765,7 +825,7 @@ fn render_track(
         .iter()
         .filter_map(|(device, identity)| {
             (identity.class == NativeDeviceClass::Effect
-                && identity.type_id.as_str().ok() == Some("hex.eq8"))
+                && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq")))
             .then_some(*device)
         })
         .collect();
@@ -779,6 +839,20 @@ fn render_track(
     view.device_panel
         .eq8_graph_gestures
         .retain(|device, _| alive_eq8.contains(device));
+
+    // Prepare the full read-only inventory, including unavailable descriptors
+    // and unsupported-state errors, without constructing offscreen controls.
+    for node in track.ordered_device_chain() {
+        let (device, class) = match node {
+            hex_project::TrackDeviceRef::Instrument(device) => {
+                (device, NativeDeviceClass::Instrument)
+            }
+            hex_project::TrackDeviceRef::Effect(device) => (device, NativeDeviceClass::Effect),
+        };
+        cache_device_metadata(&mut view.device_panel, device, class);
+    }
+
+    parameter_rows::reconcile(view, cx);
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
@@ -816,8 +890,11 @@ fn render_track(
         .border_t_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)));
 
-    let mut chain = div()
+    let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
+        .track_scroll(&view.device_panel.chain_window.scroll)
+        .relative()
+        .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
         .debug_selector(|| "device-chain-scroll".into())
         .flex_1()
         .min_h_0()
@@ -856,8 +933,24 @@ fn render_track(
             | hex_project::TrackDeviceRef::Effect(device) => device.id(),
         })
         .collect();
+    let geometry: Vec<_> = nodes
+        .iter()
+        .map(|node| {
+            let (device, class) = match node {
+                hex_project::TrackDeviceRef::Instrument(device) => {
+                    (*device, NativeDeviceClass::Instrument)
+                }
+                hex_project::TrackDeviceRef::Effect(device) => (*device, NativeDeviceClass::Effect),
+            };
+            (
+                device.id(),
+                device_card_width(class, device.state().type_id()),
+            )
+        })
+        .collect();
+    view.device_panel.chain_window.prepare(&geometry);
     let first_device = device_ids.first().copied();
-    let mut effect_index = 0;
+    let mut effect_index: usize = 0;
     for (index, node) in nodes.into_iter().enumerate() {
         let (device, class) = match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
@@ -865,28 +958,46 @@ fn render_track(
             }
             hex_project::TrackDeviceRef::Effect(device) => (device, NativeDeviceClass::Effect),
         };
+        let mounted = chain_window::must_mount(view, device.id(), window, cx);
+        if !mounted {
+            let card = chain_window::spacer(
+                device.id(),
+                device_card_width(class, device.state().type_id()),
+            )
+            .mr(px(DEVICE_CHAIN_PADDING));
+            chain = chain.child(card);
+            if class == NativeDeviceClass::Effect {
+                effect_index = effect_index.saturating_add(1);
+            }
+            continue;
+        }
         let rendered = match class {
-            NativeDeviceClass::Instrument => render_instrument(view, cx, track_id, device),
+            NativeDeviceClass::Instrument => render_instrument(view, window, cx, track_id, device),
             NativeDeviceClass::Effect => {
-                let rendered = render_effect(view, cx, track_id, &devices, effect_index, device);
+                let rendered =
+                    render_effect(view, window, cx, track_id, &devices, effect_index, device);
                 effect_index = effect_index.saturating_add(1);
                 rendered
             }
         };
-        chain = chain.child(render_device_card_target(
-            view,
-            cx,
-            DeviceCardDropGeometry {
-                track: track_id,
-                device: device.id(),
-                class,
-                width: device_card_width(class, device.state().type_id()),
-                next: device_ids.get(index + 1).copied(),
-                first: first_device,
-                visible_chain_bounds: visible_chain_bounds.clone(),
-            },
-            rendered,
-        ));
+        let focus = view.device_panel.chain_window.focus(device.id(), cx);
+        chain = chain.child(
+            render_device_card_target(
+                view,
+                cx,
+                DeviceCardDropGeometry {
+                    track: track_id,
+                    device: device.id(),
+                    class,
+                    width: device_card_width(class, device.state().type_id()),
+                    next: device_ids.get(index + 1).copied(),
+                    first: first_device,
+                    visible_chain_bounds: visible_chain_bounds.clone(),
+                },
+                rendered,
+            )
+            .track_focus(&focus),
+        );
     }
     chain = chain.child(render_device_end_target(
         view,
@@ -926,6 +1037,7 @@ fn render_track(
         .message
         .clone()
         .unwrap_or_else(|| format!("{} · devices", track.name()));
+    let track_name_view = title_label(title, view.device_panel.message.is_some());
     let mut header = div()
         .id("device-panel-header")
         .debug_selector(|| "device-panel-header".into())
@@ -937,18 +1049,7 @@ fn render_track(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(rgb(if view.device_panel.message.is_some() {
-                    theme::color(theme::PaletteRole::Primary)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                }))
-                .child(theme::text(title)),
-        )
+        .child(track_name_view)
         .child(add_button);
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
@@ -996,7 +1097,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
             operator_panel::OPERATOR_FRAME_WIDTH
         }
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
-        (NativeDeviceClass::Effect, Some("hex.eq8")) => eq8_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
@@ -1322,6 +1423,7 @@ fn device_selection_listener(
 
 fn render_effect(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     track: TrackId,
     effects: &[hex_project::Device],
@@ -1363,6 +1465,20 @@ fn render_effect(
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
                 auto_pan_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.eq") {
+                let sample_rate = view
+                    .state
+                    .as_ref()
+                    .map_or(48000, |state| state.project.sample_rate());
+                eq_panel::render_body(
+                    view,
+                    cx,
+                    device_id,
+                    hex_engine::ProcessorChainOwner::Track(track.value()),
+                    device.state(),
+                    device_view,
+                    sample_rate,
+                )
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 let sample_rate = view
                     .state
@@ -1378,24 +1494,17 @@ fn render_effect(
                     sample_rate,
                 )
             } else {
-                let controls = device_view.parameters.iter().map(|parameter| {
-                    parameter_control(
-                        view,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Effect,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    )
-                });
-                crate::device_composition::wrapped_body(controls)
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .overflow_y_scroll()
+                parameter_rows::body(
+                    view,
+                    window,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                )
             };
             device_frame(
                 device_drag_title(
@@ -1444,7 +1553,7 @@ fn render_effect(
     let selector = format!("effect-device-{}", device_id.value());
     let frame_width = match device.state().type_id().as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8") => eq8_panel::FRAME_WIDTH,
+        Ok("hex.eq8" | "hex.eq") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
@@ -1590,7 +1699,7 @@ impl EditorView {
                 }
             }
             Err(reason) => {
-                self.error = Some(reason.clone());
+                self.error = Some(reason.clone().into());
                 self.device_panel.message = Some(reason);
             }
         }
@@ -1662,7 +1771,7 @@ impl EditorView {
 
         let Some(track) = self.selected_track else {
             self.error = Some("select a track before dropping a device".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1673,7 +1782,7 @@ impl EditorView {
         };
         let Some(target_track) = state.project.track(track) else {
             self.error = Some("device drop target is no longer available".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1685,7 +1794,7 @@ impl EditorView {
             })
         {
             self.error = Some("device drop target changed; drag again".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1713,7 +1822,7 @@ impl EditorView {
             && drop_target.replace.is_none()
         {
             self.error = Some("instrument slot is already occupied".into());
-            self.device_panel.message = self.error.clone();
+            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
             self.clear_native_device_drag(drag);
             cx.notify();
             return;
@@ -1734,7 +1843,7 @@ impl EditorView {
                 || drop_target.before.is_some()
             {
                 self.error = Some("instrument replacement target changed; drag again".into());
-                self.device_panel.message = self.error.clone();
+                self.device_panel.message = self.error.as_ref().map(ToString::to_string);
                 self.clear_native_device_drag(drag);
                 cx.notify();
                 return;
@@ -1828,6 +1937,7 @@ fn device_move_would_be_noop(
 
 fn render_instrument(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     track: TrackId,
     device: &hex_project::Device,
@@ -1873,27 +1983,18 @@ fn render_instrument(
                     body,
                 )
             } else {
-                let controls = device_view.parameters.iter().map(|parameter| {
-                    parameter_control(
-                        view,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Instrument,
-                            type_id: device_view.type_id,
-                        },
-                        parameter,
-                    )
-                });
-                let mut body = crate::device_composition::wrapped_body(controls)
-                    .id(ElementId::Name(
-                        format!("device-body-{}", device_id.value()).into(),
-                    ))
-                    .debug_selector(move || format!("device-body-{}", device_id.value()))
-                    .overflow_y_scroll();
-                if device_view.parameters.is_empty() {
-                    body = body.child(menu_message("no parameters"));
-                }
+                let body = parameter_rows::body(
+                    view,
+                    window,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Instrument,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                );
+
                 device_frame(
                     device_drag_title(
                         view,
@@ -2403,11 +2504,49 @@ fn parameter_control_with_presentation(
             return unsupported_parameter(descriptor.label);
         }
     }
+    // Semantic queries describe acknowledged canonical values, not effective painted drafts.
+    let revision = view.state.as_ref().map_or(0, |state| state.revision);
+    let generation = view.project_generation;
+    let owner = cx.entity().downgrade();
+    let pending = view.edit_pending()
+        || view.device_gesture.snapshot().is_some()
+        || !view.device_gesture_barriers.is_empty()
+        || view.device_panel.pending_values.contains_key(&key);
+    let guard: std::rc::Rc<dyn Fn(&gpui::App) -> bool> = std::rc::Rc::new(move |app| {
+        owner
+            .read_with(app, |view, _| {
+                view.project_generation == generation
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == revision)
+                    && !view.edit_pending()
+                    && view.device_gesture.snapshot().is_none()
+                    && view.device_gesture_barriers.is_empty()
+                    && !view.device_panel.pending_values.contains_key(&key)
+                    && view.device_panel.controls.contains_key(&key)
+            })
+            .unwrap_or(false)
+    });
     match view.device_panel.controls.get(&key) {
         Some(ParameterControl::Float { entity, .. }) => {
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Float(canonical) = parameter.value {
+                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
+                            control.set_accessibility_binding(
+                                gpui::AccessibilityBinding {
+                                    name: theme::text(descriptor.label),
+                                    revision,
+                                    value,
+                                    pending,
+                                    guard: guard.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2420,6 +2559,20 @@ fn parameter_control_with_presentation(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Float(canonical) = parameter.value {
+                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
+                            control.set_accessibility_binding(
+                                gpui::AccessibilityBinding {
+                                    name: theme::text(descriptor.label),
+                                    revision,
+                                    value,
+                                    pending,
+                                    guard: guard.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2445,6 +2598,18 @@ fn parameter_control_with_presentation(
             if let ParameterValue::Bool(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Bool(canonical) = parameter.value {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Toggle(canonical),
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2457,6 +2622,18 @@ fn parameter_control_with_presentation(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Bool(canonical) = parameter.value {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Toggle(canonical),
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2486,6 +2663,23 @@ fn parameter_control_with_presentation(
             if let ParameterValue::Choice(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let (ParameterValue::Choice(canonical), ParameterKind::Choice { labels }) =
+                        (parameter.value, descriptor.kind)
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Choice {
+                                    selected: canonical as usize,
+                                    options: labels.iter().map(theme::text).collect(),
+                                },
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2500,6 +2694,23 @@ fn parameter_control_with_presentation(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
+                    if let (ParameterValue::Choice(canonical), ParameterKind::Choice { labels }) =
+                        (parameter.value, descriptor.kind)
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Choice {
+                                    selected: canonical as usize,
+                                    options: labels.iter().map(theme::text).collect(),
+                                },
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(
                         identity.type_id.as_str() == Ok("hex.instrument.operator")
@@ -2627,7 +2838,7 @@ fn create_parameter_control(
                     if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
                         && event.phase != NumericEventPhase::Cancel
                     {
-                        view.error = Some(error.to_owned());
+                        view.error = Some(error.to_owned().into());
                     }
                     cx.notify();
                 });
@@ -2738,6 +2949,7 @@ fn create_parameter_control(
             };
             let config = SelectorConfig::new(id, choices, selected, style)
                 .ok()?
+                .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
                 .with_appearance(appearance);
             let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
             let target = key;

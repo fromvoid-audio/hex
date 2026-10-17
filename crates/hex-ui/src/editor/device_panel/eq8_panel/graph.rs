@@ -341,7 +341,7 @@ fn begin_band_audition(
     };
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), device_view.type_id);
     let selection = hex_engine::ProcessorAuditionSelection {
-        index: band as u8,
+        index: band as u32,
         lane: lane as u8,
     };
     let target = hex_audio::processor_audition::ProcessorAuditionTarget {

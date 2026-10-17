@@ -7,8 +7,9 @@ lowercase text. It does not imply measured Ableton compatibility.
 
 ## First implementation boundary
 
-`hex-lattice` owns concrete stereo processing primitives: a validated, immutable
-2×2 matrix, ordered composition and allocation-free frame/block application.
+`hex-dsp` owns the host-independent stereo kernels; `hex-lattice` reexports
+them without changing its existing public paths. The initial primitives are a validated,
+immutable 2×2 matrix, ordered composition and allocation-free frame/block application.
 `hex-devices` owns original device algorithms, starting with Utility's memoryless
 linear controls alongside the existing sine instrument. Neither crate owns
 project editing, persistence, UI, device I/O or plugin loading.

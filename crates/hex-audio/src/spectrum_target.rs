@@ -115,7 +115,7 @@ impl SpectrumTargetControl {
         } {
             return Err(TargetError::InvalidOwner);
         }
-        if identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8") {
+        if !matches!(identity.device_type.as_str(), Ok("hex.eq8" | "hex.eq")) {
             return Err(TargetError::WrongDeviceType);
         }
         if activation_floor == 0 {

@@ -27,6 +27,7 @@ gpui::actions!(
 
 pub(super) struct BrowserSearch {
     pub content: String,
+    clip_name: bool,
     focus: FocusHandle,
     selected: Range<usize>,
     reversed: bool,
@@ -40,6 +41,7 @@ impl BrowserSearch {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             content: String::new(),
+            clip_name: false,
             focus: cx.focus_handle(),
             selected: 0..0,
             reversed: false,
@@ -50,12 +52,26 @@ impl BrowserSearch {
         }
     }
 
+    pub(super) fn for_clip_name(content: String, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new(cx);
+        input.selected = 0..content.len();
+        input.content = content;
+        input.clip_name = true;
+        input
+    }
+
     pub(super) fn focus_handle(&self) -> &FocusHandle {
         &self.focus
     }
     pub(super) fn focus(&self, window: &mut Window) {
         self.focus.focus(window);
     }
+    pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus(window);
+        self.unmark_text(window, cx);
+        self.select_all(&BrowserSelectAll, window, cx);
+    }
+
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.content.clear();
         self.selected = 0..0;
@@ -239,6 +255,9 @@ impl BrowserSearch {
             self.move_to(self.index_for_point(event.position), cx);
         }
         self.focus.focus(window);
+        if self.clip_name {
+            cx.stop_propagation();
+        }
     }
 }
 
@@ -287,7 +306,17 @@ impl EntityInputHandler for BrowserSearch {
             .map(|range| self.range_from_utf16(range))
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selected.clone());
-        let text = text.to_lowercase();
+        let text = if self.clip_name {
+            text.replace(['\n', '\r'], " ")
+        } else {
+            text.to_lowercase()
+        };
+        if self.clip_name
+            && (self.content.len() - range.len() + text.len() > hex_project::MAX_NAME_BYTES
+                || text.chars().any(char::is_control))
+        {
+            return;
+        }
         self.content.replace_range(range.clone(), &text);
         let cursor = range.start + text.len();
         self.selected = cursor..cursor;
@@ -309,15 +338,35 @@ impl EntityInputHandler for BrowserSearch {
             .map(|range| self.range_from_utf16(range))
             .or_else(|| self.marked.clone())
             .unwrap_or_else(|| self.selected.clone());
-        let normalized = text.to_lowercase();
+        let normalized = if self.clip_name {
+            text.to_owned()
+        } else {
+            text.to_lowercase()
+        };
+        if self.clip_name
+            && (self.content.len() - range.len() + normalized.len() > hex_project::MAX_NAME_BYTES
+                || normalized.chars().any(char::is_control))
+        {
+            return;
+        }
         self.content.replace_range(range.clone(), &normalized);
         self.marked =
             (!normalized.is_empty()).then_some(range.start..range.start + normalized.len());
         self.selected = selected
             .as_ref()
             .map(|selected| {
-                range.start + lowercase_utf16_offset(text, selected.start)
-                    ..range.start + lowercase_utf16_offset(text, selected.end)
+                range.start
+                    + if self.clip_name {
+                        utf16_offset(text, selected.start)
+                    } else {
+                        lowercase_utf16_offset(text, selected.start)
+                    }
+                    ..range.start
+                        + if self.clip_name {
+                            utf16_offset(text, selected.end)
+                        } else {
+                            lowercase_utf16_offset(text, selected.end)
+                        }
             })
             .unwrap_or_else(|| range.start + normalized.len()..range.start + normalized.len());
         self.reversed = false;
@@ -353,6 +402,21 @@ impl EntityInputHandler for BrowserSearch {
     }
 }
 
+fn utf16_offset(text: &str, offset: usize) -> usize {
+    let mut remaining = offset;
+    text.chars()
+        .take_while(|ch| {
+            if remaining == 0 {
+                false
+            } else {
+                remaining = remaining.saturating_sub(ch.len_utf16());
+                true
+            }
+        })
+        .map(char::len_utf8)
+        .sum()
+}
+
 fn lowercase_utf16_offset(text: &str, offset: usize) -> usize {
     let mut remaining = offset;
     let mut normalized_offset = 0;
@@ -375,11 +439,20 @@ impl Focusable for BrowserSearch {
 impl gpui::Render for BrowserSearch {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .debug_selector(|| "browser-search".into())
+            .debug_selector({
+                let name = self.clip_name;
+                move || {
+                    if name {
+                        "clip-name-input".into()
+                    } else {
+                        "browser-search".into()
+                    }
+                }
+            })
             .flex()
             .min_w_0()
             .overflow_hidden()
-            .h(px(24.0))
+            .h(px(if self.clip_name { 16.0 } else { 24.0 }))
             .px_1()
             .items_center()
             .bg(gpui::rgb(crate::theme::color(
@@ -458,7 +531,11 @@ impl Element for BrowserSearchElement {
         let style = window.text_style();
         let (text, color) = if input.content.is_empty() {
             (
-                "search samples".to_owned(),
+                if input.clip_name {
+                    String::new()
+                } else {
+                    "search · cmd+f".to_owned()
+                },
                 gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Muted)).into(),
             )
         } else {

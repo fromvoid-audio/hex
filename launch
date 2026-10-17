@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Open the installed optimized app; use --test to update, verify and rebuild it."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parent
+
+
+def load_helper(name: str, path: Path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load repository helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+ci = load_helper("hex_launch_local_ci", ROOT / "scripts/local-ci.py")
+delivery = load_helper("hex_launch_delivery", ROOT / "scripts/hex-test-build.py")
+
+
+class LaunchError(Exception):
+    """A prerequisite failed; the desktop app must not be opened."""
+
+
+def command(argv: list[str], *, cwd: Path = ROOT, capture: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=cwd,
+        capture_output=capture,
+        text=True,
+        check=False,
+    )
+
+
+def checked(argv: list[str], *, cwd: Path = ROOT, capture: bool = True) -> str:
+    result = command(argv, cwd=cwd, capture=capture)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise LaunchError(f"command failed ({result.returncode}): {' '.join(argv)}"
+                          + (f"\n{detail}" if detail else ""))
+    return (result.stdout or "").strip()
+
+
+def require_clean_main(root: Path) -> None:
+    top = Path(checked(["git", "rev-parse", "--show-toplevel"], cwd=root)).resolve()
+    if top != root.resolve():
+        raise LaunchError(f"run ./launch from the main checkout containing this script: {top}")
+    branch = checked(["git", "branch", "--show-current"], cwd=root)
+    if branch != "main":
+        raise LaunchError(f"refusing branch {branch or '(detached HEAD)'}; switch to a clean main checkout")
+    dirty = checked(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=root)
+    if dirty:
+        raise LaunchError("refusing a dirty checkout; save or remove tracked and untracked changes first")
+
+
+def fetch_and_fast_forward(root: Path) -> str:
+    checked(["git", "fetch", "origin", "refs/heads/main:refs/remotes/origin/main"], cwd=root)
+    fetched = checked(["git", "rev-parse", "refs/remotes/origin/main"], cwd=root)
+    ancestry = command(["git", "merge-base", "--is-ancestor", "HEAD", fetched], cwd=root)
+    if ancestry.returncode != 0:
+        raise LaunchError("local main is ahead of or divergent from fetched origin/main; refusing to change it")
+    checked(["git", "merge", "--ff-only", "refs/remotes/origin/main"], cwd=root)
+    head = checked(["git", "rev-parse", "HEAD"], cwd=root)
+    if head != fetched:
+        raise LaunchError(f"checkout did not reach fetched origin/main ({fetched}); current HEAD is {head}")
+    dirty = checked(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=root)
+    if dirty:
+        raise LaunchError("checkout became dirty during fast-forward; refusing verification and launch")
+    return fetched
+
+
+def included_revisions(source: str, root: Path) -> list[dict[str, str]]:
+    raw = checked(["gh", "api", f"repos/PORTALSURFER/hex/commits/{source}/pulls"], cwd=root)
+    try:
+        pulls = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise LaunchError(f"GitHub returned invalid pull request metadata: {error}") from error
+    included = []
+    for pull in pulls if isinstance(pulls, list) else []:
+        number = pull.get("number") if isinstance(pull, dict) else None
+        head = pull.get("head", {}).get("sha") if isinstance(pull, dict) else None
+        if isinstance(number, int) and isinstance(head, str) and len(head) == 40 \
+                and all(char in "0123456789abcdef" for char in head):
+            included.append({"pr": f"https://github.com/PORTALSURFER/hex/pull/{number}", "head": head})
+    if not included:
+        raise LaunchError(f"GitHub reports no pull request associated with main commit {source}")
+    return included
+
+
+def configured_app(root: Path) -> Path:
+    config = json.loads((root / "scripts/hex-test-build.json").read_text())
+    configured = Path(os.environ.get("HEX_DEV_APP_PATH", config["app_path"]))
+    if configured.is_absolute():
+        app = configured
+    else:
+        # Read standard checkout metadata without invoking Git on normal startup.
+        git_dir = root / ".git"
+        if git_dir.is_file():
+            pointer = git_dir.read_text().strip()
+            if not pointer.startswith("gitdir: "):
+                raise LaunchError("cannot resolve the configured app from checkout metadata")
+            git_dir = root / pointer[len("gitdir: "):]
+        common_file = git_dir / "commondir"
+        common = git_dir / common_file.read_text().strip() if common_file.is_file() else git_dir
+        app = common.resolve().parent / configured
+    if app.name.casefold() != "hex.app":
+        raise LaunchError("configured stable development app must be named hex.app")
+    return app.absolute()
+
+
+def open_installed(app: Path, expected_source: str | None = None) -> Path:
+    try:
+        receipt = delivery.verify(app)
+        source = receipt.get("source")
+        if receipt.get("profile") != "release":
+            raise ValueError("installed app is not an optimized release build")
+        if not isinstance(source, str) or len(source) != 40 or any(c not in "0123456789abcdef" for c in source):
+            raise ValueError("installed app has no valid source provenance")
+    except (delivery.DeliveryError, OSError, ValueError, KeyError, TypeError,
+            AttributeError, subprocess.CalledProcessError) as error:
+        raise LaunchError(f"installed optimized hex is unavailable: {error}; run ./launch --test to verify and build it") from error
+    if expected_source is not None and (source != expected_source or receipt.get("candidate") != expected_source):
+        raise LaunchError(f"installed app does not match fetched main {expected_source}; app was not opened")
+    checked(["open", "-a", str(app)])
+    print(f"opened {app}")
+    return app
+
+
+def launch_installed(root: Path = ROOT) -> Path:
+    if sys.platform != "darwin":
+        raise LaunchError("./launch opens the native desktop app on macOS only")
+    return open_installed(configured_app(root))
+
+
+def checklist(source: str) -> str:
+    return f"""# launch smoke checklist
+
+Candidate source: `{source}` (optimized release build; full local CI passed).
+
+1. Confirm the hex window opens and its titlebar controls do not overlap app controls.
+2. Open the generated demo and confirm the arrangement renders and transport starts/stops.
+3. Open a project, make a clip edit, then undo and redo it.
+4. Save the project, quit normally, reopen it, and confirm the saved edit remains.
+
+Native interaction and listening results remain operator acceptance; this launch command records no such result.
+"""
+
+
+def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
+    if sys.platform != "darwin":
+        raise LaunchError("./launch builds and opens the native desktop app on macOS only")
+    require_clean_main(root)
+    initial_head = checked(["git", "rev-parse", "HEAD"], cwd=root)
+    source = fetch_and_fast_forward(root)
+    if source != initial_head:
+        # Re-import helpers and run the entrypoint from the newly fetched source.
+        os.execv(sys.executable, [sys.executable, str(root / "launch"), *(argv or [])])
+        raise LaunchError("could not restart ./launch from the updated main source")
+    included = included_revisions(source, root)
+    app = configured_app(root)
+    try:
+        delivery.assert_inactive(app)
+    except (delivery.DeliveryError, OSError, subprocess.CalledProcessError) as error:
+        raise LaunchError(f"configured app must be saved and quit before launch; no process was terminated: {error}") from error
+
+    runner = ci.LocalCiRunner(root, mode="full")
+    result = runner.run()
+    if result != 0 or runner.summary.get("status") != "passed":
+        raise LaunchError(f"full local CI failed; see {runner.summary_path}")
+    if runner.summary.get("commit") != source or runner.summary.get("dirty") is not False \
+            or runner.summary.get("stale") is not False:
+        raise LaunchError(f"full local CI did not verify the fetched clean source; see {runner.summary_path}")
+
+    included_path = runner.output_dir / "included-test-revisions.json"
+    checklist_path = runner.output_dir / "USER-TEST.md"
+    included_path.write_text(json.dumps(included, indent=2) + "\n")
+    checklist_path.write_text(checklist(source))
+    checked(
+        ["sh", "scripts/bundle-macos.sh", "--ci-report", str(runner.summary_path),
+         "--candidate", source, "--included", str(included_path), "--checklist", str(checklist_path)],
+        cwd=root,
+        capture=False,
+    )
+
+    return open_installed(app, expected_source=source)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--test", action="store_true",
+                        help="update clean main, run full local checks, build/install the optimized app, then open it")
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    options = parser.parse_args(arguments)
+    try:
+        if options.test:
+            run_launch(argv=arguments)
+        else:
+            launch_installed()
+    except (LaunchError, ci.InterruptedRun, ci.TargetCacheError, OSError,
+            ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        print(f"launch stopped: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -50,9 +50,23 @@ expected_changes = {
     "src/scene.rs",
     "src/bounds_tree.rs",
     "src/taffy.rs",
+    "src/gpui.rs",
+    "src/elements/div.rs",
+    "src/view.rs",
 }
 if set(manifest["patched_files"]) != expected_changes:
     errors.append("unexpected GPUI patch scope")
+expected_additions = {
+    "src/accessibility.rs",
+    "src/platform/accessibility_bridge.rs",
+    "src/platform/mac/accessibility.rs",
+}
+if set(manifest.get("added_files", {})) != expected_additions:
+    errors.append("unexpected GPUI added-file scope")
+for name, expected in manifest.get("added_files", {}).items():
+    path = vendor / name
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        errors.append(f"GPUI added-source/provenance mismatch: {name}")
 for name, original in manifest["original_files"].items():
     path = vendor / name
     expected = manifest["patched_files"].get(name, original)
@@ -60,8 +74,11 @@ for name, original in manifest["original_files"].items():
         errors.append(f"GPUI source/provenance mismatch: {name}")
 local_metadata = {"HEX-PATCHES.md", "hex-provenance.json", "hex-patches.diff"}
 extra = {
-    str(path.relative_to(vendor)) for path in vendor.rglob("*") if path.is_file()
-} - set(manifest["original_files"]) - local_metadata
+    # Finder metadata is ignored by Git and is not a dependency build input.
+    # Keep symlinks and every other unexpected file visible to this check.
+    str(path.relative_to(vendor)) for path in vendor.rglob("*")
+    if path.is_symlink() or (path.is_file() and path.name != ".DS_Store")
+} - set(manifest["original_files"]) - expected_additions - local_metadata
 if extra:
     errors.append(f"unexpected files in external GPUI: {sorted(extra)}")
 lock = re.split(r"(?m)^\[\[package\]\]\s*\n", (root / "Cargo.lock").read_text())
@@ -70,4 +87,4 @@ if len(gpui) != 1 or string_value(gpui[0], "source") is not None or string_value
     errors.append("lockfile must resolve exactly the local GPUI 0.2.2 patch")
 if errors:
     raise SystemExit("\n".join(errors))
-print("GPUI patch passed: verified baseline, documented input, cursor, titlebar, test-support, cache-epoch, scene-replay and explicit grid-literal deltas, excluded native dependency")
+print("GPUI patch passed: verified baseline, input/cursor/titlebar, cache epochs/replay, test support and bounded accessibility, excluded native dependency")

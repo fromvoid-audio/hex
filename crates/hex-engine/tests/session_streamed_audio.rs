@@ -56,6 +56,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         ],
         tracks: vec![
             TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -72,6 +73,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 sends: Vec::new(),
             },
             TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -85,6 +87,8 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    name: "clip".into(),
+                    flavor: hex_project::ClipFlavor::default(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: 8,
@@ -109,6 +113,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 track: SESSION_TRACK,
                 scene: SCENE,
                 content: SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id: SESSION_CLIP,
                     name: "one shot".into(),
@@ -894,6 +899,8 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
         panic!("audio track expected")
     };
     clips.push(ClipSnapshot {
+        name: "clip".into(),
+        flavor: hex_project::ClipFlavor::default(),
         edit: None,
         gain: hex_project::ClipGain::UNITY,
         id: 10,
@@ -1001,6 +1008,8 @@ fn canonical_capture_streamed_empty_chain_offsets_partitions_and_provider_refusa
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = 0.5;
     snapshot.tracks[0].content = TrackContentSnapshot::Audio(vec![ClipSnapshot {
+        name: "clip".into(),
+        flavor: hex_project::ClipFlavor::default(),
         edit: None,
         gain: hex_project::ClipGain::UNITY,
         id: 10,

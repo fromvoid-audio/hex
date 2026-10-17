@@ -65,7 +65,7 @@ impl Drop for TempDir {
 }
 
 #[test]
-fn return_workflow_routes_pcm_edits_devices_history_and_schema25_roundtrip() {
+fn return_workflow_routes_pcm_edits_devices_history_and_current_schema_roundtrip() {
     use hex_engine::NativeDeviceClass;
 
     let service = Service::new(8_000, 16, 0).expect("service");
@@ -360,7 +360,7 @@ fn return_workflow_routes_pcm_edits_devices_history_and_schema25_roundtrip() {
     assert!(!saved.state.unsaved);
     let bytes = fs::read(&path).expect("saved document bytes");
     let document: serde_json::Value = serde_json::from_slice(&bytes).expect("project json");
-    assert_eq!(document["version"], 25);
+    assert_eq!(document["version"], 28);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     let persisted = hex_storage::load(&path).expect("load schema 25 project");

@@ -35,7 +35,7 @@ pub use frame::{
     DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS, DeviceLayout,
     DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
     device_dense_section, device_display, device_frame, device_grouped_row, device_header,
-    device_layout, device_rail, device_section, device_split,
+    device_layout, device_rail, device_section, device_split, device_windowed_body,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{

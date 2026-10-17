@@ -1,3 +1,5 @@
+#[path = "accessibility.rs"]
+mod native_accessibility;
 use super::{BoolExt, MacDisplay, NSRange, NSStringExt, ns_string, renderer};
 use crate::{
     AnyWindowHandle, Bounds, Capslock, DisplayLink, ExternalPaths, FileDropEvent,
@@ -105,11 +107,21 @@ unsafe extern "C" {
 #[ctor]
 unsafe fn build_classes() {
     unsafe {
+        native_accessibility::initialize_class();
         WINDOW_CLASS = build_window_class("GPUIWindow", class!(NSWindow));
         PANEL_CLASS = build_window_class("GPUIPanel", class!(NSPanel));
         VIEW_CLASS = {
             let mut decl = ClassDecl::new("GPUIView", class!(NSView)).unwrap();
             decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+            decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
+            decl.add_method(
+                sel!(accessibilityChildren),
+                native_accessibility::children as extern "C" fn(&Object, Sel) -> id,
+            );
+            decl.add_method(
+                sel!(accessibilityLabel),
+                native_accessibility::root_label as extern "C" fn(&Object, Sel) -> id,
+            );
             unsafe {
                 decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
 
@@ -289,6 +301,7 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
     unsafe {
         let mut decl = ClassDecl::new(name, superclass).unwrap();
         decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+        decl.add_ivar::<*mut c_void>(native_accessibility::DATA_IVAR);
         decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(&Object, Sel));
 
         decl.add_method(
@@ -394,6 +407,7 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
 }
 
 struct MacWindowState {
+    accessibility: Option<Arc<native_accessibility::NativeBridge>>,
     handle: AnyWindowHandle,
     executor: ForegroundExecutor,
     native_window: id,
@@ -732,6 +746,7 @@ impl MacWindow {
                 should_close_callback: None,
                 close_callback: None,
                 appearance_changed_callback: None,
+                accessibility: None,
                 input_handler: None,
                 last_key_equivalent: None,
                 synthetic_drag_counter: 0,
@@ -767,6 +782,14 @@ impl MacWindow {
                 WINDOW_STATE_IVAR,
                 Arc::into_raw(window.0.clone()) as *const c_void,
             );
+
+            if let Some(bridge) =
+                native_accessibility::register(handle.window_id().as_u64(), native_view)
+            {
+                native_accessibility::attach(native_window, &bridge);
+                native_accessibility::attach(native_view, &bridge);
+                window.0.lock().accessibility = Some(bridge);
+            }
 
             if let Some(title) = titlebar
                 .as_ref()
@@ -962,6 +985,7 @@ impl MacWindow {
 
 impl Drop for MacWindow {
     fn drop(&mut self) {
+        self.revoke_accessibility();
         let mut this = self.0.lock();
         this.renderer.destroy();
         let window = this.native_window;
@@ -982,6 +1006,57 @@ impl Drop for MacWindow {
 }
 
 impl PlatformWindow for MacWindow {
+    fn revoke_accessibility(&self) {
+        let bridge = self.0.lock().accessibility.clone();
+        if let Some(bridge) = bridge {
+            native_accessibility::revoke(&bridge);
+        }
+    }
+    fn on_accessibility_action(
+        &self,
+        callback: Box<dyn FnMut(crate::AccessibilityRequest) -> bool>,
+    ) {
+        let bridge = self.0.lock().accessibility.clone();
+        if let Some(bridge) = bridge {
+            native_accessibility::set_callback(&bridge, callback);
+        }
+    }
+    fn publish_accessibility(&self, nodes: Vec<crate::AccessibilityNode>, refused: bool) {
+        let (bridge, frames) = {
+            let state = self.0.lock();
+            let Some(bridge) = state.accessibility.clone() else {
+                return;
+            };
+            let height = state.content_size().height.0;
+            let frames = nodes
+                .iter()
+                .map(|node| {
+                    let b = node.bounds;
+                    let local = NSRect::new(
+                        NSPoint::new(
+                            b.origin.x.0 as f64,
+                            (height - b.origin.y.0 - b.size.height.0) as f64,
+                        ),
+                        NSSize::new(b.size.width.0 as f64, b.size.height.0 as f64),
+                    );
+                    let screen: NSRect = unsafe {
+                        let rect: NSRect =
+                            msg_send![state.native_view.as_ptr(), convertRect: local toView: nil];
+                        msg_send![state.native_window, convertRectToScreen: rect]
+                    };
+                    [
+                        screen.origin.x,
+                        screen.origin.y,
+                        screen.size.width,
+                        screen.size.height,
+                    ]
+                })
+                .collect();
+            (bridge, frames)
+        };
+        native_accessibility::publish(&bridge, nodes, frames, refused);
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.as_ref().lock().bounds()
     }
@@ -1639,6 +1714,7 @@ extern "C" fn yes(_: &Object, _: Sel) -> BOOL {
 
 extern "C" fn dealloc_window(this: &Object, _: Sel) {
     unsafe {
+        native_accessibility::detach(this);
         drop_window_state(this);
         let _: () = msg_send![super(this, class!(NSWindow)), dealloc];
     }
@@ -1646,6 +1722,7 @@ extern "C" fn dealloc_window(this: &Object, _: Sel) {
 
 extern "C" fn dealloc_view(this: &Object, _: Sel) {
     unsafe {
+        native_accessibility::detach(this);
         drop_window_state(this);
         let _: () = msg_send![super(this, class!(NSView)), dealloc];
     }
@@ -2087,6 +2164,7 @@ extern "C" fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
 }
 
 extern "C" fn close_window(this: &Object, _: Sel) {
+    native_accessibility::revoke_object(this);
     unsafe {
         let close_callback = {
             let window_state = get_window_state(this);
