@@ -4,7 +4,8 @@ This create-new workload prepares native acceptance of the connected verified
 streaming path in PR232–239, including the reader-window and retirement fixes
 in PR271/272. Generation and the explicit headless smoke do not
 establish native device deadlines, sustained playback, listening, or the broader
-original24/177 acceptance. PR241 retains the subsequent edit/fault exercise.
+original24/177 acceptance. PR241 maps the subsequent edit/fault exercise in the
+[native validation ledger](streaming-native-validation.md).
 
 ## Generate and identify
 
