@@ -4,6 +4,12 @@
 
 Own device output, stream lifetime, bounded real-time control delivery, and backend telemetry.
 
+Selected-device spectra stage actual whole-entry input and output independently,
+then submit a single aligned pair only after final callback output validation.
+The bounded worker shares FFT scratch, cadence, freshness and retirement across
+both layers. Output-only APIs project the output of the same reader; legacy
+captures leave input absent. See [EQ signal and custody contracts](../../docs/eq.md#live-input-and-output-spectra).
+
 The desktop's nonblocking initial open uses `request_initial_open()` and polls
 its one-result handle; the lifecycle worker uses the device's actual default
 rate without assuming a project rate. Recovery uses
