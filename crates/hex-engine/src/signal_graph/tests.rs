@@ -18,7 +18,7 @@ use std::any::Any;
 mod eq_automation;
 
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
-struct Definition;
+pub(crate) struct Definition;
 impl NativeDeviceMetadata for Definition {
     fn type_id(&self) -> DeviceTypeId {
         TYPE
@@ -57,7 +57,7 @@ impl NativeDeviceMetadata for Definition {
         Err(DeviceContractError::UnknownParameter)
     }
 }
-fn state(delay: u32) -> Result<NativeDeviceState, DeviceContractError> {
+pub(crate) fn state(delay: u32) -> Result<NativeDeviceState, DeviceContractError> {
     NativeDeviceState::new(TYPE, 1, delay.to_le_bytes().to_vec())
 }
 impl NativeDeviceDefinition for Definition {

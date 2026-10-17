@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.44s
+     Running `target/release/examples/owned_history_profile`
+fixture=owned-delay original test provider; native admission remains unchanged; stereo; block=128; warmup=100; measured=4000
+whole-copy baseline copies both complete histories per block; dirty interval copies only written frames at commit; neither run measures native deadlines
+rate=44100 history_frames=88200 pair_bytes=1411304 dirty_copy_bytes_per_block=1024 whole_copy_bytes_per_block=1411200 dirty_p50_ns=208 dirty_p99_ns=3125 whole_p50_ns=49084 whole_p99_ns=92500 pcm_equal=true digest=b9226422c3789f53 large_live_inheritance=false
+rate=48000 history_frames=96000 pair_bytes=1536104 dirty_copy_bytes_per_block=1024 whole_copy_bytes_per_block=1536000 dirty_p50_ns=208 dirty_p99_ns=1375 whole_p50_ns=58584 whole_p99_ns=100917 pcm_equal=true digest=95ebdd109bdfa079 large_live_inheritance=false
+rate=96000 history_frames=192000 pair_bytes=3072104 dirty_copy_bytes_per_block=1024 whole_copy_bytes_per_block=3072000 dirty_p50_ns=250 dirty_p99_ns=1084 whole_p50_ns=85500 whole_p99_ns=154542 pcm_equal=true digest=79fb994f07d7ea61 large_live_inheritance=false
+rate=192000 history_frames=384000 pair_bytes=6144104 dirty_copy_bytes_per_block=1024 whole_copy_bytes_per_block=6144000 dirty_p50_ns=333 dirty_p99_ns=4291 whole_p50_ns=128458 whole_p99_ns=248416 pcm_equal=true digest=5cb6d30fb66feaa3 large_live_inheritance=false

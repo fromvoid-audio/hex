@@ -989,7 +989,7 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::Allocation)?;
             instances.extend(bus.device_chain.iter().cloned());
             return_chains.push(
-                hex_lattice::NativeRuntimeChain::new(instances)
+                hex_lattice::NativeRuntimeChain::new_prepared(instances)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
             );
             return_scratch.push([[0.0; 2]; 256]);

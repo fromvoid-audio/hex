@@ -1,3 +1,14 @@
+## owned effect transactions — #2673 / PR289, 17 october 2026
+
+Additive owned preparation/runtime capability and explicit host error rollback
+preserve legacy factories and effective pair budgets. A registered test delay
+uses bounded dirty-ring synchronization; oracle/abort/bypass/clock/factory tests,
+compensated/uncompensated host retry and allocation/free probes accompany it.
+The optimized long-history spike retains exact PCM; large native admission and
+preserved-history transfer remain refused. See [contract](docs/owned-effect-transactions.md).
+Full exact-source CI is recorded with the PR. This is the W04 bootstrap, not
+production long-history devices, native acceptance or goal completion.
+
 ## portable sample catalog fixtures — #2723 / PR339, 17 october 2026
 
 The original Unix invalid-byte filename fixture reproduced macOS OS92 before
