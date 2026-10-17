@@ -514,7 +514,7 @@ impl EditorView {
         let output_generation = match audio.control.preview_request() {
             Ok(token) => token,
             Err(error) => {
-                self.error = Some(error.to_string());
+                self.error = Some(error.to_string().into());
                 return;
             }
         };
@@ -577,7 +577,9 @@ impl EditorView {
                             }
                             view.status = "sample preview started".into();
                         }
-                        Err(error) => view.error = Some(format!("sample preview failed · {error}")),
+                        Err(error) => {
+                            view.error = Some(format!("sample preview failed · {error}").into())
+                        }
                     }
                 }
                 if let Some(pending) = view.browser.playback_pending.take() {
@@ -2053,7 +2055,7 @@ impl EditorView {
                             view.request_browser_scan(path, cx);
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase()),
+                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
                 cx.notify();

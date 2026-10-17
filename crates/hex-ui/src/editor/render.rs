@@ -118,14 +118,12 @@ impl EditorView {
                     .tooltip({
                         let message = error.clone();
                         move |_, cx| {
-                            cx.new(|_| super::transport::MiniTooltip {
-                                description: message.clone().into(),
-                            })
-                            .into()
+                            cx.new(|_| super::display_error::ErrorTooltip(message.clone()))
+                                .into()
                         }
                     })
                     .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                    .child(theme::text(error)),
+                    .child(error.display_text()),
             );
         } else {
             bar = bar.child(
