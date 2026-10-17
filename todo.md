@@ -1,3 +1,176 @@
+## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
+
+- Create-new canonical workload generator writes100 independent120s original
+  mixed-rate WAVs with bounded IO, exact reader fingerprints and44.1/48kHz saved
+  projects sharing relative source paths. Two real Session scenes share assets;
+  audio-only tracks keep existing source/runtime/page limits and safe gains.
+- Small generator controls and an explicit ignored full-workload Desktop smoke
+  cover automated preparation. Native sustained100-track playback/listening and
+  device deadline evidence remain operator acceptance, not generation/headless
+  claims. Exact source/check/build results are recorded externally.
+- See docs/streaming-100-track-workload.md for generation, hashes, explicit smoke
+  and finite optimized operator checklist. PR241 remains the later edit/fault pass;
+  original24/177 broader acceptance stays open.
+
+## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
+
+The eleven canonical algorithm diagrams replace the raw matrix UI; new serial
+patches expose level-driven FM while saved custom routing and legacy DSP remain
+preserved. Version 15 adds explicit legacy/operator behavior, source assignments,
+the requested 1–32 voice choices, stealing/retrigger/mono, per-note pan and real
+interpolation/2× antialias processing. See [contracts and limits](docs/vector-global.md)
+and [reference provenance](research/observations/vector-global-2653.md).
+
+All 288 device tests and 38 focused operator UI tests pass at the source milestone.
+Connected pressure/bend/wheel input uses a separate identity-bound lease and the
+native CoreMIDI boundary. Hardware notes, sustain, MPE and recorded controller
+lanes are excluded. A prepared callback/oracle probe covers controller changes,
+held algorithm switching and cancellation with zero total/signed-net allocations.
+The release headless profile records CPU/storage cost in
+[performance.md](docs/performance.md); it does not establish physical deadlines.
+
+[PR269](https://github.com/PORTALSURFER/hex/pull/269) retains final exact-source full
+local CI and merge evidence. The repository test-build receipt records optimized
+stable-path delivery. Native controller/UI/listening acceptance remains separate;
+see the supplied finite test checklist. Implementation, merge and disk installation
+must not be reported as measured Live sonic parity or native acceptance.
+## native superseded preparation cleanup — pulse2656 / PR272, 17 october 2026
+
+- Adapter retirement intent now survives actual Root Cleaning/Complete and
+  verification failure before its first explicit request. Exact report recovery
+  remains the only removal/reuse frontier; transient work contention retains the
+  cancelled preparation token instead of treating Busy as completion.
+- An actual Root/pair control fails before repair in0.03s, then covers repeated
+  retirement, verification failure, exact recovery and incarnation reuse. Rapid
+  New→Import before empty ACK exercises actual successor PCM with callback probes.
+  No Root policy, queue/capacity, native deadline or listening claim is added.
+
+## native downsample reader window — pulse2655 / PR271, 17 october 2026
+
+- Native verified reader limits now use the already reserved source-scratch
+  allowance instead of confusing 4096 output frames with source frames. Existing
+  worker window validation and file/source/page/runtime limits stay unchanged.
+- A small actual Session→native adapter 48 kHz→44.1 kHz control reproduces the old
+  catalog-capacity refusal in 0.37 s, then checks actual applied PCM and zero
+  total/net callback allocations after repair. Full 100-track/native listening
+  acceptance remains separately tracked by PR240/241; no physical claim here.
+
+## connected verified document audio — pulse2544 / PR239, 17 october 2026
+
+- Desktop composes the actual Session worker/source snapshot with persistent
+  native pair/graph preparation and same-slot queue acceptance. UI receives only
+  the constructor-bound Client in both modes; Resident preroll ownership remains
+  a scoped compatibility path and never a Verified fallback.
+- Verified new-track import removes only the freshly generated default instrument
+  atomically. Empty/resident successors retain typed context and actual N2 domain
+  admission. Conservative per-request quote/scratch reservations preserve the
+  existing separate mutable-runtime, page-pool PCM, metadata and opaque scopes.
+- Actual install status reconciles coalesced Submitted events with last-audible
+  context and stable current refusal. Canonical generation events release the old
+  Client before replacement readiness; existing workers own cleanup without UI
+  polling or joins. Headless connected controls use actual mixed-rate verified
+  worker pages and zero-total/net callback probes.
+- Targeted and final exact local-CI evidence is recorded externally on the PR and
+  Pulse. No physical device, native UI/listening, installation, 100-track or
+  original24/177 completion is claimed; PR240/241 and export followup2650 remain.
+
+## verified document source/service checkpoint — pulse2544 / PR239, 16 october 2026
+
+Explicit verified New/Open branches before resident decode; imports/batches retain
+immutable verified source facts and use the existing mixed-source semantic
+compiler. History/source metadata budgets include Undo-retained facts, while
+canonical snapshots share verified path backing and pair actual worker context.
+Resident defaults remain. Verified events omit legacy Playback; offline export
+refuses explicitly (separate Pulse2650 / PR266). All163 Session tests, three
+focused real-reader/worker controls, strict Session Clippy and the UI compatibility
+check passed at this source checkpoint. The next accounting checkpoint enumerates actual auxiliary queue/atomic payload
+DATA and bounded opaque resource handles, with a never-used preview seal and
+owning refusals (including sentinel request0). All164 audio feature unit tests and
+76 integration tests plus strict feature Clippy pass; the handle-budget and
+sentinel-token negative controls fail with their guards disabled. The native endpoint checkpoint reserves four terminal destinations before CPAL
+exposure and separates callback nonrenderability, autonomous graph cleanup and
+final client endpoint/lease release. The move-only client transfers its whole
+bundle on close/Drop; the lifecycle thread destroys actual endpoint Boxes.
+Split gain/publication admission uses one atomic word with matching terminal
+release and enqueue-failure rollback. Legacy Resident Control remains compatible.
+The strict capture-enabled factory also measures actual analysis buffers and
+capture capacity, keeps Reader inside Client, binds the actual Reaper, and uses
+persistent normal-join/first-panic custody. Native analysis is fixed to device rate;
+generic dynamic workers remain unchanged and cannot mint its native receipt.
+The pending source constructor now reserves one existing N2 Root cell before
+factory work, keeps Starting occupied through close, seals the exact same pair
+in place, and transfers its endpoint only through the real reserved publication
+ring/terminal barrier. Verification refusal conserves the pool until normal
+lifecycle cleanup and report consumption; the real first-play readiness fixture
+uses this path. Session sink/desktop/UI wiring is still unfinished; no full-CI,
+native UI or delivery claim. See [source plan](docs/streamed-session-source-plan.md).
+## loop-enabled prepared arrangement seek — #2652 / PR268, 17 october 2026
+
+Interactive seek candidates now accept admitted enabled transport loops instead
+of failing with `UnsupportedTransportLoop`. End/beyond-end targets normalize into
+the loop before bounded first-pass reconstruction; both candidate clocks start
+at that frame with pass zero. Ordinary rendering preserves mutable gate clipping,
+track/return processor history, first-pass tempo and subsequent periodic playback.
+Raw-request work budgets, cancellation, exact revision ownership, storage limits
+and linear-export preroll refusals remain unchanged. The focused regression
+failed with the reported error before the fix; boundary/paused-resume PCM tests
+cover mutable feedback plus stateful Track/Return chains and inside/outside-loop
+tempo changes across repeated seams. Full local CI and optimized native delivery
+are tracked with the canonical PR; native listening remains user-owned.
+
+## cold clip-cache geometry identity — #2651 / PR267, 17 october 2026
+
+Corrected the stored lane key to the exact geometry consumed by the first cached
+clip build. Row construction preceded lane prepaint, so the old key caused an
+unnecessary rebuild on the immediate next selection frame. The strengthened
+existing regression fails with two builds before the assignment and passes with
+one afterward, without executor parking/settling frames; current selection paint,
+first-frame clip/trim geometry and cached trim capture remain covered. All 522
+enabled UI tests and strict desktop/UI Clippy pass, along with source guards.
+The merged `5607b14c` native run completed 360 samples but 100-track cut selection
+p95 was 28.229 ms (median 5.649 ms). Fixed optimized `17ce787d` passed all 20
+local CI steps and all 360 native samples with zero failures. Its 100-track
+selection median is 4.723–4.937 ms, p95 6.208–9.466 ms, maximum 9.847 ms; all
+160 measured selections are below 16.67 ms. The original protocol is unchanged;
+[full distributions and retained intermediate runs](docs/evidence/time-selection-2026-10-17/report.md)
+document the source, hashes, endpoint correction and measurement limits.
+See [geometry identity and measurement limits](docs/waveform-display.md).
+
+## dense selection candidate integration — #2648 / PR264, 16 october 2026
+
+Integrated current main00cb2c70, preserving the separately merged unsnapped Main
+cursor fix and current canonical worker/streaming contracts. Updated only the
+synthetic cache snapshot fixture for the worker-captured source field; the
+production cache/replay algorithm and original timing harness are unchanged.
+Nine focused cache/replay regressions pass (one manual profile remains ignored),
+including current-draw invalidation, painter ordering/refusal, snapshot ownership,
+scroll/resize and pending drag identity. Final full CI belongs to the linked PR.
+The complete360-row optimized native rerun and16.67ms p95 target remain pending
+an actual Mac capture; headless results do not establish native/display timing.
+
+## dense selection feedback experiment — #2648 / PR264, 16 october 2026
+
+Confirmed the dense visible waveform working set thrashed the 128-entry LRU;
+512 entries retain it with the same 65,536-column aggregate bound. After that
+fix alone missed the timing target, phase probes identified substantial lazy-row
+prepaint and scene-paint work. The bounded child cache retains original visuals
+with live selection/geometry. An explicit GPUI epoch repairs same-draw stale
+replay while preserving input identity across state/key/transient changes.
+Read-only snapshot capture has a red/green regression; cache lifecycle and
+input-path GPUI fixtures pass. The optimized headless profile still spent most
+time in cached paint, so a narrow ordered scene replay interval now avoids
+per-primitive bounds-tree insertion. Its retained legacy painter oracle passes
+mixed/layered/alpha/future-overlay/repeated-generation and refusal checks;
+all 510 enabled UI tests pass. Strict checks are recorded with the candidate.
+The ignored headless framework diagnostic uses the same loaded fixture and
+explicit draw timing, with test text/renderer limitations disclosed. Optimized
+`80330bc` reduced headless draw median/p95 from 18.353/19.123 ms to
+5.426/5.799 ms with zero clip rebuilds; the optimized replay oracle passed.
+All temporary production probes and eight-case termination are removed, and
+the native harness matches the merged measurement source byte for byte. Final
+full local CI, corrected optimized native timing and the unchanged 360-sample
+benchmark remain open.
+See [cache contract](docs/waveform-display.md). No 60 Hz claim yet.
 ## unsnapped main cursor — #2647 / PR263, 16 october 2026
 
 Main gestures now retain Main-lane pointer geometry for selection updates,
@@ -3645,3 +3818,21 @@ same-owner device/context refusal, with zero total/net callback probes. A narrow
 negative control reproduces premature speculative repin. Final source evidence
 and exact full local CI are recorded externally; PR239 UI composition and original
 #24/#177 native/manual acceptance remain open. See docs/streamed-native-readiness.md.
+
+- PR #239 worker-connection checkpoint: one existing lifecycle open lane selects
+  legacy or worker-owned completion. Neutral Session sink negotiates before
+  canonical startup, polls through event backpressure, and closes on worker exit.
+  Focused negotiated-rate/offline/editing/backpressure/close controls and existing
+  Session suites pass; desktop/native publication and mode UI remain open.
+
+- PR #239 Resident forwarding checkpoint: one nonblocking constructor-owned
+  request/result cell preserves owning refusal and separates request/submitted/
+  applied identities. Verified sealing refuses that owning compatibility path.
+  Headless real queue/ACK, contention, refusal identity and zero-allocation
+  controls pass; desktop/UI integration remains outstanding.
+
+- PR #239 pending verified-pair checkpoint: endpoint/disposal reserve precedes
+  worker spawn; ready seal moves the same pair and cleanup backing. Mixed-rate
+  and empty-source seals, alias refusal, cancellation/pool conservation, changed
+  fingerprint, early insufficient allowance and retained worker-panic controls
+  pass. Root N2 slot integration and desktop/UI connection remain open.

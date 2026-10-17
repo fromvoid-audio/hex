@@ -1,4 +1,6 @@
 //! Private original math only; no Fine mapping, envelope application or runtime.
+mod support;
+
 #[path = "../src/pitch_multiplier.rs"]
 mod pitch;
 use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
@@ -43,7 +45,7 @@ fn hand_octaves_fractional_oracles_and_inverse_ratios_match_existing_math() {
 
 #[test]
 fn neutral_preserves_bits_and_phase_matches_actual_registered_note_preparation() {
-    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    let mut state = support::legacy_operator_state();
     for op in 1..=4 {
         state = OPERATOR_METADATA
             .patch_parameter(

@@ -442,11 +442,7 @@ fn routed_session_operator_import_and_feedback_refusal_match_local_root_lifecycl
     ] {
         let mut f = fixture(true);
         let mut local = fixture(false);
-        let operator = crate::default_native_device_state_for_class(
-            crate::NativeDeviceClass::Instrument,
-            hex_devices::operator_state::OPERATOR_TYPE_ID,
-        )
-        .unwrap();
+        let operator = crate::operator_legacy_test::legacy_operator_state();
         for fixture in [&mut f, &mut local] {
             let device = fixture
                 .editor

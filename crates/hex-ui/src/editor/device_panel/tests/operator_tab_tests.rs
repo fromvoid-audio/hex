@@ -62,14 +62,10 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
         );
     }
     visual.simulate_keystrokes("enter");
-    let algorithm = editor.read_with(cx, |view, app| {
-        let ParameterControl::Choice { entity, .. } = &view.device_panel.controls[&ParameterKey {
-            device,
-            parameter: hex_lattice_contract::ParameterId::from_static(61),
-        }] else {
-            panic!("algorithm selector")
-        };
-        entity.focus_handle(app)
+    let algorithm = editor.read_with(cx, |view, _| {
+        view.device_panel.operator_navigation_focus
+            [&(device, operator_panel::NavigationTarget::Algorithm(1))]
+            .clone()
     });
     visual.update(|window, _| algorithm.focus(window));
     visual.run_until_parked();
@@ -80,7 +76,7 @@ fn operator_focus_paints_sections_without_mouse_motion_and_keeps_detail_dark(
     );
     let bounds = visual
         .debug_bounds(Box::leak(
-            format!("device-{}-parameter-61", device.value()).into_boxed_str(),
+            format!("operator-algorithm-{}-1", device.value()).into_boxed_str(),
         ))
         .unwrap();
     visual.simulate_click(bounds.center(), Modifiers::default());
@@ -135,7 +131,15 @@ fn operator_tab_cycles_rendered_controls_in_both_directions_without_project_edit
     );
     assert_eq!(focused(&mut visual), first, "finite tab cycle");
     editor.read_with(cx, |view, _| {
-        for focus in view.device_panel.operator_navigation_focus.values() {
+        let page = view.device_panel.operator_pages[&device].page;
+        for ((_, target), focus) in &view.device_panel.operator_navigation_focus {
+            if matches!(target, operator_panel::NavigationTarget::Algorithm(_))
+                && page != operator_panel::OperatorPage::Routing
+                || matches!(target, operator_panel::NavigationTarget::Page(_))
+                    && page == operator_panel::OperatorPage::Routing
+            {
+                continue; // Cached handles for a hidden page are outside the rendered tab order.
+            }
             assert!(
                 order.contains(focus),
                 "oscillator and page selectors participate"
@@ -709,7 +713,11 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
     visual.update(|window, _| routing.focus(window));
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
-    let algorithm = parameter_focus(61, cx);
+    let algorithm = editor.read_with(cx, |view, _| {
+        view.device_panel.operator_navigation_focus
+            [&(device, operator_panel::NavigationTarget::Algorithm(1))]
+            .clone()
+    });
     visual.update(|window, _| algorithm.focus(window));
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {

@@ -1,7 +1,8 @@
 //! Native application menus dispatch the editor's existing guarded actions.
 use super::{
-    OpenProject, OpenRecentProject, OpenRelinkedProject, OpenSettings, Quit, RecoverPreviousSave,
-    RecoverSavedProject, RecoverUntitledProject, SaveAsProject, SaveProject,
+    NewProject, NewStreamingProject, OpenProject, OpenRecentProject, OpenRelinkedProject,
+    OpenSettings, OpenStreamingProject, Quit, RecoverPreviousSave, RecoverSavedProject,
+    RecoverUntitledProject, SaveAsProject, SaveProject,
 };
 use crate::theme;
 use gpui::{App, Menu, MenuItem};
@@ -20,7 +21,16 @@ pub(super) fn install(cx: &mut App, recent_projects: &[PathBuf]) {
         Menu {
             name: theme::text("file"),
             items: vec![
+                MenuItem::action(theme::text("new resident project"), NewProject),
+                MenuItem::action(
+                    theme::text("new verified streaming project"),
+                    NewStreamingProject,
+                ),
                 MenuItem::action(theme::text("open project…"), OpenProject),
+                MenuItem::action(
+                    theme::text("open as verified streaming…"),
+                    OpenStreamingProject,
+                ),
                 MenuItem::action(theme::text("open and relink media…"), OpenRelinkedProject),
                 MenuItem::action(
                     theme::text("recover latest untitled project…"),

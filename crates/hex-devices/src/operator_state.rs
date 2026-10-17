@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = 14;
+pub const OPERATOR_STATE_VERSION: u32 = 15;
+const COMPANION_STATE_VERSION: u32 = 14;
 const CATALOG_STATE_VERSION: u32 = 13;
 const HARMONIC_STATE_VERSION: u32 = 12;
 const LFO_STATE_VERSION: u32 = 7;
@@ -30,10 +31,13 @@ const ENABLE_STATE_VERSION: u32 = 8;
 const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
+pub mod algorithms;
 mod companion;
 mod enable;
+mod global;
 mod harmonic_runtime;
 mod harmonics;
+mod modulation;
 pub use harmonics::{
     partial as harmonic_parameter, range as harmonic_range_parameter,
     repeat as harmonic_repeat_parameter,
@@ -50,7 +54,7 @@ const FIELD_COUNT: usize = CORE_FIELDS + OPERATORS * ENVELOPE_FIELDS;
 const FLOAT_PARAMETER_COUNT: usize = FIELD_COUNT - OPERATORS;
 const WAVEFORM_COUNT: usize = OPERATORS;
 const VELOCITY_SENSITIVITY_COUNT: usize = OPERATORS;
-const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
+const STORED_PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + WAVEFORM_COUNT
     + 1
     + OPERATORS * 3
@@ -61,6 +65,7 @@ const PARAMETER_COUNT: usize = FLOAT_PARAMETER_COUNT
     + FILTER_PARAMETERS
     + harmonics::COUNT
     + companion::COUNT;
+const PARAMETER_COUNT: usize = STORED_PARAMETER_COUNT + global::COUNT + modulation::COUNT + 1;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -72,7 +77,9 @@ const LFO_PAYLOAD_BYTES: usize = FEEDBACK_PAYLOAD_BYTES + lfo::BYTES;
 const ENABLE_PAYLOAD_BYTES: usize = LFO_PAYLOAD_BYTES + enable::BYTES;
 const FILTER_PAYLOAD_BYTES: usize = ENABLE_PAYLOAD_BYTES + crate::operator_filter::BYTES;
 const HARMONIC_PAYLOAD_BYTES: usize = FILTER_PAYLOAD_BYTES + harmonics::BYTES;
-const PAYLOAD_BYTES: usize = HARMONIC_PAYLOAD_BYTES + companion::BYTES;
+const COMPANION_PAYLOAD_BYTES: usize = HARMONIC_PAYLOAD_BYTES + companion::BYTES;
+const GLOBAL_PAYLOAD_BYTES: usize = COMPANION_PAYLOAD_BYTES + global::BYTES;
+const PAYLOAD_BYTES: usize = GLOBAL_PAYLOAD_BYTES + modulation::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
@@ -158,6 +165,19 @@ pub mod parameter {
         }
         ParameterId::from_static(88 + operator)
     }
+
+    /// Sounding voice limit, independent of the64-occurrence admission ledger.
+    pub const VOICES: ParameterId = ParameterId::from_static(601);
+    pub const RETRIGGER: ParameterId = ParameterId::from_static(602);
+    pub const INTERPOLATION: ParameterId = ParameterId::from_static(603);
+    pub const ANTIALIAS: ParameterId = ParameterId::from_static(604);
+    pub const PAN: ParameterId = ParameterId::from_static(605);
+    pub const PAN_KEY: ParameterId = ParameterId::from_static(606);
+    pub const PAN_RANDOM: ParameterId = ParameterId::from_static(607);
+    pub const GLOBAL_MODE: ParameterId = ParameterId::from_static(608);
+
+    /// Derived eleven-algorithm selector; zero preserves custom legacy routing.
+    pub const ALGORITHM: ParameterId = ParameterId::from_static(600);
 
     /// Derived topology selector. Custom is inferred from the stored routing.
     pub const fn routing_preset() -> ParameterId {
@@ -256,6 +276,9 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut index = 0;
     while index < CORE_FIELDS - OPERATORS {
         result[index] = crate::fm4::device::PARAMETERS[index];
+        if index < 12 && index % 3 == 1 && index > 1 {
+            result[index].default = ParameterValue::Float(0.0);
+        }
         index += 1;
     }
     let mut envelope = 0;
@@ -307,7 +330,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
         kind: ParameterKind::Choice {
             labels: &ROUTING_PRESET_LABELS,
         },
-        default: ParameterValue::Choice(0),
+        default: ParameterValue::Choice(1),
         presentation: ParameterPresentation::Linear,
     };
     index += 1;
@@ -363,7 +386,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let lfo = lfo::descriptors();
     let mut offset = 0;
     while offset < lfo::COUNT {
-        result[PARAMETER_COUNT
+        result[STORED_PARAMETER_COUNT
             - companion::COUNT
             - harmonics::COUNT
             - FILTER_PARAMETERS
@@ -375,7 +398,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let enabled = enable::descriptors();
     let mut offset = 0;
     while offset < enable::COUNT {
-        result[PARAMETER_COUNT
+        result[STORED_PARAMETER_COUNT
             - companion::COUNT
             - harmonics::COUNT
             - FILTER_PARAMETERS
@@ -386,12 +409,11 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let filter = crate::operator_filter::descriptors();
     let mut offset = 0;
     while offset < FILTER_PARAMETERS {
-        result
-            [PARAMETER_COUNT - companion::COUNT - harmonics::COUNT - FILTER_PARAMETERS + offset] =
-            filter[offset];
+        result[STORED_PARAMETER_COUNT - companion::COUNT - harmonics::COUNT - FILTER_PARAMETERS
+            + offset] = filter[offset];
         offset += 1;
     }
-    index = PARAMETER_COUNT - companion::COUNT - harmonics::COUNT;
+    index = STORED_PARAMETER_COUNT - companion::COUNT - harmonics::COUNT;
     let harmonic = harmonics::descriptors();
     let mut extra = 0;
     while extra < harmonics::COUNT {
@@ -402,10 +424,23 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let companion = companion::descriptors();
     let mut offset = 0;
     while offset < companion::COUNT {
-        result[PARAMETER_COUNT - companion::COUNT + offset] = companion[offset];
+        result[STORED_PARAMETER_COUNT - companion::COUNT + offset] = companion[offset];
         offset += 1;
     }
 
+    let globals = global::descriptors();
+    let mut offset = 0;
+    while offset < global::COUNT {
+        result[STORED_PARAMETER_COUNT + offset] = globals[offset];
+        offset += 1;
+    }
+    let assignments = modulation::descriptors();
+    let mut offset = 0;
+    while offset < modulation::COUNT {
+        result[STORED_PARAMETER_COUNT + global::COUNT + offset] = assignments[offset];
+        offset += 1;
+    }
+    result[STORED_PARAMETER_COUNT + global::COUNT + modulation::COUNT] = algorithms::DESCRIPTOR;
     result
 }
 
@@ -424,6 +459,8 @@ pub struct OperatorSettings {
     harmonics: harmonics::Harmonics,
     filter: crate::operator_filter::Settings,
     companion: companion::Settings,
+    global: global::Settings,
+    modulation: modulation::Settings,
 }
 
 impl OperatorSettings {
@@ -435,6 +472,7 @@ impl OperatorSettings {
                 fields[descriptor.id.value() as usize - 1] = value;
             }
         }
+        fields[12..32].copy_from_slice(&algorithms::CATALOG[0].routing_fields());
         Self {
             fields,
             waveforms: [OperatorWaveform::Sine; OPERATORS],
@@ -446,6 +484,8 @@ impl OperatorSettings {
             harmonics: harmonics::Harmonics::default(),
             filter: crate::operator_filter::Settings::default(),
             companion: companion::Settings::default(),
+            global: global::Settings::default(),
+            modulation: modulation::Settings::default(),
         }
     }
 
@@ -463,6 +503,7 @@ impl OperatorSettings {
             ENABLE_STATE_VERSION => ENABLE_PAYLOAD_BYTES,
             11 => FILTER_PAYLOAD_BYTES,
             HARMONIC_STATE_VERSION | CATALOG_STATE_VERSION => HARMONIC_PAYLOAD_BYTES,
+            COMPANION_STATE_VERSION => COMPANION_PAYLOAD_BYTES,
             OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
@@ -573,12 +614,28 @@ impl OperatorSettings {
         } else {
             crate::operator_filter::Settings::default()
         };
-        let companion = if state.state_version() >= OPERATOR_STATE_VERSION {
-            companion::Settings::decode(&state.payload()[HARMONIC_PAYLOAD_BYTES..])?
+        let companion = if state.state_version() >= COMPANION_STATE_VERSION {
+            companion::Settings::decode(
+                &state.payload()[HARMONIC_PAYLOAD_BYTES..COMPANION_PAYLOAD_BYTES],
+            )?
         } else {
             companion::Settings::default()
         };
+        let global = if state.state_version() >= OPERATOR_STATE_VERSION {
+            global::Settings::decode(
+                &state.payload()[COMPANION_PAYLOAD_BYTES..GLOBAL_PAYLOAD_BYTES],
+            )?
+        } else {
+            global::Settings::legacy()
+        };
+        let modulation = if state.state_version() >= OPERATOR_STATE_VERSION {
+            modulation::Settings::decode(&state.payload()[GLOBAL_PAYLOAD_BYTES..])?
+        } else {
+            modulation::Settings::default()
+        };
         let result = Self {
+            modulation,
+            global,
             companion,
             filter,
             fields,
@@ -618,6 +675,8 @@ impl OperatorSettings {
         self.filter.append(&mut payload);
         self.harmonics.append(&mut payload);
         self.companion.append(&mut payload);
+        self.global.append(&mut payload);
+        self.modulation.append(&mut payload);
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -651,6 +710,8 @@ impl OperatorSettings {
         self.lfo.validate()?;
         self.filter.validate()?;
         self.companion.validate()?;
+        self.global.validate()?;
+        self.modulation.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -846,6 +907,12 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.modulation.read(parameter) {
+            return Ok(value);
+        }
+        if let Some(value) = settings.global.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.companion.read(parameter) {
             return Ok(value);
         }
@@ -863,6 +930,11 @@ impl NativeDeviceMetadata for OperatorMetadata {
         }
         if let Some(value) = settings.tuning.read(parameter) {
             return Ok(value);
+        }
+        if parameter == parameter::ALGORITHM {
+            return Ok(ParameterValue::Choice(algorithms::choice(
+                &settings.fields[12..32],
+            )));
         }
         if parameter == parameter::routing_preset() {
             return Ok(ParameterValue::Choice(settings.routing_preset().choice()));
@@ -910,6 +982,12 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<bool, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if !settings.global.active
+            && ((601..=607).contains(&parameter.value())
+                || (620..=639).contains(&parameter.value()))
+        {
+            return Ok(false);
+        }
         if let Some(index) = OperatorSettings::feedback_index(parameter) {
             return Ok(settings.feedback_enabled(index));
         }
@@ -932,6 +1010,13 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.modulation.patch(parameter, value)? {
+            settings.global.active = true;
+            return settings.to_state();
+        }
+        if settings.global.patch(parameter, value)? {
+            return settings.to_state();
+        }
         if settings.companion.patch(parameter, value) {
             return settings.to_state();
         }
@@ -962,6 +1047,16 @@ impl NativeDeviceMetadata for OperatorMetadata {
             return settings.to_state();
         }
         if settings.tuning.patch(parameter, value)? {
+            return settings.to_state();
+        }
+        if parameter == parameter::ALGORITHM {
+            let ParameterValue::Choice(choice) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            if let Some(algorithm) = algorithms::from_choice(choice)? {
+                settings.global.active = true;
+                settings.fields[12..32].copy_from_slice(&algorithm.routing_fields());
+            }
             return settings.to_state();
         }
         if parameter == parameter::routing_preset() {
@@ -1027,7 +1122,7 @@ impl NativeInstrumentDefinition for OperatorMetadata {
             .map_err(|_| DeviceContractError::InvalidParameterValue)?
             .oscillator_levels();
         let continuation_format =
-            hex_lattice::AnalyticContinuationFormat::new(OPERATOR_TYPE_ID, 1)?;
+            hex_lattice::AnalyticContinuationFormat::new(OPERATOR_TYPE_ID, 2)?;
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
@@ -1081,6 +1176,7 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
             .iter()
             .any(|v| *v)
             || self.harmonic_runtime.settings.companion.requires_runtime()
+            || self.harmonic_runtime.settings.global.active
     }
     fn prepare_mutable_continuation_runtime(
         &self,

@@ -125,6 +125,25 @@ impl AudioAdmissionStatus {
         false
     }
 
+    /// A control-side refusal can precede any submitted audio revision. Keep
+    /// its canonical state visible after transient event text has changed.
+    pub(super) fn unpublished_refusal(
+        &mut self,
+        project: ProjectRevision,
+        reason: &'static str,
+    ) -> bool {
+        if let Some(current) = self.current.as_mut()
+            && current.project == project
+            && current.audio_revision.is_none()
+            && current.state != AdmissionState::Applied
+        {
+            let before = current.state;
+            current.state = AdmissionState::Rejected(reason);
+            return before != current.state;
+        }
+        false
+    }
+
     /// Record only a candidate explicitly promoted by the applied-revision
     /// high-water mark. A stale candidate can update the last-audible record,
     /// but it cannot replace a newer pending/applied current revision.

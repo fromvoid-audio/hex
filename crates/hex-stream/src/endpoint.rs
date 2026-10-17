@@ -115,6 +115,29 @@ impl Endpoint {
         }
         Some((ready, held))
     }
+    pub(crate) fn requested_data(
+        cache_pages: usize,
+        request_capacity: usize,
+        source_count: usize,
+    ) -> Option<crate::EndpointData> {
+        let (cache_slots, pending_count) = Self::geometry(cache_pages, request_capacity)?;
+        Some(crate::EndpointData {
+            cache: crate::AllocationData::of::<CacheSlot>(cache_slots),
+            pending: crate::AllocationData::of::<PendingSlot>(pending_count),
+            source_keys: crate::AllocationData::of::<StreamSourceKey>(source_count),
+            held_returns: crate::AllocationData::of::<Box<PageBuffer>>(cache_pages.checked_add(1)?),
+        })
+    }
+    fn geometry(cache_pages: usize, request_capacity: usize) -> Option<(usize, usize)> {
+        let cache = cache_pages
+            .checked_sub(1)?
+            .checked_next_power_of_two()?
+            .checked_mul(2)?;
+        let pending = request_capacity
+            .checked_mul(2)?
+            .checked_next_power_of_two()?;
+        Some((cache, pending))
+    }
     pub(crate) fn new(
         cache_pages: usize,
         request_capacity: usize,
@@ -122,14 +145,9 @@ impl Endpoint {
         queues: EndpointQueues,
     ) -> Result<Self, ()> {
         let max_cached_pages = cache_pages.saturating_sub(1);
-        let cache_count = max_cached_pages.checked_next_power_of_two().ok_or(())?;
-        let pending_count = request_capacity
-            .checked_mul(2)
-            .ok_or(())?
-            .checked_next_power_of_two()
-            .ok_or(())?;
+        let (cache_slots, pending_count) =
+            Self::geometry(cache_pages, request_capacity).ok_or(())?;
         let mut cache = Vec::new();
-        let cache_slots = cache_count.checked_mul(2).ok_or(())?;
         cache.try_reserve_exact(cache_slots).map_err(|_| ())?;
         cache.resize_with(cache_slots, || CacheSlot::Empty);
         let mut pending = Vec::new();

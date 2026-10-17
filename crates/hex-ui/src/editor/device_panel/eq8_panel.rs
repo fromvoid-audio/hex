@@ -280,7 +280,7 @@ fn audition_toggle(
             if !event.checked
                 && let Some(audio) = view.audio.as_mut()
             {
-                let _ = audio.control.processor_audition.cancel_immediately();
+                let _ = audio.control.audition_cancel();
             }
             cx.notify();
         });
@@ -330,14 +330,14 @@ fn spectrum_toggle(
     let identity = hex_engine::PostNodeIdentity::new(owner, device.value(), device_type);
     let generation = view.project_generation;
     let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
-    let selected =
-        view.audio.as_ref().and_then(|audio| {
-            audio.control.spectrum_target.desired().map(|target| {
-                target.identity == identity && target.project_generation == generation
-            })
-        }) == Some(true);
+    let selected = view.audio.as_ref().and_then(|audio| {
+        audio
+            .control
+            .spectrum_desired()
+            .map(|target| target.identity == identity && target.project_generation == generation)
+    }) == Some(true);
     let available = view.audio.as_ref().is_some_and(|audio| {
-        audio.spectrum.is_some() && (8_000..=192_000).contains(&audio.sample_rate)
+        audio.spectrum_error.is_none() && (8_000..=192_000).contains(&audio.sample_rate)
     });
     let tooltip = view
         .audio
@@ -363,13 +363,13 @@ fn spectrum_toggle(
     })
     .on_click(cx.listener(move |view, _, _, cx| {
         let active = view.audio.as_ref().and_then(|audio| {
-            audio.control.spectrum_target.desired().map(|target| {
+            audio.control.spectrum_desired().map(|target| {
                 target.identity == identity && target.project_generation == generation
             })
         }) == Some(true);
         if active {
             if let Some(audio) = view.audio.as_mut() {
-                let _ = audio.control.spectrum_target.clear();
+                let _ = audio.control.spectrum_clear();
             }
             view.device_panel.spectrum_result = None;
             view.device_panel.message = None;
@@ -382,7 +382,8 @@ fn spectrum_toggle(
             .published_audio_revision(generation, project_revision)
         {
             if let Some(audio) = view.audio.as_mut() {
-                if audio.spectrum.is_none() {
+                if audio.spectrum_error.is_some() || !(8_000..=192_000).contains(&audio.sample_rate)
+                {
                     view.device_panel.message = Some(
                         audio
                             .spectrum_error
@@ -390,7 +391,7 @@ fn spectrum_toggle(
                             .unwrap_or_else(|| "spectrum analysis unavailable".into()),
                     );
                 } else {
-                    match audio.control.spectrum_target.select(
+                    match audio.control.spectrum_select(
                         identity,
                         generation,
                         floor,

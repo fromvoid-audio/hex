@@ -485,6 +485,30 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             .unwrap(),
         rail
     );
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-page-{}-envelope",
+                device.value()
+            )))
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "operator-page-{}-oscillator",
+                device.value()
+            )))
+            .is_none()
+    );
+    let shell = visual
+        .debug_bounds(selector(format!(
+            "device-{}-parameter-1-knob",
+            device.value()
+        )))
+        .unwrap();
+    visual.simulate_click(shell.center(), Modifiers::default());
+    visual.run_until_parked();
     assert_eq!(
         tab_bounds(&mut visual, device, "envelope", "amp env"),
         envelope
@@ -522,6 +546,8 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             "focused routing activation takes precedence over session launch"
         );
     });
+    visual.simulate_click(shell.center(), Modifiers::default());
+    visual.run_until_parked();
     visual.simulate_click(envelope.center(), Modifiers::default());
     visual.simulate_click(fine.center(), Modifiers::default());
     tab_to_routing(&mut visual, &editor, device);

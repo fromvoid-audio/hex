@@ -7,9 +7,9 @@ mod arrangement_device_drop_ui_test;
 mod arrangement_main_track_ui_test;
 mod arrangement_seek;
 mod audio_admission;
-mod bootstrap;
 mod browser;
 mod browser_input;
+mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
 mod clip_view;
@@ -19,6 +19,7 @@ mod close;
 mod computer_keyboard;
 mod context_menu;
 mod controller;
+mod controller_input;
 mod device_gesture;
 mod device_panel;
 mod device_preset;
@@ -98,7 +99,7 @@ use gpui::{
     App, AppContext, Bounds, Context, FocusHandle, KeyBinding, Window, WindowBounds, WindowOptions,
     actions, px, size,
 };
-use hex_audio::{PreparedOutput, prepared::Status};
+use hex_audio::prepared::Status;
 use hex_engine::playback::{Playback, PlaybackAction, PlaybackCommand};
 use hex_project::{ClipId, Command, SceneId, TrackId};
 use hex_session::service::{Request, Service, ViewState};
@@ -108,7 +109,6 @@ use refresh::RedrawGate;
 use std::{collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
 use viewport::Viewport;
 
-const MAX_RESIDENT_FRAMES: u64 = 8_000_000;
 pub(super) const UI_REQUEST_CAPACITY: usize = 32;
 pub(super) const UI_EVENT_BUDGET: usize = 2;
 const PLAYBACK_CANDIDATE_CAPACITY: usize = 32;
@@ -138,6 +138,55 @@ struct PendingPlayback {
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+}
+
+struct PendingResidentPublication {
+    token: hex_audio::prepared::ResidentPublicationToken,
+    project_revision: u64,
+    project_generation: u64,
+    state: Arc<ViewState>,
+    install_fresh_runtime: bool,
+    fresh_runtime_fence: Option<hex_audio::prepared::FreshRuntimeFence>,
+    prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
+    seek_request_id: Option<u64>,
+    device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
+}
+
+enum PendingEditorAudioResult {
+    Opened {
+        project_generation: u64,
+        restart_request: Option<u64>,
+        audio: crate::EditorAudio,
+    },
+    Unavailable {
+        project_generation: u64,
+        restart_request: Option<u64>,
+        error: String,
+    },
+}
+
+impl PendingEditorAudioResult {
+    fn project_generation(&self) -> u64 {
+        match self {
+            Self::Opened {
+                project_generation, ..
+            }
+            | Self::Unavailable {
+                project_generation, ..
+            } => *project_generation,
+        }
+    }
+    fn close(self) {
+        if let Self::Opened { mut audio, .. } = self {
+            audio.control.close();
+        }
+    }
+}
+
+struct PendingEditorPublicationObservation {
+    context: hex_engine::AudioSourceContext,
+    output_identity: u64,
+    state: crate::EditorPublicationState,
 }
 
 #[derive(Clone)]
@@ -176,7 +225,10 @@ actions!(
         LaunchSessionSelection,
         Stop,
         ImportAudio,
+        NewProject,
+        NewStreamingProject,
         OpenProject,
+        OpenStreamingProject,
         OpenRelinkedProject,
         RecoverUntitledProject,
         RecoverSavedProject,
@@ -323,6 +375,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-t", AddMidiTrack, Some("hex_editor")),
         KeyBinding::new("cmd-shift-m", AddMidiClip, Some("hex_editor")),
         KeyBinding::new("cmd-o", OpenProject, Some("hex_editor")),
+        KeyBinding::new("cmd-n", NewProject, Some("hex_editor")),
         KeyBinding::new("cmd-s", SaveProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-s", SaveAsProject, Some("hex_editor")),
         KeyBinding::new("cmd-shift-e", ExportProject, Some("hex_editor")),
@@ -387,31 +440,15 @@ fn install_close_guard(window: &mut Window, cx: &mut App, view: gpui::WeakEntity
     });
 }
 
-fn recovery_service(sample_rate: u32) -> Result<Service, String> {
-    let path = hex_session::service::untitled_recovery_path()?;
-    Service::with_recovery(sample_rate, 32, MAX_RESIDENT_FRAMES, path)
-        .map_err(|error| error.to_string().to_lowercase())
-}
-
-pub(super) fn open(cx: &mut App, output: Result<PreparedOutput, String>) -> Result<(), String> {
+pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Result<(), String> {
     configure_editor_app(cx)?;
-    let sample_rate = output.as_ref().map_or(48_000, |audio| audio.sample_rate);
-    let service = recovery_service(sample_rate)?;
     cx.open_window(editor_window_options(cx), move |window, cx| {
-        let view = cx.new(|cx| EditorView::new(window, cx, service, output));
+        let view = cx.new(|cx| EditorView::new_with_backend(window, cx, backend));
         install_close_guard(window, cx, view.downgrade());
         view
     })
     .map_err(|error| format!("could not open hex: {error}"))?;
     Ok(())
-}
-
-pub(super) fn open_pending(
-    cx: &mut App,
-    request: Result<hex_audio::RecoveryOpen, String>,
-) -> Result<(), String> {
-    configure_editor_app(cx)?;
-    bootstrap::open(cx, request)
 }
 
 #[cfg(test)]
@@ -427,8 +464,15 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
-    audio: Option<PreparedOutput>,
-    recovery_open: Option<hex_audio::RecoveryOpen>,
+    audio: Option<crate::EditorAudio>,
+    audio_events: std::sync::mpsc::Receiver<crate::EditorAudioEvent>,
+    source_reservation: Option<hex_session::SourcePlanReservation>,
+    restart_request_id: u64,
+    pending_restart_request: Option<(u64, u64)>,
+    pending_recovery_generation: Option<u64>,
+    pending_audio_result: Option<PendingEditorAudioResult>,
+    pending_publication_observation: Option<PendingEditorPublicationObservation>,
+    document_audio_mode: hex_session::DocumentAudioMode,
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     offline_cursor: u64,
@@ -469,6 +513,7 @@ pub(super) struct EditorView {
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
+    pending_resident_publication: Option<PendingResidentPublication>,
     pending_audio_commands: VecDeque<PendingPlaybackAction>,
     pending_seek_ticket: Option<u64>,
     pending_metronome_ticket: Option<u64>,
@@ -489,6 +534,9 @@ pub(super) struct EditorView {
     play_intent: play_intent::Tracker,
     opening_project: bool,
     pending_open_path: Option<std::path::PathBuf>,
+    pending_open_mode: Option<hex_session::DocumentAudioMode>,
+    requested_audio_mode: Option<hex_session::DocumentAudioMode>,
+    pending_new_mode: Option<hex_session::DocumentAudioMode>,
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     close_prompt_open: bool,
@@ -502,6 +550,7 @@ pub(super) struct EditorView {
     status: String,
     pub(in crate::editor) error: Option<String>,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
+    controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
     focus: FocusHandle,
     pub(in crate::editor) midi_focus: FocusHandle,
@@ -518,6 +567,7 @@ pub(super) struct EditorView {
     clip_detail_body_height: f32,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     loop_rail_cursor: gpui::CursorStyle,
+    clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
     arrangement_bounds: Option<drag::LaneBounds>,
@@ -585,11 +635,28 @@ pub(super) struct EditorView {
 }
 
 impl EditorView {
+    fn new_with_backend(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        backend: crate::EditorBackend,
+    ) -> Self {
+        let mut view = Self::new(
+            window,
+            cx,
+            backend.service,
+            Err("preparing audio output".into()),
+        );
+        view.audio_events = backend.audio_events;
+        view.source_reservation = Some(backend.source_reservation);
+        view.status = "preparing audio output".into();
+        view
+    }
+
     fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
-        output: Result<PreparedOutput, String>,
+        output: Result<crate::EditorAudio, String>,
     ) -> Self {
         Self::new_with_browser_preferences_path(
             window,
@@ -607,7 +674,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
-        output: Result<PreparedOutput, String>,
+        output: Result<crate::EditorAudio, String>,
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
     ) -> Self {
@@ -627,7 +694,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
-        output: Result<PreparedOutput, String>,
+        output: Result<crate::EditorAudio, String>,
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
         theme_preferences_path: std::path::PathBuf,
@@ -647,7 +714,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
         service: Service,
-        output: Result<PreparedOutput, String>,
+        output: Result<crate::EditorAudio, String>,
         preferences_path: std::path::PathBuf,
         recent_projects_path: std::path::PathBuf,
         theme_preferences_path: std::path::PathBuf,
@@ -719,7 +786,7 @@ impl EditorView {
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
                 if let Some(audio) = view.audio.as_mut() {
-                    let _ = audio.control.processor_audition.cancel_immediately();
+                    let _ = audio.control.audition_cancel();
                 }
                 device_panel::clear_eq8_audition_gesture_flags(view);
                 if midi_cancelled || scrub_cancelled {
@@ -740,8 +807,15 @@ impl EditorView {
         let mut view = Self {
             service,
             audio,
+            audio_events: std::sync::mpsc::channel().1,
+            source_reservation: None,
+            restart_request_id: 0,
+            pending_restart_request: None,
+            pending_recovery_generation: None,
+            pending_audio_result: None,
+            pending_publication_observation: None,
+            document_audio_mode: hex_session::DocumentAudioMode::Resident,
             state: None,
-            recovery_open: None,
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
             offline_cursor: 0,
@@ -782,6 +856,7 @@ impl EditorView {
             audio_batch: None,
             audio_batch_progress: None,
             pending_playback: None,
+            pending_resident_publication: None,
             pending_audio_commands: VecDeque::new(),
             pending_seek_ticket: None,
             pending_metronome_ticket: None,
@@ -802,6 +877,9 @@ impl EditorView {
             play_intent: play_intent::Tracker::default(),
             opening_project: false,
             pending_open_path: None,
+            pending_open_mode: None,
+            requested_audio_mode: None,
+            pending_new_mode: None,
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
             close_prompt_open: false,
@@ -815,6 +893,7 @@ impl EditorView {
             status,
             error: None,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
+            controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
             focus,
             midi_focus,
@@ -831,6 +910,7 @@ impl EditorView {
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             loop_rail_gesture: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
+            clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),
             drag_lane_epochs: std::collections::HashMap::new(),
             arrangement_bounds: None,
@@ -952,9 +1032,8 @@ impl EditorView {
         let device_playing = self.audio.as_ref().is_some_and(|audio| {
             audio
                 .control
-                .status
-                .playing
-                .load(std::sync::atomic::Ordering::Acquire)
+                .status()
+                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
         let start_frame = self.playback_start_frame();
         let command = match self.play_toggle_action(device_playing, start_frame) {
@@ -1064,9 +1143,7 @@ impl EditorView {
     }
 
     pub(super) fn audio_status(&self) -> Option<&Status> {
-        self.audio
-            .as_ref()
-            .map(|audio| audio.control.status.as_ref())
+        self.audio.as_ref().and_then(|audio| audio.status())
     }
 
     fn visible_viewport(&self, horizon: u64) -> Viewport {

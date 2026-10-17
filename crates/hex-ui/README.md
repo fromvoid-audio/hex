@@ -7,7 +7,11 @@ Own GPUI views, display state, interactions, lowercase text, and bundled Ioskele
 ## Dependencies
 
 hex-project read-only metadata and commands; hex-session worker endpoints;
-hex-engine contracts; hex-audio service handle; GPUI. The backend is created and injected by hex-desktop.
+hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI. The backend is created and injected by hex-desktop.
+
+The optional controller input row selects a CoreMIDI endpoint/channel for the
+selected instrument and dispatches a generation-bound engine lease through the
+session worker. See [controller input](../../docs/controller-input.md).
 
 ## Does not own
 
@@ -228,13 +232,22 @@ pitch, warp modes, numeric entry and marker dragging remain follow-ups.
 See ../../docs/clip-view.md for contracts and user acceptance checks.
 
 Waveform drawing retains ready-to-paint paths in the editor-owned bounded
-`waveform_geometry` cache (128 entries, 65,536 aggregate device columns). Keys
+`waveform_geometry` cache (512 entries, 65,536 aggregate device columns). Keys
 include retained source identity, clip/source mapping, visible interval, bounds
 and scale. Project replacement clears cached ownership. Arrangement/detail
 redraws reuse unchanged geometry; live trims omit invisible original paint
 children and suppress notifications for identical snapped candidates. Pending
 control colors and compact status slot widths remain stable. See
 ../../docs/clip-edit-performance.md for measurement scope and native checks.
+
+Arrangement rows retain bounded GPUI child views for unchanged legacy clip
+content. Lane geometry, headers, selection overlays and transient previews stay
+live in the editor. Project generation clears cached ownership; snapshot updates
+replace all retained snapshot Arcs and prune removed tracks. View/grid/palette,
+selected-clip and measured-lane changes advance an explicit scene cache epoch,
+preserving input identity. Busy edits and drags rebuild original child content
+each draw. See ../../docs/waveform-display.md for the cache contract, ignored
+headless framework diagnostic and pending native timing gate.
 
 ## arrangement time selection — 9 October 2026
 

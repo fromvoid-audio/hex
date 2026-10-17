@@ -36,11 +36,7 @@ fn inventory_shape(
         .unwrap();
     let mut snapshot = editor.project().snapshot();
     let template = snapshot.tracks.remove(0);
-    let operator = crate::default_native_device_state_for_class(
-        crate::NativeDeviceClass::Instrument,
-        hex_devices::operator_state::OPERATOR_TYPE_ID,
-    )
-    .unwrap();
+    let operator = crate::operator_legacy_test::legacy_operator_state();
     let operator = crate::patch_native_device_parameter_for_class(
         crate::NativeDeviceClass::Instrument,
         &operator,

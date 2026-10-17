@@ -63,6 +63,15 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_refu
             .error
             .is_none()
     ); // serial FM
+    // New patches start with silent modulators. Raise each serial stage so
+    // every later level edit changes the audible FM signal.
+    for level in [5, 8, 11] {
+        assert!(
+            patch(&service, device, level, ParameterValue::Float(1.0))
+                .error
+                .is_none()
+        );
+    }
     assert!(
         patch(&service, device, 20_001, ParameterValue::Bool(true))
             .error
@@ -139,8 +148,8 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_refu
     oracle.apply(PlaybackCommand::Play);
     assert_eq!(render(&mut restored), render(&mut oracle));
 
-    // Each connected B/C/D level changes the FM signal. The default custom
-    // topology leaves them disconnected, which is separate from handoff failure.
+    // Each connected B/C/D level changes the serial FM signal independently
+    // of the earlier rejected tuning handoff.
     for level in [5, 8, 11] {
         let leveled = patch(&service, device, level, ParameterValue::Float(0.0));
         assert!(leveled.error.is_none());

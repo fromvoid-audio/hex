@@ -141,8 +141,7 @@ fn rollback_restores_coefficients_enable_clock_feedback_and_lfo_history() {
         pcm
     }
     for lfo in [false, true] {
-        let mut settings =
-            OperatorSettings::from_state(&OPERATOR_METADATA.default_state().unwrap()).unwrap();
+        let mut settings = crate::operator_state::tests::legacy_settings();
         settings.harmonics.custom[0] = true;
         settings.harmonics.authored[0] = true;
         settings.feedback[0] = 0.2;
@@ -263,7 +262,7 @@ fn fast_harmonic_cap_matches_wide_oracle_at_every_nyquist_boundary() {
 #[test]
 fn noise_catalog_native_and_analytic_pcm_is_partition_independent() {
     for waveform in [OperatorWaveform::NoiseLooped, OperatorWaveform::NoiseWhite] {
-        let mut settings = OperatorSettings::defaults();
+        let mut settings = super::super::tests::legacy_settings();
         settings.waveforms[0] = waveform;
         let configuration = settings.prepare_configuration(48000).unwrap();
         let factory = Factory::new(

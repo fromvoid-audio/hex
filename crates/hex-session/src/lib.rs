@@ -18,6 +18,12 @@ use std::{
 };
 
 pub mod arrangement_seek;
+mod audio_sources;
+mod verified_import;
+use audio_sources::MediaBank;
+pub use audio_sources::{
+    AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
+};
 pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
@@ -152,6 +158,10 @@ pub struct Session {
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     sine_table: Arc<hex_engine::SineTable>,
     media: HashMap<AssetId, ResidentAsset>,
+    verified_sources: BTreeMap<AssetId, VerifiedAudioFile>,
+    semantic_source_epoch: u64,
+    audio_mode: DocumentAudioMode,
+    source_reservation: Option<SourcePlanReservation>,
     resident_frames: u64,
     max_resident_frames: u64,
     resident_waveform_bins: usize,
@@ -174,6 +184,10 @@ impl Session {
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
             sine_table: Arc::new(hex_engine::SineTable::new()),
             media: HashMap::new(),
+            verified_sources: BTreeMap::new(),
+            semantic_source_epoch: 0,
+            audio_mode: DocumentAudioMode::Resident,
+            source_reservation: None,
             resident_frames: 0,
             max_resident_frames,
             resident_waveform_bins: 0,
@@ -326,6 +340,10 @@ impl Session {
             editor,
             sine_table,
             media,
+            verified_sources: BTreeMap::new(),
+            semantic_source_epoch: 0,
+            audio_mode: DocumentAudioMode::Resident,
+            source_reservation: None,
             resident_frames,
             max_resident_frames,
             resident_waveform_bins,
@@ -1216,6 +1234,11 @@ impl Session {
 
     /// Compile the current canonical snapshot on a control worker.
     pub fn compile(&self) -> Result<PlaybackProject, SessionError> {
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
+            return Err(SessionError::Invalid(
+                "verified streaming requires protected native pages",
+            ));
+        }
         Ok(self
             .compile_prepared_revision(None)?
             .arrangement()
@@ -1227,6 +1250,11 @@ impl Session {
     pub fn compile_with_midi_preview(
         &self,
     ) -> Result<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>), SessionError> {
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
+            return Err(SessionError::Invalid(
+                "verified streaming requires protected native pages",
+            ));
+        }
         let prepared = self.compile_prepared_revision(None)?;
         Ok((
             prepared.arrangement().as_ref().clone(),
@@ -1240,9 +1268,14 @@ impl Session {
         track: hex_project::TrackId,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
+            return Err(SessionError::Invalid(
+                "gain recording is unavailable for verified streaming",
+            ));
+        }
         hex_engine::PreparedRevision::prepare_for_gain_recording_with_audio_transforms(
             self.project(),
-            &self.media_bank(),
+            &self.media_bank().resident,
             self.sine_table(),
             previous.map(|prepared| prepared.session().as_ref()),
             track,
@@ -1266,11 +1299,16 @@ impl Session {
         )?))
     }
 
-    fn media_bank(&self) -> BTreeMap<AssetId, Audio> {
-        self.media
-            .iter()
-            .map(|(id, resident)| (*id, resident.audio.clone()))
-            .collect()
+    fn media_bank(&self) -> MediaBank {
+        MediaBank {
+            epoch: self.semantic_source_epoch,
+            resident: self
+                .media
+                .iter()
+                .map(|(id, resident)| (*id, resident.audio.clone()))
+                .collect(),
+            verified: self.verified_sources.clone(),
+        }
     }
 }
 
@@ -1278,7 +1316,7 @@ impl Session {
 /// Root summaries deduplicate exact retained Audio owners; views never reprocess PCM.
 fn prepare_with_waveforms(
     project: &Project,
-    media: &BTreeMap<AssetId, Audio>,
+    media: &MediaBank,
     table: Arc<hex_engine::SineTable>,
     previous: Option<&hex_engine::PreparedSessionInventory>,
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
@@ -1288,9 +1326,17 @@ fn prepare_with_waveforms(
         .try_borrow_mut()
         .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;
     let (prepared, next) = transforms.transaction(|| {
-        let prepared = hex_engine::PreparedRevision::prepare_with_audio_transforms(
-            project, media, table, previous, transforms,
-        )?;
+        let prepared = if media.verified.is_empty() {
+            hex_engine::PreparedRevision::prepare_with_audio_transforms(
+                project,
+                &media.resident,
+                table,
+                previous,
+                transforms,
+            )?
+        } else {
+            media.prepare(project, table, previous)?
+        };
         // At most 262144 leaf bins per accepted revision (plus bounded pyramid
         // and per-root metadata). Dense projects receive coarser truthful peaks.
         let requested_bins =

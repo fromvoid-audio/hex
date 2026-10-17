@@ -20,8 +20,12 @@ pub(crate) use eligible::publication::{
     StreamInstall, StreamOutcome, StreamProgress,
 };
 pub use eligible::{
-    AudioCandidateCancellationResult, AudioCandidateDomainRefusal, AudioCandidateDomainReservation,
-    AudioCandidateDomainToken, AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidateCancellationResult, AudioCandidateDomainPreparationFailure,
+    AudioCandidateDomainPreparationProgress, AudioCandidateDomainRefusal,
+    AudioCandidateDomainReservation, AudioCandidateDomainStartError, AudioCandidateDomainToken,
+    AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
+    AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
+    AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
 };
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -366,6 +370,12 @@ impl CandidateRoot {
     ) {
         self.0.eligible.record_native_boundary(boundary);
     }
+    pub(crate) fn anchor_native_spectrum(
+        &self,
+        identity: Option<crate::spectrum_worker::NativeSpectrumIdentity>,
+    ) {
+        self.0.eligible.anchor_native_spectrum(identity);
+    }
     pub(crate) fn anchor_native_boundary(
         &self,
         terminals: &crate::native_callback_owner::NativeTerminals,
@@ -403,6 +413,76 @@ impl CandidateRoot {
     }
     pub(crate) fn eligible_claims_open(&self) -> bool {
         self.0.eligible.claims_open()
+    }
+    pub(crate) fn reserve_runtime_preparation(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+        domains: Vec<AudioCandidateDomainToken>,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        {
+            let bank = lock(&self.0.bank);
+            if bank.closing || bank.retiring {
+                return Err(AudioCandidatePreparationRefusal {
+                    reason: "candidate Root is closing",
+                    domains,
+                });
+            }
+        }
+        let result = self
+            .0
+            .eligible
+            .reserve_runtime_preparation(reservation, domains);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn bind_runtime_preparation_domains(
+        &self,
+        token: AudioCandidatePreparationToken,
+        domains: Vec<AudioCandidateDomainToken>,
+    ) -> Result<(), AudioCandidatePreparationRefusal> {
+        let result = self
+            .0
+            .eligible
+            .bind_runtime_preparation_domains(token, domains);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn with_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        prepare: impl FnOnce(
+            &mut hex_engine::AudioCandidatePreparation,
+        ) -> Result<(), hex_engine::AudioStorageError>,
+    ) -> Result<AudioCandidatePreparationProgress, &'static str> {
+        let result = self.0.eligible.with_runtime_preparation(token, prepare);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn stage_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        rate: u32,
+        header: (u64, u64, crate::prepared::PublicationPolicy),
+        enqueue: impl FnOnce(QueuedEligibleCandidate),
+    ) -> Result<AudioCandidateTicket, &'static str> {
+        let result = self.0.eligible.stage_runtime_preparation(
+            self,
+            token,
+            eligible::publication::Header {
+                revision: header.0,
+                context_generation: header.1,
+                policy: header.2,
+            },
+            rate,
+            enqueue,
+        );
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn cancel_runtime_preparation(&self, token: AudioCandidatePreparationToken) -> bool {
+        let result = self.0.eligible.cancel_runtime_preparation(token);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
     }
     pub(crate) fn seal_publication(
         &self,
@@ -500,8 +580,59 @@ impl CandidateRoot {
         crate::lifecycle::request_candidate_cleanup(self);
         Ok(token)
     }
+    pub(crate) fn begin_domain_preparation(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        {
+            let bank = lock(&self.0.bank);
+            if bank.closing || bank.retiring {
+                return Err(AudioCandidateDomainStartError::Busy(
+                    "candidate terminal custody closing",
+                ));
+            }
+        }
+        let result = self
+            .0
+            .eligible
+            .begin_preparation(config, definitions, readiness);
+        // The eligible bank itself retains successful late construction. Its
+        // Starting cell was already occupied when terminal closure could win.
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn poll_domain_preparation(
+        &self,
+        token: AudioCandidateDomainToken,
+        enqueue: impl FnOnce(DomainEnvelope),
+    ) -> Result<AudioCandidateDomainPreparationProgress, &'static str> {
+        let (progress, pages) = self.0.eligible.poll_preparation(token)?;
+        let bank = lock(&self.0.bank);
+        if let Some(pages) = pages {
+            if bank.closing || bank.retiring {
+                self.0.eligible.retain_closed_pages(pages);
+            } else {
+                enqueue(pages);
+            }
+        }
+        drop(bank);
+        crate::lifecycle::request_candidate_cleanup(self);
+        Ok(progress)
+    }
     pub(crate) fn ingest_pages(&self, pages: DomainEnvelope) -> Result<(), DomainEnvelope> {
         self.0.eligible.ingest_pages(pages)
+    }
+    pub(crate) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
+        self.0.eligible.domain_is_sealed(token)
+    }
+    pub(crate) fn domain_covers_source(
+        &self,
+        token: AudioCandidateDomainToken,
+        source: &hex_engine::StreamedSourceMetadata,
+    ) -> bool {
+        self.0.eligible.domain_covers_source(token, source)
     }
     pub(crate) fn retire_domain(&self, token: AudioCandidateDomainToken) -> bool {
         let result = self.0.eligible.retire_domain(token);
@@ -919,7 +1050,7 @@ impl CandidateRoot {
         let work = self.0.execution.try_lock().ok();
         let bank = lock(&self.0.bank);
         format!(
-            "root={} scheduled={} retiring={} slots={:?} work={:?}",
+            "root={} scheduled={} retiring={} slots={:?} work={:?} eligible={}",
             bank.root,
             bank.scheduled,
             bank.retiring,
@@ -929,7 +1060,8 @@ impl CandidateRoot {
                 w.bank_drop_pending,
                 w.metadata_drop_pending,
                 w.first_panic.is_some()
-            ))
+            )),
+            self.0.eligible.test_publication_status()
         )
     }
     pub(crate) fn report(&self) -> AudioCandidateCustodyReport {

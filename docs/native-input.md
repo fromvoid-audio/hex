@@ -156,3 +156,79 @@ editing and event delivery are unchanged. Provenance and cumulative diff retain
 the verified 0.2.2 archive and existing patch scope. The optimized native build
 and source guards compile/check this boundary; measured scene paint/submission
 observations do not establish physical input or physical display latency.
+
+## cached scene debug-selector replay — 16 october 2026
+
+Primary-approved narrow test-support decision for #2648 / PR264: preserve debug
+selector bounds when `AnyView.cached` replays paint. `Frame` retains an
+insertion-history map under the existing test/test-support cfg; `PaintIndex`
+records its offsets and `reuse_paint` restores only the cached segment. This
+keeps nested reuse and duplicate overwrite order correct without restoring
+unrelated removed selectors. Existing per-frame clearing remains effective.
+The patch is limited to safe Rust metadata in `src/window.rs`; normal builds
+have no added field, operation, public API, native access or input behavior.
+Published archive identity and original hashes stay pinned; the cumulative
+patch and patched window hash are regenerated from that verified archive.
+
+A rendered nested-cache test proves retained selectors across genuine scene
+reuse with unchanged child render counts, current duplicate overwrite order,
+moved child bounds and selector removal. The previously failing audio-trim
+fixture now finds its cached handle and completes its ordinary drag with cache
+reuse enabled. This test metadata is not physical display or native OS evidence.
+
+## stable cached-view invalidation — 16 october 2026
+
+Primary approved one additional safe GPUI boundary for #2648 after a rendered
+regression proved that replacing the cached child identity on a same-revision
+read-only snapshot refresh lost an otherwise-current clip mouse-down. The same
+gesture passed with the original direct builder. `AnyView::cached_with_epoch`
+adds an opaque `u64` caller epoch to the existing cache key so changed content
+rebuilds in the current draw without replacing view/element identity. Existing
+`cached` callers use zero and keep their behavior. Changing the epoch does not
+schedule a frame; Hex notifies the live editor owner. No dirty notification is
+queued from child emission, and no native/unsafe/event-delivery or bulk replay
+code changes.
+
+Hex retains a child's identity until its track is removed or the project
+generation changes. New immutable snapshots update every retained child to the
+current Arc once and prune removed track IDs; old offscreen snapshots are not
+retained. Keys and transient fresh-render states advance the epoch. Tests prove
+current-frame selected color/viewport geometry, next-frame reuse and preserved
+mouse-down/drag capture across a same-revision snapshot refresh. Original archive
+hashes remain pinned; only the documented `src/view.rs` addition extends the
+provenance guard's approved file scope.
+
+## ordered cached-scene replay — 16 october 2026
+
+Primary approved the private GPUI scene/bounds-tree optimization for #2648 only
+after the optimized headless fixed-fixture run measured zero clip rebuilds yet
+spent most of its frame replaying cached clip paint. A validated cached range can
+reserve one conservative union bound/order interval, then retain its internal
+order differences, mixed-kind ties and original operation stream. It does not
+place an entire track into a shared paint layer or change live clip geometry.
+The original replay loop is the fallback for old/current external layer contexts,
+unbalanced contained layers, invalid geometry, empty visible content or checked
+order reservation refusal. Refusal makes no scene/tree mutation. Reservation
+leaves room for one following live order; it does not claim arbitrary future
+order-exhaustion protection for the legacy renderer.
+
+`scene.rs` and `bounds_tree.rs` are the only added production patch files.
+The already patched `TestAppContext` gains one test-support-only verification
+entry point returning `Result<(), String>`; deterministic std-only fixtures
+exercise private GPUI code through Hex's root lockfile, without adding GPUI dev
+dependencies or testing another dependency graph. The retained original replay
+is the oracle for payload/layer streams, PathIds and actual batch painter order
+over every elementary overlap cell, including alpha/ties, 1×/2× bounds, multiple
+cached ranges, fresh live overlays and eight cached generations with stable
+order spans. Invalid layer/range/geometry and overflow cases verify no mutation.
+No unsafe/native/API-to-renderer data change is introduced. The macOS Surface
+branch keeps the original shared append logic; native image-buffer rendering
+has no dedicated fixture here. Pinned archive/original hashes are preserved and
+the cumulative diff/hash guard includes the explicitly approved files.
+
+The optimized `80330bc` headless comparison reduced explicit draw p95 from
+19.123 ms to 5.799 ms with zero clip rebuilds over 40 measured draws; its
+optimized oracle also passed. This test uses NoopTextSystem without native
+font/GPU/presentation work and does not establish the native frame budget.
+Temporary production probes are removed. Final full local CI and the canonical
+native 360-sample run remain required; see [method and limits](waveform-display.md).

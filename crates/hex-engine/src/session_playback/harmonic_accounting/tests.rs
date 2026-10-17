@@ -122,7 +122,7 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
     );
-    assert_eq!(original.payload().len(), 1616);
+    assert_eq!(original.payload().len(), 1728);
     assert_eq!(&original.payload()[288..292], &(-0.0f32).to_le_bytes());
     let mut proposal = payload::Payload {
         prefix: original.payload()[..380].try_into().unwrap(),

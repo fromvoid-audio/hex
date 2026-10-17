@@ -8,7 +8,7 @@ errors = []
 # Text children must be normalized centrally; other children are view elements.
 widgets = (
     'div(', 'Self::button(', 'Self::with_tooltip(', 'Self::ruler(', 'Self::empty_grid(',
-    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.clip_detail_view(',
+    'self.track(', 'self.mixer_strip(', 'self.mixer(', 'self.transport(', 'self.controller_input_row(', 'self.clip_detail_view(',
     'self.browser(', 'self.inspector(', 'self.status_bar(', 'theme::text(', 'crate::theme::text(',
     'self.icon(', 'self.control_icon(', 'self.control_icon_description(',
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
@@ -31,6 +31,8 @@ widgets = (
     'waveform)', 'waveform_preview)', 'phase)', 'velocity)', 'feedback)', 'cycle.unwrap_or_else(', 'graph)',
     'fields)', 'labeled_field(', 'carrier)', 'preset)', 'compact_control(', 'compact_control_with_codec(',
     'routing_header_cell(', 'routing_cell(',
+    # Algorithm diagrams have no text; global controls normalize captions.
+    'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',
@@ -107,17 +109,15 @@ for root_view in ('app.rs', 'editor/render.rs'):
     if '.font_family(theme::FONT_FAMILY)' not in app:
         errors.append(f'{root_view}: root UI must inherit Ioskeley Mono')
 # The shared compact title row reserves balanced space for native controls;
-# editor startup and the loaded editor both use that component. The generated
-# demo still owns its separate toolbar and retains the same leading inset.
+# one EditorView renders both pending-backend startup and the loaded editor.
+# The generated demo retains its separate toolbar with the same leading inset.
 header = (ROOT / 'crates/hex-ui/src/editor/header.rs').read_text()
 if 'crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)' not in header or '.px(px(' not in header:
     errors.append('editor/header.rs: center title with balanced native-control insets')
-for top_row in ('editor/bootstrap.rs', 'editor/render.rs'):
+for top_row in ('editor/render.rs',):
     source = (ROOT / 'crates/hex-ui/src' / top_row).read_text()
     if 'header::title_bar' not in source and 'self.title_bar(cx)' not in source and 'self.title_bar()' not in source:
         errors.append(f'{top_row}: use the shared title row')
-if 'header::loading_toolbar' not in (ROOT / 'crates/hex-ui/src/editor/bootstrap.rs').read_text():
-    errors.append('editor/bootstrap.rs: align startup toolbar with editor toolbar geometry')
 demo_toolbar = (ROOT / 'crates/hex-ui/src/layout/transport.rs').read_text()
 if '.pl(px(theme::TITLEBAR_LEADING_INSET))' not in demo_toolbar:
     errors.append('layout/transport.rs: reserve the shared native titlebar leading inset')

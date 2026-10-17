@@ -1,4 +1,6 @@
 //! Private original-law proof, not a native provider/codec or engine integration.
+mod support;
+
 #[path = "../src/operator_globals_volume.rs"]
 mod volume;
 
@@ -186,7 +188,7 @@ fn complete_private_checkpoint_storage_is_fixed_and_inline() {
 
 #[test]
 fn registered_operator_carrier_pcm_has_exact_neutral_identity_and_independent_gain() {
-    let state = OPERATOR_METADATA.default_state().unwrap();
+    let state = support::legacy_operator_state();
     let original = state.clone();
     for rate in [8_000, 48_000, 192_000] {
         let instrument = OPERATOR_METADATA.prepare_instrument(&state, rate).unwrap();
@@ -220,7 +222,7 @@ fn mutable_factory(
     feedback: bool,
     lfo: bool,
 ) -> Box<dyn hex_lattice::PreparedMutableInstrumentRuntime> {
-    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    let mut state = support::legacy_operator_state();
     for (id, value) in [
         (78, ParameterValue::Float(if feedback { 0.4 } else { 0.0 })),
         (82, ParameterValue::Bool(lfo)),
@@ -298,7 +300,7 @@ fn composition_does_not_change_actual_feedback_lfo_gate_or_release_history() {
 #[ignore = "manual optimized paired Linux proof timing, not native deadline evidence"]
 fn profile_original_carrier_and_volume_composition() {
     use std::{hint::black_box, time::Instant};
-    let state = OPERATOR_METADATA.default_state().unwrap();
+    let state = support::legacy_operator_state();
     let instrument = OPERATOR_METADATA
         .prepare_instrument(&state, 48_000)
         .unwrap();

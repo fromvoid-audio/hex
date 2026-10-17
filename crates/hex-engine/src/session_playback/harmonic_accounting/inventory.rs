@@ -31,9 +31,12 @@ fn operator(kind: Instrument) -> hex_lattice_contract::NativeDeviceState {
         Instrument::Fm4 => DeviceTypeId::from_static("hex.instrument.fm4"),
         _ => hex_devices::operator_state::OPERATOR_TYPE_ID,
     };
-    let state =
+    let state = if matches!(kind, Instrument::Sine | Instrument::Fm4) {
         crate::default_native_device_state_for_class(crate::NativeDeviceClass::Instrument, type_id)
-            .unwrap();
+            .unwrap()
+    } else {
+        crate::operator_legacy_test::legacy_operator_state()
+    };
     match kind {
         Instrument::Lfo => crate::patch_native_device_parameter_for_class(
             crate::NativeDeviceClass::Instrument,

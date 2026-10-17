@@ -2,26 +2,22 @@
 mod app;
 mod build_info;
 mod context_menu;
+mod controller_input;
 mod device_composition;
 mod diagnostics;
+pub use controller_input::install_controller_input;
 pub use diagnostics::install_session_log;
 mod editor;
+mod editor_backend;
+pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
 mod theme;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
-use hex_audio::{AudioOutput, PreparedOutput};
+use hex_audio::AudioOutput;
 
-/// Open the canonical project editor around a prepared native output stream.
-pub fn open_editor(cx: &mut App, output: Result<PreparedOutput, String>) -> Result<(), String> {
-    editor::open(cx, output)
-}
-
-/// Present a loading window while the injected initial output opens off-thread.
-pub fn open_editor_pending(
-    cx: &mut App,
-    request: Result<hex_audio::RecoveryOpen, String>,
-) -> Result<(), String> {
-    editor::open_pending(cx, request)
+/// Open the editor with a worker-owned native audio backend.
+pub fn open_editor_backend(cx: &mut App, backend: EditorBackend) -> Result<(), String> {
+    editor::open_backend(cx, backend)
 }
 
 /// Compose the GPUI window around the backend created by the desktop entry point.

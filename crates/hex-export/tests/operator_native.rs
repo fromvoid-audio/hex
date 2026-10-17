@@ -132,8 +132,17 @@ fn operator_revision(state: hex_lattice_contract::NativeDeviceState) -> Arc<Prep
 }
 
 #[test]
-fn registered_operator_export_matches_independent_pcm16_oracle_across_blocks_and_release() {
-    let revision = operator_revision(operator_state());
+fn legacy_operator_export_matches_independent_pcm16_oracle_across_blocks_and_release() {
+    // This independent sine oracle is the historical output-rate law. The
+    // remaining tests cover current operator-mode export/playback agreement.
+    let state = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &operator_state(),
+        ParameterId::from_static(608),
+        ParameterValue::Choice(0),
+    )
+    .expect("legacy processing");
+    let revision = operator_revision(state);
     let directory = TestDir::new();
     let path = directory.0.join("operator.wav");
     let report = hex_export::render_prepared_new(&path, revision, 0, 6_500)
