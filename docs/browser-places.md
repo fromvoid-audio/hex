@@ -49,3 +49,8 @@ User acceptance: add a folder, wait for saved feedback, close/reopen this review
 build and confirm the folder remains and opens. Retest audio/MIDI dragging,
 cross-track preview and second pickup after the edit completes. Running earlier
 apps and unsaved projects are preserved. No native acceptance claim yet.
+
+17 October 2026: places now occupy the split browser's left navigation column;
+the same background persistence and add-folder paths remain in use. The new
+section/icon settings are transient and do not modify this preferences schema.
+See [browser composition](browser-layout.md) and Pulse #2672 for their persistence.
