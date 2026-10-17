@@ -45,6 +45,7 @@ struct PlaybackPreviewRequest {
     generation: u64,
     output_generation: u64,
     output_identity: u64,
+    start_fraction: f64,
     path: PathBuf,
     sample_rate: u32,
 }
@@ -176,6 +177,8 @@ pub(super) struct BrowserState {
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
+    playback_fraction: f32,
+    waveform_bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
     preview_selected: Option<PreviewKey>,
     #[cfg(test)]
@@ -246,6 +249,8 @@ impl BrowserState {
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
+            playback_fraction: 0.0,
+            waveform_bounds: Rc::new(Cell::new(None)),
             playback_in_flight: false,
             playback_pending: None,
             preview_cache: HashMap::new(),
@@ -540,16 +545,27 @@ impl EditorView {
         self.browser.playback_phase = Phase::Idle;
         self.browser.playback_output = None;
         self.browser.playback_path = None;
+        self.browser.playback_fraction = 0.0;
         if let Some(audio) = self.audio.as_mut() {
             audio.control.preview_cancel();
         }
     }
 
     fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.play_browser_sample_from(path, 0.0, cx);
+    }
+
+    fn play_browser_sample_from(&mut self, path: PathBuf, fraction: f64, cx: &mut Context<Self>) {
+        let fraction = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         if self.browser.playback_output.is_some() {
             self.cancel_browser_sample_playback();
         }
         self.browser.playback_phase = Phase::Unavailable;
+        self.browser.playback_fraction = fraction as f32;
         self.status = "sample preview unavailable".into();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("sample preview is unavailable in verified streaming mode".into());
@@ -590,6 +606,7 @@ impl EditorView {
             output_identity,
             path,
             sample_rate: audio.sample_rate,
+            start_fraction: fraction,
         };
         self.browser.playback_phase = Phase::Preparing;
         self.browser.playback_output = Some((output_identity, output_generation));
@@ -626,9 +643,11 @@ impl EditorView {
                     })
                 {
                     let admitted = result.and_then(|pcm| {
+                        let frame =
+                            audition::frame_at_fraction(pcm.frames().len(), request.start_fraction);
                         audio
                             .control
-                            .preview_publish(request.output_generation, pcm)
+                            .preview_publish_from(request.output_generation, pcm, frame)
                             .map_err(|error| error.to_string())
                     });
                     match admitted {
@@ -679,24 +698,52 @@ impl EditorView {
     }
 
     pub(super) fn poll_browser_sample_playback(&mut self) -> bool {
-        let Some((identity, generation)) = self.browser.playback_output else {
+        let Some((identity, _)) = self.browser.playback_output else {
             return false;
         };
-        let phase = self
+        let snapshot = self
             .audio
             .as_ref()
             .filter(|audio| audio.control.output_identity() == Some(identity))
-            .and_then(|audio| audio.control.preview_snapshot())
-            .map_or(Phase::Unavailable, |snapshot| {
-                if snapshot.generation == generation
-                    || (snapshot.generation == 0 && snapshot.phase == Phase::Idle)
+            .and_then(|audio| audio.control.preview_snapshot());
+        self.accept_browser_sample_snapshot(snapshot)
+    }
+
+    fn accept_browser_sample_snapshot(
+        &mut self,
+        snapshot: Option<hex_audio::sample_preview::Snapshot>,
+    ) -> bool {
+        let Some((_, generation)) = self.browser.playback_output else {
+            return false;
+        };
+        let mut progress_changed = false;
+        let phase = snapshot.map_or(Phase::Unavailable, |snapshot| {
+            if snapshot.generation == generation {
+                if snapshot.frames > 0
+                    && matches!(
+                        snapshot.phase,
+                        Phase::Preparing | Phase::Playing | Phase::Finished
+                    )
                 {
-                    snapshot.phase
-                } else {
-                    Phase::Unavailable
+                    let fraction =
+                        (snapshot.frame as f64 / snapshot.frames as f64).clamp(0.0, 1.0) as f32;
+                    let width = self
+                        .browser
+                        .waveform_bounds
+                        .get()
+                        .map_or(1.0, |bounds| f32::from(bounds.size.width).max(1.0));
+                    progress_changed = (fraction * width).floor()
+                        != (self.browser.playback_fraction * width).floor();
+                    self.browser.playback_fraction = fraction;
                 }
-            });
-        self.accept_browser_sample_phase(phase)
+                snapshot.phase
+            } else if snapshot.generation == 0 && snapshot.phase == Phase::Idle {
+                Phase::Idle
+            } else {
+                Phase::Unavailable
+            }
+        });
+        self.accept_browser_sample_phase(phase) || progress_changed
     }
 
     fn accept_browser_sample_phase(&mut self, phase: Phase) -> bool {
@@ -723,9 +770,15 @@ impl EditorView {
     }
 
     fn browser_selection_audition(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.browser.playback_output.is_some() && self.browser.playback_path != path {
-            self.cancel_browser_sample_playback();
-            self.status = "sample preview stopped".into();
+        if self.browser.playback_path != path {
+            if self.browser.playback_output.is_some() {
+                self.cancel_browser_sample_playback();
+                self.status = "sample preview stopped".into();
+            } else {
+                self.browser.playback_path = None;
+                self.browser.playback_fraction = 0.0;
+                self.browser.playback_phase = Phase::Idle;
+            }
         }
         if self.browser.auto_audition
             && let Some(path) = path

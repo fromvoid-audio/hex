@@ -3170,3 +3170,106 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
         }
     }
 }
+
+#[gpui::test]
+fn browser_waveform_click_is_manual_positioned_audition_and_retains_focus(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, path) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.browser.results_focused = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("browser-audition-waveform").unwrap();
+    let mut generation = 0;
+    for fraction in [0.0, 0.5, 0.9, 0.25] {
+        let position = point(
+            bounds.left() + bounds.size.width * fraction,
+            bounds.center().y,
+        );
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        generation += 1;
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.browser.playback_generation, generation);
+            assert!((view.browser.playback_fraction - fraction).abs() < 0.02);
+            assert_eq!(view.browser.playback_path.as_ref(), Some(&path));
+            assert_eq!(
+                view.browser.playback_phase,
+                hex_audio::sample_preview::Phase::Unavailable
+            );
+            assert!(view.browser.results_focused);
+            assert!(!view.browser.auto_audition);
+            assert!(view.pending_audio_commands.is_empty());
+            assert!(view.pending_requests.is_empty());
+        });
+    }
+    visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, generation)
+    });
+}
+
+#[gpui::test]
+fn browser_waveform_position_observes_rendered_pcm_not_click_or_decode(cx: &mut TestAppContext) {
+    use hex_audio::sample_preview::Phase;
+    let (_, editor, _, _, _) = browser_drag_fixture(cx);
+    let (mut control, mut callback) = hex_audio::prepared::channel(48_000).unwrap();
+    let token = control.sample_preview.request().unwrap();
+    control
+        .sample_preview
+        .publish_from(
+            token,
+            hex_engine::Audio::new(48_000, vec![[0.5; 2]; 10]).unwrap(),
+            5,
+        )
+        .unwrap();
+    editor.update(cx, |view, _| {
+        view.browser.playback_output = Some((1, token));
+        assert!(view.accept_browser_sample_snapshot(Some(control.sample_preview.snapshot())));
+        assert_eq!(view.browser.playback_phase, Phase::Preparing);
+        assert_eq!(view.browser.playback_fraction, 0.5);
+        assert!(!view.accept_browser_sample_snapshot(Some(control.sample_preview.snapshot())));
+    });
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 2]).unwrap();
+    editor.update(cx, |view, _| {
+        assert!(view.accept_browser_sample_snapshot(Some(control.sample_preview.snapshot())));
+        assert_eq!(view.browser.playback_phase, Phase::Playing);
+        assert_eq!(view.browser.playback_fraction, 0.7);
+    });
+    callback.render(&mut [[0.0; 2]; 8]).unwrap();
+    editor.update(cx, |view, _| {
+        assert!(view.accept_browser_sample_snapshot(Some(control.sample_preview.snapshot())));
+        assert_eq!(view.browser.playback_phase, Phase::Finished);
+        assert_eq!(view.browser.playback_fraction, 1.0);
+        assert!(view.browser.playback_output.is_none());
+        assert!(!view.accept_browser_sample_snapshot(Some(control.sample_preview.snapshot())));
+        view.cancel_browser_sample_playback();
+        assert_eq!(view.browser.playback_fraction, 0.0);
+        assert!(!view.accept_browser_sample_snapshot(Some(control.sample_preview.snapshot())));
+        assert!(view.pending_audio_commands.is_empty());
+    });
+}
+
+#[gpui::test]
+fn browser_new_selection_clears_completed_position_without_auto_audition(cx: &mut TestAppContext) {
+    let (_, editor, _, _, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.browser.auto_audition = false;
+        view.browser.playback_phase = hex_audio::sample_preview::Phase::Finished;
+        view.browser.playback_fraction = 1.0;
+        view.browser.playback_path = Some("old.wav".into());
+        let generation = view.browser.playback_generation;
+        view.browser_selection_audition(Some("new.wav".into()), cx);
+        assert_eq!(view.browser.playback_generation, generation);
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Idle
+        );
+        assert_eq!(view.browser.playback_fraction, 0.0);
+        assert!(view.browser.playback_path.is_none());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+}

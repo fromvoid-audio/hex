@@ -4628,3 +4628,14 @@ retry automatically. Reproduced selected-cache loss before repair; real pointer
 hover/selection regression checks no repeated preparation/audition, stable metadata,
 unchanged project state and surrounding lane geometry/style. Native flicker
 acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## browser waveform-position audition — pulse2779 / PR385
+
+Manual waveform clicks resolve bounded hit position against decoded preview PCM;
+existing generation/ownership queues replace previews and silence Stop without
+project transport. Exact-end starts finish silently. Callback position publication
+feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation,
+locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
+focus and unavailable-output regressions cover the browser strip. Native pointer,
+listening and position acceptance remains coordinator-serial.
