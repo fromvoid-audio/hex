@@ -768,8 +768,10 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
     )
     .expect("prepare conversion");
     assert_eq!(prepared.waveform().source_frames, 480);
-    let mut session = Session::new(48_000, 8, 480).expect("session");
+    let mut session = Session::new(48_000, 8, 441 + 480).expect("original plus playback budget");
     let (_, asset, clip) = imported_ids(session.import(prepared).expect("import"));
+    assert_eq!(session.source_audio(asset).unwrap().sample_rate(), 44_100);
+    assert_eq!(session.source_audio(asset).unwrap().frames().len(), 441);
     let metadata = session.project().asset(asset).expect("metadata");
     assert_eq!(metadata.path(), path);
     assert_eq!(metadata.source_sample_rate(), 44_100);
@@ -783,7 +785,7 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         session.project().clip(clip).expect("clip").source_length(),
         480
     );
-    assert_eq!(session.resident_frames(), 480);
+    assert_eq!(session.resident_frames(), 441 + 480);
     let original = session
         .audio(asset)
         .expect("prepared PCM")
@@ -791,7 +793,7 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         .to_vec();
     assert!(session.undo());
     assert!(session.project().tracks().is_empty());
-    assert_eq!(session.resident_frames(), 480);
+    assert_eq!(session.resident_frames(), 441 + 480);
     assert!(session.redo());
     let playback = session.compile().expect("compile");
     let mut renderer = hex_engine::Renderer::new(&playback);
