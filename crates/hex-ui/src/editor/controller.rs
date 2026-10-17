@@ -1586,6 +1586,7 @@ impl EditorView {
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
             self.edit_cursor = None;
+            self.clip_paint_gesture = None;
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
@@ -1986,6 +1987,17 @@ impl EditorView {
             self.last_enqueued_arrangement_device_drop = Some(*destination);
         }
         #[cfg(test)]
+        if let Request::ConvertClip {
+            project_generation,
+            revision,
+            clip,
+            to_audio,
+        } = &request
+        {
+            self.last_enqueued_clip_conversion =
+                Some((*project_generation, *revision, *clip, *to_audio));
+        }
+        #[cfg(test)]
         if let Request::Edit(command) = &request {
             self.last_enqueued_edit = Some(command.clone());
         }
@@ -2113,6 +2125,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::Edit(_)
+                | Request::ConvertClip { .. }
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
                 | Request::InsertTimeRange { .. }

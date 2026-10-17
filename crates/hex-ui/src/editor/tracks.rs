@@ -497,6 +497,9 @@ impl EditorView {
                     .opacity(0.035),
             );
         }
+        if let Some(preview) = self.clip_paint_overlay(track_id, viewport) {
+            clip_area = clip_area.child(preview);
+        }
         if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor) {
             clip_area = clip_area.children([selection]);
         }

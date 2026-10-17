@@ -20,6 +20,14 @@ pub enum Command {
         clip: ClipId,
         name: String,
     },
+    /// Replace audio with an empty editable MIDI source, retaining clip identity.
+    ConvertAudioClipToMidi(ClipId),
+    /// Adopt a rendered project-rate WAV for a MIDI clip, retaining identity.
+    ConvertMidiClipToAudio {
+        clip: ClipId,
+        path: PathBuf,
+        frames: u64,
+    },
     /// One prepared history operation creates a normal hybrid track with a device.
     InsertTrackWithDevice {
         name: String,
@@ -1151,6 +1159,12 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::ConvertAudioClipToMidi(clip) => {
+                crate::clip_conversion::audio_to_midi(self, clip)
+            }
+            Command::ConvertMidiClipToAudio { clip, path, frames } => {
+                crate::clip_conversion::midi_to_audio(self, clip, path, frames)
+            }
             Command::SpliceGainTouchBatch {
                 track,
                 expected_epoch,

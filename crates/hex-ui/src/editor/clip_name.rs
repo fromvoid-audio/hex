@@ -73,6 +73,7 @@ impl EditorView {
             || self.active_trim_drag.is_some()
             || self.active_midi_trim_drag.is_some()
             || self.time_range_move_gesture.is_some()
+            || self.clip_paint_gesture.is_some()
             || self.clip_name_edit.is_some()
         {
             return;

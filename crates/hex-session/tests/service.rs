@@ -2156,3 +2156,57 @@ fn arrangement_catalog_atomic_command_preserves_project_on_compile_and_capacity_
     assert_eq!(session.project(), &baseline);
     assert!(!session.can_undo());
 }
+
+#[test]
+fn clip_conversion_worker_rejects_stale_selection_and_publishes_editable_midi() {
+    let service = Service::new(48_000, 16, 1024).unwrap();
+    next_event(&service);
+    let path = std::env::temp_dir().join(format!(
+        "hex-convert-service-{}-{}.wav",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(&path, wav_mono_pcm16(&[4000; 512])).unwrap();
+    service.submit(Request::Import(path.clone())).unwrap();
+    let imported = next_event(&service);
+    let track = &imported.state.project.tracks()[0];
+    let clip = track.clips()[0].id();
+    let revision = imported.state.revision;
+    let request = |project_generation, revision| Request::ConvertClip {
+        project_generation,
+        revision,
+        clip,
+        to_audio: false,
+    };
+    for stale in [request(1, revision), request(0, revision - 1)] {
+        service.submit(stale).unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.as_ref().unwrap().contains("project changed"));
+        assert!(refused.playback.is_none());
+        assert_eq!(refused.state.project, imported.state.project);
+        assert_eq!(refused.state.revision, revision);
+    }
+    service.submit(request(0, revision)).unwrap();
+    let converted = next_event(&service);
+    assert!(converted.error.is_none());
+    assert!(converted.playback.is_some());
+    assert_eq!(converted.created, Some(Created::Clip(clip)));
+    assert!(converted.state.project.clip(clip).is_none());
+    assert!(
+        converted
+            .state
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .notes()
+            .is_empty()
+    );
+    assert_eq!(converted.state.project.tracks()[0].id(), track.id());
+    assert_eq!(converted.state.revision, revision + 1);
+    service.submit(Request::Undo).unwrap();
+    assert!(next_event(&service).state.project.clip(clip).is_some());
+    fs::remove_file(path).unwrap();
+}

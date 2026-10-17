@@ -21,7 +21,7 @@ The native IME/selection/clipboard implementation is shared with browser search.
 requires nonblank text without control characters and at most 1024 UTF-8 bytes.
 Names live on canonical Arrangement clips and independent Session clips, enter
 history and snapshots, and survive trims, splits, duplication, time-range copies
-and Arrangement-to-Session copying. New and migrated Arrangement clips default
+and Arrangement-to-Session copying. Audio/MIDI conversion retains the name. New and migrated Arrangement clips default
 to `clip`. Source asset paths and names remain independent. An unchanged rename
 adds no history. Drafts capture generation/revision/ID/original name and cannot
 write into a replacement project or overwrite a newer edit.

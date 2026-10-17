@@ -8,6 +8,7 @@ pub use audio_edit::{
     SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
     audio_projection_frame, default_audio_warp,
 };
+mod clip_conversion;
 mod clip_copy;
 mod clip_fragment;
 mod conversion;
