@@ -562,6 +562,18 @@ mod tests {
         assert_eq!(scale.cents[0], 1.0);
         assert!(scale.valid());
         assert!(scale.frequency(62) < scale.frequency(63));
+
+        // Both rounded bounds must stay inside the exact one-cent interval.
+        for first in [0.000_07, 1.234_567_8e-12] {
+            let mut cents = Scale::equal(3).cents;
+            cents[0] = first;
+            let mut scale = Scale::new(3, cents, 60, 220.0, 0, 1200.0).unwrap();
+            assert!(scale.move_degree(2, 1200.0));
+            assert!(scale.move_degree(1, -1.0));
+            assert!(scale.valid());
+            assert!(f64::from(scale.cents[1]) - f64::from(first) >= 1.0);
+            assert!(1200.0 + f64::from(first) - f64::from(scale.cents[2]) >= 1.0);
+        }
     }
 
     #[test]
