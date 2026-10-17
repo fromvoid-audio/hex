@@ -1,5 +1,10 @@
 # registered vector instrument
 
+Historical implementation evidence below retains its original state/version and
+limits. Current Vector is v15 with globals, controllers, eleven algorithms and
+selected polyphony up to 32; see [current globals](vector-global.md),
+[state](operator-state.md) and [catalog reconciliation](native-device-catalog.md).
+
 The original four-operator FM synth is named **vector** in the browser, catalog
 and device header. Its stable `hex.instrument.operator` identity, versioned
 state and parameter IDs remain unchanged so existing projects retain their
