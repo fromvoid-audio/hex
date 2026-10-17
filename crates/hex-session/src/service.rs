@@ -1050,6 +1050,7 @@ fn run_tuning_library_operation_in(
                             preset.scale,
                             session.project().tuning().audition(),
                         ) {
+                            Ok(tuning) if tuning == session.project().tuning() => Ok(()),
                             Ok(tuning) => match session.command_prepared_revision(
                                 hex_project::Command::SetTuning(tuning),
                                 previous.map(Arc::as_ref),
@@ -1094,6 +1095,7 @@ fn run_tuning_library_operation_in(
                             preset.scale,
                             session.project().tuning().audition(),
                         ) {
+                            Ok(tuning) if tuning == session.project().tuning() => Ok(()),
                             Ok(tuning) => match session.command_prepared_revision(
                                 hex_project::Command::SetTuning(tuning),
                                 previous.map(Arc::as_ref),

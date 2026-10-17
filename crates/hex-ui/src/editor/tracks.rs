@@ -394,9 +394,9 @@ impl EditorView {
                 drag.preview
                     .borrow()
                     .as_ref()
-                    .map(|preview| (drag.clip.asset(), preview.clip.clone()))
+                    .map(|preview| (drag.clip.clone(), preview.clip.clone()))
             });
-        if let Some((asset, preview_clip)) = live_trim_preview {
+        if let Some((original_clip, preview_clip)) = live_trim_preview {
             let preview_start = preview_clip.start();
             if let Some(preview_end) = preview_start.checked_add(preview_clip.duration()) {
                 let visible_start = preview_start.max(viewport.start);
@@ -422,14 +422,20 @@ impl EditorView {
                             false,
                         )))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
-                    if let Some(waveform) = state.waveforms.get(&asset) {
-                        preview = preview.child(super::waveform::waveform_view_cached(
-                            waveform,
-                            &preview_clip,
-                            visible_start,
-                            visible_end,
-                            std::rc::Rc::clone(&self.waveform_geometry_cache),
-                        ));
+                    if let Some(waveform) = super::waveform::preview_waveform_view_cached(
+                        super::waveform::WaveformPreview {
+                            original: &original_clip,
+                            preview: &preview_clip,
+                            tempo: state.project.tempo_map(),
+                            asset: state.waveforms.get(&original_clip.asset()),
+                            prepared: state.audio_clip_waveforms.get(&original_clip.id()),
+                        },
+                        visible_start,
+                        visible_end,
+                        std::rc::Rc::clone(&self.waveform_geometry_cache),
+                        self.waveform_grid(track_id, viewport, scale_factor),
+                    ) {
+                        preview = preview.child(waveform);
                     }
                     clip_area = clip_area.children([preview]);
                 }
@@ -1185,6 +1191,22 @@ impl EditorView {
         clip_area
     }
 
+    fn waveform_grid(
+        &self,
+        track: hex_project::TrackId,
+        viewport: Viewport,
+        scale: f32,
+    ) -> Option<super::waveform::WaveformGrid> {
+        let lane = self.drag_lanes.get(&track)?;
+        Some(super::waveform::WaveformGrid {
+            start: viewport.start,
+            end: viewport.end()?,
+            left: lane.left,
+            width: lane.width,
+            columns: super::waveform::waveform_column_count(lane.width, scale),
+        })
+    }
+
     fn clip_view(
         &self,
         state: &ViewState,
@@ -1194,7 +1216,11 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let ClipViewTimeline { viewport, grid, .. } = timeline;
+        let ClipViewTimeline {
+            viewport,
+            grid,
+            scale_factor,
+        } = timeline;
         let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
         let trim_preview_clip = self
@@ -1300,12 +1326,18 @@ impl EditorView {
                     preview.length = clip.duration();
                     Some(preview)
                 });
-                content = content.child(super::waveform::prepared_waveform_view_cached(
-                    preview.as_ref().unwrap_or(prepared),
-                    clip,
+                let prepared = preview.as_ref().unwrap_or(prepared);
+                content = content.child(super::waveform::timeline_waveform_view_cached(
+                    std::sync::Arc::clone(&prepared.waveform),
+                    super::waveform_geometry::WaveformMapping::Prepared {
+                        timeline_origin: clip.start(),
+                        root_offset: prepared.offset,
+                        gain: clip.gain(),
+                    },
                     visible_start,
                     visible_end,
                     std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    self.waveform_grid(track, viewport, scale_factor),
                 ));
             } else if clip.audio_edit().is_some() {
                 content = content.child(
@@ -1316,12 +1348,16 @@ impl EditorView {
             } else {
                 match waveform {
                     Some(waveform) => {
-                        content = content.child(super::waveform::waveform_view_cached(
-                            waveform,
-                            clip,
+                        content = content.child(super::waveform::timeline_waveform_view_cached(
+                            std::sync::Arc::clone(waveform),
+                            super::waveform_geometry::WaveformMapping::Clip {
+                                clip: clip.clone(),
+                                timeline_origin: clip.start(),
+                            },
                             visible_start,
                             visible_end,
                             std::rc::Rc::clone(&self.waveform_geometry_cache),
+                            self.waveform_grid(track, viewport, scale_factor),
                         ));
                     }
                     None => {

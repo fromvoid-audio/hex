@@ -308,7 +308,7 @@ impl NativeDeviceDefinition for TestDevice {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        _sample_rate: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         let (scale, latency) = match state.payload() {
@@ -351,7 +351,11 @@ struct SquareRuntime {
     scale: f32,
 }
 impl NativeProcessorRuntime for SquareRuntime {
-    fn process_block(&mut self, frames: &mut [hex_lattice::StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [hex_lattice::StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let [left, right] = *frame;
             *frame = [
@@ -431,7 +435,14 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let instance = |device_id, state: NativeDeviceState, sample_rate| {
         let processor = registry
-            .prepare_processor(&state, sample_rate)
+            .prepare_processor(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap();
         PreparedProcessorInstance {

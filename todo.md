@@ -1,27 +1,40 @@
-## project tuning runtime continuation — #2740 / PR351, 17 october 2026
+## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
 
-Cloud takeover repairs the invalid Operator event-preflight fixture and stale
-sampler/table footprint accounting without increasing scoped memory ceilings.
-Ordinary worker edits invalidate tuning-family inheritance while audible keyboard
-cancellation remains at publication; a prepared/refused candidate cannot silence
-the installed lease. Focused native DSP/engine/Session, non-octave mapping,
-Operator PCM16 export and actual callback total/net-zero allocation checks pass.
-The optional combined feature/all-target matrix still exposes existing2722/PR338;
-required scoped Clippy passes. Release copy-cost evidence and full exact-source
-local CI remain pending at this checkpoint. See
-[runtime contract](docs/project-tuning-runtime.md). Full native editor/audition,
-MTS, coordinated current combined schema and Mac/user acceptance remain required
-goal4 work; no complete tuning delivery or merge is claimed.
+Checkpoint7a24 includes merged350/387 and intermediate runtime351 e1d9d50f;
+all20 exact local checks passed, but a later dependency review found zero-step
+oscillator admission. Current source integrates the canonical977bed89 control
+representability repair. All322 device tests pass (one existing ignore), including
+its provider/mixed/fixed/velocity regressions; strict affected all-target Clippy
+passes. Runtime351 remains unmerged; current-source full checks and final
+canonical dependency qualification/merge remain pending.
 
-Full workspace verification exposed a real neutral-path regression in the paused
-runtime: a table inside every Operator configuration grew legacy feedback/LFO
-twins beyond their8KiB contract. The repair keeps small configurations free of
-tables/heap owners and passes an optional borrowed table to note preparation;
-only the already-wide custom mutable factory/runtime retains that fixed data.
-Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
-are restored, without raising limits or adding callback table construction.
-All313 device tests, packing proof and volume/history proof pass; renewed full
-workspace/final CI remains required. Earlier failed runner evidence is retained.
+Cloud4 accepted integrated tuning runtimeffb42158 and owns the next shared seam.
+Typed borrowed mono/stereo resource views and one rate/tuning/resource context now
+serve instrument and effect preparation, providers, Arrangement/Session/keyboard
+hosts and conformance callers. Old with_tuning overloads are removed. Arrangement
+instruments and track/return effects borrow the same effective project table.
+All319 device and54 lattice library tests pass (one existing device test ignored),
+strict affected all-target Clippy and audio/export/allocation-feature compilation
+pass. Actual registry tests prove a valid borrowed PCM view alone cannot bypass
+root admission, and stale extra views refuse before provider migration.
+Analytic inline/shared/continuation callbacks now borrow the resource inventory
+through their actual sample ABI. A real mono/stereo PCM conformance callback and
+actual callback allocation probe pass with zero allocations/frees. All319 device
+and55 lattice library tests pass, including one existing device ignore; strict
+all-target Clippy and audio allocation-feature tests pass. Existing asset-free
+hosts pass an explicit empty inventory and registries continue refusing assets;
+Lower mutable-instrument preflight/processing and owned/native effect callbacks
+now require and forward the actual borrowed inventory. The synthetic effect
+consumes real mono/stereo PCM, including bypass cursor advancement; measured
+analytic and effect callbacks have zero total/net allocations and frees.
+Per-configuration host root leases, coexistence-union accounting and retirement
+admission remain unfinished. Mutable twin actual mono/stereo PCM, stale-content
+refusal before mutation, rollback/retry and continuation probes pass; measured
+analytic/effect/mutable callbacks all retain zero total/net allocations/frees.
+This synthetic free-running source is not a registered MIDI sampler. No cap or
+note layout increase.
+No sampler registration, full-CI or native acceptance claim. Beats clip stretching
+2771/PR379 retains current explicit priority; canonical tuning dependencies remain.
 
 ## tuning review precision and cyclic gaps — #2739 / PR350, 17 october 2026
 
@@ -35,7 +48,6 @@ Extended existing fractional-root and combined device-manifest fixtures also
 reproduced a one-ulp JSON parser error. The pinned serde_json dependency now
 enables float_roundtrip, preserving current-format authored root precision.
 Both owning storage fixtures pass after the repair, including all device owners.
-
 
 ## combined current project format — #2739 / PR350, 17 october 2026
 
@@ -62,6 +74,42 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## stable waveform resize sampling — pulse2764 / PR372, 17 october 2026
+
+Arrangement clips and ordinary/lower-fade resize previews use a bounded shared
+viewport sampling lattice instead of redistributing all peak columns across
+each changing clip width. Actual interior stereo outline geometry fails under
+the former sampling and passes with fixed lane/time density across fractional
+edges, zoom scales and the column cap; canonical loop/one-shot trims are covered.
+Project/source mapping, fade envelopes, one Undo and audio paths remain owned by
+the existing model. Native reproduction/acceptance is pending; the running
+source labels were0f99bfbc and1879e018 in static captures, with no resize captured. See docs/waveform-display.md.
+Earlier exact-source checks passed on8a787a2b. Final integration now preserves
+merged PR388 accepted-root crops, PR387 changed-root stretch mapping and PR383
+free lower handles. Combined crop/stretch/grid regressions pass39 tests with
+one existing manual profile ignored, including the reproduced/repaired prepared
+edge-bin translation defect. Fresh required evidence is recorded in PR/Pulse. No native
+acceptance or app delivery is claimed.
+
+## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
+
+Command-T binds the existing AddTrack action under editor/non-text focus.
+Rendered focus and keyboard regressions cover the editor, browser search,
+clip-name input and gain numeric draft; canonical Undo/Redo remains one edit.
+Required exact-source checks and native acceptance are recorded in Pulse/PR.
+Track layout resizing was delivered separately by launcher2714/PR330.
+
+
+## supersession fixture command readiness — pulse2774 / PR381, 17 october 2026
+
+The rapid native-worker test now observes command readiness on its real worker
+endpoint as well as the applied callback source before issuing its single Play.
+Eight generations, exact PCM, zero callback allocation/deallocation and the same
+five-second deadline remain. This test-only synchronization addresses a missing
+precondition; no runtime/client/publication behavior changes. Old full-bin failures
+and focused checks remain retained; final exact-source CI is recorded in Pulse.
+See docs/local-ci.md. No native app operation or delivery performed.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
@@ -76,6 +124,19 @@ retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
+## sample bpm and shift edge stretching — pulse2781 / PR387, 17 october2026
+
+Authored original sample BPM, canonical affine edge stretch and metadata-only
+preview/release wiring are implemented in a separate follow-up. Five model/storage
+fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
+both-edge stationary Shift gesture checks pass; excessive stretch refuses project/history
+commit. Escape preview persistence was reproduced and repaired; active-window
+Escape/focus/deactivation and canceled re-entry checks pass. Final exact-source
+CI remains pending on the final projection candidate. Merged388 supplies
+ordinary trim visibility;387 adds accepted-peak changed-root projection for live
+Shift stretch. Stability2764/PR372 stays separate; final projection checks and
+coordinator-owned native acceptance remain pending. See docs/sample-bpm-stretch.md for behavior and
+finite coordinator-only native checklist. No Mac execution or app replacement.
 
 ## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
 
@@ -107,6 +168,43 @@ compiled the example without its gated provider. The same command now passes
 independent PCM oracle at all four documented rates. Runtime code, features,
 dependencies and admission limits are unchanged. Full final-source CI remains
 pending; retained failure/success logs are separate from native acceptance.
+
+## project tuning runtime continuation — #2740 / PR351, 17 october 2026
+
+Cloud takeover repairs the invalid Operator event-preflight fixture and stale
+sampler/table footprint accounting without increasing scoped memory ceilings.
+Ordinary worker edits invalidate tuning-family inheritance while audible keyboard
+cancellation remains at publication; a prepared/refused candidate cannot silence
+the installed lease. Focused native DSP/engine/Session, non-octave mapping,
+Operator PCM16 export and actual callback total/net-zero allocation checks pass.
+The optional combined feature/all-target matrix still exposes existing2722/PR338;
+required scoped Clippy passes. Release copy-cost evidence and full exact-source
+local CI remain pending at this checkpoint. See
+[runtime contract](docs/project-tuning-runtime.md). Full native editor/audition,
+MTS, coordinated current combined schema and Mac/user acceptance remain required
+goal4 work; no complete tuning delivery or merge is claimed.
+
+Full workspace verification exposed a real neutral-path regression in the paused
+runtime: a table inside every Operator configuration grew legacy feedback/LFO
+twins beyond their8KiB contract. The repair keeps small configurations free of
+tables/heap owners and passes an optional borrowed table to note preparation;
+only the already-wide custom mutable factory/runtime retains that fixed data.
+Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilings
+are restored, without raising limits or adding callback table construction.
+All313 device tests, packing proof and volume/history proof pass; renewed full
+workspace/final CI remains required. Earlier failed runner evidence is retained.
+## combined current project format — #2739 / PR350, 17 october 2026
+
+After asset PR297 landed, cloud5 integrates both active capabilities in one
+schema31: required complete tuning and device-asset manifest for every project,
+including empty/default values. Prior alpha30 refuses explicitly without
+conversion, rewriting or deletion. The manifest is a reusable bounded current
+payload, not a historical30 dispatch reader. Existing older readers stay intact;
+legacy writers continue to refuse data loss. Combined non-octave tuning/assets,
+Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
+covered by the owning storage fixtures. All storage/project/tuning tests and
+strict affected all-target Clippy pass; final complete integrated checks remain
+required. No historical30 reader or automatic user-file conversion was added.
 
 ## device asset state storage proof — pulse2681 / PR297, 17 october 2026
 
@@ -171,6 +269,34 @@ context reset; stale capture cannot be refreshed by decay. Both EQ panels share
 a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
 strict Clippy pass; UI/full exact-source validation and coordinator-arranged
 native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
+
+## eq panel geometry — #2731 / PR344, 17 october 2026
+
+Sized the toolbar/footer for full shared controls, kept fixed control widths,
+added the reusable wide frequency micro dial and compact boolean button, and
+moved remove alongside selected-node controls. Automation telemetry now lives
+in its own field/page row. A rendered regression fails before and passes after
+at 880/1500-pixel windows in response and automation modes, checking containment,
+nonoverlap, action/readout bounds and usable graph height. Review exposed
+38.4-pixel automate text in a twelve-pixel action. Intrinsic nonwrapping action
+widths preserve shared styling; the strengthened font-shaped text-fit regression
+fails before and passes after, alongside all six rendered EQ tests. Full exact-source CI
+and optimized native visual/input acceptance remain required.
+See [layout contract](docs/eq.md#panel-layout).
+
+## focused eq Backspace — #2737 / PR348, 17 october 2026
+
+Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
+bindings. The owner reuses canonical stable-node removal and refuses automation
+point IDs, previews, pending/stale work and old project generations. Empty graph
+focus consumes the key; numeric/text siblings keep their own editing. A rendered
+regression fails before/passes after for removal with atomic automation cleanup,
+empty focus, Undo/Redo and current-format save/reopen identity state. All eight
+rendered EQ regressions and strict UI feature Clippy pass, including
+pending/numeric/automation-point isolation and held-pointer cancellation with
+real editor keybindings. Graph-scoped Escape preserves existing cancellation
+before ancestor editor actions. Full exact-source CI and optimized native input
+acceptance remain required.
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4483,6 +4609,30 @@ CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
 native physical input/listening and optimized coordinated Mac delivery remain
 pending with the coordinator's serial follow-up workflow.
 
+
+## lower fade handles free by default — pulse2777 / PR383, 17 october 2026
+
+Both lower fade-edge resize handles now use unsnapped pointer positions by
+default, independent of ordinary Arrangement snap. Holding the existing Command
+modifier enables the configured grid, or the existing adaptive grid when global
+snap is off. Stationary modifier changes and mouse-up use current modifiers.
+Ordinary trims/body gestures and upper/curve controls retain their behavior.
+The existing rendered gesture regression fails before this change (quarter grid
+produces frame24000 instead of the requested18000). Expanded coverage checks
+both edges, grid on/off, stationary press/release and both mouse-up disagreement
+directions, no-motion clicks and canonical single Undo/Redo. Existing cancellation
+coverage now exercises both lower edges; canonical model tests retain loop/source
+bounds and opposite-edge/fade-shape coverage. All nine focused fade tests pass. Exact full cloud CI evidence is tracked in
+Pulse2777 and canonical PR383.
+
+Native acceptance remains pending through the coordinator's single Mac lane:
+on the approved optimized candidate, drag each lower handle with snap on and
+off; verify continuous free motion, hold Command to snap (adaptive when off),
+press/release Command without moving, then release with either modifier state.
+Check crop/reveal and unchanged waveform landmarks, opposite edge and fade shape,
+one Undo/Redo, click-only no-op, Escape cancellation and finite source limits.
+No Mac job, app replacement, save/quit or delivery was performed by this lane.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -4716,6 +4866,20 @@ layout/listening and broader historical scrub/playhead wishlist remain open;
 Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
 
 
+## waveform visibility during edge trim — pulse2782 / PR388, 17 october 2026
+
+The actual trim overlay hid the original waveform and always used raw asset
+mapping, which refuses transformed clips. Before-fix rendered input reproduced
+zero-height stereo paths in all 24 processed/warped motion cases across two
+sample/rate fixtures; untouched controls remained visible. The preview now
+reuses the immutable accepted processing root with the model-projected crop
+offset and validates root identity, extent and original cached crop metadata.
+Original/prospective clips remain available for the separate tempo-aware
+Shift-stretch seam; no source BPM or gesture policy is implemented here.
+See docs/waveform-display.md for regression scope and the finite pending native
+checklist. Exact cloud CI evidence is recorded in Pulse2782 and canonical PR388.
+No Mac/app operation or delivery is claimed.
+
 ## browser waveform cache stability — pulse2778 / PR384
 
 Visible row composition no longer mutates the16-entry metadata cache. Selected
@@ -4724,6 +4888,17 @@ retry automatically. Reproduced selected-cache loss before repair; real pointer
 hover/selection regression checks no repeated preparation/audition, stable metadata,
 unchanged project state and surrounding lane geometry/style. Native flicker
 acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## browser waveform-position audition — pulse2779 / PR385
+
+Manual waveform clicks resolve bounded hit position against decoded preview PCM;
+existing generation/ownership queues replace previews and silence Stop without
+project transport. Exact-end starts finish silently. Callback position publication
+feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation,
+locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
+focus and unavailable-output regressions cover the browser strip. Native pointer,
+listening and position acceptance remains coordinator-serial.
 
 
 ## deliberate sample insertion — pulse2780 / PR386

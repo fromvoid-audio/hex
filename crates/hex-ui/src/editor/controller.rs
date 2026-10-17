@@ -1438,13 +1438,20 @@ impl EditorView {
                     .audition_input
                     .as_ref()
                     .is_some_and(|active| Arc::ptr_eq(active, input))
-                && !input.is_cancelled()
                 && self
                     .state
                     .as_ref()
                     .is_some_and(|state| state.revision == event.state.revision);
             if !current {
                 input.cancel();
+                return None;
+            }
+            if input.is_cancelled() {
+                self.cancel_tuning_audition();
+                if let Some(error) = event.error {
+                    self.tuning.error = Some(error.clone());
+                    self.error = Some(error.into());
+                }
                 return None;
             }
         }
@@ -4104,5 +4111,72 @@ mod verified_actual_applied_tests {
             },
             "late refusal"
         ));
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tuning_audition_error_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    fn next(service: &hex_session::service::Service) -> Event {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match service.try_event() {
+                Ok(event) => return event,
+                Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(2))
+                }
+                Err(error) => panic!("worker did not reply: {error}"),
+            }
+        }
+    }
+    #[gpui::test]
+    fn review_current_audition_worker_refusal_is_visible_but_stale_owner_is_ignored(
+        cx: &mut TestAppContext,
+    ) {
+        let service = hex_session::service::Service::new(48_000, 8, 1_000_000).unwrap();
+        let initial = next(&service);
+        let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            initial.state.project.as_ref().clone(),
+            Arc::default(),
+        );
+        let old = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
+        let active = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
+        editor.update(cx, |view, _| {
+            view.state = Some(Arc::clone(&initial.state));
+            view.tuning.open = true;
+            view.tuning.audition_input = Some(Arc::clone(&active));
+        });
+        for (input, stale) in [(old, true), (Arc::clone(&active), false)] {
+            service
+                .submit(Request::PrepareTuningAudition {
+                    revision: 99,
+                    input,
+                })
+                .unwrap();
+            let event = next(&service);
+            assert!(event.error.is_some());
+            assert!(
+                event
+                    .tuning_audition_complete
+                    .as_ref()
+                    .unwrap()
+                    .is_cancelled()
+            );
+            editor.update(cx, |view, _| {
+                view.receive(event);
+                if stale {
+                    assert!(view.error.is_none());
+                    assert!(Arc::ptr_eq(
+                        view.tuning.audition_input.as_ref().unwrap(),
+                        &active
+                    ));
+                } else {
+                    assert!(view.tuning.error.is_some());
+                    assert!(view.tuning.audition_input.is_none());
+                }
+            });
+        }
     }
 }

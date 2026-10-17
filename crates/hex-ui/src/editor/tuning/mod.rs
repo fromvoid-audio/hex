@@ -503,6 +503,10 @@ impl EditorView {
             return;
         }
         if self.tuning.client.snapshot().is_none() {
+            if self.edit_pending() {
+                self.tuning.error = Some("wait for pending project changes".into());
+                return;
+            }
             if let Err(reason) = self
                 .tuning
                 .client
@@ -735,6 +739,11 @@ impl EditorView {
             closest.filter(|i| (s.cents()[*i] - cents).abs() / s.period_cents() * width < 10.0);
         if event.button == MouseButton::Right {
             self.tuning.context = hit;
+            cx.notify();
+            return;
+        }
+        if self.tuning.client.snapshot().is_none() && self.edit_pending() {
+            self.tuning.error = Some("wait for pending project changes".into());
             cx.notify();
             return;
         }

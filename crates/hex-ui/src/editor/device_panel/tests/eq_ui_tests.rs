@@ -73,6 +73,335 @@ fn plot(
     location
 }
 
+fn assert_action_label_fits(
+    visual: &mut VisualTestContext,
+    label: &str,
+    bounds: gpui::Bounds<gpui::Pixels>,
+) {
+    let width = visual.update(|window, _| {
+        window
+            .text_system()
+            .shape_line(
+                label.to_owned().into(),
+                px(8.0),
+                &[gpui::TextRun {
+                    len: label.len(),
+                    font: gpui::font(theme::FONT_FAMILY),
+                    color: gpui::rgb(0xffffff).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+    });
+    assert!(
+        width + px(6.0) <= bounds.size.width,
+        "full rendered {label:?} ({width:?}) plus padding must fit its action {bounds:?}"
+    );
+}
+
+#[gpui::test]
+fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+    visual.simulate_click(auto.center(), Modifiers::default());
+    visual.run_until_parked();
+    let point = plot(&mut visual, device, 0.25, 0.6);
+    visual.simulate_click(point, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).lanes.len() == 1
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            read(view, device),
+            before,
+            "automation point identity must not delete a band"
+        )
+    });
+    let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+    visual.simulate_click(auto.center(), Modifiers::default());
+    visual.run_until_parked();
+    let original = editor.read_with(cx, |view, _| read(view, device));
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("backspace");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && (view.state.as_ref().unwrap().project.track(track).is_none()
+                || read(view, device).nodes.is_empty())
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state.as_ref().unwrap().project.track(track).is_some(),
+            "EQ Backspace must never delete its track"
+        );
+        assert!(read(view, device).nodes.is_empty());
+        assert!(
+            read(view, device).lanes.is_empty(),
+            "node removal atomically removes its automation"
+        );
+    });
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state.as_ref().unwrap().project.track(track).is_some(),
+            "empty focused EQ consumes Backspace"
+        )
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == original
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_some()
+        )
+    });
+    let removed = editor.read_with(cx, |view, _| read(view, device));
+    assert_eq!(removed.next_node_id, original.next_node_id);
+    let path = std::env::temp_dir().join(format!(
+        "hex-eq-backspace-{}-{}.hex",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump_until(&editor, cx, |view| settled(view) && path.exists());
+    let reload = Service::new(48000, 8, 8000000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert!(reopened.state.project.track(track).is_some());
+    assert_eq!(
+        EqState::decode(reopened.state.project.device(device).unwrap().state()).unwrap(),
+        removed
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[gpui::test]
+fn eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    let original = editor.read_with(cx, |view, _| read(view, device));
+    editor.update(cx, |view, _| view.worker_requests_pending = 1);
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        view.worker_requests_pending = 0;
+        assert_eq!(read(view, device), original);
+        assert!(view.pending_requests.is_empty());
+    });
+    let id = original.nodes[0].id;
+    enter_typed_value(
+        &mut visual,
+        device,
+        id.parameter(hex_engine::eq::NodeParameter::Frequency)
+            .unwrap(),
+        "1234",
+    );
+    visual.simulate_keystrokes("backspace enter");
+    pump_until(&editor, cx, |view| {
+        settled(view) && (read(view, device).nodes[0].frequency_hz - 123.0).abs() < 0.01
+    });
+    editor.read_with(cx, |view, _| {
+        let state = read(view, device);
+        assert_eq!(state.nodes.len(), 1);
+        assert_eq!(state.nodes[0].id, id);
+        assert!(view.state.as_ref().unwrap().project.track(track).is_some());
+    });
+    // A held creation is a preview, not a removable canonical node. The key
+    // must neither commit that preview nor escape into editor deletion.
+    let blank = plot(&mut visual, device, 0.8, 0.6);
+    visual.simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("backspace escape");
+    visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| assert_eq!(read(view, device).nodes.len(), 1));
+}
+
+#[gpui::test]
+fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut TestAppContext) {
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    let node = editor.read_with(cx, |view, _| read(view, device).nodes[0].id);
+    for automation in [false, true] {
+        if automation {
+            let toggle = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+            visual.simulate_click(toggle.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        for width in [880.0, 1500.0] {
+            visual.simulate_resize(size(px(width), px(650.0)));
+            visual.run_until_parked();
+            let toolbar = visual.debug_bounds(selector("eq-toolbar", device)).unwrap();
+            let footer = visual.debug_bounds(selector("eq-footer", device)).unwrap();
+            let control_bounds =
+                |visual: &mut VisualTestContext, parameter: hex_lattice_contract::ParameterId| {
+                    visual
+                        .debug_bounds(Box::leak(
+                            format!("eq-control-{}-{}", device.value(), parameter.value())
+                                .into_boxed_str(),
+                        ))
+                        .unwrap()
+                };
+            let out = control_bounds(&mut visual, hex_engine::eq::OUTPUT_GAIN);
+            assert!(
+                out.top() >= toolbar.top() && out.bottom() <= toolbar.bottom(),
+                "the output dial and value must fit inside the toolbar at {width}px"
+            );
+            let mut previous = None;
+            for field in [
+                hex_engine::eq::NodeParameter::Enabled,
+                hex_engine::eq::NodeParameter::Kind,
+                hex_engine::eq::NodeParameter::Frequency,
+                hex_engine::eq::NodeParameter::Gain,
+                hex_engine::eq::NodeParameter::Q,
+                hex_engine::eq::NodeParameter::Slope,
+            ] {
+                let bounds = control_bounds(&mut visual, node.parameter(field).unwrap());
+                assert!(bounds.top() >= footer.top() && bounds.bottom() <= footer.bottom());
+                assert!(bounds.left() >= footer.left() && bounds.right() <= footer.right());
+                if let Some(right) = previous {
+                    assert!(bounds.left() >= right, "selected controls must not overlap");
+                }
+                previous = Some(bounds.right());
+            }
+            let graph = visual
+                .debug_bounds(selector("eq-response", device))
+                .unwrap();
+            assert!(toolbar.bottom() <= graph.top());
+            assert!(graph.bottom() <= footer.top());
+            assert!(graph.size.height >= px(if automation { 48.0 } else { 60.0 }));
+            let frequency = control_bounds(
+                &mut visual,
+                node.parameter(hex_engine::eq::NodeParameter::Frequency)
+                    .unwrap(),
+            );
+            assert!(
+                frequency.size.width >= px(74.0),
+                "full frequency text and units need the wide micro dial"
+            );
+            for prefix in ["eq-auto", "eq-remove"] {
+                let bounds = visual.debug_bounds(selector(prefix, device)).unwrap();
+                assert!(bounds.left() >= previous.unwrap() && bounds.right() <= footer.right());
+                assert!(bounds.top() >= footer.top() && bounds.bottom() <= footer.bottom());
+                let label = if prefix == "eq-remove" {
+                    "remove"
+                } else if automation {
+                    "response"
+                } else {
+                    "automate"
+                };
+                assert_action_label_fits(&mut visual, label, bounds);
+                previous = Some(bounds.right());
+            }
+            for (prefix, label) in [("eq-spectrum-input", "input"), ("eq-audition", "listen")] {
+                let bounds = visual.debug_bounds(selector(prefix, device)).unwrap();
+                assert_action_label_fits(&mut visual, label, bounds);
+            }
+            let mut right = toolbar.left();
+            for name in [
+                format!(
+                    "eq-control-{}-{}",
+                    device.value(),
+                    hex_engine::eq::MODE.value()
+                ),
+                format!(
+                    "eq-control-{}-{}",
+                    device.value(),
+                    hex_engine::eq::OUTPUT_GAIN.value()
+                ),
+                format!("eq-bank-{}-0", device.value()),
+                format!("eq-bank-{}-1", device.value()),
+                format!("eq-bank-{}-2", device.value()),
+                format!("eq-bank-{}-3", device.value()),
+                format!("eq-bank-{}-4", device.value()),
+                format!("eq8-spectrum-{}", device.value()),
+                format!("eq-spectrum-input-{}", device.value()),
+                format!("eq-audition-{}", device.value()),
+            ] {
+                let bounds = visual
+                    .debug_bounds(Box::leak(name.into_boxed_str()))
+                    .unwrap();
+                assert!(
+                    bounds.left() >= right && bounds.right() <= toolbar.right(),
+                    "toolbar controls fit without overlap"
+                );
+                assert!(bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom());
+                right = bounds.right();
+            }
+            if automation {
+                let row = visual
+                    .debug_bounds(selector("eq-automation-toolbar", device))
+                    .unwrap();
+                let value = visual
+                    .debug_bounds(selector("eq-playhead", device))
+                    .unwrap();
+                assert!(row.bottom() <= graph.top());
+                assert!(value.left() >= row.left() && value.right() <= row.right());
+                assert!(value.top() >= row.top() && value.bottom() <= row.bottom());
+            }
+        }
+    }
+}
+
 #[gpui::test]
 fn eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);

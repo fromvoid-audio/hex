@@ -142,3 +142,43 @@ fn audition_keys_are_owned_by_tuning_focus_and_release_after_modifier_changes(
         "closing cancels even when the worker is busy"
     );
 }
+
+#[gpui::test]
+fn review_pending_canonical_edit_blocks_new_tuning_gesture_and_drag(cx: &mut TestAppContext) {
+    let project = hex_project::Project::new(48_000).unwrap();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            view.tuning.open = true;
+            view.tuning.focus.focus(window);
+            view.sync_tuning(cx);
+            cx.notify();
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let original = view.tuning.value;
+            view.pending_requests.push_back(Request::Undo);
+            assert!(view.edit_pending());
+            view.tuning_change(original.with_enabled(true), NumericEventPhase::Commit);
+            assert!(view.tuning.client.snapshot().is_none());
+            assert_eq!(view.tuning.value, original);
+            let bounds = view.tuning.pitch_bounds.unwrap();
+            view.tuning_pointer_down(
+                &MouseDownEvent {
+                    position: gpui::point(bounds.left(), bounds.center().y),
+                    button: MouseButton::Left,
+                    click_count: 1,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            assert!(view.tuning.drag.is_none());
+        });
+    });
+}

@@ -3,6 +3,7 @@
 pub mod conformance;
 mod meter;
 mod owned_processor;
+mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_TYPES, NativeDeviceMetadata,
@@ -13,6 +14,10 @@ pub use meter::DeviceMeter;
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
     PreparedRuntimeDevice, PreparedRuntimeInstance,
+};
+pub use resources::{
+    BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity, DeviceResourcePcm,
+    DeviceResourceView, DeviceResources, EMPTY_DEVICE_RESOURCES,
 };
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
@@ -49,9 +54,9 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
     fn prepare_runtime_factory(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        self.prepare_processor(state, sample_rate).map(|processor| {
+        self.prepare_processor(state, context).map(|processor| {
             processor
                 .map(|processor| PreparedProcessorFactory::Legacy(std::sync::Arc::from(processor)))
         })
@@ -62,7 +67,7 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
     fn prepare_processor(
         &self,
         _state: &NativeDeviceState,
-        _sample_rate: u32,
+        _context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         Ok(None)
     }
@@ -151,7 +156,11 @@ pub enum OutputTail {
 /// Audio-owned state with allocation-free, infallible block processing and
 /// history operations once the prepared configurations have been admitted.
 pub trait NativeProcessorRuntime: StdAny + Send {
-    fn process_block(&mut self, frames: &mut [StereoFrame]);
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    );
     /// Process with the content-origin clock at this node's input. The host
     /// aligns this borrowed clock with compensated audio; processors must not
     /// retain it. Time-independent implementations preserve the existing path.
@@ -159,14 +168,19 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         &mut self,
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
-        self.process_block(frames);
+        self.process_block(frames, _resources);
     }
     /// Advance private state while preserving a bypassed signal.
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    ) {
         for frame in frames {
             let input = *frame;
-            self.process_block(std::slice::from_mut(frame));
+            self.process_block(std::slice::from_mut(frame), _resources);
             *frame = input;
         }
     }
@@ -177,8 +191,9 @@ pub trait NativeProcessorRuntime: StdAny + Send {
         &mut self,
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
-        self.process_bypassed_block(frames);
+        self.process_bypassed_block(frames, _resources);
     }
     fn reset(&mut self);
     /// True only when this runtime cannot produce any future output under
@@ -1460,9 +1475,10 @@ impl<'a> NativeDeviceRegistry<'a> {
     pub fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -1472,14 +1488,15 @@ impl<'a> NativeDeviceRegistry<'a> {
                 .migrate_state(state)?
                 .with_host_metadata_from(state)?,
         )?;
-        definition.prepare_processor(&current, sample_rate)
+        definition.prepare_processor(&current, context)
     }
     pub fn prepare_device(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedNativeDevice, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -1491,15 +1508,16 @@ impl<'a> NativeDeviceRegistry<'a> {
         )?;
         Ok(PreparedNativeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_processor(&current, sample_rate)?,
+            processor: definition.prepare_processor(&current, context)?,
         })
     }
     pub fn prepare_runtime_device(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
         state.require_asset_free_processing()?;
+        context.validate_for(state)?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -1511,7 +1529,7 @@ impl<'a> NativeDeviceRegistry<'a> {
         )?;
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_runtime_factory(&current, sample_rate)?,
+            processor: definition.prepare_runtime_factory(&current, context)?,
         })
     }
     fn validate_current(
@@ -1717,7 +1735,12 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for SplitAuditionRuntime {
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
 
         fn reset(&mut self) {
             self.requested = None;
@@ -1850,7 +1873,7 @@ mod tests {
         fn prepare_processor(
             &self,
             state: &NativeDeviceState,
-            _sample_rate: u32,
+            _context: &crate::DevicePreparationContext<'_>,
         ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
             if state.payload() != [1] {
                 return Err(DeviceContractError::MalformedState);
@@ -1870,7 +1893,11 @@ mod tests {
         }
     }
     impl NativeProcessorRuntime for IndependentRuntime {
-        fn process_block(&mut self, frames: &mut [StereoFrame]) {
+        fn process_block(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
             for frame in frames {
                 frame[0] += self.history;
                 frame[1] += self.history;
@@ -1919,7 +1946,11 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for DelayedTailRuntime {
-        fn process_block(&mut self, frames: &mut [StereoFrame]) {
+        fn process_block(
+            &mut self,
+            frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
             for frame in frames {
                 let delayed = self.delay[0];
                 self.delay.rotate_left(1);
@@ -1957,14 +1988,14 @@ mod tests {
             let mut runtime = prepared.create_runtime();
             assert!(runtime.is_quiescent());
             let mut impulse = [[1.0, -0.5]];
-            runtime.process_block(&mut impulse);
+            runtime.process_block(&mut impulse, &crate::EMPTY_DEVICE_RESOURCES);
             assert_eq!(impulse, [[0.0, 0.0]]);
             assert!(!runtime.is_quiescent());
 
             let mut silence = [[0.0, 0.0]; 3];
             let mut processed = 0;
             for block in silence.chunks_mut(partition) {
-                runtime.process_block(block);
+                runtime.process_block(block, &crate::EMPTY_DEVICE_RESOURCES);
                 processed += block.len();
                 assert_eq!(runtime.is_quiescent(), processed == 3);
             }
@@ -2129,7 +2160,12 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for RetargetRuntime {
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
         fn reset(&mut self) {}
         fn is_quiescent(&self) -> bool {
             true
@@ -2349,7 +2385,12 @@ mod tests {
     }
 
     impl NativeProcessorRuntime for IncompatibleRuntime {
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
         fn reset(&mut self) {}
         fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
             previous.as_any().is::<Self>()
@@ -2369,7 +2410,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2380,11 +2425,11 @@ mod tests {
         let mut feedback = prepared.create_runtime();
         assert!(feedback.is_quiescent());
         let mut excitation = [[1.0, 1.0]];
-        feedback.process_block(&mut excitation);
+        feedback.process_block(&mut excitation, &crate::EMPTY_DEVICE_RESOURCES);
         assert!(!feedback.is_quiescent());
         for _ in 0..32 {
             let mut silence = [[0.0, 0.0]; 7];
-            feedback.process_block(&mut silence);
+            feedback.process_block(&mut silence, &crate::EMPTY_DEVICE_RESOURCES);
             assert!(silence.iter().all(|frame| *frame != [0.0, 0.0]));
             assert!(!feedback.is_quiescent());
         }
@@ -2422,7 +2467,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2450,7 +2499,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                44_100,
+                &crate::DevicePreparationContext {
+                    sample_rate: 44_100,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2483,7 +2536,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2531,7 +2588,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2571,7 +2632,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
@@ -2632,7 +2697,11 @@ mod tests {
                 &registry
                     .default_state(DeviceTypeId::from_static("test.independent"))
                     .unwrap(),
-                48_000,
+                &crate::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &crate::TuningTable::default(),
+                    resources: &crate::EMPTY_DEVICE_RESOURCES,
+                },
             )
             .unwrap()
             .unwrap();
