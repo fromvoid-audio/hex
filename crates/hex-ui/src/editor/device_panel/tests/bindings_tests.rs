@@ -86,3 +86,48 @@ fn retiring_numeric_control_does_not_cancel_an_unowned_same_parameter_gesture(
         assert!(!view.device_gesture.has_pending_terminal());
     });
 }
+
+#[gpui::test]
+fn numeric_binding_lease_cannot_adopt_a_newer_same_parameter_gesture(cx: &mut TestAppContext) {
+    use super::super::gesture_adapter::dispatch_bound_numeric_gesture;
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let metadata =
+        hex_engine::native_device_view(state.project.device(device).unwrap().state()).unwrap();
+    let parameter = metadata
+        .parameters
+        .iter()
+        .find(|p| matches!(p.value, ParameterValue::Float(_)))
+        .unwrap();
+    let target = GestureTarget::DeviceParameter {
+        device,
+        parameter: parameter.descriptor.id,
+    };
+    let (_, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, _| {
+        let lease = std::rc::Rc::new(std::cell::Cell::new(None));
+        dispatch_bound_numeric_gesture(
+            view,
+            target,
+            &lease,
+            NumericEventPhase::Begin,
+            parameter.value,
+        )
+        .unwrap();
+        let old_key = lease.get().unwrap();
+        // Simulate the acknowledged retirement of this edit followed by a new
+        // control beginning the same parameter in the same project generation.
+        view.device_gesture.reset();
+        view.begin_device_gesture(target, parameter.value).unwrap();
+        assert_ne!(view.device_gesture.snapshot().unwrap().key, old_key);
+        let before = view.device_gesture.snapshot();
+        for phase in [
+            NumericEventPhase::Change,
+            NumericEventPhase::Commit,
+            NumericEventPhase::Cancel,
+        ] {
+            dispatch_bound_numeric_gesture(view, target, &lease, phase, parameter.value).unwrap();
+            assert_eq!(view.device_gesture.snapshot(), before);
+            assert!(!view.device_gesture.has_pending_terminal());
+        }
+    });
+}

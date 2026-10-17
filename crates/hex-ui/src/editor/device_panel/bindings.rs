@@ -1,6 +1,10 @@
 //! Persistent host bindings shared by specialized and descriptor-driven panels.
 //! Session gestures, canonical edits and app lifecycle remain with their owners.
+use super::gesture_adapter::{
+    NumericGestureLease, dispatch_bound_numeric_gesture, owns_numeric_gesture,
+};
 use super::*;
+use std::{cell::Cell, rc::Rc};
 
 pub(super) type NumericBeginHook =
     Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
@@ -29,6 +33,7 @@ pub(super) struct BindingPresentation {
 
 pub(super) enum ParameterControl {
     Float {
+        lease: NumericGestureLease,
         entity: Entity<NumericControl>,
         _subscription: Subscription,
         class: NativeDeviceClass,
@@ -522,24 +527,49 @@ fn create_parameter_control(
                 device: key.device,
                 parameter: key.parameter,
             };
-            let subscription =
-                cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
+            let lease = Rc::new(Cell::new(None));
+            let event_lease = lease.clone();
+            let generation = view.project_generation;
+            let owner = view.device_panel.owner;
+            let subscription = cx.subscribe(
+                &entity,
+                move |view, emitter, event: &NumericControlEvent, cx| {
+                    let is_current = |view: &EditorView| {
+                        view.project_generation == generation
+                            && view.device_panel.owner == owner
+                            && matches!(view.device_panel.controls.get(&key),
+                                Some(ParameterControl::Float { entity, .. })
+                                    if entity.entity_id() == emitter.entity_id())
+                    };
+                    if !is_current(view) {
+                        return;
+                    }
                     if event.phase == NumericEventPhase::Begin
                         && let Some(hook) = numeric_begin.as_ref()
                     {
                         hook(view, cx, key);
                     }
+                    if !is_current(view) {
+                        return;
+                    }
                     let value = ParameterValue::Float(event.value as f32);
-                    if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
-                        && event.phase != NumericEventPhase::Cancel
+                    if let Err(error) = dispatch_bound_numeric_gesture(
+                        view,
+                        target,
+                        &event_lease,
+                        event.phase,
+                        value,
+                    ) && event.phase != NumericEventPhase::Cancel
                     {
                         view.error = Some(error.to_owned().into());
                     }
                     cx.notify();
-                });
+                },
+            );
             view.device_panel.controls.insert(
                 key,
                 ParameterControl::Float {
+                    lease,
                     entity,
                     _subscription: subscription,
                     class: identity.class,
@@ -691,15 +721,16 @@ pub(super) fn cancel_control(
     key: ParameterKey,
     control: &mut ParameterControl,
 ) {
-    if let ParameterControl::Float { entity, .. } = control {
+    if let ParameterControl::Float { entity, lease, .. } = control {
+        let target = GestureTarget::DeviceParameter {
+            device: key.device,
+            parameter: key.parameter,
+        };
+        let owns = owns_numeric_gesture(view, target, lease);
+        // Revoke before local cancellation can enqueue a subscription event.
+        lease.set(None);
         entity.update(cx, |control, cx| control.cancel(cx));
-        if view.device_gesture.snapshot().is_some_and(|snapshot| {
-            snapshot.target
-                == (GestureTarget::DeviceParameter {
-                    device: key.device,
-                    parameter: key.parameter,
-                })
-        }) {
+        if owns {
             let _ = view.cancel_device_gesture();
         }
     }

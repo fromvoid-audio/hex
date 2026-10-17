@@ -255,14 +255,14 @@ pub(super) fn finalize_controls_except(
         if excluded.contains(key) {
             continue;
         }
-        if let ParameterControl::Float { entity, .. } = control {
+        if let ParameterControl::Float { entity, lease, .. } = control {
             controls.push((
                 GestureTarget::DeviceParameter {
                     device: key.device,
                     parameter: key.parameter,
                 },
                 entity.clone(),
-                Some(*key),
+                Some((*key, lease.clone())),
             ));
         }
     }
@@ -287,17 +287,27 @@ pub(super) fn finalize_controls_except(
                 }
             };
         if let Some(finalized) = finalized {
-            let active_gesture_matches = view
-                .device_gesture
-                .snapshot()
-                .is_some_and(|snapshot| snapshot.target == target)
-                && !view.device_gesture.has_pending_terminal();
+            let active_gesture_matches = match parameter_key.as_ref() {
+                Some((_, lease)) => gesture_adapter::owns_numeric_gesture(view, target, lease),
+                None => {
+                    view.device_gesture
+                        .snapshot()
+                        .is_some_and(|snapshot| snapshot.target == target)
+                        && !view.device_gesture.has_pending_terminal()
+                }
+            };
             if finalized.previous != finalized.value || active_gesture_matches {
-                if let Err(error) = commit_owned_numeric_edit(view, target, &finalized) {
+                let result = match parameter_key.as_ref() {
+                    Some((_, lease)) => {
+                        gesture_adapter::commit_bound_numeric_edit(view, target, lease, &finalized)
+                    }
+                    None => commit_owned_numeric_edit(view, target, &finalized),
+                };
+                if let Err(error) = result {
                     first_error.get_or_insert_with(|| error.to_owned());
                     continue;
                 }
-                if let Some(key) = parameter_key {
+                if let Some((key, _)) = parameter_key {
                     view.device_panel
                         .pending_values
                         .insert(key, ParameterValue::Float(finalized.value as f32));
