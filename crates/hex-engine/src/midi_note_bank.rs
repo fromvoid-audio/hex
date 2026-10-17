@@ -29,7 +29,7 @@ struct BankEntry {
 /// context index. The index is resolved against the current revision or the
 /// playback's retained-owner lease table at sample time.
 /// Keep this by-value so existing inline samplers do not allocate or add an
-/// indirect owner lookup; the large variant is the preserved 344-byte value.
+/// indirect owner lookup; the large variant is the 352-byte value including continuation authority.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PreparedMidiNote {
@@ -628,8 +628,8 @@ mod tests {
 
     #[test]
     fn complete_revision_limit_accounts_wide_entries_all_owners_and_indices() {
-        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(), 344);
-        assert_eq!(std::mem::size_of::<BankEntry>(), 352);
+        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(), 352);
+        assert_eq!(std::mem::size_of::<BankEntry>(), 360);
         let (max_bank_bytes, max_indices) = complete_revision_limits().unwrap();
         assert!(
             PreparedMidiNoteBank::validate_complete_revision_budget(max_bank_bytes, max_indices,)

@@ -539,6 +539,20 @@ impl Session {
         command: Command,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.command_prepared_revision_with(command, previous, |_, _, _| Ok(()))
+            .map(|(created, (prepared, ()))| (created, prepared))
+    }
+    /// Finish a worker artifact inside the same canonical/history transaction.
+    pub fn command_prepared_revision_with<T>(
+        &mut self,
+        command: Command,
+        previous: Option<&hex_engine::PreparedRevision>,
+        finish: impl FnOnce(
+            &Project,
+            &Project,
+            &Arc<hex_engine::PreparedRevision>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
         if matches!(
             &command,
             Command::AddAsset { .. }
@@ -554,18 +568,24 @@ impl Session {
         }
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        self.editor.execute_prepared(command, |candidate| {
-            prepare_with_waveforms(
-                candidate,
-                &media,
-                Arc::clone(&sine_table),
-                previous.map(|artifact| artifact.session().as_ref()),
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-            )
-            .map(Arc::new)
-            .map_err(SessionError::from)
-        })
+        self.editor
+            .execute_prepared_transition(command, |source, candidate| {
+                let prepared = prepare_with_waveforms(
+                    candidate,
+                    &media,
+                    Arc::clone(&sine_table),
+                    previous.map(|artifact| artifact.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )
+                .and_then(|prepared| {
+                    tuning_prepared_transition(prepared, source, candidate, previous)
+                })
+                .map(Arc::new)
+                .map_err(SessionError::from)?;
+                let completed = finish(source, candidate, &prepared)?;
+                Ok((prepared, completed))
+            })
     }
 
     /// Prepare a typed native parameter overlay without changing canonical
@@ -1162,10 +1182,23 @@ impl Session {
         &mut self,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Option<Arc<hex_engine::PreparedRevision>>, SessionError> {
+        self.undo_prepared_revision_with(previous, |_, _, _| Ok(()))
+            .map(|result| result.map(|(prepared, ())| prepared))
+    }
+    /// Prepare worker publication before accepting a history transition.
+    pub fn undo_prepared_revision_with<T>(
+        &mut self,
+        previous: Option<&hex_engine::PreparedRevision>,
+        finish: impl FnOnce(
+            &Project,
+            &Project,
+            &Arc<hex_engine::PreparedRevision>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        self.editor.undo_prepared(|candidate| {
-            prepare_with_waveforms(
+        self.editor.undo_prepared_transition(|source, candidate| {
+            let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
@@ -1173,8 +1206,11 @@ impl Session {
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
             )
+            .and_then(|prepared| tuning_prepared_transition(prepared, source, candidate, previous))
             .map(Arc::new)
-            .map_err(SessionError::from)
+            .map_err(SessionError::from)?;
+            let completed = finish(source, candidate, &prepared)?;
+            Ok((prepared, completed))
         })
     }
 
@@ -1202,10 +1238,23 @@ impl Session {
         &mut self,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Option<Arc<hex_engine::PreparedRevision>>, SessionError> {
+        self.redo_prepared_revision_with(previous, |_, _, _| Ok(()))
+            .map(|result| result.map(|(prepared, ())| prepared))
+    }
+    /// Prepare worker publication before accepting a history transition.
+    pub fn redo_prepared_revision_with<T>(
+        &mut self,
+        previous: Option<&hex_engine::PreparedRevision>,
+        finish: impl FnOnce(
+            &Project,
+            &Project,
+            &Arc<hex_engine::PreparedRevision>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        self.editor.redo_prepared(|candidate| {
-            prepare_with_waveforms(
+        self.editor.redo_prepared_transition(|source, candidate| {
+            let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
                 Arc::clone(&sine_table),
@@ -1213,8 +1262,11 @@ impl Session {
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
             )
+            .and_then(|prepared| tuning_prepared_transition(prepared, source, candidate, previous))
             .map(Arc::new)
-            .map_err(SessionError::from)
+            .map_err(SessionError::from)?;
+            let completed = finish(source, candidate, &prepared)?;
+            Ok((prepared, completed))
         })
     }
 
@@ -1394,3 +1446,19 @@ fn prepare_with_waveforms(
 
 #[cfg(test)]
 mod audio_edit_tests;
+
+fn tuning_prepared_transition(
+    prepared: hex_engine::PreparedRevision,
+    source: &Project,
+    candidate: &Project,
+    previous: Option<&hex_engine::PreparedRevision>,
+) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    if source.tuning() != candidate.tuning()
+        && source.same_except_tuning(candidate)
+        && let Some(previous) = previous
+    {
+        prepared.with_tuning_continuation_from(candidate, source, previous)
+    } else {
+        Ok(prepared)
+    }
+}

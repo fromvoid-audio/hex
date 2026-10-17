@@ -6,7 +6,7 @@ use hex_lattice_contract::{
 use std::fmt;
 
 /// Maximum storage carried by one immutable analytic note sampler. The sampler
-/// plus its release count and function pointer occupies 344 bytes on 64-bit
+/// plus its release count, sampler and continuation descriptor occupies 352 bytes on 64-bit
 /// targets. The fixed payload can hold the validated standalone FM4 kernel.
 pub const ANALYTIC_NOTE_PAYLOAD_WORDS: usize = 41;
 
@@ -87,10 +87,35 @@ pub trait PreparedSharedAnalyticContext: Send + Sync {
 /// prepared on the control side and receives authored age and gate duration;
 /// `sample` borrows this value to avoid copying its bounded payload per frame;
 /// it performs no allocation or state mutation.
+/// Static provider authority for per-occurrence pitch continuation. The provider
+/// validates every nonpitch coefficient and preserves authored phase/envelope law.
+/// Static descriptor identity, rather than function-address equality, binds formats.
+/// The callback must be bounded, allocation-free and free of interior mutation.
+pub struct AnalyticNoteContinuation {
+    continue_payload: fn(
+        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+        u64,
+    ) -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError>,
+}
+impl AnalyticNoteContinuation {
+    pub const fn new(
+        continue_payload: fn(
+            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            u64,
+        )
+            -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError>,
+    ) -> Self {
+        Self { continue_payload }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct PreparedAnalyticNote {
     payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
     release_frames: u64,
+    continuation: Option<&'static AnalyticNoteContinuation>,
     sample_fn: fn(&[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], u64, u64, u64) -> StereoFrame,
 }
 
@@ -114,12 +139,36 @@ impl PreparedAnalyticNote {
         Self {
             payload,
             release_frames,
+            continuation: None,
             sample_fn,
         }
     }
 
     pub const fn release_frames(&self) -> u64 {
         self.release_frames
+    }
+
+    pub const fn with_continuation(mut self, provider: &'static AnalyticNoteContinuation) -> Self {
+        self.continuation = Some(provider);
+        self
+    }
+
+    /// Prepare this exact target from the actually applied occurrence sampler.
+    /// The returned copy retains target authority and unchanged release duration;
+    /// hosts must preflight all carried notes before publishing any replacement.
+    pub fn continue_from(
+        &self,
+        source: &Self,
+        age_frames: u64,
+    ) -> Result<Self, DeviceContractError> {
+        let (Some(target), Some(previous)) = (self.continuation, source.continuation) else {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        };
+        if !std::ptr::eq(target, previous) || self.release_frames != source.release_frames {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let payload = (target.continue_payload)(&source.payload, &self.payload, age_frames)?;
+        Ok(Self { payload, ..*self })
     }
 
     /// Sample one stereo frame by authored age and gate duration, both in
@@ -218,6 +267,19 @@ pub trait PreparedNativeInstrument: Send + Sync {
 /// registry from effects because they prepare authored notes rather than a
 /// stereo effect matrix.
 pub trait NativeInstrumentDefinition: NativeDeviceMetadata {
+    /// Optional project tuning. Legacy providers are supported only for exact
+    /// neutral tuning; nonneutral tables must never silently use equal temperament.
+    fn prepare_instrument_with_tuning(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        tuning: &crate::TuningTable,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        if !tuning.is_neutral() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        self.prepare_instrument(state, sample_rate)
+    }
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
@@ -349,6 +411,16 @@ impl<'a> NativeInstrumentRegistry<'a> {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.prepare_instrument_with_tuning(state, sample_rate, &crate::TuningTable::default())
+    }
+
+    /// Validate canonical state and prepare against the exact effective project table.
+    pub fn prepare_instrument_with_tuning(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        tuning: &crate::TuningTable,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
@@ -356,7 +428,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .validate_current(definition, definition.migrate_state(state)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
             .with_output_gain_millidb(state.output_gain_millidb())?;
-        definition.prepare_instrument(&current, sample_rate)
+        definition.prepare_instrument_with_tuning(&current, sample_rate, tuning)
     }
 
     fn validate_current(
@@ -648,4 +720,28 @@ mod tests {
             assert_eq!(note.sample(40, 32), [0.0, 0.0]);
         }
     }
+    #[test]
+    fn legacy_provider_accepts_exact_neutral_and_refuses_custom_table() {
+        let provider=TestToneDefinition {id:"test.instrument.neutral",sampler:constant_left,payload:[0;ANALYTIC_NOTE_PAYLOAD_WORDS]};
+        let definitions:[&dyn NativeInstrumentDefinition;1]=[&provider];
+        let registry=NativeInstrumentRegistry::new(&definitions).unwrap();
+        let state=registry.default_state(provider.type_id()).unwrap();
+        assert!(registry.prepare_instrument_with_tuning(&state,48000,&crate::TuningTable::default()).is_ok());
+        let custom=crate::TuningTable::new([333.0;128]).unwrap();
+        assert!(matches!(registry.prepare_instrument_with_tuning(&state,48000,&custom),Err(DeviceContractError::UnsupportedProcessingClass)));
+    }
+    #[test]
+    fn inline_continuation_requires_same_static_authority_and_exact_release_law() {
+        fn carry(source:&[u64;ANALYTIC_NOTE_PAYLOAD_WORDS],_:&[u64;ANALYTIC_NOTE_PAYLOAD_WORDS],_:u64)->Result<[u64;ANALYTIC_NOTE_PAYLOAD_WORDS],DeviceContractError>{Ok(*source)}
+        static A:AnalyticNoteContinuation=AnalyticNoteContinuation::new(carry);
+        static B:AnalyticNoteContinuation=AnalyticNoteContinuation::new(carry);
+        let a=PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],8,constant_left).with_continuation(&A);
+        let b=PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],8,constant_left).with_continuation(&B);
+        assert!(a.continue_from(&a,777).is_ok());
+        assert!(a.continue_from(&b,777).is_err(),"same callback does not grant foreign provider authority");
+        assert!(PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],9,constant_left).with_continuation(&A).continue_from(&a,777).is_err());
+        assert!(PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],8,constant_left).continue_from(&a,777).is_err());
+        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(),352);
+    }
+
 }

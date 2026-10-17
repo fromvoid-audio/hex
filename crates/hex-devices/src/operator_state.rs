@@ -1114,8 +1114,22 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         state: &NativeDeviceState,
         sample_rate: u32,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.prepare_instrument_with_tuning(
+            state,
+            sample_rate,
+            &hex_lattice::TuningTable::default(),
+        )
+    }
+    fn prepare_instrument_with_tuning(
+        &self,
+        state: &NativeDeviceState,
+        sample_rate: u32,
+        tuning: &hex_lattice::TuningTable,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
-        let configuration = settings.prepare_configuration(sample_rate)?;
+        let configuration = settings
+            .prepare_configuration(sample_rate)?
+            .with_project_tuning(*tuning);
         let authored_state = settings.prepared_authored_state(state)?;
         let effective_levels = *configuration
             .feedback_parameters([0.0; OPERATORS])
@@ -1169,12 +1183,14 @@ struct PreparedOperatorInstrument {
 
 impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prefers_mutable_continuation(&self) -> bool {
-        self.harmonic_runtime
-            .settings
-            .harmonics
-            .custom
-            .iter()
-            .any(|v| *v)
+        !self.configuration.project_tuning().is_neutral()
+            || self
+                .harmonic_runtime
+                .settings
+                .harmonics
+                .custom
+                .iter()
+                .any(|v| *v)
             || self.harmonic_runtime.settings.companion.requires_runtime()
             || self.harmonic_runtime.settings.global.active
     }

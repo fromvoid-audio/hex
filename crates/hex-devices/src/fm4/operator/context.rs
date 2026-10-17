@@ -17,6 +17,7 @@ const MAX_CONFIGURATION_ID: u64 = u64::MAX >> 1;
 #[derive(Debug, Clone)]
 pub struct PreparedOperatorConfiguration {
     sample_rate: u32,
+    project_tuning: hex_lattice::TuningTable,
     configuration_id: u64,
     ratios: [f64; OPERATORS],
     tuning: [OperatorTuning; OPERATORS],
@@ -142,6 +143,7 @@ impl PreparedOperatorConfiguration {
             .map_err(|_| Invalid("operator configuration identity exhausted"))?;
         Ok(Self {
             sample_rate,
+            project_tuning: hex_lattice::TuningTable::default(),
             configuration_id,
             ratios: oscillators.map(|oscillator| oscillator.ratio),
             tuning,
@@ -155,6 +157,15 @@ impl PreparedOperatorConfiguration {
             oscillator_velocity: [0.0; OPERATORS],
             oscillator_quantize: [false; OPERATORS],
         })
+    }
+
+    /// Project pitch law is independent of the opaque device state and fixed-Hz modes.
+    pub fn with_project_tuning(mut self, tuning: hex_lattice::TuningTable) -> Self {
+        self.project_tuning = tuning;
+        self
+    }
+    pub(crate) fn project_tuning(&self) -> &hex_lattice::TuningTable {
+        &self.project_tuning
     }
 
     /// Control-prepared modifiers retain the existing compact note payload.
@@ -199,17 +210,21 @@ impl PreparedOperatorConfiguration {
     }
     fn modified_steps(&self, pitch: u8, velocity: u8) -> Result<[u64; 4], Invalid> {
         if self.oscillator_velocity == [0.0; 4] {
-            return super::tuning::prepared_steps(
+            return super::tuning::prepared_steps_with_table(
                 self.sample_rate,
                 pitch,
                 &self.ratios,
                 &self.tuning,
+                &self.project_tuning,
             );
         }
         if pitch > 127 {
             return Err(Invalid("invalid operator pitch"));
         }
-        let note_hz = 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0);
+        let note_hz = self
+            .project_tuning
+            .frequency(pitch)
+            .map_err(|_| Invalid("invalid operator pitch"))?;
         let mut steps = [0; 4];
         for (i, step) in steps.iter_mut().enumerate() {
             let amount = f64::from(self.oscillator_velocity[i]);
@@ -566,6 +581,7 @@ impl PreparedOperatorConfiguration {
 
     pub(crate) fn retarget_compatible_with(&self, target: &PreparedOperatorConfiguration) -> bool {
         self.sample_rate == target.sample_rate
+            && self.project_tuning == target.project_tuning
             && self.ratios == target.ratios
             && self.tuning == target.tuning
             && self.configuration.phases == target.configuration.phases
