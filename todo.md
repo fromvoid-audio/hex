@@ -51,6 +51,14 @@ merged PR388 accepted-root crops, PR387 changed-root stretch mapping and PR383
 free lower handles; fresh required evidence is recorded in PR/Pulse. No native
 acceptance or app delivery is claimed.
 
+## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
+
+Command-T binds the existing AddTrack action under editor/non-text focus.
+Rendered focus and keyboard regressions cover the editor, browser search,
+clip-name input and gain numeric draft; canonical Undo/Redo remains one edit.
+Required exact-source checks and native acceptance are recorded in Pulse/PR.
+Track layout resizing was delivered separately by launcher2714/PR330.
+
 
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
