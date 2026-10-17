@@ -52,6 +52,8 @@ widgets = (
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    # Audition row controls normalize labels; miniature waveform contains no text.
+    'self.browser_audition_row(', 'mini_waveform(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
