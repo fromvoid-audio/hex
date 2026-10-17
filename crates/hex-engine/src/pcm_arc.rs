@@ -108,7 +108,7 @@ pub(crate) fn native_layout_known() -> bool {
 
 #[cfg(test)]
 #[path = "../build_support/pcm_gate.rs"]
-mod build_gate_tests;
+pub(crate) mod build_gate_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

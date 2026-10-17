@@ -510,6 +510,9 @@ even when their nested bank/context declarations are legitimate.
 
 This selected template view excludes canonical `MidiSourceIdentity` model-source
 storage, enclosing Session clip/revision containers and full construction peak.
-The public provenance boundary for those existing canonical model owners is
-recorded separately; it remains Unknown pending the coordinated decision. No
-pointer/count/hash claim, alternate PCM owner/cache or registry admission is added.
+The approved canonical borrowed model-owner boundary and its separate new/COW
+native-layout qualification are documented in [native MIDI storage](native-midi-storage.md).
+Its selected actual model/history/prepared identity inventory remains separate
+from enclosing container storage, root custody, full construction peak and
+retirement. No pointer/count/hash promotion, alternate PCM owner/cache or
+registry admission is added.

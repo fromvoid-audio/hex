@@ -24,6 +24,14 @@ impl Editor {
     pub fn project(&self) -> &Project {
         &self.project
     }
+    /// Borrow the actual current, Undo and Redo projects without snapshots,
+    /// synthetic source identities, owning clones or allocation. The returned
+    /// borrow excludes history mutation; publication still needs root custody.
+    pub fn retained_projects_on_control(&self) -> impl Iterator<Item = &Project> {
+        std::iter::once(&self.project)
+            .chain(self.undo.iter())
+            .chain(self.redo.iter())
+    }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

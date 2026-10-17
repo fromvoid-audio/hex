@@ -5,6 +5,9 @@ use crate::{
     Track, TrackId,
 };
 use std::{collections::HashMap, sync::Arc};
+#[path = "midi_storage.rs"]
+mod storage;
+pub use storage::MidiSourceStorageObservation;
 
 /// Independently-owned MIDI event source shared by Arrangement and Session clips.
 #[derive(Debug, Clone, PartialEq, Eq)]

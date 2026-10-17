@@ -322,6 +322,15 @@ impl std::fmt::Debug for PreparedSessionInventory {
 }
 
 impl PreparedSessionInventory {
+    pub(crate) fn visit_model_sources_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            ledger.model_source_if_unvisited(&clip.source_identity)?;
+        }
+        Ok(())
+    }
     pub(crate) fn visit_midi_templates_on_control<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,

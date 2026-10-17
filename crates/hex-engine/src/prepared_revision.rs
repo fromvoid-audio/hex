@@ -106,6 +106,17 @@ impl std::fmt::Debug for PreparedRevision {
 }
 
 impl PreparedRevision {
+    pub(crate) fn visit_model_sources_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        for track in &self.mutable_track_revisions {
+            for source in &track.arrangement_midi_sources {
+                ledger.model_source_if_unvisited(&source.source)?;
+            }
+        }
+        Ok(())
+    }
     pub fn prepare(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,

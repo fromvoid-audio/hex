@@ -35,7 +35,7 @@ pub use audio_candidate::{
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
     AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
-    audio_storage_constructor_layout_supported,
+    audio_storage_constructor_layout_supported, canonical_midi_storage_layout_supported,
 };
 mod audio_clip_source;
 mod audio_input_storage;

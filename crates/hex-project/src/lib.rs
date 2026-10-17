@@ -40,6 +40,7 @@ pub use gain_touch::{
     MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, validate_gain_lane_parts,
 };
 mod midi;
+pub use midi::MidiSourceStorageObservation;
 mod midi_batch;
 mod midi_playback;
 pub use gain_envelope::{

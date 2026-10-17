@@ -1,5 +1,6 @@
 //! Version-bound declaration selector; not a security/allocator attestation.
 pub const COMMIT: &str = "4a4ef493e3a1488c6e321570238084b38948f6db";
+#[derive(Clone, Copy)]
 pub struct Observation<'a> {
     pub verbose: &'a str,
     pub host: &'a str,

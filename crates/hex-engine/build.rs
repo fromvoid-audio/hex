@@ -1,4 +1,6 @@
 //! Build-only declared-layout evidence; unsupported observations remain Unknown.
+#[path = "build_support/midi_gate.rs"]
+mod midi_gate;
 #[path = "build_support/pcm_gate.rs"]
 mod pcm_gate;
 use std::{
@@ -66,6 +68,7 @@ fn ordinary_install(root: &Path, target: &str, evidence: &mut String) -> bool {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support/pcm_gate.rs");
+    println!("cargo:rerun-if-changed=build_support/midi_gate.rs");
     let host = env::var("HOST").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     let target_flags = format!(
@@ -124,6 +127,7 @@ fn main() {
     let mut evidence = format!(
         "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
     );
+    let mut midi_decision = Err("missing_compiler_observation");
     let decision = compiler
         .as_deref()
         .ok_or("missing_cargo_selected_compiler")
@@ -134,19 +138,44 @@ fn main() {
                 .ok_or("sysroot_command_failed")?;
             let root = Path::new(sysroot.trim());
             let installed = ordinary_install(root, &target, &mut evidence);
-            pcm_gate::decide(pcm_gate::Observation {
+            let observed = pcm_gate::Observation {
                 verbose: &verbose,
                 host: &host,
                 target: &target,
                 ordinary_install: installed,
                 unsupported_inputs: unsupported,
-            })
+            };
+            midi_decision = midi_gate::decide(observed);
+            pcm_gate::decide(observed)
         });
     evidence.push_str(&format!("decision: {decision:?}\nrequested layout declaration only; no security/RSS/physical allocator claim\n"));
     let saved = env::var_os("OUT_DIR")
         .map(PathBuf::from)
-        .is_some_and(|path| fs::write(path.join("pcm-arc-build-evidence.txt"), evidence).is_ok());
+        .is_some_and(|path| fs::write(path.join("pcm-arc-build-evidence.txt"), &evidence).is_ok());
     let known = decision.is_ok() && saved;
+    let midi_evidence = format!(
+        "{evidence}\ncontract: {}\ncompiler: {}\nconstructors: sized Arc::new; sized Arc::make_mut/clone_from_ref_in/UniqueArcUninit; unique get_mut retains allocation\ndecision: {midi_decision:?}\nrequested allocation only; no RSS/provenance/custody/retirement claim\n",
+        midi_gate::FAMILY,
+        pcm_gate::COMMIT
+    );
+    let midi_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            fs::write(path.join("midi-arc-build-evidence.txt"), midi_evidence).is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_MIDI_ARC_LAYOUT_KNOWN={}",
+        if midi_decision.is_ok() && saved && midi_saved {
+            "1"
+        } else {
+            "0"
+        }
+    );
+    println!("cargo:rustc-env=HEX_MIDI_ARC_LAYOUT_TARGET={target}");
+    println!(
+        "cargo:rustc-env=HEX_MIDI_ARC_CONSTRUCTOR_FAMILY={}",
+        midi_gate::FAMILY
+    );
     // Always override any caller text; unsupported builds retain legacy Audio.
     println!(
         "cargo:rustc-env=HEX_PCM_ARC_LAYOUT_KNOWN={}",

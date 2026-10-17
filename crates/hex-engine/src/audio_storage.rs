@@ -2,6 +2,8 @@
 //! No owner is cloned or transferred; this is never publication/lifetime authority.
 use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, StreamedSourceMetadata};
 use std::{any::Any, sync::Arc};
+mod models;
+pub use models::canonical_midi_storage_layout_supported;
 mod sources;
 mod values;
 
@@ -58,6 +60,8 @@ enum OwnerDomain {
     Shared,
     DevicePayload,
     DeviceAssetReferences,
+    CanonicalMidiSource,
+    CanonicalMidiField,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {

@@ -7,6 +7,83 @@ use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };
 #[test]
+fn canonical_midi_control_inventory_has_zero_allocations_and_unchanged_owner_counts() {
+    use hex_engine::{AudioRootStorageLedger, AudioStorageLedgerReservation};
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
+    if !hex_engine::canonical_midi_storage_layout_supported() {
+        return;
+    }
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "inventory".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(1).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    editor
+        .execute(Command::RenameTrack {
+            track,
+            name: "retained".into(),
+        })
+        .unwrap();
+    let identity = editor.project().midi_clip(clip).unwrap().source_identity();
+    let before = identity.source_storage_on_control().owning_counts();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 64,
+        root_rows: 4,
+        max_retained_bytes: 100_000,
+        max_construction_peak_bytes: 100_000,
+    })
+    .unwrap();
+    let measurement = allocation_counter::measure(|| {
+        ledger
+            .borrow_editor_midi_sources_on_control(&editor)
+            .unwrap();
+        ledger
+            .borrow_midi_source_identity_on_control(&identity)
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        ledger.summary().unwrap().require_known_storage().unwrap();
+        assert_eq!(identity.source_storage_on_control().owning_counts(), before);
+    });
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(identity.source_storage_on_control().owning_counts(), before);
+    // Actual owners/ledger are destroyed on control outside the measured view.
+}
+#[test]
 fn freshly_prepared_clip_pcm_renders_and_seeks_without_callback_allocation_or_free() {
     use hex_engine::{
         AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole, OwnedAudioSource,
