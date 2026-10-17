@@ -291,3 +291,35 @@ covered. These are actual media-plan/PCM union proofs, not a complete publicatio
 permit. Processed-media budget ownership, all-role metadata, inline/effect host
 wiring and atomic publication/reaper qualification remain open. Resource-backed
 registry processing stays refused until those actual host proofs are complete.
+
+## freshly prepared clip PCM and transform custody
+
+Worker-produced clip PCM now has a distinct declaration captured at its fresh
+`Arc::new(AudioData)` constructor. It is separate from original PCM: old/raw
+derived Audio remains Unknown, and even a known freshly prepared clip cannot
+enter an original device-resource bank. Native clones preserve the prepared
+origin with distinct physical handles. Actual Vec capacity must fit its retained
+reservation before the owner is created; invalid values/rates or under-reserved
+capacity refuse the unpublished candidate.
+
+The existing production 768MiB derived-buffer counter now has process lifetime.
+Reservations borrow that same static counter, retaining the existing atomic
+reservation/release law without hiding an owning budget Arc in each PCM root.
+Isolated test budgets remain explicitly unqualified. The last actual PCM owner
+still releases its reservation; no callback final-drop permission is introduced.
+
+Scoped Session/transform inventory visits actual source/prepared Audio fields
+in committed and pending caches as well as resident originals, derivatives and
+waveforms. Its higher-ranked callback prevents inventory guards or a borrowed
+ledger from escaping across transaction commit/eviction. A compile-fail lifetime
+test covers that restriction. Enclosing cache/domain/tempo metadata and native
+host publication admission remain separate work.
+
+Actual pending-candidate tests refuse closure when cache owners are omitted,
+then close the PCM union when every real field is selected. An injected
+publication refusal retires pending source aliases and the new prepared PCM on
+control; retry/commit selects the actual committed owners. A last-owner test
+observes the actual reservation's final release on control. The native clip
+renderer probe uses an independent constant-gain PCM oracle through partitioned
+render/seek and records zero total/net callback allocations and frees. This is
+prepared-PCM/custody evidence, not complete graph/reaper or sampler admission.

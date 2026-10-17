@@ -404,7 +404,7 @@ impl Clone for Audio {
         // data retention. Native source/clip plans use their PRE-reserved handle.
         let handle = self
             .pcm_arc_receipt
-            .and_then(|r| r.checked_allocations(self))
+            .and_then(|r| r.checked_native_allocations(self))
             .and_then(|_| audio_only_inputs::handle().ok());
         self.clone_with_native_handle_on_control(handle)
     }
@@ -424,7 +424,7 @@ impl Audio {
     pub(crate) fn clone_with_native_handle_on_control(&self, handle: Option<u64>) -> Self {
         let native_handle = self
             .pcm_arc_receipt
-            .and_then(|r| r.checked_allocations(self))
+            .and_then(|r| r.checked_native_allocations(self))
             .and(handle)
             .and_then(std::num::NonZeroU64::new);
         Self {
@@ -451,6 +451,49 @@ impl Audio {
                 _derived: Some(reservation),
             }),
         })
+    }
+    /// Fresh worker-produced PCM with an actual retained-capacity reservation.
+    /// Old/raw derived Audio is never relabelled. The distinct prepared origin
+    /// cannot be admitted as an original device resource source.
+    pub(crate) fn from_prepared_derived(
+        sample_rate: u32,
+        frames: Vec<Frame>,
+        reservation: audio_transform::Reservation,
+    ) -> Result<Self, Invalid> {
+        if sample_rate == 0
+            || frames.is_empty()
+            || frames.iter().flatten().any(|sample| !sample.is_finite())
+        {
+            return Err(Invalid(
+                "prepared audio must contain finite samples at a valid rate",
+            ));
+        }
+        let bytes = frames
+            .capacity()
+            .checked_mul(std::mem::size_of::<Frame>())
+            .ok_or(Invalid("prepared audio capacity overflow"))?;
+        if bytes > reservation.reserved_bytes() {
+            return Err(Invalid(
+                "prepared audio capacity exceeds its retained reservation",
+            ));
+        }
+        let receipt =
+            pcm_arc::PcmArcReceipt::prepared_current(frames.len(), frames.capacity(), &reservation);
+        if let Some(receipt) = receipt {
+            let handle = audio_only_inputs::handle()
+                .map_err(|_| Invalid("prepared audio handle exhausted"))?;
+            Ok(Self {
+                sample_rate,
+                pcm_arc_receipt: Some(receipt),
+                native_handle: std::num::NonZeroU64::new(handle),
+                frames: Arc::new(AudioData {
+                    values: frames,
+                    _derived: Some(reservation),
+                }),
+            })
+        } else {
+            Self::from_derived(sample_rate, frames, reservation)
+        }
     }
     /// Source rate; compilation currently requires an exact project-rate match.
     pub fn sample_rate(&self) -> u32 {

@@ -132,42 +132,47 @@ fn actual_mixed_session_plan_reuses_originals_and_closes_only_with_every_real_pc
             session.source_audio(ids[1]).unwrap().frames().as_ptr()
         );
     }
-    let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
-    ledger
-        .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)
+                .unwrap();
+            ledger
+                .borrow_device_resource_lease_on_control(&lease, AudioStorageRole::Current)
+                .unwrap();
+            assert_eq!(
+                ledger.validate_selected_shared_handles_on_control(),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            inventory
+                .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            assert_eq!(ledger.selected_shared_counts_on_control().0, 5); // two originals, two derivatives, one retained root
+            let bytes = ledger.summary().unwrap().retained_bytes;
+            drop(ledger);
+            let mut small = ledger_limits();
+            small.max_retained_bytes = bytes - 1;
+            let refuses = (|| {
+                let mut ledger = AudioRootStorageLedger::try_new_on_control(small)?;
+                ledger.borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)?;
+                ledger
+                    .borrow_device_resource_lease_on_control(&lease, AudioStorageRole::Current)?;
+                inventory.visit_on_control(&mut ledger, AudioStorageRole::Caller)?;
+                ledger.summary()
+            })();
+            assert!(matches!(
+                refuses,
+                Err(AudioStorageError::ReservationExceeded)
+            ));
+            // This deliberately remains incomplete retirement/publication evidence.
+            assert!(bank.input_storage_summary().retained_data_bytes > 0);
+            Ok(())
+        })
         .unwrap();
-    ledger
-        .borrow_device_resource_lease_on_control(&lease, AudioStorageRole::Current)
-        .unwrap();
-    assert_eq!(
-        ledger.validate_selected_shared_handles_on_control(),
-        Err(AudioStorageError::UnknownStorage)
-    );
-    let inventory = session.resident_pcm_inventory_on_control().unwrap();
-    inventory
-        .visit_on_control(&mut ledger, AudioStorageRole::Caller)
-        .unwrap();
-    ledger
-        .validate_selected_shared_handles_on_control()
-        .unwrap();
-    assert_eq!(ledger.selected_shared_counts_on_control().0, 5); // two originals, two derivatives, one retained root
-    let bytes = ledger.summary().unwrap().retained_bytes;
-    drop(ledger);
-    let mut small = ledger_limits();
-    small.max_retained_bytes = bytes - 1;
-    let refuses = (|| {
-        let mut ledger = AudioRootStorageLedger::try_new_on_control(small)?;
-        ledger.borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)?;
-        ledger.borrow_device_resource_lease_on_control(&lease, AudioStorageRole::Current)?;
-        inventory.visit_on_control(&mut ledger, AudioStorageRole::Caller)?;
-        ledger.summary()
-    })();
-    assert!(matches!(
-        refuses,
-        Err(AudioStorageError::ReservationExceeded)
-    ));
-    // This deliberately remains incomplete retirement/publication evidence.
-    assert!(bank.input_storage_summary().retained_data_bytes > 0);
 }
 
 #[test]
@@ -182,27 +187,31 @@ fn current_and_candidate_plans_share_pcm_but_every_bank_alias_must_be_selected()
     let candidate = session
         .prepare_resident_resource_bank_on_control(&ids, limits(), &cancel)
         .unwrap();
-    let inventory = session.resident_pcm_inventory_on_control().unwrap();
-    let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
-    inventory
-        .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
+            inventory
+                .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&current, AudioStorageRole::Current)
+                .unwrap();
+            assert_eq!(
+                ledger.validate_selected_shared_handles_on_control(),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            ledger
+                .borrow_device_resource_bank_on_control(&candidate, AudioStorageRole::Archive)
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            assert_eq!(ledger.selected_shared_counts_on_control().0, 6); // same four PCM allocations plus two actual roots
+            drop(ledger);
+
+            Ok(())
+        })
         .unwrap();
-    ledger
-        .borrow_device_resource_bank_on_control(&current, AudioStorageRole::Current)
-        .unwrap();
-    assert_eq!(
-        ledger.validate_selected_shared_handles_on_control(),
-        Err(AudioStorageError::UnknownStorage)
-    );
-    ledger
-        .borrow_device_resource_bank_on_control(&candidate, AudioStorageRole::Archive)
-        .unwrap();
-    ledger
-        .validate_selected_shared_handles_on_control()
-        .unwrap();
-    assert_eq!(ledger.selected_shared_counts_on_control().0, 6); // same four PCM allocations plus two actual roots
-    drop(ledger);
-    drop(inventory);
     drop(current);
     let snapshot = candidate
         .borrow_original_source_on_control(ids[0], 4096)
@@ -251,17 +260,21 @@ fn plan_work_metadata_alias_and_cancel_failures_leave_actual_session_and_history
     let bank = session
         .prepare_resident_resource_bank_on_control(&ids, limits(), &cancel)
         .unwrap();
-    let inventory = session.resident_pcm_inventory_on_control().unwrap();
-    let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
-    inventory
-        .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
+            inventory
+                .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap(); // failed aliases were actually retired
+            Ok(())
+        })
         .unwrap();
-    ledger
-        .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)
-        .unwrap();
-    ledger
-        .validate_selected_shared_handles_on_control()
-        .unwrap(); // failed aliases were actually retired
 }
 
 #[test]
@@ -304,4 +317,85 @@ fn raw_audio_original_remains_unknown_at_the_actual_session_plan_boundary() {
             .shares(session.media.get(&asset).unwrap().source_audio.pcm())
     );
     drop(revision);
+}
+
+#[test]
+fn actual_processed_clip_cache_joins_original_and_candidate_pcm_without_source_relabelling() {
+    let Some((mut session, ids)) = fixture() else {
+        return;
+    };
+    let clip = session.project().tracks()[0].clips()[0].id();
+    let source = session.audio(ids[0]).unwrap().frames().to_vec();
+    let (_, revision) = session
+        .command_prepared_revision(
+            hex_project::Command::SetAudioClipSourceGain {
+                clip,
+                points: vec![
+                    hex_project::SourceGainPoint {
+                        frame: 0,
+                        gain_q16: 32768,
+                    },
+                    hex_project::SourceGainPoint {
+                        frame: source.len() as u64,
+                        gain_q16: 32768,
+                    },
+                ],
+            },
+            None,
+        )
+        .unwrap();
+    let view = revision
+        .arrangement()
+        .audio_clip_views()
+        .iter()
+        .find(|view| view.clip == clip)
+        .unwrap();
+    for (actual, expected) in view.audio.frames().iter().zip(&source) {
+        assert_eq!(*actual, [expected[0] * 0.5, expected[1] * 0.5]);
+    }
+    assert!(matches!(
+        OwnedAudioSource::alias_native_audio_on_control(&view.audio, 4096),
+        Err(AudioStorageError::UnknownStorage)
+    ));
+    drop(revision); // Otherwise its actual clip/preview handles must also be selected.
+    let bank = session
+        .prepare_resident_resource_bank_on_control(&ids, limits(), &AtomicBool::new(false))
+        .unwrap();
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)
+                .unwrap();
+            inventory
+                .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            assert_eq!(ledger.selected_shared_counts_on_control().0, 6); // originals2 + project2 + processed1 + root1
+            drop(ledger);
+
+            Ok(())
+        })
+        .unwrap();
+    let before = session.project().clone();
+    assert!(session.undo());
+    assert!(session.redo());
+    assert_eq!(session.project(), &before);
+    session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
+            inventory
+                .visit_on_control(&mut ledger, AudioStorageRole::Caller)
+                .unwrap();
+            ledger
+                .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Current)
+                .unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
 }

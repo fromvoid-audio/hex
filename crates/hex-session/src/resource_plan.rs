@@ -1,6 +1,6 @@
 //! Closed control-side media plans and borrowed actual PCM inventory.
 //! No second source cache, publication authority or callback preparation.
-use crate::{OriginalAudio, Session, SessionError, service::AudioClipWaveform};
+use crate::{OriginalAudio, Session, service::AudioClipWaveform};
 use hex_engine::{
     AudioRootStorageLedger, AudioStorageError, AudioStorageReservation, AudioStorageRole,
     OwnedAudioInputs, OwnedAudioSource,
@@ -11,7 +11,6 @@ use hex_engine::{
 };
 use hex_project::{AssetId, ClipId};
 use std::{
-    cell::Ref,
     collections::BTreeMap,
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
@@ -32,7 +31,8 @@ pub struct ResidentResourcePlanReservation {
 /// their fields. It owns no PCM; no RefCell guard escapes into a callback.
 pub struct ResidentPcmInventory<'a> {
     session: &'a Session,
-    waveforms: Ref<'a, BTreeMap<ClipId, AudioClipWaveform>>,
+    waveforms: &'a BTreeMap<ClipId, AudioClipWaveform>,
+    transforms: &'a hex_engine::audio_transform::AudioTransformPcmInventory<'a>,
 }
 impl ResidentPcmInventory<'_> {
     /// PCM fields only. Enclosing maps, transform caches, graph metadata and
@@ -57,6 +57,7 @@ impl ResidentPcmInventory<'_> {
         for waveform in self.waveforms.values() {
             visit_waveform(ledger, &waveform.waveform, role)?;
         }
+        self.transforms.visit_on_control(ledger, role)?;
         Ok(())
     }
 }
@@ -81,17 +82,27 @@ fn check(cancel: &AtomicBool) -> Result<(), ResourcePreparationError> {
     }
 }
 impl Session {
-    pub fn resident_pcm_inventory_on_control(
+    /// The scoped inventory/ledger cannot escape transaction preparation or
+    /// retain a borrow across cache commit, eviction or canonical mutation.
+    pub fn with_resident_pcm_inventory_on_control<T>(
         &self,
-    ) -> Result<ResidentPcmInventory<'_>, SessionError> {
+        visit: impl for<'scope> FnOnce(
+            &'scope ResidentPcmInventory<'scope>,
+        ) -> Result<T, AudioStorageError>,
+    ) -> Result<T, AudioStorageError> {
         let waveforms = self
             .audio_clip_waveforms
             .try_borrow()
-            .map_err(|_| SessionError::Invalid("audio waveform state is already borrowed"))?;
-        Ok(ResidentPcmInventory {
-            session: self,
-            waveforms,
-        })
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        self.audio_transforms
+            .with_pcm_inventory_on_control(|transforms| {
+                let inventory = ResidentPcmInventory {
+                    session: self,
+                    waveforms: &waveforms,
+                    transforms,
+                };
+                visit(&inventory)
+            })
     }
 
     /// Prepare requested sorted source identities from ACTUAL retained media.

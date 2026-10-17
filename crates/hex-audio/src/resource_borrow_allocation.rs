@@ -7,6 +7,114 @@ use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };
 #[test]
+fn freshly_prepared_clip_pcm_renders_and_seeks_without_callback_allocation_or_free() {
+    use hex_engine::{
+        AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole, OwnedAudioSource,
+    };
+    use hex_project::{Command, Created, Editor, Project};
+    use std::{collections::BTreeMap, sync::Arc};
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported constructor; no native prepared clip proof");
+        return;
+    }
+    let mut editor = Editor::new(Project::new(16_000).unwrap(), 8).unwrap();
+    let Created::Imported { asset, clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "prepared pcm".into(),
+            path: "prepared.wav".into(),
+            sample_rate: 16_000,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::SetAudioClipSourceGain {
+            clip,
+            points: vec![
+                hex_project::SourceGainPoint {
+                    frame: 0,
+                    gain_q16: 32768,
+                },
+                hex_project::SourceGainPoint {
+                    frame: 512,
+                    gain_q16: 32768,
+                },
+            ],
+        })
+        .unwrap();
+    let original = OwnedAudioSource::try_resident(16_000, vec![[0.5, -0.25]; 512])
+        .ok()
+        .unwrap()
+        .try_into_native_audio_on_control()
+        .ok()
+        .unwrap();
+    let media = BTreeMap::from([(asset, original)]);
+    let transforms = hex_engine::audio_transform::AudioTransformPreparation::default();
+    let revision = hex_engine::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        &media,
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &transforms,
+    )
+    .unwrap();
+    let prepared = &revision.arrangement().audio_clip_views()[0].audio;
+    assert!(matches!(
+        OwnedAudioSource::alias_native_audio_on_control(prepared, 4096),
+        Err(hex_engine::AudioStorageError::UnknownStorage)
+    ));
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        data_rows: 16,
+        handle_rows: 8,
+        root_rows: 8,
+        max_retained_bytes: 65_536,
+        max_construction_peak_bytes: 65_536,
+    })
+    .unwrap();
+    ledger
+        .borrow_native_audio_on_control(prepared, AudioStorageRole::Current)
+        .unwrap();
+    ledger.summary().unwrap().require_known_storage().unwrap();
+    assert!(
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .is_err()
+    ); // live graph/cache owners remain
+    drop(ledger);
+    let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+    renderer.play();
+    let mut output = [[0.0; 2]; 512];
+    renderer.render(&mut output).unwrap(); // warm exact renderer before measurement
+    let mut sums = [0.0_f32; 2];
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..64 {
+            renderer.seek(0);
+            for block in output.chunks_mut(17) {
+                renderer.render(block).unwrap();
+            }
+            for actual in &output {
+                let expected = [0.25, -0.125];
+                assert_eq!(*actual, expected);
+                sums[0] += actual[0];
+                sums[1] += actual[1];
+            }
+        }
+    });
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(sums, [8192.0, -4096.0]);
+    // Actual renderer/cache/revision destruction stays on this control thread.
+}
+#[test]
 fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees() {
     let mono = vec![0.25_f32; 64];
     let stereo = vec![[0.5_f32, -0.75]; 64];

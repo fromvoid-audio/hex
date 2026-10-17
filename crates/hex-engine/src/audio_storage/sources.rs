@@ -14,8 +14,8 @@ impl<'a> AudioRootStorageLedger<'a> {
             ledger.source(source)
         })
     }
-    /// The actual native stereo Audio field joins the SAME resource union.
-    /// Unknown origin remains unknown; IDs/counts do not mint declarations.
+    /// Actual native original or freshly prepared stereo PCM joins the SAME
+    /// union. Old/raw derived origin remains unknown; IDs/counts cannot mint it.
     pub fn borrow_native_audio_on_control(
         &mut self,
         audio: &'a crate::Audio,
@@ -67,6 +67,10 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         match source.storage_kind() {
             SourceStorageKind::Resident(audio) => {
+                audio
+                    .pcm_arc_receipt
+                    .and_then(|receipt| receipt.checked_allocations(audio))
+                    .ok_or(AudioStorageError::UnknownStorage)?;
                 self.resident(audio, Owner::exclusive(source), source.storage_handle())
             }
             SourceStorageKind::ResidentMono(owner) => {
@@ -103,7 +107,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         let allocations = audio
             .pcm_arc_receipt
-            .and_then(|r| r.checked_allocations(audio))
+            .and_then(|r| r.checked_native_allocations(audio))
             .ok_or(AudioStorageError::UnknownStorage)?;
         if audio.native_handle.map(|h| h.get()) != Some(handle) {
             return Err(AudioStorageError::SourceMismatch);
