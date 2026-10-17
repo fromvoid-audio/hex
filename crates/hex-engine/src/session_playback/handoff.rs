@@ -1160,6 +1160,7 @@ impl SessionPlayback {
                                                 previous.gain_recording_override,
                                             ),
                                             continuation: None,
+                                            inline_tuning_owned: false,
                                             voice,
                                         },
                                     ) {
@@ -1583,7 +1584,30 @@ impl SessionPlayback {
                                     previous.revision.gain_recording_track(),
                                     previous.gain_recording_override,
                                 ),
-                                continuation: None,
+                                continuation: (matching_candidate
+                                    && matches!(
+                                        sampler,
+                                        crate::midi_note_bank::PreparedMidiNote::Inline(_)
+                                    )
+                                    && inline_tuning_owner_matches(old_track, new_track)
+                                    && previous.revision.arrangement().shared_contexts().tuning()
+                                        != self.revision.arrangement().shared_contexts().tuning())
+                                .then_some(SessionContinuation {
+                                    key,
+                                    onset_beat: span.onset_beat,
+                                    gate_end_beat: span.gate_end_beat,
+                                    pitch: span.pitch,
+                                    channel: span.channel,
+                                    velocity: span.velocity,
+                                }),
+                                inline_tuning_owned: matching_candidate
+                                    && matches!(
+                                        sampler,
+                                        crate::midi_note_bank::PreparedMidiNote::Inline(_)
+                                    )
+                                    && inline_tuning_owner_matches(old_track, new_track)
+                                    && previous.revision.arrangement().shared_contexts().tuning()
+                                        != self.revision.arrangement().shared_contexts().tuning(),
                                 voice,
                             },
                         ) {
@@ -1913,6 +1937,21 @@ impl SessionPlayback {
                             order: 0,
                             mix,
                             continuation,
+                            inline_tuning_owned: matches
+                                && matches!(
+                                    voice.sampler(),
+                                    crate::midi_note_bank::PreparedMidiNote::Inline(_)
+                                )
+                                && self
+                                    .revision
+                                    .arrangement()
+                                    .tracks()
+                                    .get(track_index)
+                                    .is_some_and(|target| {
+                                        inline_tuning_owner_matches(old_track, target)
+                                    })
+                                && previous.revision.arrangement().shared_contexts().tuning()
+                                    != self.revision.arrangement().shared_contexts().tuning(),
                             voice,
                         },
                     )?;
@@ -2445,7 +2484,10 @@ impl SessionPlayback {
                     && super::harmonic_import::imports_release(previous, old_index, release)
             })
         });
+        // These copies are private scratch. Every provider refusal precedes any
+        // source/runtime mutation; bank samplers remain immutable and interned.
         for release in &mut self.release_scratch {
+            retune_inline_release(previous, &self.revision, &self.route_scratch, release)?;
             if !release.voice.sampler().is_current() {
                 continue;
             }
@@ -3241,4 +3283,112 @@ fn remap_release_gate(
         .beat_to_frame(occurrence.gate_end)
         .map(Some)
         .map_err(|_| SessionPlaybackError::TempoConversion)
+}
+
+fn inline_tuning_owner_matches(source: &crate::Track, target: &crate::Track) -> bool {
+    source.instrument_id == target.instrument_id
+        && source.instrument_state == target.instrument_state
+        && source.instrument_slot_enabled()
+        && target.instrument_slot_enabled()
+        && source.midi_source_index == target.midi_source_index
+}
+
+/// Retune only still-owned occurrences; unrelated source/device tails retain the
+/// copied source sampler forever. The actual occurrence sampler carries offsets
+/// from earlier applied edits, so rapid revisions and Undo never restart phase.
+fn retune_inline_release(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    routes: &[TrackRoute],
+    release: &mut ReleaseEntry,
+) -> Result<(), SessionPlaybackError> {
+    use crate::midi_note_bank::PreparedMidiNote;
+    if !release.inline_tuning_owned {
+        return Ok(());
+    }
+    let Some(owned) = release.continuation else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let Some(old_index) = previous
+        .routes
+        .iter()
+        .position(|route| route.id == release.track_id)
+    else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let Some(new_index) = routes.iter().position(|route| route.id == release.track_id) else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+    let new_route = effective_midi_route(candidate, routes, new_index)?;
+    let source = &previous.revision.arrangement().tracks()[old_index];
+    let target = &candidate.arrangement().tracks()[new_index];
+    if old_route.owner != new_route.owner
+        || !inline_tuning_owner_matches(source, target)
+        || release.location.tail_group().is_some()
+    {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    }
+    let target_sampler = match new_route.owner {
+        RouteOwner::Arrangement => {
+            let mut sampler = None;
+            target
+                .for_each_active_midi_span(previous.arrangement_frame, |span, prepared| {
+                    if span.clip == owned.key.clip
+                        && span.note == owned.key.note
+                        && span.iteration == owned.key.iteration
+                        && span.onset_beat == owned.onset_beat
+                        && span.gate_end_beat == owned.gate_end_beat
+                        && span.pitch == owned.pitch
+                        && span.channel == owned.channel
+                        && span.velocity == owned.velocity
+                    {
+                        sampler = Some(prepared);
+                    }
+                })
+                .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+            sampler
+        }
+        RouteOwner::Session { clip, launch } => candidate
+            .session()
+            .midi_clip_for_track(clip, release.track_id)
+            .and_then(|clip| {
+                let occurrence = clip.occurrence(owned.key.note, owned.key.iteration, launch)?;
+                if clip.id != owned.key.clip
+                    || occurrence.onset != owned.onset_beat
+                    || occurrence.gate_end != owned.gate_end_beat
+                    || occurrence.pitch != owned.pitch
+                    || occurrence.channel != owned.channel
+                    || occurrence.velocity != owned.velocity
+                {
+                    return None;
+                }
+                let bank = clip.instrument_template().note_bank();
+                bank.index(owned.pitch, owned.velocity)
+                    .and_then(|index| bank.sampler(index))
+            }),
+        _ => None,
+    };
+    let Some(PreparedMidiNote::Inline(target)) = target_sampler else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let PreparedMidiNote::Inline(source) = release.voice.sampler() else {
+        return Err(SessionPlaybackError::SharedAnalyticContext);
+    };
+    let age = previous
+        .performance_frame
+        .checked_sub(release.voice.start_frame())
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    let continued = target
+        .continue_from(&source, age)
+        .map_err(|_| SessionPlaybackError::Arrangement("inline tuning continuation was refused"))?;
+    release
+        .voice
+        .set_sampler(PreparedMidiNote::Inline(continued));
+    Ok(())
 }
