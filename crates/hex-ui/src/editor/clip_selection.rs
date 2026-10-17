@@ -103,6 +103,12 @@ fn ordered_clips(project: &Project, track: TrackId) -> Vec<ClipId> {
 }
 impl EditorView {
     pub(super) fn reconcile_clip_selection(&mut self) {
+        // A lane/header focus change clears the visible clip selection. A later
+        // additive click must not resurrect those now invisible members.
+        if self.selected_clip.is_none() {
+            self.clip_selection.apply_members(BTreeSet::new());
+            self.clip_selection.anchor = None;
+        }
         if let Some(state) = &self.state {
             self.clip_selection
                 .reconcile(&state.project, self.project_generation, state.revision);
@@ -315,6 +321,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (project, clips, other) = fixture();
+        let target = project.tracks()[1].id();
         let (handle, editor) =
             super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -357,6 +364,30 @@ mod tests {
         assert_eq!(selected(&editor, &mut visual), BTreeSet::from([other]));
         click(&mut visual, other, command);
         assert!(selected(&editor, &mut visual).is_empty());
+        click(&mut visual, clips[0], Modifiers::default());
+        click(
+            &mut visual,
+            clips[4],
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let blank = gpui::point(
+            lane.right() - gpui::px(12.0),
+            lane.bottom() - gpui::px(10.0),
+        );
+        visual.simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(selected(&editor, &mut visual).is_empty());
+        click(&mut visual, other, command);
+        assert_eq!(selected(&editor, &mut visual), BTreeSet::from([other]));
     }
     #[gpui::test]
     fn same_primary_membership_change_repaints_retained_audio_and_midi(cx: &mut TestAppContext) {
