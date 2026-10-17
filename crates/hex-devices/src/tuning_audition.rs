@@ -305,6 +305,13 @@ impl Synth {
         keys
     }
 
+    /// Bounded owner lookup for preserving physical inputs across a retune.
+    pub fn owns_voice(&self, owner: u64) -> bool {
+        self.voices
+            .iter()
+            .any(|voice| voice.active && voice.owner == owner)
+    }
+
     pub fn active_voices(&self) -> usize {
         self.voices.iter().filter(|voice| voice.active).count()
     }

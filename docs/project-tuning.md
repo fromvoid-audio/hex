@@ -177,3 +177,10 @@ pending, and keeps a400ms recent marker. Stop, faults, unavailable source/route
 identity and project replacement clear held playback gates. These are MIDI gate
 observations at the reported transport cursor, not synth loudness/release-tail or
 physical hardware-input telemetry. Reference audition retains its actual held mask.
+
+Current audition preparation failures are shown only for the still-owned input;
+stale completions cannot replace a newer activation or its error. A held input
+refused under one table is retried on a valid retune without restarting voices
+that actually continued. New tuning gestures wait for pending canonical edits;
+Cancel remains available. Loading or importing an identical scale still updates
+preset metadata, but preserves project revision, clean state, Redo and audio.

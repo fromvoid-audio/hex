@@ -127,6 +127,13 @@ impl Runtime {
     pub(crate) fn preserve_from(&mut self, old: &mut Self, continued: Synth) {
         self.synth = continued;
         self.desired = old.desired;
+        // A refused physical input has no voice to carry. Retry it once under
+        // the new table; preserve cached owners that really continued.
+        for desired in &mut self.desired {
+            if *desired != 0 && !self.synth.owns_voice(*desired >> 16) {
+                *desired = 0;
+            }
+        }
         old.detached = true;
     }
     pub(crate) fn cancel(&mut self) {
@@ -217,5 +224,24 @@ mod tests {
             !input.take_rejection(),
             "reported refusal must not remain latched"
         );
+    }
+    #[test]
+    fn review_held_rejected_audition_retries_when_retune_makes_pitch_valid() {
+        let input = Arc::new(TuningAuditionInput::new(0));
+        let mut source = Runtime::prepare(&project(60, 20_000.0), Arc::clone(&input)).unwrap();
+        input.set_key(0, Some((127, 100, 1))).unwrap();
+        source.mix(&mut [[0.0; 2]; 64]);
+        assert!(input.take_rejection());
+        assert_eq!(input.held_keys(), [0; 2]);
+        let mut target = Runtime::prepare(&project(127, 220.0), Arc::clone(&input)).unwrap();
+        let continued = target.continued_synth(&source).unwrap();
+        target.preserve_from(&mut source, continued);
+        let mut output = [[0.0; 2]; 128];
+        target.mix(&mut output);
+        assert_eq!(input.held_keys(), [0, 1 << 63]);
+        assert!(output.iter().any(|frame| frame[0] != 0.0));
+        input.set_key(0, None).unwrap();
+        target.mix(&mut output);
+        assert_eq!(input.held_keys(), [0; 2]);
     }
 }

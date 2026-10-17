@@ -3,19 +3,7 @@ use hex_tuning::{Audition, ProjectTuning};
 use std::time::{Duration, Instant};
 
 fn stale_library_write(export: bool) {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let directory = Scratch(std::env::temp_dir().join(format!(
-        "hex-stale-tuning-write-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    )));
-    std::fs::create_dir(&directory.0).unwrap();
+    let directory = library_scratch();
     let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
     let original = tuning(333.0).scale();
     hex_storage::tuning_library::save(&directory.0, 1, "original", original).unwrap();
@@ -299,5 +287,80 @@ fn grouped_previews_skip_cancel_and_commit_retarget_the_actual_keyboard_without_
     assert_eq!(
         undone.state.project, initial.state.project,
         "whole gesture is exactly one undo"
+    );
+}
+
+struct LibraryScratch(PathBuf);
+impl Drop for LibraryScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+fn library_scratch() -> LibraryScratch {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let directory = LibraryScratch(std::env::temp_dir().join(format!(
+        "hex-tuning-library-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )));
+    std::fs::create_dir(&directory.0).unwrap();
+    directory
+}
+#[test]
+fn review_identical_library_load_preserves_redo_without_replacement() {
+    let directory = library_scratch();
+    let mut session = Session::new(48_000, 8, 1_000_000).unwrap();
+    session.command(Command::SetTuning(tuning(333.0))).unwrap();
+    assert!(session.undo());
+    assert!(session.can_redo());
+    let original = session.project().clone();
+    hex_storage::tuning_library::save(&directory.0, 1, "same", original.tuning().scale()).unwrap();
+    let (result, prepared) = run_tuning_library_operation_in(
+        &mut session,
+        TuningLibraryContext {
+            request_generation: 0,
+            request_revision: 0,
+            operation_id: 1,
+            current_generation: 0,
+            current_revision: 0,
+        },
+        TuningLibraryOperation::Load { slot: 1 },
+        None,
+        &directory.0,
+    );
+    assert!(result.error.is_none());
+    assert_eq!(result.loaded_name.as_deref(), Some("same"));
+    assert!(
+        prepared.is_none(),
+        "identical load must not publish a new revision"
+    );
+    assert_eq!(session.project(), &original);
+    assert!(session.can_redo());
+}
+#[test]
+fn review_identical_import_keeps_worker_revision_clean_and_audio_unchanged() {
+    let directory = library_scratch();
+    let service = Service::new(48_000, 8, 1_000_000).unwrap();
+    let initial = next(&service);
+    let path = directory.0.join("same.freqs");
+    hex_storage::tuning_library::export_file(&path, "same", initial.state.project.tuning().scale())
+        .unwrap();
+    service
+        .submit(Request::TuningLibrary {
+            project_generation: 0,
+            revision: initial.state.revision,
+            operation_id: 1,
+            operation: TuningLibraryOperation::Import { path },
+        })
+        .unwrap();
+    let event = next(&service);
+    assert!(event.error.is_none());
+    assert_eq!(event.state.revision, initial.state.revision);
+    assert!(!event.state.unsaved);
+    assert!(event.playback.is_none());
+    assert_eq!(event.state.project, initial.state.project);
+    assert_eq!(
+        event.tuning_library.unwrap().loaded_name.as_deref(),
+        Some("same")
     );
 }
