@@ -4655,6 +4655,20 @@ layout/listening and broader historical scrub/playhead wishlist remain open;
 Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
 
 
+## waveform visibility during edge trim — pulse2782 / PR388, 17 october 2026
+
+The actual trim overlay hid the original waveform and always used raw asset
+mapping, which refuses transformed clips. Before-fix rendered input reproduced
+zero-height stereo paths in all 24 processed/warped motion cases across two
+sample/rate fixtures; untouched controls remained visible. The preview now
+reuses the immutable accepted processing root with the model-projected crop
+offset and validates root identity, extent and original cached crop metadata.
+Original/prospective clips remain available for the separate tempo-aware
+Shift-stretch seam; no source BPM or gesture policy is implemented here.
+See docs/waveform-display.md for regression scope and the finite pending native
+checklist. Exact cloud CI evidence is recorded in Pulse2782 and canonical PR388.
+No Mac/app operation or delivery is claimed.
+
 ## browser waveform cache stability — pulse2778 / PR384
 
 Visible row composition no longer mutates the16-entry metadata cache. Selected
@@ -4663,6 +4677,17 @@ retry automatically. Reproduced selected-cache loss before repair; real pointer
 hover/selection regression checks no repeated preparation/audition, stable metadata,
 unchanged project state and surrounding lane geometry/style. Native flicker
 acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## browser waveform-position audition — pulse2779 / PR385
+
+Manual waveform clicks resolve bounded hit position against decoded preview PCM;
+existing generation/ownership queues replace previews and silence Stop without
+project transport. Exact-end starts finish silently. Callback position publication
+feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation,
+locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
+focus and unavailable-output regressions cover the browser strip. Native pointer,
+listening and position acceptance remains coordinator-serial.
 
 
 ## deliberate sample insertion — pulse2780 / PR386

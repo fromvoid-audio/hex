@@ -394,9 +394,9 @@ impl EditorView {
                 drag.preview
                     .borrow()
                     .as_ref()
-                    .map(|preview| (drag.clip.asset(), preview.clip.clone()))
+                    .map(|preview| (drag.clip.clone(), preview.clip.clone()))
             });
-        if let Some((asset, preview_clip)) = live_trim_preview {
+        if let Some((original_clip, preview_clip)) = live_trim_preview {
             let preview_start = preview_clip.start();
             if let Some(preview_end) = preview_start.checked_add(preview_clip.duration()) {
                 let visible_start = preview_start.max(viewport.start);
@@ -422,14 +422,19 @@ impl EditorView {
                             false,
                         )))
                         .children([clip_grid_layer(grid, visible_start, visible_end)]);
-                    if let Some(waveform) = state.waveforms.get(&asset) {
-                        preview = preview.child(super::waveform::waveform_view_cached(
-                            waveform,
-                            &preview_clip,
-                            visible_start,
-                            visible_end,
-                            std::rc::Rc::clone(&self.waveform_geometry_cache),
-                        ));
+                    if let Some(waveform) = super::waveform::preview_waveform_view_cached(
+                        super::waveform::WaveformPreview {
+                            original: &original_clip,
+                            preview: &preview_clip,
+                            tempo: state.project.tempo_map(),
+                            asset: state.waveforms.get(&original_clip.asset()),
+                            prepared: state.audio_clip_waveforms.get(&original_clip.id()),
+                        },
+                        visible_start,
+                        visible_end,
+                        std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    ) {
+                        preview = preview.child(waveform);
                     }
                     clip_area = clip_area.children([preview]);
                 }
