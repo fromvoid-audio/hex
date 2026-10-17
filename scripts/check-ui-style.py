@@ -46,6 +46,11 @@ widgets = (
     'main)', 'mixer)', 'lane)', 'row)', 'rows)', 'clips)', 'strips)', 'track_labels)',
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
+    # Split browser components normalize every caption at their boundary.
+    'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
+    'editor)', 'sidebar)', 'panel.w_full(',
+    'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',

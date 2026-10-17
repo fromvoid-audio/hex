@@ -18,7 +18,9 @@ use std::{
     sync::Arc,
 };
 
-const DEFAULT_WIDTH: f32 = 280.0;
+mod layout;
+
+const DEFAULT_WIDTH: f32 = 480.0;
 const MIN_WIDTH: f32 = 220.0;
 const MIN_WORKSPACE_WIDTH: f32 = 560.0;
 const COLLAPSED_WIDTH: f32 = 28.0;
@@ -131,6 +133,7 @@ pub(super) enum BrowserSection {
 
 pub(super) struct BrowserState {
     pub open: bool,
+    layout: layout::BrowserLayout,
     pub width: f32,
     pub section: BrowserSection,
     pub directory: PathBuf,
@@ -190,6 +193,7 @@ impl BrowserState {
         };
         Self {
             open: true,
+            layout: layout::BrowserLayout::default(),
             width: DEFAULT_WIDTH,
             section: BrowserSection::Samples,
             directory: music.clone(),
@@ -1174,42 +1178,7 @@ impl EditorView {
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        panel = panel.child(
-            div()
-                .h(px(25.0))
-                .flex_shrink_0()
-                .px_1()
-                .flex()
-                .items_center()
-                .gap_1()
-                .border_b_1()
-                .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                        .child(theme::text(match section {
-                            BrowserSection::Samples => "browser · samples",
-                            BrowserSection::Instruments => "browser · devices",
-                            BrowserSection::Projects => "browser · projects",
-                        })),
-                )
-                .child(self.browser_icon(
-                    "⌕",
-                    "choose a folder",
-                    move |view, _, cx| view.open_browser_folder(cx),
-                    cx,
-                ))
-                .child(self.browser_icon(
-                    "×",
-                    "close browser · cmd+alt+b",
-                    |view, window, cx| view.toggle_browser(window, cx),
-                    cx,
-                )),
-        );
-        panel = panel.child(self.browser_sections(cx));
+        let toolbar = self.browser_toolbar(cx);
         if section == BrowserSection::Instruments && self.browser.device_catalog.is_none() {
             let catalog = (|| {
                 let mut entries = Vec::new();
@@ -1229,45 +1198,51 @@ impl EditorView {
             self.browser.device_catalog = Some(catalog);
         }
         if section == BrowserSection::Samples || section == BrowserSection::Projects {
-            panel = panel.child(self.browser_places(cx));
-            panel = panel.child(
-                div()
-                    .px_1()
-                    .py_1()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(self.browser_icon(
-                        "↑",
-                        "parent folder",
-                        |view, _, cx| {
-                            if let Some(parent) = view.browser.directory.parent().map(PathBuf::from)
-                            {
-                                view.request_browser_scan(parent, cx);
-                            }
-                        },
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                            .child(theme::text(
-                                path.file_name()
-                                    .and_then(|name| name.to_str())
-                                    .unwrap_or("folder"),
-                            )),
-                    )
-                    .child(folder_dialog),
-            );
-            panel = panel.child(div().px_1().pb_1().child(self.browser.search.clone()));
+            panel =
+                panel.child(
+                    div()
+                        .h(px(24.0))
+                        .flex_shrink_0()
+                        .px_1()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(self.browser_icon(
+                            "↑",
+                            "parent folder",
+                            |view, _, cx| {
+                                if let Some(parent) =
+                                    view.browser.directory.parent().map(PathBuf::from)
+                                {
+                                    view.request_browser_scan(parent, cx);
+                                }
+                            },
+                            cx,
+                        ))
+                        .child(
+                            div().flex_1().min_w_0().overflow_hidden().text_xs().child(
+                                theme::text(
+                                    path.file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("folder"),
+                                ),
+                            ),
+                        )
+                        .child(folder_dialog),
+                );
         }
+        panel = panel.child(self.browser_tag_selector(cx));
+        panel = panel.child(
+            div()
+                .h(px(22.0))
+                .flex_shrink_0()
+                .px_2()
+                .bg(rgb(theme::color(theme::PaletteRole::Hover)))
+                .text_xs()
+                .child(theme::text("name")),
+        );
         match section {
             BrowserSection::Instruments => {
-                panel = panel.child(div().px_1().pb_1().child(self.browser.search.clone()));
                 match self
                     .browser
                     .device_catalog
@@ -1412,6 +1387,36 @@ impl EditorView {
                 }
             }
         }
+
+        let preview = self.browser_selection_preview(cx);
+        let sidebar = self.browser_sidebar(pane_width, cx);
+        let editor = self.browser_tag_editor(pane_width, cx);
+        panel = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(panel.w_full().flex_1().min_h_0().min_w_0())
+            .child(preview);
+        panel = div()
+            .w(px(pane_width))
+            .flex_shrink_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .child(toolbar)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(sidebar)
+                    .child(panel)
+                    .children(editor),
+            );
 
         let entity = cx.entity();
         let mut resize = div()
@@ -1684,123 +1689,6 @@ impl EditorView {
         )
     }
 
-    fn browser_sections(&mut self, cx: &mut Context<Self>) -> Div {
-        let mut row = div()
-            .h(px(25.0))
-            .flex_shrink_0()
-            .flex()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        for (index, (section, label, icon)) in [
-            (BrowserSection::Samples, "samples", "♫"),
-            (BrowserSection::Instruments, "devices", "⌘"),
-            (BrowserSection::Projects, "projects", "▤"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let active = self.browser.section == section;
-            row = row.child(
-                div()
-                    .id(("browser-section", index))
-                    .flex_1()
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .bg(rgb(if active {
-                        theme::color(theme::PaletteRole::Hover)
-                    } else {
-                        theme::color(theme::PaletteRole::Surface)
-                    }))
-                    .text_xs()
-                    .text_color(rgb(if active {
-                        theme::color(theme::PaletteRole::Secondary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            view.browser.section = section;
-                            cx.notify();
-                        }),
-                    )
-                    .child(theme::text(icon))
-                    .child(theme::text(label)),
-            );
-        }
-        row
-    }
-
-    fn browser_places(&self, cx: &mut Context<Self>) -> Div {
-        let mut row = div()
-            .h(px(23.0))
-            .flex_shrink_0()
-            .px_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .border_b_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
-            let path = place.clone();
-            let label = if *place == self.browser.music {
-                "music"
-            } else if *place == self.browser.home {
-                "home"
-            } else {
-                place
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("folder")
-            };
-            let selected = self.browser.directory == *place;
-            row = row.child(
-                div()
-                    .id(("browser-place", index))
-                    .px_1()
-                    .text_xs()
-                    .text_color(rgb(if selected {
-                        theme::color(theme::PaletteRole::Secondary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    }))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |view, _, _, cx| {
-                            view.request_browser_scan(path.clone(), cx)
-                        }),
-                    )
-                    .child(theme::text(label)),
-            );
-        }
-        if self.browser.places.len() < PLACE_CAPACITY {
-            row = row.child(self.browser_icon(
-                "+",
-                "add folder place",
-                |view, _, cx| view.open_browser_folder(cx),
-                cx,
-            ));
-        }
-        let mut content = div().flex().flex_col().flex_shrink_0().child(row);
-        if let Some(status) = self.browser.places_status.as_ref() {
-            content = content.child(
-                div()
-                    .h(px(16.0))
-                    .flex_shrink_0()
-                    .px_1()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(status)),
-            );
-        }
-        content
-    }
-
     fn browser_device_row(
         &mut self,
         index: usize,
@@ -1831,7 +1719,11 @@ impl EditorView {
             .items_center()
             .gap_1()
             .cursor_pointer()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .bg(rgb(theme::color(if self.browser.selected_index == index {
+                theme::PaletteRole::Hover
+            } else {
+                theme::PaletteRole::Surface
+            })))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
@@ -1897,6 +1789,7 @@ impl EditorView {
         let description = theme::text(tooltip);
         div()
             .id(label)
+            .debug_selector(move || format!("browser-control-{label}"))
             .w(px(22.0))
             .h(px(22.0))
             .flex_shrink_0()
