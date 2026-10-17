@@ -6,6 +6,27 @@ Arrangement and Session workflows, audio/MIDI behavior, editing, recording,
 automation, routing, and project fidelity, while improving architecture,
 responsiveness, and measured performance.
 
+## Active alpha compatibility policy
+
+Hex is active alpha software. Until the user selects a satisfactory feature set
+for release, breaking source, model and project-format changes are allowed.
+Do not spend effort maintaining backward compatibility or adding migrations,
+historical project conversions or compatibility readers solely for earlier alpha
+versions. This includes incompatible unpublished branch formats. This policy
+supersedes older backward-compatibility and migration requirements in this file,
+repository documents and existing task descriptions for future Hex changes.
+Select the release compatibility policy when the user chooses the release scope;
+do not infer a compatibility freeze from an alpha version or schema number.
+
+Active features must coexist in one coherent current format. Preserve strict
+current-format validation, complete save/reopen round trips, explicit errors for
+unsupported formats, runtime and real-time safety, and Undo/Redo integrity.
+Never automatically delete, rewrite or convert existing user files to accommodate
+a breaking change. This policy does not authorize removing all existing migration
+code or unrelated cleanup. Historical implementation and verification evidence
+remain factual records, not new compatibility obligations. PR, validation and
+delivery requirements remain in force.
+
 Frame design prototypes under `design/frame/` may use JSON, JavaScript and HTML
 for design tooling only. They must not become the shipped application runtime.
 
@@ -513,7 +534,7 @@ applies. Inspect checkout topology and status before editing. The workspace now 
 Git on `main` with the private `PORTALSURFER/hex` remote, created at user request on
 9 October 2026.
 
-## 8. Keeping projects and compatibility complete
+## 8. Keeping current projects complete
 
 Schema-13 hybrid-track audio/MIDI metadata persistence, independent canonical
 Session MIDI and unwarped audio one-shot sources/scenes/cells, finite Arrangement
@@ -537,8 +558,9 @@ changing the MIDI model, scheduler or runtime. Read `docs/musical-time.md` befor
 belongs on the control side and existing audio remains frame-anchored. Read `docs/clip-fades.md` for the fixed
 fade domain, split continuity and deliberate trim reanchoring contract. As it grows:
 
-- Version its schema and write explicit migrations/defaults; new model fields
-  require save/load and history review in the same change.
+- Identify the current schema explicitly; new model fields require current-format
+  save/load and history review in the same change. Historical alpha migrations
+  are not required under the active alpha policy above.
 - Round-trip complete project state, media references, automation, routing, device
   state, timing, and editor state that is promised to persist.
 - Use atomic/recoverable writes; do not overwrite a good project with a partial save.
@@ -601,8 +623,9 @@ paired track identities or cross-type move/import rejection. Arrangement owns
 both clip collections; Session owns one audio/MIDI/Stop cell per track/scene.
 Preserve frame-anchored audio and beat-anchored MIDI, current overlap policies,
 combined ID/count/admission limits, source-specific editing and safe release tails.
-Version persistence changes and migrate legacy typed tracks without losing IDs,
-source data or mixer state. Read docs/hybrid-tracks.md before extending this model.
+Identify current persistence changes explicitly and preserve current-format IDs,
+source data, mixer state and history integrity. Earlier alpha format migration is
+not required. Read docs/hybrid-tracks.md before extending this model.
 
 ## Shared Lattice device interface
 
