@@ -1,16 +1,3 @@
-## aligned eq input/output capture — #2730 / PR343, 17 october 2026
-
-Actual whole-entry pre/post taps share one bounded packet, rolling-window
-position, cadence, reader and reaper. Both phases require independent exact
-coverage and final caller validation; legacy output APIs remain supported.
-The explicit spectrum control enables capture; input defaults visible and
-hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
-Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
-storage/allocation regressions. Portable tests and earlier integrated full runs
-pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
-coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
-See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
-
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
@@ -4544,3 +4531,16 @@ stages on Linux and Mac, including real signing; those reports do not certify
 this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
+coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
