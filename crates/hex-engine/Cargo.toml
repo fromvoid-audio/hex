@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-instrument-test-support = []
+instrument-test-support = ["hex-lattice/conformance"]
 
 [lints]
 workspace = true
