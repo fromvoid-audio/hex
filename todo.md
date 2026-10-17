@@ -1,3 +1,16 @@
+## streaming transport and native acceptance ledger — pulse2546 / PR241, 17 october 2026
+
+- One connected VerifiedStreaming adapter control exercises actual mixed-rate
+  worker PCM, direct seek, unchanged applied source/domain, Pause and priority
+  Stop with a full command queue; real callback entries retain allocation probes.
+- [Native validation ledger](docs/streaming-native-validation.md) maps all eight
+  original24 criteria plus the finite edit/Undo/save/reopen/catalog/transport/fault/
+  shutdown matrix to owning source tests and separate unperformed native cases.
+  No provider/cap/production behavior changes or manual merge gate are introduced.
+- Exact final local CI and stable optimized delivery are recorded externally.
+  Physical deadlines, listening, GUI interaction and backend faults remain
+  unverified; source merge and installation do not complete original24 acceptance.
+
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
 - Create-new canonical workload generator writes100 independent120s original
