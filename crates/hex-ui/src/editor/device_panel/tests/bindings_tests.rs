@@ -246,6 +246,18 @@ fn synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag(cx: &mut Te
         );
         assert!(!view.device_gesture.has_pending_terminal());
     });
+    // The fence is one delivery cycle, not a permanently disabled binding.
+    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(start.x, start.y - px(12.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().is_some())
+    });
 }
 
 #[gpui::test]

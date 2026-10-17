@@ -321,11 +321,14 @@ pub(super) fn finalize_controls_except(
                     first_error.get_or_insert_with(|| error.to_owned());
                     continue;
                 }
-                if let Some((key, _)) = parameter_key {
+                if let Some((key, _)) = parameter_key.as_ref() {
                     view.device_panel
                         .pending_values
-                        .insert(key, ParameterValue::Float(finalized.value as f32));
+                        .insert(*key, ParameterValue::Float(finalized.value as f32));
                 }
+            }
+            if let Some((key, _)) = parameter_key.as_ref() {
+                bindings::fence_finished_delivery(view, cx, *key, entity.entity_id());
             }
             entity.update(cx, |control, cx| {
                 control.accept_finish_edit_for_owner(finalized, cx)

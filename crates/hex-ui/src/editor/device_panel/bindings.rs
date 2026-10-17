@@ -113,6 +113,7 @@ impl CapturedBinding {
 pub(super) enum ParameterControl {
     Float {
         lease: NumericGestureLease,
+        delivery_fence: Rc<Cell<u64>>,
         entity: Entity<NumericControl>,
         _subscription: Subscription,
         binding: CapturedBinding,
@@ -600,11 +601,14 @@ fn create_parameter_control(
             };
             let lease = Rc::new(Cell::new(None));
             let event_lease = lease.clone();
+            let delivery_fence = Rc::new(Cell::new(0));
+            let event_fence = delivery_fence.clone();
             let subscription = cx.subscribe(
                 &entity,
                 move |view, emitter, event: &NumericControlEvent, cx| {
                     let is_current = |view: &EditorView| {
-                        binding.current(view, event.phase != NumericEventPhase::Cancel)
+                        event_fence.get() == 0
+                            && binding.current(view, event.phase != NumericEventPhase::Cancel)
                             && matches!(view.device_panel.controls.get(&key),
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
@@ -638,6 +642,7 @@ fn create_parameter_control(
                 key,
                 ParameterControl::Float {
                     lease,
+                    delivery_fence,
                     entity,
                     _subscription: subscription,
                     binding,
@@ -781,13 +786,56 @@ fn create_parameter_control(
     }
 }
 
+/// Owner finalization can precede queued widget effects in the same App update.
+/// Suppress only that completed delivery cycle, reopening this same binding
+/// after the already-enqueued effects. Refused finalization never enters here.
+pub(super) fn fence_finished_delivery(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+    key: ParameterKey,
+    emitter: gpui::EntityId,
+) {
+    let Some(ParameterControl::Float { delivery_fence, .. }) = view.device_panel.controls.get(&key)
+    else {
+        return;
+    };
+    let fence = delivery_fence.clone();
+    let epoch = fence.get().wrapping_add(1).max(1);
+    fence.set(epoch);
+    let owner = cx.weak_entity();
+    cx.defer(move |cx| {
+        let _ = owner.update(cx, |view, _| {
+            if fence.get() == epoch
+                && let Some(ParameterControl::Float {
+                    entity,
+                    binding,
+                    delivery_fence,
+                    ..
+                }) = view.device_panel.controls.get(&key)
+                && entity.entity_id() == emitter
+                && Rc::ptr_eq(delivery_fence, &fence)
+                && binding.generation == view.project_generation
+                && binding.owner == view.device_panel.owner
+            {
+                fence.set(0);
+            }
+        });
+    });
+}
+
 pub(super) fn cancel_control(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     key: ParameterKey,
     control: &mut ParameterControl,
 ) {
-    if let ParameterControl::Float { entity, lease, .. } = control {
+    if let ParameterControl::Float {
+        entity,
+        lease,
+        delivery_fence,
+        ..
+    } = control
+    {
         let target = GestureTarget::DeviceParameter {
             device: key.device,
             parameter: key.parameter,
@@ -795,6 +843,7 @@ pub(super) fn cancel_control(
         let owns = owns_numeric_gesture(view, target, lease);
         // Revoke before local cancellation can enqueue a subscription event.
         lease.set(None);
+        delivery_fence.set(delivery_fence.get().wrapping_add(1).max(1));
         entity.update(cx, |control, cx| control.cancel(cx));
         if owns {
             let _ = view.cancel_device_gesture();
