@@ -100,6 +100,8 @@ widgets = (
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()
