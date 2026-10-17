@@ -85,6 +85,15 @@ fn apply_shapes(project: Project, shapes: Vec<FadeShape>) -> Result<Project, Sto
 }
 impl<'a> DocumentV29<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
+        super::device_assets::refuse_legacy(project)?;
+        Self::base(project)
+    }
+    pub(super) fn for_asset_envelope(project: &'a Project) -> Result<Self, StorageError> {
+        let mut document = Self::base(project)?;
+        document.base.base.version = 30;
+        Ok(document)
+    }
+    fn base(project: &'a Project) -> Result<Self, StorageError> {
         let mut base = super::audio_events::encode(project)?;
         base.base.version = 29;
         let fade_shapes = project

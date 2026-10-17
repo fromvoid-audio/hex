@@ -6,6 +6,12 @@ the same stable identity, offset and length. Existing post-only observers remain
 supported; observation never transfers sample or runtime ownership. Host render
 success and final output validation still determine whether samples may publish.
 
+Supported registry preparation and public prepared-chain admission currently
+reject nonempty device asset references before provider migration/preparation.
+Metadata queries, state migration and edits preserve host-owned references but
+grant no PCM ownership or runtime capability. See
+[device assets](../../docs/device-assets.md).
+
 ## Purpose
 
 Provide validated stereo transforms and registered, bounded stateful effect
