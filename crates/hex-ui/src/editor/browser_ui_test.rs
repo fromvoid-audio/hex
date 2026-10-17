@@ -2113,6 +2113,10 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
     visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("browser-tag-selector").is_none());
+    let before_editor_row = visual.debug_bounds("browser-entry-0").expect("sample row");
+    let before_editor_preview = visual
+        .debug_bounds("browser-selection-preview")
+        .expect("preview");
     let open = visual
         .debug_bounds("browser-control-⋮")
         .expect("editor toggle");
@@ -2124,6 +2128,50 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("tag editor");
     let row = visual.debug_bounds("browser-entry-0").expect("sample row");
     assert!(row.right() <= tag_editor.left());
+    assert_eq!(
+        row, before_editor_row,
+        "opening the editor preserves results geometry"
+    );
+    assert_eq!(
+        visual
+            .debug_bounds("browser-selection-preview")
+            .expect("preview"),
+        before_editor_preview
+    );
+    let close = visual
+        .debug_bounds("browser-control-⊗")
+        .expect("close editor");
+    visual.simulate_mouse_down(close.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(close.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("browser-entry-0").expect("sample row"),
+        before_editor_row
+    );
+    // Reopen through the selected item's mini strip as well.
+    let open = visual
+        .debug_bounds("browser-control-⋯")
+        .expect("mini editor toggle");
+    visual.simulate_mouse_down(open.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(open.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("browser-entry-0").expect("sample row"),
+        before_editor_row
+    );
+    // The outer edge follows the pointer even with the extra editor column open.
+    let outer = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("outer divider");
+    let target = point(outer.left() - px(30.0), outer.center().y);
+    visual.simulate_mouse_down(outer.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let resized = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("resized outer divider");
+    assert!((resized.left() - target.x).abs() < px(1.0));
     editor.update(visual, |view, cx| {
         view.browser.width = super::MIN_WIDTH;
         cx.notify();
@@ -2137,4 +2185,71 @@ fn split_browser_keeps_results_between_sidebar_tags_and_preview(cx: &mut TestApp
         .expect("compact preview");
     assert!(row.size.width > px(0.0));
     assert!(row.bottom() <= preview.top());
+}
+
+#[gpui::test]
+fn browser_picker_resizes_to_icons_and_back_without_changing_browser_width(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let sidebar = visual.debug_bounds("browser-sidebar").expect("sidebar");
+    let row = visual.debug_bounds("browser-entry-0").expect("sample row");
+    let outer_before = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("outer divider");
+    let preview_before = visual
+        .debug_bounds("browser-selection-preview")
+        .expect("preview");
+    let handle = visual
+        .debug_bounds("browser-sidebar-resize")
+        .expect("picker divider");
+    let target = point(sidebar.left() + px(20.0), handle.center().y);
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let compact = visual.debug_bounds("browser-sidebar").expect("icon rail");
+    assert_eq!(compact.size.width, px(36.0));
+    let compact_row = visual
+        .debug_bounds("browser-entry-0")
+        .expect("expanded results");
+    assert!(compact_row.left() < row.left());
+    let compact_preview = visual
+        .debug_bounds("browser-selection-preview")
+        .expect("wider preview");
+    let outer = visual
+        .debug_bounds("browser-resize-handle")
+        .expect("outer divider");
+    assert_eq!(outer, outer_before);
+    assert!(compact_preview.size.width > preview_before.size.width);
+    assert_eq!(compact_preview.right(), outer.left());
+    assert_eq!(compact_preview.left(), compact_row.left());
+    let section = visual
+        .debug_bounds("browser-section-projects")
+        .expect("projects icon");
+    visual.simulate_mouse_move(section.center(), None, Modifiers::default());
+    visual.simulate_mouse_down(section.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(section.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.section, BrowserSection::Projects)
+    });
+    visual.run_until_parked();
+    let handle = visual
+        .debug_bounds("browser-sidebar-resize")
+        .expect("compact divider");
+    let target = point(sidebar.right() + px(2.0), handle.center().y);
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("browser-sidebar")
+            .expect("restored sidebar")
+            .size
+            .width,
+        sidebar.size.width
+    );
 }
