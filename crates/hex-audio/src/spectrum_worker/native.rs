@@ -127,7 +127,7 @@ mod tests {
         }
     }
     #[test]
-    fn fixed_factory_declares_actual_six_boxes_and_rejects_wrong_rate_without_queue_admission() {
+    fn fixed_factory_declares_actual_eight_boxes_and_rejects_wrong_rate_without_queue_admission() {
         let (mut capture, mut reader, mut reaper) =
             spawn_native_spectrum_worker(stamp(48000)).unwrap();
         let receipt = capture.native_receipt().unwrap();
@@ -140,7 +140,12 @@ mod tests {
             ),
             (3, 6)
         );
-        assert!(receipt.storage.data_bytes > 6 * FFT_SIZE * std::mem::size_of::<f32>());
+        // Four stereo signal-window boxes plus the kernel's window, real,
+        // imaginary and one-sided power boxes, excluding headers and queue.
+        let worker_payload = 4 * FFT_SIZE * std::mem::size_of::<[f32; 2]>()
+            + 3 * FFT_SIZE * std::mem::size_of::<f64>()
+            + (FFT_SIZE / 2 + 1) * std::mem::size_of::<f64>();
+        assert!(receipt.storage.data_bytes > worker_payload);
         let mut submit = || {
             assert_eq!(
                 capture.submit(stamp(44100), &[[0.5; 2]; 32]),
@@ -149,7 +154,7 @@ mod tests {
             assert_eq!(capture.next_sequence, 1); // refusal deliberately leaves a gap
             for sequence in 1..=16 {
                 assert_eq!(
-                    capture.submit(stamp(48000), &[[0.5; 2]; 256]),
+                    capture.submit_pair(stamp(48000), &[[0.2, -0.2]; 256], &[[0.5; 2]; 256]),
                     CaptureOutcome::Queued { sequence }
                 );
             }
@@ -171,8 +176,9 @@ mod tests {
         submit();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if let Some(frame) = reader.try_latest() {
-                assert_eq!(frame.stamp.sample_rate_hz, 48000);
+            if let Some(pair) = reader.try_latest_pair() {
+                assert_eq!(pair.output.stamp.sample_rate_hz, 48000);
+                assert!(pair.input.is_some());
                 break;
             }
             assert!(

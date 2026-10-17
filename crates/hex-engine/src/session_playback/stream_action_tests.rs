@@ -78,6 +78,54 @@ fn pages() -> Pages {
 }
 
 #[test]
+fn streamed_paired_observation_covers_each_phase_at_exact_loop_offsets() {
+    for looped in [false, true] {
+        let revision = action_revision(looped);
+        let mut observed = Playback::from_prepared(Arc::clone(&revision));
+        let mut oracle = Playback::from_prepared(revision);
+        for runtime in [&mut observed, &mut oracle] {
+            runtime
+                .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+                .unwrap();
+        }
+        let mut actual = [[0.0; 2]; 512];
+        let mut expected = actual;
+        let mut calls = Vec::new();
+        observed
+            .render_with_pages_and_node_signal_observer(
+                &mut actual,
+                &mut pages(),
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    calls.push((identity, phase, offset, frames.len()));
+                }),
+            )
+            .unwrap();
+        oracle
+            .render_with_pages(&mut expected, &mut pages())
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(!calls.is_empty());
+        for pair in calls.chunks_exact(2) {
+            assert_eq!(pair[0].0, pair[1].0);
+            assert_eq!(pair[0].1, crate::NodeSignalPhase::Input);
+            assert_eq!(pair[1].1, crate::NodeSignalPhase::Output);
+            assert_eq!((pair[0].2, pair[0].3), (pair[1].2, pair[1].3));
+        }
+        assert_eq!(calls.len() % 2, 0);
+        let identity = calls[0].0;
+        let mut covered = [0_u8; 512];
+        for (_, phase, offset, count) in calls.into_iter().filter(|(id, _, _, _)| *id == identity) {
+            if phase == crate::NodeSignalPhase::Input {
+                for sample in &mut covered[offset..offset + count] {
+                    *sample += 1;
+                }
+            }
+        }
+        assert_eq!(covered, [1; 512]);
+    }
+}
+
+#[test]
 fn prepared_stream_seek_is_pure_preserves_real_filter_history_and_refuses_stale_runtime() {
     let revision = action_revision(false);
     let mut actual = Playback::from_prepared(Arc::clone(&revision));

@@ -1369,6 +1369,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hiding_input_retains_output_and_uses_identical_spectrum_coordinates() {
+        use hex_audio::{
+            spectrum::SpectrumFrame,
+            spectrum_worker::{
+                PublishedSpectra, PublishedSpectrum, SpectrumStamp, SpectrumTargetId,
+            },
+        };
+        let frame = SpectrumFrame {
+            sample_rate_hz: 48_000,
+            bins_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
+        };
+        let pair = PublishedSpectra {
+            input: Some(frame.clone()),
+            output: PublishedSpectrum {
+                stamp: SpectrumStamp {
+                    target: SpectrumTargetId(1),
+                    generation: 2,
+                    sample_rate_hz: 48_000,
+                    applied_revision: 3,
+                },
+                frame,
+                captured_at: std::time::Instant::now(),
+                processed_at: std::time::Instant::now(),
+            },
+        };
+        let shown = spectrum_layers(Some(&pair), true, 20_000.0);
+        assert_eq!(shown.0, shown.1, "equal signals align on the same axes");
+        let hidden = spectrum_layers(Some(&pair), false, 20_000.0);
+        assert_eq!(hidden.0, shown.0, "input visibility cannot hide output");
+        assert!(hidden.1.is_none());
+        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None));
+    }
+
+    #[test]
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
         assert_eq!(creation_kind(0.0), eq::NodeKind::LowCut);
         assert_eq!(creation_kind(CUT_CREATION_EDGE), eq::NodeKind::LowCut);

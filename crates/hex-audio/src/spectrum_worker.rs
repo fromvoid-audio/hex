@@ -614,6 +614,133 @@ enum IngestOutcome {
 mod tests {
     use super::*;
 
+    #[test]
+    fn paired_windows_keep_real_levels_stereo_energy_and_reset_together() {
+        let context = stamp(3, 7, 48_000, 11);
+        let mut analysis = SpectrumCore::new(SpectrumKernel::new(48_000).unwrap(), 48_000);
+        let now = Instant::now();
+        for sequence in 0..16 {
+            let mut capture = batch(sequence, context, 0.0, 256);
+            capture.paired = true;
+            capture.captured_start = now;
+            for i in 0..256 {
+                let position = sequence as usize * 256 + i;
+                let signal =
+                    (std::f32::consts::TAU * 32.0 * position as f32 / FFT_SIZE as f32).sin() * 0.5;
+                capture.input_samples[i] = [signal, -signal];
+                capture.samples[i] = [signal * 0.25, -signal * 0.25];
+            }
+            analysis.ingest(capture);
+        }
+        let pair = analysis.analyze_pair_if_due(now).unwrap();
+        let peak = |frame: &SpectrumFrame| {
+            frame
+                .bins_dbfs
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let input_peak = peak(pair.input.as_ref().unwrap());
+        let output_peak = peak(&pair.output.frame);
+        assert!(
+            (input_peak + 6.0206).abs() < 0.01,
+            "anti-phase input retains stereo energy"
+        );
+        assert!((input_peak - output_peak - 12.0412).abs() < 0.01);
+        assert_eq!(pair.output.stamp, context);
+        assert_eq!(pair.output.captured_at, now);
+
+        // A missing capture resets both phases, never joining samples across a gap.
+        let mut after_gap = batch(17, context, 0.0, 256);
+        after_gap.paired = true;
+        assert_eq!(analysis.ingest(after_gap), IngestOutcome::Reset);
+        assert_eq!(analysis.filled, 256);
+        assert!(
+            analysis
+                .analyze_pair_if_due(now + ANALYSIS_INTERVAL)
+                .is_none()
+        );
+        for sequence in 18..33 {
+            let mut silence = batch(sequence, context, 0.0, 256);
+            silence.paired = true;
+            analysis.ingest(silence);
+        }
+        let silent = analysis
+            .analyze_pair_if_due(now + ANALYSIS_INTERVAL)
+            .unwrap();
+        assert_eq!(
+            peak(silent.input.as_ref().unwrap()),
+            crate::spectrum::FLOOR_DBFS
+        );
+        assert_eq!(peak(&silent.output.frame), crate::spectrum::FLOOR_DBFS);
+
+        // Legacy output-only input cannot inherit the previous paired input.
+        assert_eq!(
+            analysis.ingest(batch(33, context, 0.2, 256)),
+            IngestOutcome::Reset
+        );
+        assert_eq!(analysis.filled, 256);
+        for sequence in 34..49 {
+            analysis.ingest(batch(sequence, context, 0.2, 256));
+        }
+        assert!(
+            analysis
+                .analyze_pair_if_due(now + ANALYSIS_INTERVAL * 2)
+                .unwrap()
+                .input
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn paired_capture_refuses_mismatched_or_nonfinite_input_and_preserves_sequence_gaps() {
+        let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let mut capture = SpectrumCapture {
+            producer,
+            next_sequence: 0,
+            exhausted: false,
+            native: None,
+        };
+        let context = stamp(1, 2, 48_000, 3);
+        assert_eq!(
+            capture.submit_pair(context, &[[0.5; 2]], &[[0.1; 2]; 2]),
+            CaptureOutcome::InvalidBatch { sequence: 0 }
+        );
+        assert_eq!(
+            capture.submit_pair(context, &[[f32::NAN; 2]], &[[0.1; 2]]),
+            CaptureOutcome::InvalidBatch { sequence: 1 }
+        );
+        assert!(consumer.pop().is_err());
+        let mut submit = || {
+            assert_eq!(
+                capture.submit_pair(context, &[[0.5, -0.5]; 256], &[[0.1, -0.1]; 256]),
+                CaptureOutcome::Queued { sequence: 2 }
+            )
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut submit);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            submit();
+        }
+        let queued = consumer.pop().unwrap();
+        assert_eq!(queued.sequence, 2);
+        assert!(queued.paired);
+        assert_eq!(queued.input_samples, [[0.5, -0.5]; 256]);
+        assert_eq!(queued.samples, [[0.1, -0.1]; 256]);
+    }
+
     fn stamp(target: u64, generation: u64, rate: u32, revision: u64) -> SpectrumStamp {
         SpectrumStamp {
             target: SpectrumTargetId(target),

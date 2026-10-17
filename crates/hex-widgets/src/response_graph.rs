@@ -937,6 +937,11 @@ mod tests {
         assert!(with_analyzer.validate().is_ok());
         with_analyzer.analyzer.as_mut().unwrap()[1][1] = f32::NAN;
         assert!(with_analyzer.validate().is_err());
+        let mut with_input = model();
+        with_input.input_analyzer = Some(vec![[0.0, 0.3], [1.0, 0.7]]);
+        assert!(with_input.validate().is_ok());
+        with_input.input_analyzer.as_mut().unwrap()[0][1] = f32::INFINITY;
+        assert!(with_input.validate().is_err());
         let mut invalid = model();
         invalid.nodes[0].position[0] = f32::NAN;
         assert!(invalid.validate().is_err());
