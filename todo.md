@@ -1,3 +1,24 @@
+## owned installer Finder cleanup — pulse2788 / PR394, 17 october2026
+
+A real source394 PhaseB publication verified the new signed app and deleted old
+custody, then failed to remove `.hex-install` because Finder left `.DS_Store`.
+The adjacent receipt stayed old and release ownership pending; this is incomplete
+delivery. The production assembly regression reproduces that precise cutpoint
+before the repair and verifies matching sealed/adjacent receipts after it.
+Only regular Finder metadata in the fixed owned workspace is removed. Unknown
+entries, symlinks and directories remain refused/preserved; running-app checks,
+activation locks, signing and source/inventory validation remain intact. Portable
+regressions cover late unexpected members, safe refusal, normal rebuild retry,
+metadata-only recovery and idempotence. Independent review identified the later
+first-rmdir race: a new before-failing regression now verifies one ENOTEMPTY-only
+retry, late unknown/link preservation and bounded exhaustion with actual durable
+release-owner READY/PENDING assertions (compilation/native tools substituted).
+The original b101 run remains frozen historical evidence; repaired-head exact
+full CI and serial native
+fixture/recovery remain pending. No Mac files were changed by this cloud work.
+Recovery uses qualified fixed source and the existing explicit release-adoption
+normal bundle retry, not a manual sidecar/owner write or a finalize-only API.
+
 ## borrowed resource context preparation — pulse2765 / PR373, 17 october2026
 
 Checkpoint7a24 includes merged350/387 and intermediate runtime351 e1d9d50f;

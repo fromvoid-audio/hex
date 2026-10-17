@@ -155,6 +155,37 @@ symlinks or ambiguous states stop for inspection. An older installer's
 history. Do not delete uncertain custody just to make a retry pass. Historical
 review apps, rollback copies and old receipts are never collected by this tool.
 
+The fixed, locked installation workspace permits one incidental Finder file,
+`.DS_Store`, only when it is a regular file. Cleanup unlinks that exact file;
+it never recursively deletes the workspace or accepts other hidden files,
+directories or symlinks as metadata. This also covers Finder adding the file
+after the new app is verified and temporary old-app custody is deleted.
+If Finder recreates it immediately before directory removal, ENOTEMPTY triggers
+one bounded reinspection/retry with the same rules. Unknown members still stop;
+continued interference or any other removal error reports incomplete delivery.
+
+Publication is committed when the new stable app verifies. Cleanup is outside
+the rollback block: after custody deletion there is no prior app to restore.
+Only after cleanup does the installer publish the matching adjacent receipt,
+and only successful exit from the release guard records ready ownership. A
+later error therefore means **incomplete delivery**, even if the app itself is
+valid: the sidecar can still describe the previous app and release ownership
+can remain pending. Preserve the failure log, both receipts, signed app inventory
+and release marker; do not synthesize a sidecar or edit the owner to say ready.
+
+There is no finalize-only command. After inspection, retry using qualified
+installer source and its matching full CI evidence. If the preserved release
+marker is pending, explicitly add `--adopt-release-target` to the ordinary
+`scripts/bundle-macos.sh` command. Recovery verifies the inactive app and cleans
+only the fixed temporary apps and regular Finder metadata, then the normal
+pipeline rebuilds, signs and publishes the requested qualified source. Explicit
+release adoption selectively cleans current workspace package release products
+through Cargo under the existing target lock; it does not delete projects,
+settings, media, historical apps or the installed app. An old installer that
+refuses Finder metadata needs a newly qualified fixed source; copying a repaired
+script into an old qualified checkout does not preserve its CI qualification.
+The rebuilt app's source can consequently differ from the incomplete app.
+
 Process checks run before building, recovery and replacement, including case
 aliases. A running target blocks replacement; save your work, quit normally and
 retry. No force-quit, app launch or OS input automation occurs. Process inspection
