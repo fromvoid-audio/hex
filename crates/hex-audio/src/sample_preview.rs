@@ -17,6 +17,23 @@ struct Preview {
     position: usize,
 }
 
+/// Submission is preparing until the callback actually consumes PCM. Completion
+/// reports the last rendered frame, independently of PCM retirement pressure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Idle,
+    Preparing,
+    Playing,
+    Finished,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub generation: u64,
+    pub phase: Phase,
+}
+
 /// A synchronous refusal retains the caller's exact PCM owner.
 pub struct PublishRefusal {
     pub reason: Invalid,
@@ -40,6 +57,8 @@ pub struct Control {
     retired: Consumer<Preview>,
     pending: Option<Preview>,
     generation: Arc<AtomicU64>,
+    started: Arc<AtomicU64>,
+    finished: Arc<AtomicU64>,
     rate: u32,
     last_generation: u64,
     closing: bool,
@@ -51,18 +70,24 @@ pub(crate) struct Callback {
     retired: Producer<Preview>,
     active: Option<Preview>,
     generation: Arc<AtomicU64>,
+    started: Arc<AtomicU64>,
+    finished: Arc<AtomicU64>,
 }
 
 pub(crate) fn channel(rate: u32) -> (Control, Callback) {
     let (incoming, consumer) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(2);
     let generation = Arc::new(AtomicU64::new(0));
+    let started = Arc::new(AtomicU64::new(0));
+    let finished = Arc::new(AtomicU64::new(0));
     (
         Control {
             incoming,
             retired,
             pending: None,
             generation: generation.clone(),
+            started: started.clone(),
+            finished: finished.clone(),
             rate,
             last_generation: 0,
             closing: false,
@@ -73,11 +98,32 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             retired: returning,
             active: None,
             generation,
+            started,
+            finished,
         },
     )
 }
 
 impl Control {
+    pub fn snapshot(&self) -> Snapshot {
+        let generation = self.generation.load(Acquire);
+        let phase = if !self.permitted()
+            || self.status.as_ref().is_some_and(|status| {
+                status.device_fault.load(Acquire) || status.render_fault.load(Acquire)
+            }) {
+            Phase::Unavailable
+        } else if generation == 0 {
+            Phase::Idle
+        } else if self.finished.load(Acquire) == generation {
+            Phase::Finished
+        } else if self.started.load(Acquire) == generation {
+            Phase::Playing
+        } else {
+            Phase::Preparing
+        };
+        Snapshot { generation, phase }
+    }
+
     pub(crate) fn bind_status(&mut self, status: Arc<crate::prepared::Status>) {
         self.status = Some(status);
     }
@@ -175,7 +221,9 @@ impl Callback {
         use crate::native_callback_owner::ChannelStorage;
         ChannelStorage::ring(self.incoming.buffer())?
             .plus(ChannelStorage::ring(self.retired.buffer())?)?
-            .plus(ChannelStorage::paired_payload(self.generation.as_ref()))
+            .plus(ChannelStorage::paired_payload(self.generation.as_ref()))?
+            .plus(ChannelStorage::paired_payload(self.started.as_ref()))?
+            .plus(ChannelStorage::paired_payload(self.finished.as_ref()))
     }
 
     pub(crate) fn begin_block(&mut self, closing: bool) {
@@ -227,11 +275,17 @@ impl Callback {
         }
         let frames = preview.audio.frames();
         let count = output.len().min(frames.len() - preview.position);
+        if count > 0 {
+            self.started.store(preview.generation, Release);
+        }
         for (target, source) in output.iter_mut().zip(&frames[preview.position..][..count]) {
             target[0] += source[0];
             target[1] += source[1];
         }
         preview.position += count;
+        if preview.position == frames.len() {
+            self.finished.store(preview.generation, Release);
+        }
     }
 }
 
@@ -241,6 +295,85 @@ mod tests {
 
     fn pcm(value: f32, frames: usize) -> Audio {
         Audio::new(48_000, vec![[value, -value]; frames]).unwrap()
+    }
+
+    #[test]
+    fn status_follows_actual_pcm_end_stop_and_stale_decode_without_replay() {
+        let (mut control, mut callback) = channel(48_000);
+        assert_eq!(control.snapshot().phase, Phase::Idle);
+        let first = control.request().unwrap();
+        control.publish(first, pcm(0.25, 3)).unwrap();
+        assert_eq!(
+            control.snapshot(),
+            Snapshot {
+                generation: first,
+                phase: Phase::Preparing
+            }
+        );
+        callback.begin_block(false);
+        let mut output = [[0.0; 2]; 2];
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.25, -0.25]; 2]);
+        assert_eq!(control.snapshot().phase, Phase::Playing);
+        output.fill([0.0; 2]);
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.25, -0.25], [0.0; 2]]);
+        assert_eq!(control.snapshot().phase, Phase::Finished);
+        // Completion is observable even before callback ownership can retire.
+        for _ in 0..3 {
+            output.fill([0.0; 2]);
+            callback.mix(&mut output);
+            assert_eq!(output, [[0.0; 2]; 2]);
+            assert_eq!(control.snapshot().phase, Phase::Finished);
+        }
+        let next = control.request().unwrap();
+        assert_eq!(
+            control.snapshot(),
+            Snapshot {
+                generation: next,
+                phase: Phase::Preparing
+            }
+        );
+        control.publish(first, pcm(0.9, 4)).unwrap();
+        control.publish(next, pcm(0.5, 8)).unwrap();
+        callback.begin_block(false);
+        callback.mix(&mut output);
+        assert_eq!(control.snapshot().phase, Phase::Playing);
+        control.cancel();
+        output.fill([0.0; 2]);
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.0; 2]; 2]);
+        assert_eq!(control.snapshot().phase, Phase::Idle);
+        // A decode that finishes after Stop cannot restart the cancelled token.
+        control.publish(next, pcm(0.8, 4)).unwrap();
+        callback.begin_block(false);
+        callback.mix(&mut output);
+        assert_eq!(output, [[0.0; 2]; 2]);
+        control.shutdown();
+        assert_eq!(control.snapshot().phase, Phase::Unavailable);
+    }
+
+    #[test]
+    fn output_faults_override_playback_status_and_shutdown_stays_unavailable() {
+        let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
+        let generation = control.sample_preview.request().unwrap();
+        control
+            .sample_preview
+            .publish(generation, pcm(0.5, 8))
+            .unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 2]).unwrap();
+        assert_eq!(control.sample_preview.snapshot().phase, Phase::Playing);
+        control.status.device_fault.store(true, Release);
+        assert_eq!(control.sample_preview.snapshot().phase, Phase::Unavailable);
+        control.status.device_fault.store(false, Release);
+        control.status.render_fault.store(true, Release);
+        assert_eq!(control.sample_preview.snapshot().phase, Phase::Unavailable);
+        control.status.render_fault.store(false, Release);
+        control.request_shutdown();
+        assert_eq!(control.sample_preview.snapshot().phase, Phase::Unavailable);
+        callback.begin_block();
+        control.reclaim();
     }
 
     #[test]

@@ -4559,6 +4559,15 @@ this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
 
+## browser audition lifecycle — pulse2766 / PR374, 17 october 2026
+
+Callback-derived request generations distinguish preparing, playing and finite
+completion, including retirement pressure. Cancel silences pending/queued/active
+PCM independently of project transport; stale decode cannot restart it. Faults
+and shutdown report unavailable. Two fixed atomic acknowledgements add no
+callback allocation, locks or final PCM disposal. Browser layout and transport
+integration remain canonical Pulse2664 / PR280. Source does not establish that
+the reported endless audition is a backend loop; native listening remains open.
 
 ## track header width and row height — pulse2714 / PR330
 
