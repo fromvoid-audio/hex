@@ -41,7 +41,7 @@ pub(super) struct CapturedBinding {
 }
 
 impl CapturedBinding {
-    fn current(self, view: &EditorView, require_enabled: bool) -> bool {
+    pub(super) fn current(self, view: &EditorView, require_enabled: bool) -> bool {
         if self.generation != view.project_generation || self.owner != view.device_panel.owner {
             return false;
         }
@@ -142,7 +142,21 @@ pub(super) fn parameter_control_matches_identity(
 }
 
 impl ParameterControl {
-    fn binding(&self) -> CapturedBinding {
+    pub(super) fn metadata(
+        &self,
+    ) -> (
+        NativeDeviceClass,
+        hex_lattice_contract::DeviceTypeId,
+        ParameterDescriptor,
+    ) {
+        let binding = self.binding();
+        (
+            binding.identity.class,
+            binding.identity.type_id,
+            binding.descriptor,
+        )
+    }
+    pub(super) fn binding(&self) -> CapturedBinding {
         match self {
             Self::Float { binding, .. }
             | Self::Bool { binding, .. }

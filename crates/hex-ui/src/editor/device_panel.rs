@@ -245,6 +245,20 @@ pub(super) fn finalize_controls_except(
     excluded: &[ParameterKey],
 ) -> bool {
     retire_removed_send_controls(view, cx);
+    // A canonical replacement can arrive before the next render reconciles
+    // cached widgets. Retire those drafts before synchronous owner submission.
+    let stale: Vec<_> = view
+        .device_panel
+        .controls
+        .iter()
+        .filter_map(|(key, control)| (!control.binding().current(view, false)).then_some(*key))
+        .collect();
+    for key in stale {
+        if let Some(mut control) = view.device_panel.controls.remove(&key) {
+            cancel_control(view, cx, key, &mut control);
+        }
+        view.device_panel.pending_values.remove(&key);
+    }
     let mut first_error = None;
     let active = view
         .device_gesture
