@@ -542,6 +542,96 @@ fn plotted_response_matches_actual_cut_impulse_transform() {
     }
 }
 #[test]
+fn plotted_response_matches_actual_impulse_transform_across_shapes_rates_and_extremes() {
+    // Fixed before the UI sampling repair: 0.05db above -80db, otherwise
+    // absolute linear 1e-5. An unsettled impulse is not an acceptable oracle.
+    let mut cases = 0;
+    let mut maximum_db_error = 0.0_f64;
+    for rate in [8000, 44100, 48000, 96000, 192000] {
+        for kind in [
+            NodeKind::Bell,
+            NodeKind::LowShelf,
+            NodeKind::HighShelf,
+            NodeKind::LowCut,
+            NodeKind::HighCut,
+            NodeKind::Notch,
+        ] {
+            let slopes = if matches!(kind, NodeKind::LowCut | NodeKind::HighCut) {
+                4
+            } else {
+                1
+            };
+            for slope in 0..slopes {
+                for (frequency, q, gain) in [
+                    (20.0, 0.1, -12.0),
+                    (1000.0, 18.0, 12.0),
+                    ((rate as f32 * 0.45).min(18000.0), 18.0, -12.0),
+                ] {
+                    let mut settings = EqState::default();
+                    let mut band = node(1);
+                    band.kind = kind;
+                    band.slope = slope;
+                    band.frequency_hz = frequency;
+                    band.q = q;
+                    band.gain_db = gain;
+                    settings.add(band).unwrap();
+                    let prepared = runtime::PreparedEq::new(settings, rate).unwrap();
+                    let mut rt = prepared.create_runtime();
+                    // The original 131072-frame audit was inconclusive for the
+                    // overdamped 20hz/high-rate bell. Extend its measurement
+                    // window, preserving both original evidence and tolerances.
+                    let length = if frequency == 20.0 { 1048576 } else { 131072 };
+                    let mut frames = vec![[0.0; 2]; length];
+                    frames[0] = [1.0, -1.0];
+                    rt.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+                    assert!(
+                        frames[frames.len() - 256..]
+                            .iter()
+                            .flatten()
+                            .all(|v| v.abs() < 1e-8),
+                        "unsettled impulse: {rate}/{kind:?}/{slope}/{frequency}/{q}"
+                    );
+                    assert!(
+                        frames.iter().all(|f| f[0].is_finite() && f[0] == -f[1]),
+                        "stereo polarity must not cancel independent channel processing"
+                    );
+                    for query in [frequency * 0.37, frequency, frequency * 1.73] {
+                        if query >= rate as f32 * 0.5 {
+                            continue;
+                        }
+                        let (mut real, mut imaginary) = (0.0, 0.0);
+                        for (index, frame) in frames.iter().enumerate() {
+                            let angle = std::f64::consts::TAU * f64::from(query) * index as f64
+                                / f64::from(rate);
+                            real += f64::from(frame[0]) * angle.cos();
+                            imaginary -= f64::from(frame[0]) * angle.sin();
+                        }
+                        let actual = real.hypot(imaginary);
+                        let shown = f64::from(prepared.frequency_response_at_hz(query).unwrap()[0]);
+                        if actual > 0.0001 {
+                            let error = (20.0 * (shown / actual).log10()).abs();
+                            maximum_db_error = maximum_db_error.max(error);
+                            assert!(
+                                error < 0.05,
+                                "response error {error}db at {rate}/{kind:?}/{slope}/{frequency}/{q} query{query}"
+                            );
+                        } else {
+                            assert!(
+                                (shown - actual).abs() < 0.00001,
+                                "deep transfer differs at {query}hz"
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "pcm response audit: {cases} queries, maximum relative error {maximum_db_error}db; opposite polarity and settled tails verified"
+    );
+}
+#[test]
 fn normalized_automation_endpoints_stay_inside_every_descriptor_domain() {
     let id = NodeId::new(1).unwrap();
     for field in NodeParameter::ALL {

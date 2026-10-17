@@ -10,6 +10,8 @@ use hex_widgets::{
     ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
 };
 
+mod response;
+
 const WINDOW_BEATS: u64 = 16;
 // Outer five percent of the inset logarithmic plot; existing node hits win.
 const CUT_CREATION_EDGE: f32 = 0.05;
@@ -62,7 +64,7 @@ pub(super) struct Panel {
     preview: Option<(NativeDeviceState, EqState)>,
     creation: Option<Creation>,
     creation_selection: Option<CreationSelection>,
-    response: Option<(NativeDeviceState, u32, Vec<[f32; 2]>)>,
+    response: Option<(NativeDeviceState, u32, response::Curves)>,
 }
 
 struct Creation {
@@ -786,9 +788,6 @@ fn response_model(
     }
     let state = EqState::decode(&authored).ok()?;
     let upper = (rate as f32 * 0.49).min(20000.0);
-    let frequencies: Vec<_> = (0..96)
-        .map(|i| 20.0 * ((upper / 20.0).ln() * i as f32 / 95.0).exp())
-        .collect();
     if view
         .device_panel
         .eq_panels
@@ -800,8 +799,7 @@ fn response_model(
                 .is_none_or(|(state, cached_rate, _)| state != &authored || *cached_rate != rate)
         })
     {
-        let response =
-            hex_engine::native_effect_frequency_response(&authored, rate, &frequencies).ok()??;
+        let response = response::curves(&authored, &state, rate)?;
         view.device_panel.eq_panels.get_mut(&device)?.response =
             Some((authored.clone(), rate, response));
     }
@@ -812,20 +810,9 @@ fn response_model(
         .response
         .as_ref()?
         .2;
-    let curve = |channel: usize| {
-        response
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                [
-                    i as f32 / 95.0,
-                    ((m[channel].max(0.00001).log10() * 20.0 + 24.0) / 48.0).clamp(0.0, 1.0),
-                ]
-            })
-            .collect::<Vec<_>>()
-    };
-    let primary = curve(if bank == 2 || bank == 4 { 1 } else { 0 });
-    let secondary = curve(if bank == 2 || bank == 4 { 0 } else { 1 });
+    let channel = usize::from(bank == 2 || bank == 4);
+    let primary = response[channel].clone();
+    let secondary = response[1 - channel].clone();
     let nodes = state
         .nodes
         .iter()
