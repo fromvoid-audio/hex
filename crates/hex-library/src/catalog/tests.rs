@@ -158,8 +158,8 @@ fn global_search_unions_index_and_folder_without_duplicate_or_lost_wavs() {
     let outside_wav = outside.file("Utility-outside.wav");
     let project = outside.file("Utility.hex");
     let catalog = scan_samples(std::slice::from_ref(&indexed.0)).catalog;
-    let mut listing = crate::scan_directory(&outside.0).unwrap();
-    listing.entries.extend(catalog.entries().iter().cloned());
+    outside.file("deeper/Utility-not-recursively-searched.hex");
+    let listing = crate::scan_directory(&outside.0).unwrap();
     let results = catalog.search_with_listing("utility", Some(&listing));
     assert_eq!(results.len(), 3);
     for path in [&nested, &outside_wav, &project] {
@@ -168,6 +168,10 @@ fn global_search_unions_index_and_folder_without_duplicate_or_lost_wavs() {
             1
         );
     }
+    let overlapping = crate::scan_directory(indexed.0.join("nested")).unwrap();
+    let deduplicated = catalog.search_with_listing("utility", Some(&overlapping));
+    assert_eq!(deduplicated.len(), 1);
+    assert_eq!(deduplicated[0].path, nested);
     assert!(
         catalog
             .search_with_listing("missing", Some(&listing))
