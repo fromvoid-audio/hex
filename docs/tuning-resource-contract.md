@@ -1,18 +1,17 @@
 # shared tuning and resident-resource preparation contract
 
 This is the bounded cloud4/cloud5 handoff for Pulse2739 and W10/Pulse2681. It
-specifies the next current API; it does not claim that resource-backed native
-instruments are already admitted. No historical alpha API or format adapters
-are required. Current-format validation, history integrity and user files remain
+records the current API and pending host admission; it does not claim that
+resource-backed native instruments are already admitted. No historical alpha API
+or format adapters are required. Current-format validation, history integrity and user files remain
 protected.
 
 ## source and APIs available now
 
-Main `94646b35aec34deb8d663548a006fd03f63d9dfa` contains W10/PR297's bounded
-host-owned device slot references, catalog/snapshot/history validation and
-explicit processing refusal for nonempty bindings. It contains W05/PR290 and
-W06/PR291 as well. It has no resident instrument PCM lease or callback borrowing
-contract and does not admit sampler.
+Main at the PR373 merge below contains W05/PR290, W06/PR291, W10/PR297 and
+canonical tuning PR350/351. Schema31 preserves tuning and complete device-asset
+manifests together. Registry processing still refuses nonempty authored bindings;
+the borrowed resource ABI alone does not confer resident-root admission.
 
 PR370 now retains original-rate decoded PCM independently of clip derivatives.
 The exact control APIs available on that main are
@@ -21,27 +20,29 @@ The exact control APIs available on that main are
 `Audio::pcm_capacity_frames()`. `Session::resident_frames()` charges unique PCM
 buffer capacity across source/derivative aliases. `Audio` is the current decoded
 stereo-frame abstraction; these control borrows and bank totals are not typed
-callback resource leases or graph coexistence accounting. Cloud4 still owns that
-next preparation/process boundary under the contract below.
+callback resource leases or graph coexistence accounting. Cloud4 owns the remaining retained-root host admission under the contract below.
 
-Canonical tuning runtime PR351 at
-`ffb42158c6cdb5509871d8fbaa84321614ac8d59` exposes
-`NativeInstrumentRegistry::prepare_instrument_with_tuning(state, sample_rate,
-&hex_lattice::TuningTable)`. The validated table contains 128 effective Hz values;
-disabled tuning uses the exact existing equal-temperament law. Providers prepare
-on control, while supported mutable/analytic history transitions preserve phase,
-envelopes and instrument histories at the actual applied boundary. Fixed-Hz
-oscillators retain fixed-Hz semantics. Small Operator configurations remain
-784 bytes before W10's separate authored-state metadata charge; the optional
-custom table lives in its explicitly charged wide mutable factory, not in every
-small context. W10's unchanged 4KiB context and 2MiB shared-context ceilings apply.
+Native preparation-context PR373 merged at
+`37fee996c5fe54d36459cd22c7f41eb4320b77c8`, preserving repaired tuning PR351
+(`977bed8982ea8698fb3c83ad6f248f2d67c89a95`, merged `93d22ab0`). The current
+entrypoint is `NativeInstrumentRegistry::prepare_instrument(state,
+&DevicePreparationContext { sample_rate, tuning, resources })`. The validated
+`TuningTable` contains 128 effective Hz values; disabled tuning uses the exact
+existing equal-temperament law. `DeviceResources` supplies bounded borrowed
+`DeviceResourceView`s with slot, content/derivation identity, original sample rate
+and explicit mono/stereo PCM. Preparation and analytic/shared/continuation,
+mutable-instrument and effect processing use the one resource boundary.
 
-The tuning head above includes the Operator exact-copy/retarget fix: exact mutable
-source matching includes the existing shared tuning identity. An unchanged
-opaque instrument payload alone is insufficient authority for history copy.
-This integrated source retains W10's asset refusal in the table-aware registry
-entrypoint before provider migration or preparation, with a provider-spy regression. Asset-free tuning
-preparation must remain independent of the optional MTS broadcaster.
+Current engine hosts explicitly pass `EMPTY_DEVICE_RESOURCES`. The registry
+continues to refuse authored asset references before provider migration or
+preparation; retained-root admission, coexistence accounting and retirement
+remain cloud4's PR389 work. There is no historical `with_tuning` or
+`with_resources` adapter. Providers prepare on control; applied tuning transitions
+preserve phase, envelopes and histories. Exact mutable-source matching includes
+the effective tuning identity; unchanged authored bytes alone do not authorize
+history copy. Fixed-Hz oscillators keep fixed-Hz semantics, and Operator's existing
+4KiB context/2MiB shared-context ceilings remain unchanged. Asset-free tuning
+preparation remains independent of the optional MTS broadcaster.
 
 PR350 owns the combined current schema31 after asset30's landing. It requires
 both tuning and the complete device manifest, including empty/default data, and
@@ -50,8 +51,8 @@ cross-conversion. Existing earlier readers are not removed as unrelated cleanup.
 
 ## one current preparation and processing boundary
 
-Cloud4 is the single writer for the next shared Lattice/resource API extension;
-cloud5 supplies its integrated PR351 head before cloud4 mutates that seam. Cloud4
+Cloud4 owns the shared Lattice/resource API and PR389 host admission. PR373
+already incorporates the repaired, merged PR351 source supplied by cloud5. Cloud4
 can continue original-rate decode, lease/accounting and sampler-lifetime work
 independently. This is sequential file ownership, not a requirement to wait for
 all tuning editor/MTS/native acceptance. Reconcile actual source changes before

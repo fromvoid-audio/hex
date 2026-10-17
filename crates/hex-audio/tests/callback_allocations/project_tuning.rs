@@ -186,3 +186,108 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
 }
+
+#[test]
+fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allocations() {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 8).unwrap();
+    let input = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
+    input.set_key(0, Some((60, 127, 1))).unwrap();
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+    let mut phase = 0.0_f64;
+    let mut envelope = 0.0_f32;
+    let coefficient = (-4.6 / (f64::from(RATE) * 0.01)).exp() as f32;
+    let mut previous = None::<Arc<PreparedRevision>>;
+    for hz in [240.0, 333.0, 196.0] {
+        let mut scale = editor.project().tuning().scale();
+        scale.set_reference(60, hz, 0).unwrap();
+        editor
+            .execute(Command::SetTuning(
+                hex_tuning::ProjectTuning::new(true, scale, editor.project().tuning().audition())
+                    .unwrap(),
+            ))
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                previous.as_ref().map(|r| r.session().as_ref()),
+            )
+            .unwrap(),
+        );
+        let mut candidate =
+            Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        candidate
+            .prepare_tuning_audition(editor.project(), Arc::clone(&input))
+            .unwrap();
+        control.publish(candidate).unwrap();
+        let mut output = [[0.0; 2]; 137];
+        measured_block(&mut callback, &mut output);
+        assert!(control.status.rejected_revision().is_none());
+        assert!(!input.is_cancelled());
+        assert_ne!(input.held_keys()[0] & (1 << 60), 0);
+        for frame in output {
+            envelope = 1.0 - (1.0 - envelope) * coefficient;
+            let triangle = 1.0 - 4.0 * (phase - 0.5).abs();
+            let expected = (triangle as f32 * envelope * 0.25 * 0.65).tanh();
+            assert!((frame[0] - expected).abs() < 0.000002);
+            assert_eq!(frame[0], frame[1]);
+            phase = (phase + hz / f64::from(RATE)).fract();
+        }
+        control.reclaim();
+        previous = Some(revision);
+    }
+    // Unsupported transient reference voices cannot veto the canonical graph.
+    // Retuning back retries the still-held physical input without a new keydown.
+    for (root_key, hz, unsupported) in [(48, 20_000.0, true), (60, 196.0, false)] {
+        let mut scale = editor.project().tuning().scale();
+        scale.set_reference(root_key, hz, 0).unwrap();
+        editor
+            .execute(Command::SetTuning(
+                hex_tuning::ProjectTuning::new(true, scale, editor.project().tuning().audition())
+                    .unwrap(),
+            ))
+            .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::new(SineTable::new()),
+                previous
+                    .as_ref()
+                    .map(|revision| revision.session().as_ref()),
+            )
+            .unwrap(),
+        );
+        let mut candidate =
+            Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        candidate
+            .prepare_tuning_audition(editor.project(), Arc::clone(&input))
+            .unwrap();
+        control.publish(candidate).unwrap();
+        let mut output = [[0.0; 2]; 137];
+        measured_block(&mut callback, &mut output);
+        assert!(control.status.rejected_revision().is_none());
+        assert!(!input.is_cancelled());
+        if unsupported {
+            assert_eq!(input.held_keys(), [0; 2]);
+            assert!(input.take_rejection());
+            assert_eq!(output, [[0.0; 2]; 137]);
+        } else {
+            assert_ne!(input.held_keys()[0] & (1 << 60), 0);
+            assert!(output.iter().any(|frame| frame[0] != 0.0));
+            assert!(!input.take_rejection());
+        }
+        control.reclaim();
+        previous = Some(revision);
+    }
+    control.command(PlaybackCommand::Stop).unwrap();
+    let mut output = [[0.0; 2]; 137];
+    measured_block(&mut callback, &mut output);
+    assert!(input.is_cancelled());
+    assert_eq!(input.held_keys(), [0; 2]);
+    assert_eq!(output, [[0.0; 2]; 137]);
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+}

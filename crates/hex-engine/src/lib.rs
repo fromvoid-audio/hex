@@ -3075,6 +3075,7 @@ mod tests {
 pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
+mod midi_activity;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -3085,6 +3086,7 @@ mod prepared_tempo;
 mod session_inventory;
 pub mod session_playback;
 mod shared_analytic;
+pub mod tuning_audition;
 
 pub mod compile;
 

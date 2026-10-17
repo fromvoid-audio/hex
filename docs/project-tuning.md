@@ -32,23 +32,24 @@ inferred from its private repository.
 ## finite feature acceptance
 
 The table is the requested editor scope. A model or popup alone does not satisfy
-it. Status describes this prerequisite, not completion of the entire feature.
+it. Source implementation and automated checks are recorded below; every native
+interaction/listening item still needs the finite Mac acceptance pass.
 
 | feature | reference behavior | owning follow-up / evidence |
 | --- | --- | --- |
-| entry and editor | top-level `tuning` entry; integrated native editor, useful resizing, focus/shortcuts, lowercase themed controls and bundled typography | #2741 / PR352; pending |
-| nodes | Hz and cents per degree, Enter apply, Escape/blur cancel, arrow stepping and Shift fine, scrolling, context insert/remove; root retained, minimum three | scale math in #2739; native interactions #2741 pending |
-| pitch line | drag/fine, selected frequency/cents readout, double-click insert-and-drag/remove, note numbers and density-aware cents, held/recent MIDI highlights | #2741 pending |
-| pitch space | cohesion/root-affinity variations, selectable point, dice regeneration, live Reach drag | harmonic analysis in #2739; variation/editor #2741 pending |
-| lattice and statistics | circular harmonic relationships, selected pair, root affinity, whole-scale and three-note relationship metrics | analysis in #2739; native display #2741 pending |
-| reference | root degree/key/Hz, repeat 600–2400 cents, ratio snapping and Shift-repeat snapping | model in #2739; native bindings #2741 pending |
-| scale structure | 3–48 notes, typed/step count and visible errors, adjacent MIDI keys advance degrees and wrap periods | model/math #2739; runtime #2740/editor #2741 pending |
-| settings | equal divisions, just major, snap selected node | scale math #2739; native actions #2741 pending |
-| history | canonical undo/redo, Cmd-Z/Cmd-Shift-Z, complete drag or insert gesture is one step | discrete project history #2739; grouped editor gestures #2741 pending |
-| local library | eight named slots, save/load/rename/duplicate/import/export, FREQS1/2/3 compatibility; names remain library metadata | bounded portable codec #2739; background file operations/UI #2741 pending |
-| audition | triangle/square/saw, level, attack, release; live pitch follows tuning with finite voice/note-off ownership | project-saved settings #2739; audio/UI #2741 pending |
+| entry and editor | top-level `tuning` entry; integrated native editor, useful resizing, focus/shortcuts, lowercase themed controls and bundled typography | #2741 / PR352; source implemented, native acceptance pending |
+| nodes | Hz and cents per degree, Enter apply, Escape/blur cancel, arrow stepping and Shift fine, scrolling, context insert/remove; root retained, minimum three | scale math in #2739; native interactions implemented in #2741; Mac acceptance pending |
+| pitch line | drag/fine, selected frequency/cents readout, double-click insert-and-drag/remove, note numbers and density-aware cents, held/recent MIDI highlights | #2741 implemented; native acceptance pending |
+| pitch space | cohesion/root-affinity variations, selectable point, dice regeneration, live Reach drag | harmonic analysis in #2739; variation/editor #2741 implemented; native acceptance pending |
+| lattice and statistics | circular harmonic relationships, selected pair, root affinity, whole-scale and three-note relationship metrics | analysis in #2739; native display #2741 implemented; native acceptance pending |
+| reference | root degree/key/Hz, repeat 600–2400 cents, ratio snapping and Shift-repeat snapping | model in #2739; native bindings #2741 implemented; native acceptance pending |
+| scale structure | 3–48 notes, typed/step count and visible errors, adjacent MIDI keys advance degrees and wrap periods | model/math #2739; runtime #2740/editor #2741 implemented; native acceptance pending |
+| settings | equal divisions, just major, snap selected node | scale math #2739; native actions #2741 implemented; native acceptance pending |
+| history | canonical undo/redo, Cmd-Z/Cmd-Shift-Z, complete drag or insert gesture is one step | discrete project history #2739; grouped editor gestures #2741 implemented; native acceptance pending |
+| local library | eight named slots, save/load/rename/duplicate/import/export, FREQS1/2/3 compatibility; names remain library metadata | bounded portable codec #2739; background file operations/UI #2741 implemented; native acceptance pending |
+| audition | triangle/square/saw, level, attack, release; live pitch follows tuning with finite voice/note-off ownership | project-saved settings #2739; audio/UI #2741 implemented; native acceptance pending |
 | save project | working scale and audition settings travel with project, independent of local library; malformed data refuses safely | #2739 |
-| native playback | one table for native pitched instruments, Arrangement, Session, preview and export; explicit fixed-Hz/held-voice policy | #2740 / PR351 pending |
+| native playback | one table for native pitched instruments, Arrangement, Session, preview and export; explicit fixed-Hz/held-voice policy | #2740 / PR351 implemented and focused-tested; native listening pending |
 | MTS-ESP | master status/client count, safe ownership and lifecycle; compatible clients only | #2742 / PR353 pending |
 
 ## canonical data contract
@@ -81,10 +82,10 @@ Native DSP must consume control-prepared immutable project tuning directly. MTS
 is an external compatibility transport; missing MTS cannot disable native scale
 editing/persistence or silently restore equal temperament. Runtime cache identity,
 held/released voice transfer and fixed oscillator semantics require #2740's tests
-before tuned playback is claimed. This prerequisite explicitly refuses enabled
-tuning at both Arrangement and Session admission, preserving prior project/history
-rather than silently rendering the wrong pitches. #2740 must replace both guards
-with the verified tuned runtime. Offline export never registers an MTS master.
+before tuned playback is claimed. The native runtime in #2740 prepares both
+Arrangement and Session from the effective table, with history and independent
+pitch/PCM tests. Unsupported resource-backed providers still refuse explicitly
+before publication. Offline export never registers an MTS master.
 
 The selected architecture for #2742 is one desktop-owned publisher behind an
 explicitly audited, pinned safe native dependency. Workspace unsafe remains
@@ -119,6 +120,45 @@ These define transport ownership, not Hex native musical behavior.
 
 ## validation and delivery
 
+Save and Export compare their captured project generation/revision before reading
+the working scale or writing a file. Stale requests preserve existing slots and
+create no export. Pitch-line dragging includes the first degree; protected-root
+removal remains refused. Audition covers MIDI key127 and consumes each callback
+refusal notification once, so successful edits are not overwritten by an old error.
+
+Project barriers wait for locally coalesced tuning changes and their terminal
+acknowledgement, so Save/reopen observes the latest complete gesture. A failed
+terminal refuses dependent Save/Export writes rather than writing an older scale.
+Close and Quit include acknowledged, uncommitted tuning previews in confirmation.
+Open/New also requires replacement confirmation for an otherwise empty project
+with an active tuning draft. Device gestures use the same worker-owned barrier
+classification, including tuning-library requests, so their latest change cannot
+be overtaken.
+Stop cancels the reference input lease even while preparation is queued. Canonical
+edits rebasing an active gesture publish the actual preview graph alongside its
+preview identity, including while reference audition is active; canonical history
+remains separate. Right-click actions target the hit node. Rejected period
+compression reports invalid spacing, and audition-level coarse/fine steps are
+0.01/0.001 rather than whole-scale jumps.
+
+Dice advances an ephemeral worker seed so repeated regeneration changes choices
+without editing the project. Gate highlights resolve the applied graph's effective
+MIDI source owner, including routed Session clips. The 16-voice reference monitor
+explicitly refuses excess held physical notes without stealing an existing held
+owner; releasing/repressing after capacity is available recovers. Preset reads
+reject symlinks and nonregular files before opening, with nonblocking/no-follow
+Unix opens and a post-open regular-file check. Duplicate treats a dangling
+symlink as occupied and continues to a truly empty slot without replacing it.
+A retune retires only unsupported reference voices and reports their refusal;
+supported voices preserve phase/envelope, and the valid project graph can install.
+
+Slot replacement retains staged same-directory rename. Create-new exports and
+duplicates never replace a destination: where hard links are unavailable, an
+exclusive file creation writes the validated bounded preset. A failed write can
+leave an incomplete newly created file, reported explicitly and retained rather
+than deleted. Filesystems without directory-sync support cannot promise that
+extra durability step. Existing files and racing destinations stay intact.
+
 The runtime continuation contract, scoped memory changes and evidence boundaries
 are in [native runtime](project-tuning-runtime.md). The complete feature inventory
 above remains authoritative; a passing runtime test is not editor/MTS completion.
@@ -130,3 +170,48 @@ hosting claim follows from these source tests. Full exact-candidate local CI and
 focused PR review precede merge; later source changes require fresh evidence.
 The complete feature uses repository-owned optimized stable-path delivery with
 exact source/build/CI provenance and a finite user interaction/listening list.
+
+### Dedicated native reference audition
+
+The tuning window owns a transient reference-tone input independent of selected
+tracks and the project-tuning enable switch. Its root focus accepts the existing
+computer-keyboard piano mapping, with z/x octave and c/v velocity controls. Text
+and numeric focus do not play notes. Key release works after modifier changes;
+window deactivation, closing tuning, project replacement, Stop and retirement
+cancel the lease. A canceled lease cannot restart from autorepeat.
+
+The engine mixes a fixed-capacity PolyBLEP triangle/square/saw synthesizer after
+normal playback. It borrows prepared 128-key frequencies, preserves phase and
+envelopes through supported graph retargets, and refuses unsupported Nyquist or
+voice cases explicitly. This is a live monitor, excluded from offline export.
+Held/recent pitch-line highlights observe the synthesizer's actual held-key mask.
+Grouped tuning previews and their cancel/commit publications retain a matching
+keyboard/audition activation, and preparation refusal precedes canonical history
+commit. Opening or auditioning does not enable tuning or dirty the project.
+
+Cloud source evidence: the real desktop worker-to-audio bridge test rendered
+nonzero PCM without a selected track; the callback retarget test checked an
+independent waveform oracle with zero total/net callback allocations; GPUI tests
+covered root/numeric focus, modified key release and close cancellation. Native
+Mac listening, focus and physical deadline acceptance remain pending.
+
+The pitch line also projects admitted Arrangement and Session MIDI gates from the
+exact audio-applied prepared revision and route snapshot, including notes omitted
+from the 32-note drawing preview. It queries a reusable fixed buffer on the UI
+side at most about30 times per second, uses the applied source while edits are
+pending, and keeps a400ms recent marker. Stop, faults, unavailable source/route
+identity and project replacement clear held playback gates. These are MIDI gate
+observations at the reported transport cursor, not synth loudness/release-tail or
+physical hardware-input telemetry. Reference audition retains its actual held mask.
+
+Current audition preparation failures are shown only for the still-owned input;
+stale completions cannot replace a newer activation or its error. A held input
+refused under one table is retried on a valid retune without restarting voices
+that actually continued. New tuning gestures wait for pending canonical edits;
+Cancel remains available. Loading or importing an identical scale still updates
+preset metadata, but preserves project revision, clean state, Redo and audio.
+
+Reference audition retains a pending preparation owner until its matching worker
+completion is consumed, so cancellation before event delivery cannot hide a
+preparation error. Stop, focus loss, close and replacement still cancel ownership
+immediately; stale completions cannot report over a newer owner.

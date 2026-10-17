@@ -1939,6 +1939,7 @@ impl Callback {
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
                     {
                         previous.playback.cancel_computer_keyboard();
+                        previous.playback.cancel_tuning_audition();
                     }
                     let revision = next.revision;
                     // A held EQ8 selector normally follows the current pair
