@@ -292,6 +292,27 @@ mod native {
     }
 
     #[gpui::test]
+    fn command_t_preserves_active_gain_numeric_draft(cx: &mut TestAppContext) {
+        let (handle, entity, _) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("gain-point-value-value").unwrap();
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        visual.run_until_parked();
+        let focus = visual.update(|window, cx| window.focused(cx).unwrap());
+        visual.simulate_keystrokes("cmd-t");
+        visual.update(|window, _| assert!(focus.is_focused(window)));
+        entity.read_with(&visual, |view, cx| {
+            assert!(view.gain_numeric_editing(cx));
+            assert!(view.last_enqueued_edit.is_none());
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+
+    #[gpui::test]
     fn command_f_preserves_invalid_gain_focus_until_draft_is_cancelled(cx: &mut TestAppContext) {
         let (handle, entity, _) = window(cx);
         let visual = &mut VisualTestContext::from_window(handle, cx);

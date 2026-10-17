@@ -1,3 +1,11 @@
+## command-t canonical track creation — pulse2767 / PR375, 17 october 2026
+
+Command-T binds the existing AddTrack action under editor/non-text focus.
+Rendered focus and keyboard regressions cover the editor, browser search,
+clip-name input and gain numeric draft; canonical Undo/Redo remains one edit.
+Required exact-source checks and native acceptance are recorded in Pulse/PR.
+Track layout resizing is separately owned by launcher2714/PR330.
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
