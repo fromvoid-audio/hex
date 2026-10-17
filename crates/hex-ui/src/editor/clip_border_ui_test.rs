@@ -19,6 +19,7 @@ fn click(visual: &mut VisualTestContext, clip: ClipId, modifiers: Modifiers) {
 fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     cx: &mut TestAppContext,
 ) {
+    cx.update(super::bind_editor_keys);
     let (project, track, _, imported) = audio_project();
     let asset = project.clip(imported).unwrap().asset();
     let mut canonical = Editor::new(project, 16).unwrap();
@@ -72,6 +73,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
             start: 18_000,
             length: 144_000,
         });
+        view.snap_grid = super::musical_time::SnapGrid::Off;
         cx.notify();
     });
     visual.run_until_parked();
@@ -184,6 +186,37 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     }
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_clip, primary, "membership-only invalidation");
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+        assert!(view.last_enqueued_edit.is_none());
+    });
+    // The selected border also follows the real held edge preview, and escape
+    // restores the original visible geometry without submitting a model edit.
+    let audio = clips[2].0;
+    click(&mut visual, audio, Modifiers::default());
+    let edge = visual
+        .debug_bounds(Box::leak(
+            format!("clip-trim-right-{}", audio.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let moved = gpui::point(edge.x - gpui::px(8.0), edge.y);
+    visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .rendered_border("trim-live-preview")
+            .expect("held edge preview")
+            .0,
+        gpui::Hsla::from(gpui::rgb(theme::color(theme::PaletteRole::Primary)))
+    );
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("trim-live-preview").is_none());
+    assert_eq!(visual.debug_bounds(selectors[2]), Some(bounds[2]));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.active_trim_drag.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
         assert!(view.last_enqueued_edit.is_none());
     });
