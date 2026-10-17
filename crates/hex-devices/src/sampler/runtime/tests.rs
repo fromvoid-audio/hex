@@ -1,0 +1,232 @@
+use super::*;
+use hex_lattice::{
+    BorrowedDeviceResources, DeviceResourceIdentity, DeviceResourcePcm, DeviceResourceView,
+    NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+};
+use hex_lattice_contract::{DeviceAssetKey, DeviceAssetSlot};
+
+fn view(pcm: &[f32]) -> DeviceResourceView<'_> {
+    DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(1).unwrap(),
+            content: [2; 32],
+            derivation_version: 1,
+            derivation: [3; 32],
+        },
+        sample_rate: 8_000,
+        pcm: DeviceResourcePcm::Mono(pcm),
+    }
+}
+fn prepare(view: DeviceResourceView<'_>, mode: Mode<'_>, voices: usize) -> PreparedSamplerRuntime {
+    let mut settings = Settings::new(Region {
+        start: 0,
+        end: view.pcm.frames(),
+    });
+    settings.mode = mode;
+    PreparedSamplerPlan::new(
+        SampleShape::new(view.pcm.frames(), 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(view)
+    .unwrap()
+    .prepare_runtime_on_control(voices, 259, &hex_lattice::TuningTable::default())
+    .unwrap()
+}
+fn pair(prepared: &PreparedSamplerRuntime) -> NativeInstrumentRuntimePair {
+    NativeInstrumentRuntimePair::new(
+        prepared,
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 259,
+            max_active_occurrences: MAX_SAMPLER_RUNTIME_VOICES,
+            max_tail_frames: 8_000 * 600,
+        },
+    )
+    .unwrap()
+}
+fn on(frame_offset: usize, occurrence_id: u64, pitch: u8) -> NativeInstrumentEvent {
+    NativeInstrumentEvent::NoteOn {
+        frame_offset,
+        occurrence_id,
+        pitch,
+        velocity: 127,
+    }
+}
+fn off(frame_offset: usize, occurrence_id: u64) -> NativeInstrumentEvent {
+    NativeInstrumentEvent::NoteOff {
+        frame_offset,
+        occurrence_id,
+    }
+}
+fn process(
+    pair: &mut NativeInstrumentRuntimePair,
+    events: &[NativeInstrumentEvent],
+    output: &mut [StereoFrame],
+    resources: &dyn DeviceResources,
+) {
+    pair.begin_block();
+    pair.process_block(events, output, resources).unwrap();
+    pair.commit_block();
+}
+
+#[test]
+fn actual_mutable_pair_keeps_trigger_audio_after_note_off_and_retires_at_source_end() {
+    let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        4,
+    );
+    assert!(prepared.declared_twin_bytes() * 2 < 2 * 1024 * 1024);
+    assert_eq!(prepared.max_events_per_block(), 259);
+    let mut whole = pair(&prepared);
+    let mut output = [[0.0; 2]; 12];
+    process(
+        &mut whole,
+        &[on(0, 1, 60), off(1, 1)],
+        &mut output,
+        &resources,
+    );
+    for (actual, expected) in output[..8].iter().zip(pcm) {
+        assert_eq!(*actual, [expected; 2]);
+    }
+    assert_eq!(output[8..], [[0.0; 2]; 4]);
+    // The actual twin is quiescent after source exhaustion, not MIDI note-off.
+    let mut split = pair(&prepared);
+    let mut partitioned = [[0.0; 2]; 12];
+    process(
+        &mut split,
+        &[on(0, 1, 60), off(1, 1)],
+        &mut partitioned[..2],
+        &resources,
+    );
+    process(&mut split, &[], &mut partitioned[2..7], &resources);
+    process(&mut split, &[], &mut partitioned[7..], &resources);
+    assert_eq!(output, partitioned);
+}
+
+#[test]
+fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
+    let pcm = [1.0, 3.0, 5.0, 7.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(views[0], Mode::Classic { loop_region: None }, 1);
+    let mut runtime = pair(&prepared);
+    let mut untouched = [[9.0; 2]; 2];
+    runtime.begin_block();
+    assert_eq!(
+        runtime.process_block(&[on(0, 1, 60), on(0, 2, 60)], &mut untouched, &resources),
+        Err(Error::EventCapacityExceeded)
+    );
+    assert_eq!(untouched, [[9.0; 2]; 2]);
+    runtime.rollback_block();
+    let mut speculative = [[0.0; 2]; 2];
+    runtime.begin_block();
+    runtime
+        .process_block(&[on(0, 1, 60)], &mut speculative, &resources)
+        .unwrap();
+    runtime.rollback_block();
+    let mut committed = [[0.0; 2]; 2];
+    process(&mut runtime, &[on(0, 1, 60)], &mut committed, &resources);
+    assert_eq!(speculative, committed);
+    assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
+    // Equal-offset gate-off frees a zero-release slot before the next onset.
+    committed.fill([0.0; 2]);
+    process(
+        &mut runtime,
+        &[off(0, 1), on(0, 2, 60)],
+        &mut committed,
+        &resources,
+    );
+    assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
+}
+
+#[test]
+fn slice_selection_and_source_refusal_use_original_pcm_through_native_runtime() {
+    let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::Slice {
+            starts: &[0, 3, 5],
+            base_note: 60,
+            gate: GateMode::Trigger,
+        },
+        4,
+    );
+    let mut runtime = pair(&prepared);
+    let mut wrong = views;
+    wrong[0].identity.content[31] ^= 1;
+    let mut output = [[9.0; 2]; 4];
+    runtime.begin_block();
+    assert_eq!(
+        runtime.process_block(
+            &[on(0, 1, 61)],
+            &mut output,
+            &BorrowedDeviceResources(&wrong)
+        ),
+        Err(Error::ResourceUnavailable)
+    );
+    runtime.rollback_block();
+    assert_eq!(output, [[9.0; 2]; 4]);
+    output.fill([0.0; 2]);
+    process(
+        &mut runtime,
+        &[on(0, 1, 61), off(0, 1)],
+        &mut output,
+        &resources,
+    );
+    assert_eq!(output, [[7.0; 2], [9.0; 2], [0.0; 2], [0.0; 2]]);
+}
+
+#[test]
+fn project_tuning_velocity_amount_and_gated_release_reach_actual_mutable_samples() {
+    let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut frequencies = *hex_lattice::TuningTable::default().frequencies();
+    frequencies[61] = frequencies[60] * 1.5;
+    let tuning = hex_lattice::TuningTable::new(frequencies).unwrap();
+    let mut settings = Settings::new(Region { start: 0, end: 6 });
+    settings.velocity_amount = 0.0;
+    settings.envelope.release_seconds = 2.0 / 8_000.0;
+    let bound = PreparedSamplerPlan::new(
+        SampleShape::new(6, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap();
+    let prepared = bound.prepare_runtime_on_control(4, 259, &tuning).unwrap();
+    assert_eq!(prepared.max_release_tail_frames(), 2);
+    let mut runtime = pair(&prepared);
+    let note = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 61,
+        velocity: 1,
+    };
+    let mut output = [[0.0; 2]; 6];
+    process(&mut runtime, &[note, off(2, 1)], &mut output, &resources);
+    assert_eq!(
+        output,
+        [[1.0; 2], [4.0; 2], [7.0; 2], [5.0; 2], [0.0; 2], [0.0; 2]]
+    );
+    let original = prepared.create_runtime();
+    let same = prepared.create_runtime();
+    assert!(same.can_copy_history_from(original.as_ref()));
+    let neutral = bound
+        .prepare_runtime_on_control(4, 259, &hex_lattice::TuningTable::default())
+        .unwrap()
+        .create_runtime();
+    assert!(!neutral.can_copy_history_from(original.as_ref()));
+}

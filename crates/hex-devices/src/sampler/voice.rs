@@ -6,7 +6,7 @@ use hex_lattice::DeviceResourcePcm;
 /// a gated voice freezes its ADS level at note-off and ramps to zero; source
 /// playback (and a Classic loop) continues during release. Age queries may be
 /// made in any order, enabling seek/block-independent original render fixtures.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VoiceCoefficients {
     pub(super) expected_frames: usize,
     pub(super) channels: SampleChannels,

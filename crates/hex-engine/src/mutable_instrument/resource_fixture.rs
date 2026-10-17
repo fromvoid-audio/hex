@@ -3,6 +3,42 @@
 use super::*;
 use crate::native_device_resources::DeviceResourceConfiguration;
 
+/// Unregistered sampler DSP allocation seam. It grants neither source storage
+/// provenance nor host graph admission; the audio probe retains its own input.
+pub fn sampler_runtime_for_allocation_probe(
+    view: hex_lattice::DeviceResourceView<'_>,
+    output_rate: u32,
+) -> Result<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>, hex_devices::Invalid> {
+    use hex_devices::sampler::{
+        Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape, Settings,
+    };
+    let channels = match view.pcm {
+        hex_lattice::DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
+        hex_lattice::DeviceResourcePcm::Stereo(_) => SampleChannels::Stereo,
+    };
+    let region = Region {
+        start: 0,
+        end: view.pcm.frames(),
+    };
+    let mut settings = Settings::new(region);
+    settings.mode = Mode::Classic {
+        loop_region: Some(region),
+    };
+    let plan = PreparedSamplerPlan::new(
+        SampleShape::new(view.pcm.frames(), view.sample_rate, channels)?,
+        output_rate,
+        settings,
+    )?;
+    Ok(Box::new(
+        plan.bind_source_on_control(view)?
+            .prepare_runtime_on_control(
+                4,
+                MAX_MUTABLE_EVENTS_PER_QUERY,
+                &hex_lattice::TuningTable::default(),
+            )?,
+    ))
+}
+
 pub struct MutableResourceHostFixture {
     runtime: MutableInstrumentTrackRuntime,
     track: TrackId,

@@ -6,6 +6,92 @@ use hex_lattice::{
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
 };
+
+#[test]
+fn sampler_pair_event_history_and_original_pcm_queries_allocate_and_free_nothing() {
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    };
+    let mono = [0.5, 1.0, -0.25, 0.75];
+    let stereo = mono.map(|value| [value, -value]);
+    for pcm in [
+        DeviceResourcePcm::Mono(&mono),
+        DeviceResourcePcm::Stereo(&stereo),
+    ] {
+        let views = [DeviceResourceView {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            identity: DeviceResourceIdentity {
+                asset: DeviceAssetKey::new(1).unwrap(),
+                content: [2; 32],
+                derivation_version: 1,
+                derivation: [3; 32],
+            },
+            sample_rate: 8_000,
+            pcm,
+        }];
+        let resources = BorrowedDeviceResources(&views);
+        let prepared = hex_engine::sampler_runtime_for_allocation_probe(views[0], 8_000).unwrap();
+        let mut runtime = NativeInstrumentRuntimePair::new(
+            prepared.as_ref(),
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: 259,
+                max_active_occurrences: 32,
+                max_tail_frames: 8_000 * 600,
+            },
+        )
+        .unwrap();
+        let mut checksum = [0.0_f64; 2];
+        let measurement = allocation_counter::measure(|| {
+            for occurrence_id in 1..=128 {
+                let events = [
+                    NativeInstrumentEvent::NoteOn {
+                        frame_offset: 0,
+                        occurrence_id,
+                        pitch: 60,
+                        velocity: 127,
+                    },
+                    NativeInstrumentEvent::NoteOff {
+                        frame_offset: 8,
+                        occurrence_id,
+                    },
+                ];
+                let mut speculative = [[0.0; 2]; 16];
+                runtime.begin_block();
+                runtime
+                    .process_block(&events, &mut speculative, &resources)
+                    .unwrap();
+                runtime.rollback_block();
+                let mut committed = [[0.0; 2]; 16];
+                runtime.begin_block();
+                runtime
+                    .process_block(&events, &mut committed, &resources)
+                    .unwrap();
+                runtime.commit_block();
+                assert_eq!(speculative, committed);
+                for frame in committed {
+                    for channel in 0..2 {
+                        checksum[channel] += f64::from(frame[channel]);
+                    }
+                }
+            }
+        });
+        let expected_right = match pcm {
+            DeviceResourcePcm::Mono(_) => 512.0,
+            DeviceResourcePcm::Stereo(_) => -512.0,
+        };
+        assert_eq!(checksum, [512.0, expected_right]);
+        assert_eq!(
+            (
+                measurement.count_total,
+                measurement.bytes_total,
+                measurement.count_current,
+                measurement.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+}
 #[test]
 fn canonical_midi_control_inventory_has_zero_allocations_and_unchanged_owner_counts() {
     use hex_engine::{AudioRootStorageLedger, AudioStorageLedgerReservation};

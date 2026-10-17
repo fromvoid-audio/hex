@@ -89,6 +89,25 @@ borrow or second cache. The host must still prove complete admission/custody and
 retain the exact source configuration for current, carried and outgoing voices.
 This adapter boundary does not register the device or open resource processing.
 
+`BoundSamplerPlan::prepare_runtime_on_control` now prepares a fixed 128-key
+coefficient table against the actual project tuning. A mutable lattice runtime
+uses at most 32 scalar voice slots, caller-bounded events and borrowed original
+PCM; no pitch exponentiation or PCM scan occurs in processing. Its declared twin
+storage includes the complete key table and active state, under the existing
+runtime pair cap. Gate/release and Trigger/source exhaustion are distinct;
+same-offset events retain caller order, and unsupported capacity/source batches
+refuse before the paired runtime or output changes. Speculative rollback and
+history copying use the existing lattice runtime pair. Exact source/configuration
+identity governs history compatibility; identity is never a lease.
+
+This is still an unregistered runtime slice. Voice stealing/retrigger/glide,
+filter/LFO/modulation, high-quality resampling and warp, authored state/loading,
+the functional panel and full graph publication/retirement remain unfinished.
+The 32-slot bound is the current kernel/runtime support envelope, not a measured
+Live limit or permission to silently drop notes. Audio-harness tests measure
+Mono/Stereo processing, events and rollback with zero allocations/frees and
+independent PCM sums; they do not establish whole-root native admission.
+
 The kernel implements these original laws, pending reference measurement:
 
 | Area | Implemented contract |
