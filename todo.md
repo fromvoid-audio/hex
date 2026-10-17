@@ -1,3 +1,17 @@
+## held-clip intersection accent — #2696 / PR314, 17 october 2026
+
+Arrangement landing previews tint only occupied audio/MIDI intersections with the
+editable secondary theme accent. Gaps and exact touches stay clear; moves exclude
+the original clip, copies include it, and overlapping victims share uniform tint.
+Browser samples use the same landing path. Viewport bounds and drag cleanup follow
+the existing preview lifetime; project edits and overwrite behavior are unchanged.
+
+The two rendered pointer/modifier regressions pass; the span boundary/merge check
+passes. Architecture, GPUI/dependency/style/layout guards, formatting and affected
+strict Clippy pass at the source milestone. Final full local-CI evidence belongs
+to [PR314](https://github.com/PORTALSURFER/hex/pull/314); native macOS visual/input
+acceptance is pending. See [the finite checklist](docs/clip-drag.md).
+
 ## clip selection and inline names — #2660 / PR276, 17 october 2026
 
 Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
