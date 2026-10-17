@@ -385,7 +385,7 @@ impl NativeDeviceMetadata for BatchDefinition {
         }
         Ok(state.clone())
     }
-    fn parameters_for_state(
+    fn descriptors_for_state(
         &self,
         state: &NativeDeviceState,
     ) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
