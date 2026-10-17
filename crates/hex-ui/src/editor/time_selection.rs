@@ -799,7 +799,11 @@ impl EditorView {
         had_move || had_gesture || had_range
     }
 
-    fn visible_lane_at(&self, x: f32, y: f32) -> Option<(TrackId, super::drag::LaneBounds)> {
+    pub(super) fn visible_lane_at(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(TrackId, super::drag::LaneBounds)> {
         let state = self.state.as_ref()?;
         let (track, lane) = self
             .drag_lanes
@@ -812,7 +816,7 @@ impl EditorView {
         Some((*track, *lane))
     }
 
-    fn track_has_clip_at_frame(
+    pub(super) fn track_has_clip_at_frame(
         &self,
         track: TrackId,
         frame: u64,
