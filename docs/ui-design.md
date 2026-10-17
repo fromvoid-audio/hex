@@ -414,3 +414,28 @@ Arrangement audio and MIDI clips do not show a container hover tooltip over
 their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
 context menus and renaming retain their existing behavior. Distinct controls,
 including fade handles and track names, retain their own descriptive tooltips.
+
+## arrangement track sizing
+
+The right-hand track-header column resizes from its left edge, including the
+pinned main header in an empty project. The complete existing controls set the
+176 px minimum; the maximum reuses the 480 px browser default and retains the
+existing 560 px workspace budget minus that minimum header (384 px timeline).
+The current arrangement width can therefore reduce the maximum. These are
+implementation layout bounds, not numerical requirements supplied by the user.
+
+An individual regular header's bottom edge changes that header and lane together.
+The existing 44 px row is the minimum, and the visible track viewport at pointer
+capture is the height limit. The main row remains pinned at its existing height.
+The gesture measures displacement from the original pointer, clamps without
+accumulating error, applies the final release position, and restores the prior
+value on Escape, focus/window changes, lost-button input or stale source revision.
+
+Sizing is editor display state, like the viewport; it does not create an audio
+edit, dirty the project, add Undo entries or change the saved project format.
+Header width lasts for the view; per-track heights reset on project replacement
+and disappear for removed IDs. Timeline/ruler/grid/overview/cursor/drop geometry
+shares the same effective width. GPUI's variable-height list retains logical
+scroll anchors; it prepares the bounded row set on structural/viewport-width changes and only
+invalidates the resized row during a height drag. Native smoothness, physical
+pointer capture and minimum-size control acceptance require the finite Mac check.
