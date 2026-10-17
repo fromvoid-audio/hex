@@ -7,10 +7,24 @@ pub(crate) fn audio_to(
     track: TrackId,
     start: u64,
 ) -> Result<Created, Invalid> {
-    let mut copied = project
+    let copied = project
         .clip(clip_id)
         .cloned()
         .ok_or(Invalid("clip no longer exists"))?;
+    if original_audio_at(project, track, clip_id, start) {
+        return Ok(Created::None);
+    }
+    let id = audio_owned_to(project, copied, track, start)?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::Clip(id))
+}
+
+pub(crate) fn audio_owned_to(
+    project: &mut Project,
+    mut copied: crate::Clip,
+    track: TrackId,
+    start: u64,
+) -> Result<ClipId, Invalid> {
     crate::audio_edit::move_clip(&mut copied, start, project.tempo_map())?;
     let end = start
         .checked_add(copied.duration)
@@ -18,9 +32,6 @@ pub(crate) fn audio_to(
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
-    if original_audio_at(project, track, clip_id, start) {
-        return Ok(Created::None);
-    }
 
     crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
@@ -34,8 +45,7 @@ pub(crate) fn audio_to(
         .try_reserve(1)
         .map_err(|_| Invalid("could not reserve copied clip storage"))?;
     clips.push(copied);
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(copied_id))
+    Ok(copied_id)
 }
 
 pub(crate) fn midi_to(
@@ -50,10 +60,24 @@ pub(crate) fn midi_to(
         .find(|candidate| candidate.midi_clips().iter().any(|item| item.id == clip_id))
         .map(|candidate| candidate.id)
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let mut copied = project
+    let copied = project
         .midi_clip(clip_id)
         .cloned()
         .ok_or(Invalid("midi clip no longer exists"))?;
+    if source_track == track && copied.start == start {
+        return Ok(Created::None);
+    }
+    let id = midi_owned_to(project, copied, track, start)?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(Created::Clip(id))
+}
+
+pub(crate) fn midi_owned_to(
+    project: &mut Project,
+    mut copied: crate::MidiClip,
+    track: TrackId,
+    start: crate::BeatTime,
+) -> Result<ClipId, Invalid> {
     let end_raw = start
         .raw()
         .checked_add(copied.length.raw())
@@ -62,9 +86,6 @@ pub(crate) fn midi_to(
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
-    if source_track == track && copied.start == start {
-        return Ok(Created::None);
-    }
     let added_notes = copied.source.notes.len();
     crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
     crate::midi::overwrite_midi_interval(project, track, start, end, ClipId(0))?;
@@ -89,8 +110,7 @@ pub(crate) fn midi_to(
         .try_reserve(1)
         .map_err(|_| Invalid("could not reserve copied midi clip storage"))?;
     clips.push(copied);
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(copied_id))
+    Ok(copied_id)
 }
 
 fn original_audio_at(project: &Project, track: TrackId, clip: ClipId, start: u64) -> bool {

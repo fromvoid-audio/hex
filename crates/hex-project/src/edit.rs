@@ -186,6 +186,12 @@ pub enum Command {
         frame: u64,
     },
     /// Keyboard paste that preserves original track IDs for multi-row clipboards.
+    PasteClips {
+        clipboard: std::sync::Arc<crate::ClipClipboard>,
+        track: TrackId,
+        frame: u64,
+        insert: bool,
+    },
     PasteTimeRangeOnSourceTracks {
         clipboard: std::sync::Arc<crate::RangeClipboard>,
         track: TrackId,
@@ -2051,6 +2057,12 @@ impl Project {
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
+            Command::PasteClips {
+                clipboard,
+                track,
+                frame,
+                insert,
+            } => crate::clip_clipboard::paste(self, &clipboard, track, frame, insert),
             Command::CopyClipTo { clip, track, start } => {
                 crate::clip_copy::audio_to(self, clip, track, start)
             }

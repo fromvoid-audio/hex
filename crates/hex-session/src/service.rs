@@ -372,6 +372,7 @@ pub enum Request {
         to_audio: bool,
     },
     CopyTimeRange(hex_project::TimeRange),
+    CopyClips(Vec<hex_project::ClipId>),
     CutTimeRange(hex_project::TimeRange),
     PasteTimeRange {
         track: hex_project::TrackId,
@@ -921,7 +922,11 @@ fn run_worker(
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
-    let mut range_clipboard: Option<Arc<hex_project::RangeClipboard>> = None;
+    enum ArrangementClipboard {
+        Range(Arc<hex_project::RangeClipboard>),
+        Clips(Arc<hex_project::ClipClipboard>),
+    }
+    let mut range_clipboard: Option<ArrangementClipboard> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -1527,10 +1532,17 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::CopyClips(ids) => match session.project().capture_clips(&ids) {
+                    Ok(captured) => {
+                        range_clipboard = Some(ArrangementClipboard::Clips(Arc::new(captured)));
+                        status = Some("clips copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
                 Request::CopyTimeRange(range) => match session.project().capture_time_range(&range)
                 {
                     Ok(captured) => {
-                        range_clipboard = Some(Arc::new(captured));
+                        range_clipboard = Some(ArrangementClipboard::Range(Arc::new(captured)));
                         status = Some("time selection copied".into());
                     }
                     Err(reason) => error = Some(reason.to_string()),
@@ -1543,7 +1555,8 @@ fn run_worker(
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                             ) {
                                 Ok((_, prepared)) => {
-                                    range_clipboard = Some(Arc::new(captured));
+                                    range_clipboard =
+                                        Some(ArrangementClipboard::Range(Arc::new(captured)));
                                     if session.project() != state.project.as_ref() {
                                         unsaved = true;
                                         replacement_revision = Some(prepared);
@@ -1559,10 +1572,20 @@ fn run_worker(
                 Request::PasteTimeRange { track, frame } => {
                     if let Some(clipboard) = &range_clipboard {
                         match session.command_prepared_revision(
-                            Command::PasteTimeRangeOnSourceTracks {
-                                clipboard: Arc::clone(clipboard),
-                                track,
-                                frame,
+                            match clipboard {
+                                ArrangementClipboard::Range(clipboard) => {
+                                    Command::PasteTimeRangeOnSourceTracks {
+                                        clipboard: Arc::clone(clipboard),
+                                        track,
+                                        frame,
+                                    }
+                                }
+                                ArrangementClipboard::Clips(clipboard) => Command::PasteClips {
+                                    clipboard: Arc::clone(clipboard),
+                                    track,
+                                    frame,
+                                    insert: false,
+                                },
                             },
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                         ) {
@@ -1571,7 +1594,13 @@ fn run_worker(
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
                                 }
-                                status = Some("time selection pasted".into());
+                                status = Some(
+                                    match clipboard {
+                                        ArrangementClipboard::Range(_) => "time selection pasted",
+                                        ArrangementClipboard::Clips(_) => "clips pasted",
+                                    }
+                                    .into(),
+                                );
                             }
                             Err(reason) => error = Some(reason.to_string()),
                         }
@@ -1582,10 +1611,20 @@ fn run_worker(
                 Request::InsertTimeRange { track, frame } => {
                     if let Some(clipboard) = &range_clipboard {
                         match session.command_prepared_revision(
-                            Command::InsertTimeRangeOnSourceTracks {
-                                clipboard: Arc::clone(clipboard),
-                                track,
-                                frame,
+                            match clipboard {
+                                ArrangementClipboard::Range(clipboard) => {
+                                    Command::InsertTimeRangeOnSourceTracks {
+                                        clipboard: Arc::clone(clipboard),
+                                        track,
+                                        frame,
+                                    }
+                                }
+                                ArrangementClipboard::Clips(clipboard) => Command::PasteClips {
+                                    clipboard: Arc::clone(clipboard),
+                                    track,
+                                    frame,
+                                    insert: true,
+                                },
                             },
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                         ) {

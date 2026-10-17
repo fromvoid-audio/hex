@@ -14,7 +14,9 @@ pub use audio_edit::{
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+mod clip_clipboard;
 mod clip_copy;
+pub use clip_clipboard::ClipClipboard;
 mod clip_fragment;
 mod conversion;
 mod device;
