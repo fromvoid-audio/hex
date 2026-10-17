@@ -1,5 +1,12 @@
 # hex-storage
 
+Device asset references use a strict schema30 manifest over the complete
+schema29 body; asset-free projects retain schema29. Every device has one bounded
+manifest entry. Legacy writers and asset-unaware presets explicitly refuse these
+references. Storage preserves neutral identities and resolves them through the
+project model, without decoding device payloads or loading PCM. See
+[device assets](../../docs/device-assets.md).
+
 ## Purpose
 
 Versioned native project metadata serialization, create-new saves, and recoverable
