@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import signal
 import subprocess
@@ -52,7 +53,8 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
     with runner.guarded_release(adopt=adopt) as ownership:
         argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
         log_path = runner.output_dir / "optimized-build.log"
-        with log_path.open("w") as log:
+        with log_path.open("w") as log, \
+                ci.terminal_progress("building optimized hex"):
             process = subprocess.run(argv, cwd=runner.root, env=runner.env,
                                      stdout=subprocess.PIPE, stderr=log, text=True, check=False)
             log.write(process.stdout)
@@ -117,26 +119,83 @@ def assert_inactive(app: Path) -> None:
                                 "no application was force-quit; disk replacement cannot reload a process")
 
 
-def inventory(app: Path) -> dict[str, str]:
+def inventory(app: Path, *, signed_payload: bool = False, include_receipt: bool = False) -> dict[str, str]:
     result = {}
     for path in sorted(app.rglob("*")):
         if path.is_symlink():
             raise DeliveryError(f"symlink in staged app: {path}")
-        if path.is_file() and path.relative_to(app).as_posix() != "Contents/Resources/test-build.json":
-            result[path.relative_to(app).as_posix()] = sha(path)
+        relative = path.relative_to(app).as_posix()
+        if not include_receipt and relative == "Contents/Resources/test-build.json":
+            continue
+        # Signing changes native code and creates the resource seal. The seal
+        # itself authenticates those files and the pre-signing bundled receipt.
+        if signed_payload and (relative == "Contents/MacOS/hex" or relative.startswith("Contents/_CodeSignature/")):
+            continue
+        if path.is_file():
+            result[relative] = sha(path)
     return result
 
 
+def signing_configuration(configuration: dict) -> dict[str, str]:
+    signing = configuration.get("signing")
+    if (not isinstance(signing, dict) or set(signing) != {"certificate_sha1", "team_identifier"}
+            or not isinstance(signing.get("certificate_sha1"), str)
+            or re.fullmatch(r"[0-9A-F]{40}", signing["certificate_sha1"]) is None
+            or not isinstance(signing.get("team_identifier"), str)
+            or re.fullmatch(r"[A-Z0-9]{10}", signing["team_identifier"]) is None):
+        raise DeliveryError("configure an explicit Developer ID certificate SHA1 and team in scripts/hex-test-build.json")
+    return dict(signing)
+
+
+def native_signature(binary: Path) -> dict[str, str | None]:
+    result = subprocess.run(["codesign", "--display", "--verbose=4", "--requirements", "-", str(binary)],
+                            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = result.stdout.splitlines()
+    fields = dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("designated =>"))
+    return {"identifier": fields.get("Identifier"), "team_identifier": fields.get("TeamIdentifier"),
+            "designated_requirement": next((line for line in lines if line.startswith("designated =>")), None)}
+
+
+def verify_signed_bundle(app: Path, signing: dict[str, str], actual: dict) -> None:
+    signing = signing_configuration({"signing": signing})
+    requirement = (f'identifier "{IDENTITY}" and anchor apple generic and '
+                   f'certificate leaf[subject.OU] = "{signing["team_identifier"]}" and '
+                   'certificate leaf[field.1.2.840.113635.100.6.1.13] exists and '
+                   f'certificate leaf = H"{signing["certificate_sha1"]}"')
+    run(["codesign", "--verify", "--strict", "--test-requirement", "=" + requirement, str(app)])
+    designated = actual.get("designated_requirement") or ""
+    if (actual.get("identifier") != IDENTITY or actual.get("team_identifier") != signing["team_identifier"]
+            or "cdhash" in designated.lower() or f'identifier "{IDENTITY}"' not in designated
+            or signing["team_identifier"] not in designated):
+        raise DeliveryError("signed app has no stable configured identifier/team designated requirement")
+
+
+def sign_bundle(app: Path, signing: dict[str, str]) -> None:
+    # No identity search or ad-hoc fallback: keychain/signing failures abort
+    # before publication. Local test signing does not request notarization.
+    run(["codesign", "--force", "--sign", signing["certificate_sha1"], "--identifier", IDENTITY,
+         "--timestamp=none", str(app)])
+
+
 def verify_native_executable(binary: Path) -> None:
-    # The local bundle is unsigned; validate Mach-O code, not a bundle seal.
-    # verify() independently checks every packaged resource against the receipt.
+    # Covers legacy linker-signed code and the input/output native executable;
+    # schema-2 verification additionally requires the full signed bundle seal.
     run(["codesign", "--verify", "--strict", "--ignore-resources", str(binary)])
 
 
 def verify(app: Path) -> dict:
     assert_identity(app)
     receipt = json.loads((app / "Contents/Resources/test-build.json").read_text())
-    if receipt.get("files") != inventory(app):
+    actual = native_signature(app / "Contents/MacOS/hex")
+    signed = actual.get("team_identifier") not in (None, "not set")
+    if receipt.get("schema") == 2:
+        configured = signing_configuration(json.loads((ROOT / "scripts/hex-test-build.json").read_text()))
+        if receipt.get("signing") != configured:
+            raise DeliveryError("signed receipt does not match the configured certificate/team")
+        verify_signed_bundle(app, configured, actual)
+    elif signed:
+        raise DeliveryError("signed app requires a sealed schema-2 receipt; refusing legacy verification")
+    if receipt.get("files") != inventory(app, signed_payload=receipt.get("schema") == 2):
         raise DeliveryError(f"artifact checksum mismatch: {app}")
     if not os.access(app / "Contents/MacOS/hex", os.X_OK):
         raise DeliveryError("packaged binary is not executable")
@@ -286,6 +345,18 @@ def validate_ci(report: Path, runner, candidate: str) -> dict:
     return evidence
 
 
+def validate_source(runner, candidate: str, expected: dict | None = None) -> dict:
+    """Freeze clean exact source for build-only launch; this is not CI evidence."""
+    if not runner._capture_repository_state("start_tree"):
+        raise DeliveryError("cannot identify current source")
+    current = runner.summary["start_tree"]
+    if (len(candidate) != 40 or any(char not in "0123456789abcdef" for char in candidate)
+            or current["dirty"] or current["commit"] != candidate
+            or (expected is not None and current != expected)):
+        raise DeliveryError("build-only source is dirty, changed or differs from the exact candidate")
+    return dict(current)
+
+
 def build(args) -> dict:
     if sys.platform != "darwin":
         raise DeliveryError("native test delivery requires macOS")
@@ -293,6 +364,7 @@ def build(args) -> dict:
     if not common.is_absolute():
         common = ROOT / common
     configuration = json.loads((ROOT / "scripts/hex-test-build.json").read_text())
+    signing = signing_configuration(configuration)
     configured = Path(os.environ.get("HEX_DEV_APP_PATH", configuration["app_path"]))
     app = configured if configured.is_absolute() else common.resolve().parent / configured
     app = app.absolute()
@@ -306,7 +378,16 @@ def build(args) -> dict:
         if app.exists():
             assert_identity(app)
         runner = ci.LocalCiRunner(ROOT, adopt_target=False)
-        validate_ci(args.ci_report, runner, args.candidate)
+        build_only = getattr(args, "build_only", False)
+        source_evidence = validate_source(runner, args.candidate) if build_only else None
+
+        def revalidate() -> None:
+            if build_only:
+                validate_source(runner, args.candidate, expected=source_evidence)
+            else:
+                validate_ci(args.ci_report, runner, args.candidate)
+
+        revalidate()
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:
             raise DeliveryError("include PR head revisions")
@@ -326,7 +407,7 @@ def build(args) -> dict:
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
-            validate_ci(args.ci_report, runner, args.candidate)
+            revalidate()
             workspace = install_workspace(app)
             workspace.mkdir()
             stage = workspace / "stage.app"
@@ -346,35 +427,49 @@ def build(args) -> dict:
             with (contents / "Info.plist").open("wb") as output:
                 plistlib.dump(info, output)
             (contents / "Resources/USER-TEST.md").write_text(checklist)
-            shutil.copy2(args.ci_report, contents / "Resources/local-ci-summary.json")
-            # Rust's native linker ad-hoc signs the executable. The bundle is local,
-            # unsigned packaging; never mutate that binary after hashing it.
+            if build_only:
+                write_json(contents / "Resources/source-verification.json", {
+                    "mode": "source-only", "tests": "not_run", "source": source_evidence,
+                })
+            else:
+                shutil.copy2(args.ci_report, contents / "Resources/local-ci-summary.json")
             verify_native_executable(contents / "MacOS/hex")
-            receipt = {"schema": 1, "version": version, "source": source, "candidate": args.candidate,
+            receipt = {"schema": 2, "version": version, "source": source, "candidate": args.candidate,
                        "source_sha256": runner.summary["start_tree"]["content_sha256"],
                        "profile": "release", "build_argv": argv, "target_directory": str(runner.cargo_identity["target_directory"]),
                        "release_target_ownership": {key: release_ownership[key] for key in
                            ("profile", "source", "packages", "target_directory", "owner_path",
                             "lock_path", "action", "cleanup_status", "artifact")},
-                       "ci_report": str(args.ci_report.resolve()), "ci_report_sha256": sha(args.ci_report),
+                       "ci_report": None if build_only else str(args.ci_report.resolve()),
+                       "ci_report_sha256": None if build_only else sha(args.ci_report),
+                       "verification": {"mode": "source-only" if build_only else "full-ci",
+                                        "tests": "not_run" if build_only else "passed"},
                        "included": included, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
-                       "signature": "executable ad-hoc; bundle unsigned",
-                       "files": inventory(stage)}
+                       "signature": "Developer ID sealed local test bundle; not notarized",
+                       "signing": signing,
+                       "input_executable_sha256": sha(contents / "MacOS/hex"),
+                       "files": inventory(stage, signed_payload=True)}
             write_json(contents / "Resources/test-build.json", receipt)
+            sign_bundle(stage, signing)
             verify(stage)
             verify_native_executable(contents / "MacOS/hex")
-            validate_ci(args.ci_report, runner, args.candidate)
+            revalidate()
             activate(app, stage)
             verify_native_executable(app / "Contents/MacOS/hex")
+            receipt = {**receipt, "artifact_files": inventory(app, include_receipt=True),
+                       "native_signature": native_signature(app / "Contents/MacOS/hex")}
             write_json(app.parent / "hex-test-build-receipt.json", receipt)
             return receipt
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ci-report", type=Path, required=True)
-    parser.add_argument("--candidate", required=True, help="full locally verified PR head")
+    verification = parser.add_mutually_exclusive_group(required=True)
+    verification.add_argument("--ci-report", type=Path, help="full exact-source local CI report")
+    verification.add_argument("--build-only", action="store_true",
+                              help="verify clean exact source and build without running or requiring tests")
+    parser.add_argument("--candidate", required=True, help="full exact candidate commit")
     parser.add_argument("--included", type=Path, required=True, help="JSON list of pr/head objects (ticket references optional)")
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",

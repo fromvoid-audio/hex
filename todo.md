@@ -1,3 +1,62 @@
+## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
+
+The borrowed kernel now reports a checked exclusive end age: Trigger follows
+natural source exhaustion, Gate follows the earlier source/release bound, and
+loop gate-plus-release overflow refuses. No shared host/resource/schema/tuning
+or device-registration behavior changes. All11 sampler tests and strict device
+Clippy pass; actual PCM exhaustion/rate/pitch/reverse/slice/partition/overflow
+fixtures cover the new query. Final full CI remains pending; full2679 stays open.
+
+## owned history example feature — #2747 / PR357, 17 october 2026
+
+The conformance-only owned-history profile now declares its required Cargo
+feature. Default isolated lattice tests previously failed E0432 because Cargo
+compiled the example without its gated provider. The same command now passes
+55 tests; explicitly enabling conformance runs the optimized example and its
+independent PCM oracle at all four documented rates. Runtime code, features,
+dependencies and admission limits are unchanged. Full final-source CI remains
+pending; retained failure/success logs are separate from native acceptance.
+
+## device asset state storage proof — pulse2681 / PR297, 17 october 2026
+
+Integrated full checks exposed five stale Operator storage-size/boundary proofs
+at6ed1e8fc. Charge the actual16-byte asset-reference field even when empty:
+shared context3008, capture context2628; the unchanged2MiB retained ceiling fits
+409 typed or412 inline recipes. Boundary refusal and no-mutation checks remain;
+no production cap is raised. All136 Operator-state tests pass after repair.
+The next full run found the same engine boundary:425 recipes fit rather than426;
+the unchanged ceiling and next-recipe refusal remain. Both failed full receipts
+and focused repair logs are retained; final full CI pending.
+
+## native parameter semantics — #2674 / PR290, 17 october 2026
+
+Optional validated state-aware semantics preserve descriptor literals and authored
+state. Auto Pan and dynamic EQ declare their real normalization/access/stepping/
+smoothing and existing capability boundaries. Cached host views and the standalone
+schema2 report consume them; unknown/deleted IDs and read-only edits refuse.
+Focused numeric, identity, legacy shelf, registry and view tests accompany it.
+See [contract](docs/native-parameter-semantics.md). The first integrated full run
+failed a harmonic-editor worker wait. Batch preflight now avoids redundant
+descriptor scans while each private candidate still rechecks membership, domain
+and access. Both new regressions fail before/pass after; focused contract15,
+registry2, unchanged harmonic UI case and strict affected Clippy pass. A release
+64-parameter profile measured median11.089ms before/4.004ms after; see
+[provenance](research/observations/parameter-semantics-2674/README.md) for limits.
+Fresh full final-source CI remains required. Generic sample-offset
+automation/modulation and full W05/W20 acceptance
+remain open; no DSP, codec or EQ envelope evaluator changes.
+
+## eq edge creation and held-pointer drag — #2729 / PR342, 17 october 2026
+
+Blank presses preview a stable-ID low/high cut in the outer 5% of the logarithmic
+plot or an interior bell. The same held pointer moves it; release atomically
+commits its final position and identity reservation as one history edit. Escape,
+focus loss and stale source/allocator/selection/project discard the preview.
+Existing node and automation-point gestures retain their paths. Targeted rendered
+regressions and source checks are recorded with PR342; full exact-source CI,
+optimized delivery and native interaction/listening remain separate evidence.
+See [eq editing contract](docs/eq.md).
+
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
 Additive owned preparation/runtime capability and explicit host error rollback
@@ -4271,6 +4330,44 @@ new-node controls pass in the rendered fixture, alongside strict UI Clippy and
 page-boundary checks. The prior full run was interrupted for this repair; only
 the next unchanged full candidate may supply merge evidence.
 
+## arrangement clip hover popups — 17 october 2026 / pulse2752 / PR362
+
+- 17 October 2026 / Pulse #2752: removed Arrangement audio/MIDI container hover
+  tooltips, including the sampled-note preview popup over clip headers. Header
+  selection/drag/rename and distinct control tooltips are unchanged. Native hover
+  acceptance remains pending in the coordinated optimized candidate.
+
+Cloud continuation for Pulse2752 / PR362 verified the canonical checkpoint and
+integrated main `070cacc3`, retaining the narrow two-container tooltip removal.
+All six quick source/format checks pass; full exact-candidate runner evidence is
+recorded on the PR independently. Native audio/MIDI hover, selection, drag,
+rename, context-menu and distinct-control tooltip checks remain for the
+coordinator's serial Mac follow-up and launcher's combined optimized delivery.
+
+## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+
+- Lower fade handles use one model-owned trim-and-envelope command, including
+  neutral `f` handles, source/retained-root limits, loop phase and musical crop
+  anchoring. Upper/curve edits keep their existing behavior.
+- Metadata-only previews resize the actual clip/header/waveform crop; release
+  recomputes grid/Command snapping and makes one undoable edit. Existing inward
+  endpoint offsets are absorbed only by a meaningful drag.
+- Focused source coverage checks source/loop laws, transformed warp/events,
+  preview/command identity, history, roundtrip, saved export/playback PCM and
+  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
+  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
+
+Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
+integrated main `070cacc3` without changing the separate tooltip PR362 scope.
+A rendered regression reproduces the missing stationary Command refresh before
+the repair; the production modifier event now recomputes at the current pointer,
+while mouse-up still uses its own current modifiers. Both lower edges, Command
+press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
+pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
+CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
+native physical input/listening and optimized coordinated Mac delivery remain
+pending with the coordinator's serial follow-up workflow.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -4320,3 +4417,179 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+## device asset reference persistence — #2681 / PR297, 17 october 2026
+
+First W10 slice adds bounded neutral asset-slot identities outside the unchanged
+DSP payload, registry/codec metadata preservation, canonical catalog/history
+validation and strict schema30 persistence when references exist. Asset-free
+projects keep schema29. Older encoders/presets and all supported native processing
+paths refuse references they cannot preserve or admit. Focused checks and source
+review are underway; final full CI remains required. No sampler registration,
+PCM leases, live assignment or complete asset-platform acceptance is claimed.
+See [contract and next slices](docs/device-assets.md). Sampler2679 remains first.
+
+Cloud continuation integrated W05 metadata validation while preserving asset
+bindings (`f3008e71`); 422 portable contract/lattice/project/storage tests pass.
+Host compilation exposed a missing asset-error mapping, repaired at `83e94448`;
+six asset-related device/engine/Session checks and affected strict Clippy pass.
+The failed compile log is retained. Full final-source CI, coordinated tuning/asset
+schema migration and resource leases remain open; no live sampler is admitted.
+
+## stable native signing identity — pulse2745 / PR355, 17 october 2026
+
+Optimized test delivery now requires the configured existing Developer ID
+certificate/team and signs the complete staged bundle as `org.portalsurfer.hex.dev`.
+Strict native seal, exact signer and stable designated-requirement checks cover
+the receipt and executable; bundled pre-sign provenance and adjacent final file
+hashes avoid a signature cycle. Legacy unsigned installed apps still verify on
+normal launch. Signing failures preserve the previous app with no ad-hoc fallback.
+Targeted real macOS fixtures verify equal requirements across changed executables,
+wrong-signer rejection, receipt/resource tamper rejection and legacy compatibility.
+No app installation, privacy-setting changes or native permission-persistence
+acceptance is established by these fixtures; full candidate CI and delivery remain
+with the PR coordinator.
+
+## 17 October 2026 — W06 host binding extraction in progress
+
+Pulse2675 / PR291 factors persistent scalar controls into
+`device_panel/bindings.rs` and numeric Session adaptation into
+`gesture_adapter.rs`, with Utility, EQ and descriptor panels using the same
+host path. Operator-specific Begin/choice/Tab policy stays in composition.
+The host captures generation/owner/class/type/parameter/emitter identity and
+numeric widgets retain only the exact gesture token they began. Retirement
+cannot cancel a newer same-parameter gesture; synchronous finalization retires
+stale or disabled drafts before submission. Project/session/worker lifecycle
+and compound controls remain in their existing owners; no new UI crate.
+
+Focused original-dispatch and retired-control regressions fail before their
+repairs; the three lease/target tests pass at ab20b1f1. Later identity and
+same-update queued-Begin regression candidates remain unverified while the
+shared native cache checks corrected fade PR309. Architecture/style guards
+pass. The layout guard now follows the extracted production style helper;
+its four source-mutation tests pass. This is incomplete draft work: queued-event
+ordering, final integrated full local CI, final review and native acceptance
+remain open. Independent embedding/catalog/full W06 acceptance is not claimed.
+
+W06 follow-up: at exact8ac4e149 the six-test binding group reports five passes
+and one real rendered ordering failure: a queued Begin reopens a no-op drag
+synchronously finalized in the same App update. Stale-generation and retired
+emitter tests pass. Exacte1abd20a adds a local successful-finish delivery fence;
+independent source review finds no actionable issue. Its positive/later-drag
+checks remain pending while W04 final CI owns the native cache. No GPUI or
+other dependency patch was required; the existing dispatch_input seam is used.
+
+W06 positive ordering proof: exacte009db34 passes all six focused host binding
+tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
+drag stays finalized and a later real drag works. Final integration/review/full
+local CI and broader W06 deliverables remain pending; no native result claimed.
+
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
+
+The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
+non-divergent local `main`, runs full local CI, builds and installs the optimized
+stable app, and opens the verified candidate. `--test` remains an alias; `--open`
+provides installed-only startup. Build mode refuses before CI when either the
+installed app or a raw `hex-desktop` process is active, asking for a normal save
+and quit without terminating processes. Exact source CI, merge and combined
+delivery evidence remain with the canonical PR workflow.
+
+Cloud continuation recovered the pushed `56e11b4c` checkpoint in the published
+Hex environment at `/workspace/hex`, with activated Rust/Cargo 1.94.0 and all
+seven documented native pkg-config packages available. All 17 focused launcher
+tests pass with Python warnings treated as errors, including raw debug/release
+paths with spaces and refusal when process inspection fails. Full Linux runner
+evidence belongs to PR359; its first attempt stopped safely at unclaimed inherited
+target ownership after the Python suite, guards and formatting passed. No complete
+macOS CI, signing, installation or native acceptance is established. Mac execution
+remains paused until the user explicitly resumes it; PR355 owns signing and sample
+permissions, and the eventual combined app uses one exact verified source.
+
+## optional runtime launcher tests — pulse2755 / PR364, 17 october 2026
+
+The user's later direction supersedes PR359's default full-CI launch. Normal
+`./launch` always fetches clean main, builds the optimized exact source, verifies,
+installs and opens it without test suites or an earlier CI receipt. `--test`
+opts into full exact-source CI before building; `--open` remains installed-only.
+Build-only packaging freezes/rechecks clean source and retains guarded release,
+signature/artifact checks and safe publication, recording tests as `not_run`.
+Developer full exact-candidate checks remain required before merging this change.
+PR355 owns pending signing integration. One coordinator-controlled serial Mac
+thread will verify native behavior and the single combined delivery; cloud tests
+cannot establish keychain signing, installed launch or permission persistence.
+
+## terminal launch activity — pulse2760 / PR368, 17 october 2026
+
+The launcher now shows stage activity while fetching and verifying the installed
+app; the shared runner animates logged test/check steps and optimized compilation.
+Animation requires both stdout and stderr to be terminals. Redirected output stays
+plain, and no ticker writes over live child output. The worker stops, joins and
+clears before success/failure/interruption output resumes; narrow frames cannot
+wrap. Existing default fetch/build/start without tests, explicit `--test` full CI
+and installed-only `--open` remain. Focused deterministic terminal/redirected,
+failure/interrupt, diagnostic and release-guard regressions accompany the change.
+Final exact-source checks and finite Mac terminal acceptance remain with PR368;
+this cloud task does not install or restart the app.
+
+## signing and build-only launch integration — pulse2745 / PR355, 17 october 2026
+
+Reconciled signing with merged launcher PR364 at main `846078bc`, then
+integrated main `a240d7cf` with the alpha policy and W06 host bindings. Default
+build-only delivery keeps source-only evidence and `tests: not_run`; opt-in
+CI-backed delivery retains full-CI provenance. Both write that evidence before
+Developer ID signing and verify the complete seal and configured identity before
+publication. Source drift during signing and signing failures preserve the
+installed app. Production assembly covers both modes; the native fixture seals
+both CI and build-only source evidence. Standalone `c358550f` passed all 20 CI
+stages on Linux and Mac, including real signing; those reports do not certify
+this changed integration. Exact integrated checks remain with PR355. Persistent
+sample access, real WAV preview and identical-binary relaunch acceptance still
+require the coordinator's serial Mac phase and one launcher-owned delivery.
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
+coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
+
+## eq panel geometry — #2731 / PR344, 17 october 2026
+
+Sized the toolbar/footer for full shared controls, kept fixed control widths,
+added the reusable wide frequency micro dial and compact boolean button, and
+moved remove alongside selected-node controls. Automation telemetry now lives
+in its own field/page row. A rendered regression fails before and passes after
+at 880/1500-pixel windows in response and automation modes, checking containment,
+nonoverlap, action/readout bounds and usable graph height. Full exact-source CI
+and optimized native visual/input acceptance remain required.
+See [layout contract](docs/eq.md#panel-layout).
+
+## focused eq Backspace — #2737 / PR348, 17 october 2026
+
+Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
+bindings. The owner reuses canonical stable-node removal and refuses automation
+point IDs, previews, pending/stale work and old project generations. Empty graph
+focus consumes the key; numeric/text siblings keep their own editing. A rendered
+regression fails before/passes after for removal with atomic automation cleanup,
+empty focus, Undo/Redo and current-format save/reopen identity state. All eight
+rendered EQ regressions and strict UI feature Clippy pass, including
+pending/numeric/automation-point isolation and held-pointer cancellation with
+real editor keybindings. Graph-scoped Escape preserves existing cancellation
+before ancestor editor actions. Full exact-source CI and optimized native input
+acceptance remain required.

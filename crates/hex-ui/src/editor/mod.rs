@@ -309,6 +309,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
 const EDITOR_PRINTABLE_KEY_CONTEXT: &str = "hex_editor && !hex_text_editing";
 
 fn bind_editor_keys(cx: &mut App) {
+    hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     clip_name::bind_keys(cx);
     cx.bind_keys([
