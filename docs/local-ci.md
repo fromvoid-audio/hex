@@ -170,6 +170,9 @@ preparation therefore checks full locked metadata for workspace/external package
 name collisions and refuses those cases. A previous recorded workspace with
 removed, renamed or version-changed packages also refuses, even with adoption:
 use a fresh target rather than guessing deletion paths or broadening cleanup.
+Pure workspace additions are allowed when every recorded package retains its
+name/version. The current workspace then owns cleanup of both retained and added
+members; external-name collision, source, ownership and artifact checks still run.
 The real-Cargo test preserves this limitation explicitly.
 
 `scripts/hex-test-build.py` exposes `optimized_artifact(runner, package=...,
@@ -185,7 +188,9 @@ The release fixture uses real Cargo in isolated temporary worktrees/targets:
 incompatible numeric/string APIs and executable outputs A→B→A, a dev-only
 negative control which leaves the release artifact intact, unchanged external
 release dependencies and dev hashes, retained binaries, same-source reuse and
-removed/renamed refusal. The original dev-only real-Cargo regression remains
+removed/renamed/version-change refusal. The same fixture compiles a newly added
+workspace dependency and checks its output, complete workspace cleanup and
+preserved external release/dev hashes. The original dev-only real-Cargo regression remains
 unchanged. Contention, malformed/recreated target ownership, failed/interrupted
 cleanup, changed source/artifact and failed staging consumption have focused
 refusal tests. These checks do not substitute for the required exact-source

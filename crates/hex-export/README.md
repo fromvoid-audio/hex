@@ -31,3 +31,8 @@ export after publication; ordinary success creates no backup. Unexpected races
 and cleanup failures report truthful exceptional recovery paths.
 See [the export contract](../../docs/export.md) for scopes, consent, race handling,
 platform limits and the remaining acceptance gates.
+
+Clip bounces also use the same create-new publication boundary for stereo float32
+WAV, retaining finite samples above full scale. `render_bounce_new` consumes an
+isolated prepared source and bounded control-side preroll; source isolation,
+media admission and canonical clip replacement belong to hex-session/project.

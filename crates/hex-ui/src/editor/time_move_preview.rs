@@ -96,7 +96,9 @@ pub(super) fn clip_intersection(clip: &Clip, interval: (u64, u64)) -> Option<(u6
     (start < stop).then_some((start, stop))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn passive_audio_fragment(
+    fill: u32,
     clip: &Clip,
     waveform: Option<&std::sync::Arc<hex_session::CachedWaveform>>,
     viewport: Viewport,
@@ -124,7 +126,7 @@ pub(super) fn passive_audio_fragment(
         .overflow_hidden()
         .border_1()
         .border_color(rgb(0x000000))
-        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
+        .bg(rgb(fill))
         .children([clip_grid_layer(grid, start, stop)]);
     if let Some(waveform) = waveform {
         content = content.child(super::waveform::waveform_view_cached(
@@ -148,6 +150,7 @@ pub(super) fn passive_audio_fragment(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn passive_midi_fragment(
+    fill: u32,
     clip_id: hex_project::ClipId,
     samples: &[hex_engine::MidiPreviewSample],
     source_interval: (u64, u64),
@@ -174,8 +177,7 @@ pub(super) fn passive_midi_fragment(
         .w(relative(width as f32))
         .min_w(px(4.0))
         .overflow_hidden()
-        .opacity(0.68)
-        .bg(rgb(theme::color(theme::PaletteRole::ClipFill)))
+        .bg(rgb(fill))
         .border_1()
         .border_color(rgb(0x000000))
         .children([clip_grid_layer(grid, visible_start, visible_end)]);
@@ -219,7 +221,7 @@ pub(super) fn passive_midi_fragment(
                 .top(relative(top))
                 .w(relative(note_width))
                 .h(px(2.0))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                .bg(rgb(0x000000)),
         );
         shown += 1;
     }

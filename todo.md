@@ -1,4 +1,184 @@
+## native parameter semantics — #2674 / PR290, 17 october 2026
+
+Optional validated state-aware semantics preserve descriptor literals and authored
+state. Auto Pan and dynamic EQ declare their real normalization/access/stepping/
+smoothing and existing capability boundaries. Cached host views and the standalone
+schema2 report consume them; unknown/deleted IDs and read-only edits refuse.
+Focused numeric, identity, legacy shelf, registry and view tests accompany it.
+See [contract](docs/native-parameter-semantics.md). Full final-source CI remains
+required. Generic sample-offset automation/modulation and full W05/W20 acceptance
+remain open; no DSP, codec or EQ envelope evaluator changes.
+
+## shared stereo/gain kernels — #2671 / PR288, 17 october 2026
+
+Real production stereo kernels move to dependency-free hex-dsp with Lattice API
+reexports. Gate/Saturator share validated amplitude/decibel units on control.
+Kernel/device/lattice and authoring fixtures plus affected Clippy/architecture
+checks pass; before/after release PCM digests match in all five admitted cases.
+See [source/profile evidence](docs/native-dsp.md). Full exact final-source local
+CI remains required; broader DSP families and native/reference qualification
+remain open. No host cap or device-law changes.
+
+## native device authoring bootstrap — #2670 / PR285, 17 october 2026
+
+Opt-in Lattice conformance helpers exercise codecs, state-aware parameters,
+transactional effect histories and analytic/shared/mutable instrument classes.
+Registry-discovered defaults pass at five rates; broken-provider fixtures prove
+sensitivity. Standalone JSON report includes actual descriptors/defaults/ranges.
+See [authoring](docs/native-device-authoring.md). Full final-source local CI is
+required for this Rust slice; native/reference acceptance and two-new-device/UI
+adapter production proofs remain open. No device DSP or host budget changes.
+
+
+## nested audio events — pulse2692 / PR308, 17 october 2026
+
+Arrangement audio clips retain their outer editing behavior while a lower event
+editor cuts/reorders non-destructive root intervals. Independent adaptive BPM grid,
+time selection/range movement, trim, cursor/range split, clipboard, duplicate,
+insert-paste, zoom/pan and focused hotkeys use canonical one-step commands.
+Later events overwrite covered audio; gaps are silence. Schema28 preserves event
+state and strict legacy migration; resident worker composition precedes outer
+fades/gain and charges temporary storage. See [contract](docs/audio-events.md).
+
+Focused model, storage, PCM and real-input GPUI tests accompany this change.
+Native macOS interaction/listening, streamed event composition, cross-root paste
+and conversion of event-bearing clocks remain explicitly open. Final validation
+results and source identity are recorded in PR308 and Pulse2692.
+## native device installed inventory — #2668 / PR284, 17 october 2026
+
+Read-only bounded metadata inventory and machine-readable coverage ledger retain
+85 manual seeds, all 67 discovered Max files and eight legacy preset families
+as 142 accountable identities. Reference executable matches the pinned hash.
+Seven current effects, Vector v15 and the unregistered sampler kernel are
+reconciled against source. See [catalog](docs/native-device-catalog.md).
+Inventory fixture tests pass. Full per-feature/browser/native/reference acceptance
+remains open; this is the W02 bootstrap, not W01 or goal completion.
+
+## shared element colors and clip flavors — pulse2697 / PR315, 17 october 2026
+
+Ten shared theme colors replace custom per-clip colors. Track-header menus choose
+one identity, inherited by Arrangement/Session audio and MIDI clips; clip menus
+switch muted/accent flavor. Canonical history, schema27 persistence and explicit
+legacy defaults are source implemented; copy/split/trim/conversion retain flavor.
+Project/storage tests, context-menu/cache repaint tests and source guards pass.
+Exact full local-CI evidence is recorded with the PR; native acceptance is separate.
+Native macOS acceptance is pending. See [element colors](docs/element-colors.md).
+
+## browser outward tag editor and resizable picker — 17 october 2026
+
+The tag editor adds a right column without consuming results/preview width.
+The picker has its own drag divider, an icons-only mode and lowercase hover
+labels for collections, sections and places. Width/settings remain session-only.
+See [browser layout](docs/browser-layout.md) for the finite native checklist.
+Automated validation results are recorded with this change; native macOS
+resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
+
+## 17 october 2026 — indexed samples library (Pulse #2699 / PR317)
+
+Samples combines WAVs recursively discovered in Music and added places, with
+source-folder filters and multi-term path search. A bounded native-path database
+restores cached results then reconciles in background at startup, folder addition,
+manual refresh and 30-second intervals. Deleted/renamed files reconcile; offline
+folders and limits are visible. Existing preview/import/drag paths and the merged
+sidebar/tag/bottom-preview composition are preserved. Projects retains folder
+navigation. See docs/sample-library.md for bounds and cache recovery contracts.
+
+Source evidence: eight hex-library tests pass, including cache roundtrip/corruption,
+native paths, overlapping roots, depth limits and file reconciliation. Integrated
+UI compilation, all 30 focused browser tests and all 20 local CI checks passed on
+initial source 8cdc6ef4. Current-main integration preserves flexible EQ and the
+outward tag editor/resizable picker; both browser test groups and dated note
+sections are retained. Schema27/shared colors from PR315 are preserved. Final
+integration checks are recorded in PR/Pulse evidence. Native macOS
+visual/listening/restart acceptance remains open;
+no exact Live parity, extra audio codec, or large-library timing claim.
+
+Global search composition follows PR275's verified BrowserItemKey interface:
+All merges indexed WAVs with bounded current-folder files by original path,
+retaining outside-root WAVs; devices share file counts/ordering for preview and
+activation. Folder/catalog publication preserves selection by identity, and
+unchanged catalogs retain result snapshots. Live catalog publication supersedes
+a pending disk-cache bootstrap. Combined-file/cache regressions and all 41 browser
+tests pass at the source milestone; final exact full-CI evidence belongs to
+PR317/Pulse2699. Native appearance/listening/restart acceptance remains separate.
+
+## held-clip intersection accent — #2696 / PR314, 17 october 2026
+
+Arrangement landing previews tint only occupied audio/MIDI intersections with the
+editable secondary theme accent. Gaps and exact touches stay clear; moves exclude
+the original clip, copies include it, and overlapping victims share uniform tint.
+Browser samples use the same landing path. Viewport bounds and drag cleanup follow
+the existing preview lifetime; project edits and overwrite behavior are unchanged.
+
+The two rendered pointer/modifier regressions pass; the span boundary/merge check
+passes. Architecture, GPUI/dependency/style/layout guards, formatting and affected
+strict Clippy pass at the source milestone. Final full local-CI evidence belongs
+to [PR314](https://github.com/PORTALSURFER/hex/pull/314); native macOS visual/input
+acceptance is pending. See [the finite checklist](docs/clip-drag.md).
+
+## clip selection and inline names — #2660 / PR276, 17 october 2026
+
+Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
+and press Command-R to edit its name in place. Enter/blur commit, Escape cancels;
+typing owns editing keys. Canonical RenameClip, history, copy/split preservation,
+strict schema26 names and legacy defaults are implemented. See
+[clip names](docs/clip-names.md) for contracts and native checklist.
+Focused project/storage and rendered rename tests pass; exact final-source local
+CI evidence is retained with PR276. Native macOS visual/input acceptance remains
+separate and unverified. No optimized macOS build is produced on this Linux host.
+
+## arrangement clip painting — 17 october 2026
+
+Double-click empty track space, hold the second press, drag left or right, then
+release creates an empty MIDI clip through the existing undoable placement command.
+Snapped/free preview and cancellation are source implemented. Four focused rendered
+UI tests now cover both directions, crossing the anchor, preview bounds and
+undo/redo; they pass after reproducing the prior leftward limitation. The user
+confirmed rightward painting works. Native leftward/reversal acceptance remains
+pending. See [clip painting](docs/clip-paint.md)
+for scope and the finite native checklist.
+
+## clip grab headers and editable bodies — pulse2695, 17 october 2026
+
+- Arrangement audio/MIDI clips use a shaded upper-third grab header and open-hand
+  cursor; clicking the header selects the clip and dragging moves/copies it.
+- Lower bodies share empty-lane point/range selection and double-click-hold MIDI
+  clip painting. Visible edge trims and existing time-area move priority remain.
+- Focused rendered input regression covers both clip kinds, body selection,
+  paint preview/release, canonical placement and Undo. Native macOS acceptance
+  remains user-owned: header hover/move/copy, body selection/paint and edge trim.
+  Validation results and the focused PR are retained with Pulse2695.
+- PR review regressions cover one-click header selection during pending work or
+  another clip's rename, and visible body input across obscured audio/MIDI edges.
+  Header selection stays independent of drag admission; hit routing follows
+  reverse paint order. Both reproducers fail before the repair and pass after.
+
+## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
+
+- Worker batch failures retain member/path metadata through the UI boundary;
+  the status strip and error tooltip normalize app-owned explanation only,
+  preserving mixed-case source paths and keeping metadata with its error value.
+- Focused service and production editor-event regressions cover malformed and
+  conversion-limit mixed-case WAV failures, unchanged source bytes and canonical project/history;
+  display tests also cover Unicode case. Source guards pin both error surfaces.
+- Exact local-CI/build evidence is recorded with the candidate externally. Native
+  visual/user acceptance remains separate; exercise a failed `Samples/Kick.WAV`
+  drop and hover the status to confirm path casing, then perform a valid import.
+
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
+
+## Clip conversion — #2658 / PR274, 17 october 2026
+
+- User request: MIDI → audio bounces in place; audio → MIDI removes audio and
+  yields an empty editable source. Note detection is explicitly out of scope.
+- Source implements Arrangement/Session identity-preserving atomic replacement,
+  float32 generated WAV publication, worker preparation, undo/redo and Clip View
+  conversion controls. Effects/mixer stay live; source loops/tempo and bounded
+  mutable preroll use the canonical renderer. See docs/clip-conversion.md for
+  finite duration semantics, media ownership, refusals and native checklist.
+- Focused controller/PCM/history/save-reopen/refusal tests pass at the source
+  milestone. Exact full local-CI evidence is retained with PR274; native macOS
+  interaction/listening remains pending. No macOS bundle was built in Linux.
 
 Native effect/instrument registries validate owned descriptors for each current
 state; patches, availability and engine read-only views resolve dynamic IDs.
@@ -10,6 +190,19 @@ runtimes must declare all owned capacities; see [runtime bounds](docs/stateful-l
 Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
 The parent EQ redesign, per-node automation, full final-source local CI and any
 native/user-test delivery remain separate work; this entry does not claim them.
+
+## streaming transport and native acceptance ledger — pulse2546 / PR241, 17 october 2026
+
+- One connected VerifiedStreaming adapter control exercises actual mixed-rate
+  worker PCM, direct seek, unchanged applied source/domain, Pause and priority
+  Stop with a full command queue; real callback entries retain allocation probes.
+- [Native validation ledger](docs/streaming-native-validation.md) maps all eight
+  original24 criteria plus the finite edit/Undo/save/reopen/catalog/transport/fault/
+  shutdown matrix to owning source tests and separate unperformed native cases.
+  No provider/cap/production behavior changes or manual merge gate are introduced.
+- Exact final local CI and stable optimized delivery are recorded externally.
+  Physical deadlines, listening, GUI interaction and backend faults remain
+  unverified; source merge and installation do not complete original24 acceptance.
 
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
@@ -24,6 +217,45 @@ native/user-test delivery remain separate work; this entry does not claim them.
 - See docs/streaming-100-track-workload.md for generation, hashes, explicit smoke
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
+
+## Sampler / Simpler request — #2679 / PR296, 17 october 2026
+
+The requested device is named sampler and targets Ableton Simpler, including
+Classic, One-Shot and Slice. The standalone original borrowed-PCM kernel now
+supports pitched/rate-converted stereo regions, forward/reverse loops, manual
+slice selection, gate/trigger and linear ADSR. Eight focused fixtures pass;
+all296 device unit tests and affected integration tests pass, as does strict
+device Clippy. The standalone release profile is recorded in
+[the contract](docs/sampler.md); it establishes no host deadlines or Live match.
+
+The device is not registered or available in the app. Generic device-asset
+leases/admission/persistence, loading, the native panel, filter/LFO/warp and
+the full reference inventory/acceptance remain unfinished. Do not raise analytic
+payload budgets or store PCM in opaque state to simulate this integration.
+Pulse2679 retains the complete user request; PR296 is its first focused kernel
+prerequisite. Linux cannot run the installed macOS Live reference or provide
+native macOS listening/visual evidence. Full local CI and final PR evidence
+are recorded on the ticket; targeted checks do not authorize merge.
+
+## Global browser search — #2659 / PR275, 17 october 2026
+
+Command-F opens the browser in `all`, focuses search and selects the previous
+query. Cached name filtering combines current-folder supported files and native
+devices; category filters, dragging and sample preview remain available. Search is
+bounded/nonrecursive, matching the current library contract; no all-place index
+or Live parity claim. See docs/browser-places.md for the native user checklist.
+Focused browser tests pass, including global focus/query replacement, first-arrow
+selection, selection identity across scan completion, Session device-click focus
+and category scroll reset. Follow-up regressions cover IME whole-query replacement,
+caret movement preserving manual scroll, search clicks restoring text mode without
+scroll reset, category clicks retaining Session browser focus, empty-query Escape
+restoring caret mode, and device highlights waiting for result focus. Unfinished gain numeric drafts refuse search without
+losing focus or text; Escape then Command-F restores normal search. Native-device
+and return-send numeric edits use the existing finalization barrier before search:
+invalid drafts retain focus, while repaired valid values commit before filtering. The browser
+and gain-lane suites pass, with existing drag/preview coverage preserved.
+Full runner results are recorded in the PR and Pulse; native acceptance remains
+pending.
 
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
@@ -1443,6 +1675,110 @@ remain separate from time editing and DSP.
 
 Publication license, release distribution and additional platforms remain separate
 future decisions. No release or broad compatibility claim is implied by this list.
+
+## dense UI and accessibility — issue29 / PR188 evidence
+
+Historical source checkpoints below retain their original verification and native
+acceptance boundaries. Pulse owns the current issue status.
+
+## dense controls and accessibility integration — #29 / PR188, 16 october 2026
+
+Integrated current main into the canonical branch while preserving its current
+schema25, input/output gain, keyboard, streamed-demand and capture contracts.
+Windowed device cards/rows, focus ownership, output-meter source snapshots and
+the excluded GPUI accessibility boundary remain separate from audio behavior.
+Whole-device snapshot gestures now pin their rows; a focused regression checks
+that active rows remain mounted. Input- and output-gain controls retain their
+identity across scrolling; existing Track/Return regressions failed before
+that reconciler repair and now pass. Windowed bodies use the shared widget surface
+with a single content inset, checked scroll extent and a source-guard negative
+control against replacing that surface. Current source checks are retained in
+the PR; exact Mac compilation, the three AppKit lifecycle tests and actual
+AX/VoiceOver/input/paint acceptance remain required. No native acceptance claim.
+
+## accessibility/cache composition — #29 / PR188, 16 october 2026
+
+After merging the independent cache optimization PR264, integrated main5607b14c
+into the accessibility candidate. Cached views now retain both current-draw
+epoch invalidation and invalid-accessibility-snapshot recovery. Reconstructed
+the combined GPUI delta against the exact verified original archive; applying
+the patch reproduces every recorded source hash. The rendered cached AX recovery
+regression passes; final full combined CI is retained with PR188. Actual Mac
+compilation, three AppKit tests and native accessibility acceptance remain open.
+
+## 17 October 2026 — issue29 macOS accessibility verification
+
+Continued canonical PR188 locally. The AppKit backend compiles; the three original
+native accessibility tests and a new real-object selector regression pass with
+Hex's macos-blade features. The regression fails before correcting the SDK boolean
+getter selectors and passes afterward, covering enabled/focused updates and hidden
+revoked elements. External GPUI diff/provenance remain tied to the verified0.2.2
+archive; no Hex unsafe boundary or renderer changes. See docs/native-accessibility.md.
+Exact-final full local CI and optimized stable-path delivery are recorded on
+PR188/Pulse29. Real Inspector/VoiceOver, close/veto, popup choices and input/paint
+acceptance remain unverified; this entry does not claim whole-ticket completion.
+
+## current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `ebb55d08`, preserving the streaming constructor/status contracts,
+Vector global panel and state-aware owned descriptors alongside retained windowed
+controls and accessibility admission. Hidden-row reconciliation compares owned
+descriptors and retires changed ranges plus pending values under unchanged IDs;
+the Track/Return/instrument regressions now cover that case. Both prior histories
+remain below.
+
+The combined MIDI/menu and248px meter layout initially collapsed the status
+message at880x540. A50px message minimum preserves its space while bounded status
+fields shrink; the existing menu regression now checks stable message/revision
+bounds. All40 focused row/window/accessibility/meter/header/navigation/algorithm/
+project-replacement/controller tests pass, as do UI test compilation, formatting,
+architecture, UI-style and device-composition guards. Exact integrated-source full
+local CI, commit, merge and optimized delivery remain separate primary work;
+these source/scene checks do not establish native acceptance.
+
+## second current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `f0ef237d` after candidate `37b7832e`, preserving clip conversion,
+Arrangement clip painting, track-header hover and source-case batch errors beside
+PR188's window-aware retained controls and accessibility/cache epochs. The new
+conversion selection helper and window-bearing detail-view signature coexist;
+paint previews remain outside cached content and retain live composition.
+
+All56 focused clip-paint/detail/cache/error/project-replacement/accessibility/
+row/window/meter/controller tests pass. UI test compilation, architecture, style,
+device-layout, formatting and diff checks pass. No additional behavior repair was
+needed. Prior exact-source CI remains historical; the combined candidate still
+requires its own commit and full local CI before merge. Optimized delivery and
+native acceptance remain separate evidence.
+
+## browser/name accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `2fa584cf` after candidate `4c0bcbc3`, preserving PR294's split
+browser and PR276's schema26/inline clip names alongside PR188. Auto-merges retain
+name-draft reconciliation, keyboard ownership and cache bypass during editing;
+status minima, meter snapshots, accessibility guards and source-case error surfaces
+remain intact. Both todo histories are preserved. No additional repair was needed.
+
+All21 targeted browser geometry/resize/search, clip-name, controller-layout,
+editor-meter, accessibility, clip-cache and error-display tests pass. UI test
+compilation, architecture/style/device-layout guards, formatting and diff checks
+pass. Prior full CI is historical; exact combined-source full CI and any merge or
+optimized delivery remain primary work. These checks do not establish native
+visual/input acceptance.
+
+## fourth current-main accessibility integration — #29 / PR188, 17 october 2026
+
+Integrated main `153cc4df` after candidate `bb817c72`, preserving browser picker/
+editor sizing, bidirectional clip painting, held-clip intersection accents and
+adaptive snapping alongside the retained accessibility/cache implementation.
+No runtime repair was needed. All six earlier PR188 evidence entries are retained
+here near the original dense-UI checklist; current main's remaining history,
+including its trailing entries, stays intact.
+
+All11 focused browser sizing, cache geometry, clip-paint, drop-intersection and
+adaptive-toggle tests pass. UI test compilation, architecture/style/device-layout
+guards, formatting and diff checks pass. Exact combined-source full CI, commit,
+merge and optimized delivery remain primary work; native acceptance is separate.
 
 ## storage recovery and retained CI evidence
 
@@ -3850,6 +4186,41 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
 
+17 October 2026 — split browser visual composition: Pulse #2678 / PR294;
+see docs/browser-layout.md for scope and native review checklist. Full functional
+follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
+Command-F. Tag assignment/filtering, collections and history remain pending.
+
+## 17 October 2026 — sparse eq (Pulse #2654 / PR #270)
+
+- New-insert `eq` supports 64 stable-ID nodes, direct graph creation/drag,
+  shape/Q/12–48 db/oct controls and EQ-owned beat-curve automation. Existing EQ8
+  panels and codec remain supported, with an explicit five-bank lossless upgrade.
+- Atomic source-state/allocator reservation and preset node high-water marks
+  preserve targeting through delete/undo/new additions. EQ automation travels in
+  strict bounded opaque state; no general automation storage schema was added.
+- Focused codec/DSP/legacy PCM, canonical reservation, rendered gesture/automation/
+  upgrade and real renderer clock tests passed during implementation; exact final
+  full local CI and optimized/native delivery are coordinator-owned and pending
+  until their candidate evidence is recorded. See docs/eq.md for limitations and
+  the finite native checklist. Headless evidence is not native/listening acceptance.
+
+
+EQ #2654 final integration evidence: feature source `238bcb858426cc0caa192463d4395578be7030f2`
+includes merged metadata #2657/PR273 and current main. Targeted device, rendered
+UI, engine arrangement/loop/seek/export, identity reservation, legacy-layout and
+actual callback allocation checks pass. The release profile above is recorded
+in `docs/performance.md`; full exact-candidate local CI and stable optimized
+installation remain coordinator work. Native user checklist: `docs/eq.md`.
+
+Final EQ UI review also reproduced and repaired automation-point selection
+retargeting after deletion and insertion before the selected point. A canonical
+opaque-state key clears index-based selection after any authored edit or
+undo/redo while preserving local drag previews. The rendered two-point fixture
+now checks neighbor preservation and selection/history behavior; finite page
+navigation and Q32.32 endpoint checks cover extreme page values. Targeted
+rendered tests and the page-boundary regression pass; final full CI remains
+required on the committed integration candidate.
 
 ## 17 october 2026 — track header hover
 
@@ -3861,3 +4232,69 @@ acceptance remains open: hover selected/unselected headers and nested controls,
 then leave and confirm the original background returns. Pulse #2663 tracks the remaining validation; GitHub PR #279 contains the change.
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
+
+Full EQ CI caught an early-failure regression in the new compensated arrangement
+beat stamp. The ordinary path already treats unrepresentable beats as unavailable;
+the compensated stamp now preserves that optional clock contract without losing
+exact frame identity. The original late-failure rollback regression is retained
+unchanged, with an added origin-clock unavailable-beat assertion. Final CI must
+be rerun on this repair; the earlier failed report is not merge evidence.
+
+The final rendered EQ workflow regression also reproduces and repairs removing
+the last node while its automation editor is open. Canonical-state changes now
+persist valid node selection and leave automation mode when that target is gone,
+while pending node creation retains optimistic selection until publication.
+Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
+new-node controls pass in the rendered fixture, alongside strict UI Clippy and
+page-boundary checks. The prior full run was interrupted for this repair; only
+the next unchanged full candidate may supply merge evidence.
+
+## adaptive arranger grid — 17 october 2026
+
+- Arranger snapping uses one adaptive size with shared painting/snap spacing;
+  the toolbar toggles adaptive/off instead of cycling fixed sizes.
+- Future context-menu size selection: Pulse #2694, Hex 0.1.
+- Native zoom/snap/toggle acceptance remains pending; automated evidence is
+  recorded with the focused PR.
+
+## 17 october 2026 — pulse2698 / PR316: fetch, verify and launch desktop
+
+- Root `./launch` requires a clean main checkout, fetches and fast-forwards only
+  to `origin/main`, records the current main commit's associated PR revision,
+  runs full local CI, installs the optimized app through the supported stable
+  path, verifies its source receipt, and opens that exact app.
+- Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
+  fetch/CI/package failures, and successful operation order. Native UI and
+  listening acceptance remain user checks after launch.
+
+## launcher Finder metadata refusal — pulse2703 / PR319, 17 october 2026
+
+The GPUI provenance guard distinguishes regular `.DS_Store` Finder metadata
+from dependency source. Reproduced the actual primary checkout failure without
+removing metadata or changing source. Fixture regressions cover root/nested
+metadata and continued rejection of changed/missing/added source, lookalikes
+and symlinks. Full optimized-delivery verification remains required by launch.
+Exact final CI, merged-source launcher delivery and native launch evidence are
+recorded with PR319 and Pulse2703; not inferred from these source fixtures.
+
+## additive release-cache handoff — pulse2704 / PR320, 17 october 2026
+
+Actual primary launch passed all20 checks at0a9a4de6, then release preparation
+falsely classified four new workspace crates as removed/renamed packages.
+The release guard now permits additions only while every recorded member retains
+its name/version; it cleans the complete current workspace with the existing
+lock, scope, source and artifact checks. Real-Cargo regression fails before the
+fix and verifies added dependency output plus removal/rename/version-change
+refusals and preserved external/dev artifacts. Final exact checks and actual
+merged-source launch evidence remain recorded on PR320/Pulse2704.
+
+## fast normal startup with explicit test mode — pulse2705 / PR321, 17 october 2026
+
+The user changed normal `./launch` to open the supported installed optimized app
+without Git/update/build/CI dispatch or Cargo locks. `--test` retains clean-main
+update, exact full local checks and optimized guarded delivery/start, preserving
+that flag across updated-source re-exec. Installed identity/hash/signature/release
+checks remain, with one setup instruction for missing/unsupported apps; startup
+activates an existing process without forcing quit or changing user state.
+Targeted mode/error/configuration regressions and final source/build/actual-start
+evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.

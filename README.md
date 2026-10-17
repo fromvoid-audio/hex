@@ -49,7 +49,22 @@ remains open. Asset relinking is deferred.
 
 ## Run
 
+On macOS, `./launch` opens the installed optimized `hex.app` at the configured
+stable path (default `artifacts/hex.app`). Normal startup does not update source,
+build, run tests or take Cargo locks, and it works from dirty or non-main source.
+It verifies the installed bundle's identity, hashes, signature and release receipt.
+If no usable app exists, it reports `./launch --test` as the setup action.
+
+`./launch --test` updates a clean `main` checkout from `origin/main`, runs full
+local CI, builds and installs the optimized app, then opens it. This mode needs
+the native toolchain and authenticated `gh` for PR provenance. Save and quit hex
+before using `--test`; it refuses running-app replacement and never force-quits.
+Build provenance and a finite smoke checklist remain under `artifacts/local-ci/`;
+native interaction and listening results remain user checks.
+
 ```sh
+./launch          # open the installed optimized app
+./launch --test   # update, check, build/install, then open
 cargo run -p hex-desktop
 cargo run -p hex-desktop -- --demo
 # Optimized stable test delivery after exact-source CI (see docs/test-builds.md):
@@ -73,7 +88,7 @@ User-test builds use the optimized stable development app at `artifacts/hex.app`
 with exact-source CI, provenance and verified replacement without retained
 rollback copies. The bundle script refuses to overwrite a running app, including macOS case-insensitive
 `Hex.app` aliases. Save and quit before retrying; launch/relaunch manually after
-delivery. See [native test builds](docs/test-builds.md) for the required arguments
+delivery, or use `./launch` to open the installed app. See [native test builds](docs/test-builds.md) for the required arguments
 and repository-owned build/install process. Pulse manages tickets only.
 
 The demo is four seconds at 48 kHz and 120 BPM: one silent beat, followed by

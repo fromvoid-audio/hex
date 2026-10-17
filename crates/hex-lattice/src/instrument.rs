@@ -313,6 +313,9 @@ impl<'a> NativeInstrumentRegistry<'a> {
         snapshot.validate(&hex_lattice_contract::validated_state_descriptors(
             definition, &current,
         )?)?;
+        for &(parameter, _) in snapshot.entries() {
+            hex_lattice_contract::require_parameter_writable(definition, &current, parameter)?;
+        }
         let patched = definition.patch_parameters(&current, snapshot)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?
@@ -338,6 +341,7 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .find(|descriptor| descriptor.id == parameter)
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
+        hex_lattice_contract::require_parameter_writable(definition, &current, parameter)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
         self.validate_current(definition, definition.migrate_state(&patched)?)?
             .with_input_gain_millidb(state.input_gain_millidb())?

@@ -52,7 +52,7 @@ pub fn return_send_numeric_control(
                 if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
                     && event.phase != NumericEventPhase::Cancel
                 {
-                    view.error = Some(error.to_owned());
+                    view.error = Some(error.to_owned().into());
                 }
                 cx.notify();
             });
@@ -144,7 +144,7 @@ pub fn finalize_send_controls_for_track(
                 }
                 view.error = Some(format!(
                     "invalid send value canceled because its track left the visible area: {error}"
-                ).to_lowercase());
+                ).to_lowercase().into());
                 continue;
             }
         };
@@ -158,7 +158,11 @@ pub fn finalize_send_controls_for_track(
             && !view.device_gesture.has_pending_terminal();
         if finalized.previous != finalized.value || active_matches {
             if let Err(error) = commit_owned_numeric_edit(view, target, &finalized) {
-                view.error = Some(format!("could not finish send edit: {error}").to_lowercase());
+                view.error = Some(
+                    format!("could not finish send edit: {error}")
+                        .to_lowercase()
+                        .into(),
+                );
                 return false;
             }
         }

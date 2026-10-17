@@ -1,0 +1,1202 @@
+{
+  "schema": 1,
+  "method": "read-only metadata and file hashes; no browser launch or device execution",
+  "reference": {
+    "bundle_version": "12.4.6 (2026-09-10_0de5c8fa9a)",
+    "short_version": "12.4.6 (2026-09-10_0de5c8fa9a)",
+    "bundle_id": "com.ableton.live",
+    "executable_sha256": "5e8832e06fe92d42ceebac4fad153e44422c90923f426dcb05c760c6d80b3949"
+  },
+  "roots": {
+    "builtin": {
+      "availability": "present",
+      "file_count": 110
+    },
+    "core": {
+      "availability": "present",
+      "file_count": 2253
+    },
+    "packs": {
+      "availability": "present",
+      "file_count": 2156
+    }
+  },
+  "packs": [
+    {
+      "directory": "CV Tools",
+      "metadata": {
+        "availability": "present",
+        "sha256": "6885bfdae02c40e1deb867f20d9b3232fa951860bd7d4c121ae3746022ba1aa9",
+        "values": {
+          "PackUniqueID": "www.ableton.com/270",
+          "PackDisplayName": "CV Tools",
+          "PackVendor": "Ableton",
+          "PackMinorVersion": 1,
+          "PackMajorVersion": 2,
+          "PackRevision": 61253
+        }
+      }
+    },
+    {
+      "directory": "Creative Extensions",
+      "metadata": {
+        "availability": "present",
+        "sha256": "b3202e116c2af7d2223ee3e1d118355735802df2a937e68d2dbd8e8a0bbdd037",
+        "values": {
+          "PackUniqueID": "www.ableton.com/260",
+          "PackDisplayName": "Creative Extensions",
+          "PackVendor": "Ableton",
+          "PackMinorVersion": 5,
+          "PackMajorVersion": 1,
+          "PackRevision": 60462
+        }
+      }
+    },
+    {
+      "directory": "Generators by Iftah",
+      "metadata": {
+        "availability": "present",
+        "sha256": "1866de46d8d5b253f4215c7741a05ab77903c81e263d6d9a3414f3736107fc00",
+        "values": {
+          "PackUniqueID": "www.ableton.com/319",
+          "PackDisplayName": "Generators by Iftah",
+          "PackVendor": "Iftah",
+          "PackMinorVersion": 1,
+          "PackMajorVersion": 1,
+          "PackRevision": 61606
+        }
+      }
+    },
+    {
+      "directory": "Granulator III",
+      "metadata": {
+        "availability": "present",
+        "sha256": "72a3e738b8c266292103843d65a9a4ce890d6c4375f9e71ef1fc28e8cab971b5",
+        "values": {
+          "PackUniqueID": "www.ableton.com/311",
+          "PackDisplayName": "Granulator III",
+          "PackVendor": "Ableton",
+          "PackMinorVersion": 2,
+          "PackMajorVersion": 1,
+          "PackRevision": 60713
+        }
+      }
+    },
+    {
+      "directory": "Hypnus Records (Legacy)",
+      "metadata": {
+        "availability": "present",
+        "sha256": "b3dd7afeb487a2327d1243310266b5d220b2d1e4b5541b367a8e866154667153",
+        "values": {
+          "DeviceClassName": "",
+          "PackDisplayName": "Hypnus Records",
+          "PackUniqueID": "www.ableton.com/Legacy/8.0/Hypnus Records",
+          "PackMajorVersion": 1,
+          "PackMinorVersion": 1,
+          "PackRevision": 10,
+          "PackVendor": ""
+        }
+      }
+    },
+    {
+      "directory": "MIDI Tools by Philip Meyer",
+      "metadata": {
+        "availability": "present",
+        "sha256": "e68feef20039cd76ff65d59b6f9d0d609295dbd1245117cc1ded7d4d39343320",
+        "values": {
+          "PackUniqueID": "www.ableton.com/315",
+          "PackDisplayName": "MIDI Tools by Philip Meyer",
+          "PackVendor": "Philip Meyer",
+          "PackMinorVersion": 2,
+          "PackMajorVersion": 1,
+          "PackRevision": 60941
+        }
+      }
+    },
+    {
+      "directory": "Performance Pack by Iftah",
+      "metadata": {
+        "availability": "present",
+        "sha256": "7252dbe67f6eee8ba4425a89adc0021abe928b5bc21a1790a66e166eeec1ad80",
+        "values": {
+          "PackUniqueID": "www.ableton.com/310",
+          "PackDisplayName": "Performance Pack by Iftah",
+          "PackVendor": "Iftah",
+          "PackMinorVersion": 2,
+          "PackMajorVersion": 1,
+          "PackRevision": 61386
+        }
+      }
+    },
+    {
+      "directory": "Probability Pack by Sonic Faction",
+      "metadata": {
+        "availability": "present",
+        "sha256": "8f3b2117eef9688423c175fc349d2301c91f63a7d3cf24c8cf8f3b719c397d3f",
+        "values": {
+          "PackUniqueID": "www.ableton.com/262",
+          "PackDisplayName": "Probability Pack by Sonic Faction",
+          "PackVendor": "Sonic Faction",
+          "PackMinorVersion": 1,
+          "PackMajorVersion": 1,
+          "PackRevision": 56023
+        }
+      }
+    },
+    {
+      "directory": "Sequencers",
+      "metadata": {
+        "availability": "present",
+        "sha256": "d1a91888e5424a4b80bbc35df7242ac876bab0181f334f2078a564ca296b9801",
+        "values": {
+          "PackUniqueID": "314",
+          "PackDisplayName": "Sequencers",
+          "PackVendor": "Ableton",
+          "PackMinorVersion": 3,
+          "PackMajorVersion": 1,
+          "PackRevision": 61368
+        }
+      }
+    }
+  ],
+  "max_devices": [
+    {
+      "id": "builtin:Audio Effects/Align Delay/Ableton Folder Info/Align Delay.amxd",
+      "name": "Align Delay",
+      "root": "builtin",
+      "path": "Audio Effects/Align Delay/Ableton Folder Info/Align Delay.amxd",
+      "pack": null,
+      "sha256": "e8ef40c20a896884ad41ba315e612624d78ee64f2febcd4936bbf5e294f74d6d",
+      "size_bytes": 73321,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Audio Effects/Envelope Follower/Ableton Folder Info/Envelope Follower.amxd",
+      "name": "Envelope Follower",
+      "root": "builtin",
+      "path": "Audio Effects/Envelope Follower/Ableton Folder Info/Envelope Follower.amxd",
+      "pack": null,
+      "sha256": "2c3328d8e0eae110fdc441041ca50604d247fb97b61d62dfb741a631a5cbc380",
+      "size_bytes": 524887,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Audio Effects/LFO/Ableton Folder Info/LFO.amxd",
+      "name": "LFO",
+      "root": "builtin",
+      "path": "Audio Effects/LFO/Ableton Folder Info/LFO.amxd",
+      "pack": null,
+      "sha256": "7b8489f2821a7d3c5004cf486e51cc3968b4b302e027d426a311aa0accac4c47",
+      "size_bytes": 542384,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Audio Effects/Shaper/Ableton Folder Info/Shaper.amxd",
+      "name": "Shaper",
+      "root": "builtin",
+      "path": "Audio Effects/Shaper/Ableton Folder Info/Shaper.amxd",
+      "pack": null,
+      "sha256": "9601e56ea49152c2e0b339b0862db1c24542a23db9bfd6db3d0b817ebd153590",
+      "size_bytes": 567592,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Clang/Ableton Folder Info/DS Clang.amxd",
+      "name": "DS Clang",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Clang/Ableton Folder Info/DS Clang.amxd",
+      "pack": null,
+      "sha256": "08301ce7fa7066e8a03b9c9273c3b82b356c91405547b71fd66fff0060ed5ac4",
+      "size_bytes": 99786,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Clap/Ableton Folder Info/DS Clap.amxd",
+      "name": "DS Clap",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Clap/Ableton Folder Info/DS Clap.amxd",
+      "pack": null,
+      "sha256": "dcc971cc324deabcd1408389b8f448215503ada4d8005d53ab676fbef02d7da7",
+      "size_bytes": 125453,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Cymbal/Ableton Folder Info/DS Cymbal.amxd",
+      "name": "DS Cymbal",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Cymbal/Ableton Folder Info/DS Cymbal.amxd",
+      "pack": null,
+      "sha256": "fea652375f4378f9cb7cbd28b2e7517424c7bb0098fd0fdac4ed1645b4271606",
+      "size_bytes": 82647,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS FM/Ableton Folder Info/DS FM.amxd",
+      "name": "DS FM",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS FM/Ableton Folder Info/DS FM.amxd",
+      "pack": null,
+      "sha256": "575a3c09863f3d363d1ed433c653ab5449ff42213f13e9fd4aa419a74b65606b",
+      "size_bytes": 74711,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS HH/Ableton Folder Info/DS HH.amxd",
+      "name": "DS HH",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS HH/Ableton Folder Info/DS HH.amxd",
+      "pack": null,
+      "sha256": "091f2f67e31905d4d98355b8bdc7e1a237b166347fb5142508b905a1f240df84",
+      "size_bytes": 48253,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Kick/Ableton Folder Info/DS Kick.amxd",
+      "name": "DS Kick",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Kick/Ableton Folder Info/DS Kick.amxd",
+      "pack": null,
+      "sha256": "2e0a62e62d68e9afb20d6830826f13c77f1f314892fbad03ead79df723cbf7be",
+      "size_bytes": 97049,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Sampler/Ableton Folder Info/DS Sampler.amxd",
+      "name": "DS Sampler",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Sampler/Ableton Folder Info/DS Sampler.amxd",
+      "pack": null,
+      "sha256": "6b9bdeec9c6557ada7c94b6536791a17fffe1750d7f2d1704de35be529a3cfa2",
+      "size_bytes": 439147,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Snare/Ableton Folder Info/DS Snare.amxd",
+      "name": "DS Snare",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Snare/Ableton Folder Info/DS Snare.amxd",
+      "pack": null,
+      "sha256": "cb0e219cb366ebbd99c65c6341caf05e203eb11fa89f32a5759da78f8cd47b0d",
+      "size_bytes": 84135,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:Instruments/Drum Synth/DS Tom/Ableton Folder Info/DS Tom.amxd",
+      "name": "DS Tom",
+      "root": "builtin",
+      "path": "Instruments/Drum Synth/DS Tom/Ableton Folder Info/DS Tom.amxd",
+      "pack": null,
+      "sha256": "539abe4f2e12b98a24baaf622ac2c7e95dbce84985ed6866f7bae481f76fefc9",
+      "size_bytes": 149956,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/Envelope MIDI/Ableton Folder Info/Envelope MIDI.amxd",
+      "name": "Envelope MIDI",
+      "root": "builtin",
+      "path": "MIDI Effects/Envelope MIDI/Ableton Folder Info/Envelope MIDI.amxd",
+      "pack": null,
+      "sha256": "e7523da46c9dd2ca7c2081d9e6b46cad73b2d0f29b5ae7feb5744b76913a6931",
+      "size_bytes": 502857,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/Expression Control/Expression Control Legacy/Ableton Folder Info/Expression Control Legacy.amxd",
+      "name": "Expression Control Legacy",
+      "root": "builtin",
+      "path": "MIDI Effects/Expression Control/Expression Control Legacy/Ableton Folder Info/Expression Control Legacy.amxd",
+      "pack": null,
+      "sha256": "ae8cf0e684150c681facef308ec5d971b8a14459ef828aa7c85ec5b01c09fc69",
+      "size_bytes": 501849,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/Expression Control/Expression Control/Ableton Folder Info/Expression Control.amxd",
+      "name": "Expression Control",
+      "root": "builtin",
+      "path": "MIDI Effects/Expression Control/Expression Control/Ableton Folder Info/Expression Control.amxd",
+      "pack": null,
+      "sha256": "6ac08cbcb0c96ec78eed2813ede18b0f92736305664822551d5d037f24199388",
+      "size_bytes": 614704,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/MIDI Monitor/Ableton Folder Info/MIDI Monitor.amxd",
+      "name": "MIDI Monitor",
+      "root": "builtin",
+      "path": "MIDI Effects/MIDI Monitor/Ableton Folder Info/MIDI Monitor.amxd",
+      "pack": null,
+      "sha256": "21256e4da0dc20173de2a8be34b479f6485ae0c5731b56491ff57e8a43a923f1",
+      "size_bytes": 118902,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/MPE Control/Ableton Folder Info/MPE Control.amxd",
+      "name": "MPE Control",
+      "root": "builtin",
+      "path": "MIDI Effects/MPE Control/Ableton Folder Info/MPE Control.amxd",
+      "pack": null,
+      "sha256": "fc4e510279ab155fb03602bdfa3743628af00ef864c60e6f40d78830b8f36c7d",
+      "size_bytes": 489558,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/Note Echo/Ableton Folder Info/Note Echo.amxd",
+      "name": "Note Echo",
+      "root": "builtin",
+      "path": "MIDI Effects/Note Echo/Ableton Folder Info/Note Echo.amxd",
+      "pack": null,
+      "sha256": "cfff7695130008d9f7707d83e223d0e28288b7fbff35972ee2315c8b8493aa95",
+      "size_bytes": 295446,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Effects/Shaper MIDI/Ableton Folder Info/Shaper MIDI.amxd",
+      "name": "Shaper MIDI",
+      "root": "builtin",
+      "path": "MIDI Effects/Shaper MIDI/Ableton Folder Info/Shaper MIDI.amxd",
+      "pack": null,
+      "sha256": "4b41f2e0f89ee67c3897dcae8969495af9fd26546674686173eddc8b93f30e44",
+      "size_bytes": 560789,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Tools/Generators/Euclidean/Euclidean.amxd",
+      "name": "Euclidean",
+      "root": "builtin",
+      "path": "MIDI Tools/Generators/Euclidean/Euclidean.amxd",
+      "pack": null,
+      "sha256": "e09f96034ef2d7b7acab13c4e186f7c472ce1c43ebc09c4db98662170a4e670e",
+      "size_bytes": 325948,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "builtin:MIDI Tools/Transformations/Velocity Shaper/Velocity Shaper.amxd",
+      "name": "Velocity Shaper",
+      "root": "builtin",
+      "path": "MIDI Tools/Transformations/Velocity Shaper/Velocity Shaper.amxd",
+      "pack": null,
+      "sha256": "b101e9776449c0502a0c4f3b93e3b16ddb507c345579baeb8e7f31bd4415348a",
+      "size_bytes": 40370,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Instruments/CV Instrument/Ableton Folder Info/CV Instrument.amxd",
+      "name": "CV Instrument",
+      "root": "packs",
+      "path": "CV Tools/CV Instruments/CV Instrument/Ableton Folder Info/CV Instrument.amxd",
+      "pack": "CV Tools",
+      "sha256": "ccc2ff9b374c5be50710f76e2b9fbd2bc2d350291407d04efab00bef9f19ae05",
+      "size_bytes": 5572467,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Instruments/CV Triggers/Ableton Folder Info/CV Triggers.amxd",
+      "name": "CV Triggers",
+      "root": "packs",
+      "path": "CV Tools/CV Instruments/CV Triggers/Ableton Folder Info/CV Triggers.amxd",
+      "pack": "CV Tools",
+      "sha256": "f4cc26d0a634919f653be5c21ea8e250d0f7f2640fa6108a766372cc20e2bac9",
+      "size_bytes": 1787067,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Instruments/Rotating Rhythm Generator/Ableton Folder Info/Rotating Rhythm Generator.amxd",
+      "name": "Rotating Rhythm Generator",
+      "root": "packs",
+      "path": "CV Tools/CV Instruments/Rotating Rhythm Generator/Ableton Folder Info/Rotating Rhythm Generator.amxd",
+      "pack": "CV Tools",
+      "sha256": "2dc70a24fa401cc3450e35ab917c916c09a19380738ea3b0cb9c749e50998f5f",
+      "size_bytes": 776709,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Modulation/CV Envelope Follower/Ableton Folder Info/CV Envelope Follower.amxd",
+      "name": "CV Envelope Follower",
+      "root": "packs",
+      "path": "CV Tools/CV Modulation/CV Envelope Follower/Ableton Folder Info/CV Envelope Follower.amxd",
+      "pack": "CV Tools",
+      "sha256": "7bdfc62d81876115a58ef0d2e777557ff05d9f71efaf9a2288d4cda2f31c9d4f",
+      "size_bytes": 637513,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Modulation/CV In/Ableton Folder Info/CV In.amxd",
+      "name": "CV In",
+      "root": "packs",
+      "path": "CV Tools/CV Modulation/CV In/Ableton Folder Info/CV In.amxd",
+      "pack": "CV Tools",
+      "sha256": "51a4b5624a23ed61b9e701a3531a47625b918d7297421a8a3a2bfa37bbf5dcd0",
+      "size_bytes": 3774686,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Modulation/CV LFO/Ableton Folder Info/CV LFO.amxd",
+      "name": "CV LFO",
+      "root": "packs",
+      "path": "CV Tools/CV Modulation/CV LFO/Ableton Folder Info/CV LFO.amxd",
+      "pack": "CV Tools",
+      "sha256": "562d1a4da4935cefa38e80294ab41a6937f488148b0281e278f793675cb74635",
+      "size_bytes": 520129,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Modulation/CV Shaper/Ableton Folder Info/CV Shaper.amxd",
+      "name": "CV Shaper",
+      "root": "packs",
+      "path": "CV Tools/CV Modulation/CV Shaper/Ableton Folder Info/CV Shaper.amxd",
+      "pack": "CV Tools",
+      "sha256": "65c6f5cf549bdbd126e2645c2acaed69b3bb2a2c6fb63f73e04debcb80786b14",
+      "size_bytes": 537831,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Utilities/CV Clock In/Ableton Folder Info/CV Clock In.amxd",
+      "name": "CV Clock In",
+      "root": "packs",
+      "path": "CV Tools/CV Utilities/CV Clock In/Ableton Folder Info/CV Clock In.amxd",
+      "pack": "CV Tools",
+      "sha256": "9a558d99e108b160e0f9a26fdddbc19b8080dc2b256b6d930d654388f8948962",
+      "size_bytes": 328726,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Utilities/CV Clock Out/Ableton Folder Info/CV Clock Out.amxd",
+      "name": "CV Clock Out",
+      "root": "packs",
+      "path": "CV Tools/CV Utilities/CV Clock Out/Ableton Folder Info/CV Clock Out.amxd",
+      "pack": "CV Tools",
+      "sha256": "d97a1e019f780e1d2ff16eb92fceabcebeb8aec654274f55b0d59db49a0bd540",
+      "size_bytes": 231851,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:CV Tools/CV Utilities/CV Utility/Ableton Folder Info/CV Utility.amxd",
+      "name": "CV Utility",
+      "root": "packs",
+      "path": "CV Tools/CV Utilities/CV Utility/Ableton Folder Info/CV Utility.amxd",
+      "pack": "CV Tools",
+      "sha256": "beb2fde7a8af5e35dc633470ece169ac18edf12df09f4bd0aa880f7b3c23d06a",
+      "size_bytes": 455578,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Audio Effects/Color Limiter/Ableton Folder Info/Color Limiter.amxd",
+      "name": "Color Limiter",
+      "root": "packs",
+      "path": "Creative Extensions/Audio Effects/Color Limiter/Ableton Folder Info/Color Limiter.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "c85492940c98a5e83cf2ce2f8836090341aa9ec448f0d7ec200d7da03bc80fd8",
+      "size_bytes": 230465,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Audio Effects/Gated Delay/Ableton Folder Info/Gated Delay.amxd",
+      "name": "Gated Delay",
+      "root": "packs",
+      "path": "Creative Extensions/Audio Effects/Gated Delay/Ableton Folder Info/Gated Delay.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "849a55a019eedd9490aaa15c6ccc20eb56f924d370da203de598e5664b502629",
+      "size_bytes": 401534,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Audio Effects/Pitch Hack/Ableton Folder Info/Pitch Hack.amxd",
+      "name": "Pitch Hack",
+      "root": "packs",
+      "path": "Creative Extensions/Audio Effects/Pitch Hack/Ableton Folder Info/Pitch Hack.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "19565f9a7aaa781b9c92cc83f82b441fd260273f3e042812b31cde916b3b1937",
+      "size_bytes": 360065,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Audio Effects/Re-Enveloper/Ableton Folder Info/Re-Enveloper.amxd",
+      "name": "Re-Enveloper",
+      "root": "packs",
+      "path": "Creative Extensions/Audio Effects/Re-Enveloper/Ableton Folder Info/Re-Enveloper.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "c8f92850ad67edb3b16fdaaa3f1c30a97c4b23e56e11b66d76545b0e0d1c1087",
+      "size_bytes": 443539,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Audio Effects/Spectral Blur/Ableton Folder Info/Spectral Blur.amxd",
+      "name": "Spectral Blur",
+      "root": "packs",
+      "path": "Creative Extensions/Audio Effects/Spectral Blur/Ableton Folder Info/Spectral Blur.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "840f0c4a36c9103fd99a800f1cce381c9969d4e373c5e6dae196ef6eaa600070",
+      "size_bytes": 158347,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Instruments/Bass/Ableton Folder Info/Bass.amxd",
+      "name": "Bass",
+      "root": "packs",
+      "path": "Creative Extensions/Instruments/Bass/Ableton Folder Info/Bass.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "36c1f2b49c200501d07603cd85ad3c127e5f36c0f45dd3b9a1aa399b36f24cf6",
+      "size_bytes": 1845917,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/Instruments/Poli/Ableton Folder Info/Poli.amxd",
+      "name": "Poli",
+      "root": "packs",
+      "path": "Creative Extensions/Instruments/Poli/Ableton Folder Info/Poli.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "212a7fb6eeee0d040cb6fa243b7c189d203abb29122b82d2956d25f740e5bd1c",
+      "size_bytes": 1553174,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Creative Extensions/MIDI Effects/Melodic Steps/Ableton Folder Info/Melodic Steps.amxd",
+      "name": "Melodic Steps",
+      "root": "packs",
+      "path": "Creative Extensions/MIDI Effects/Melodic Steps/Ableton Folder Info/Melodic Steps.amxd",
+      "pack": "Creative Extensions",
+      "sha256": "f1b41dabc719135568d327b61c71f3ae81c5f7baef133b5b260adf31456020c4",
+      "size_bytes": 971473,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Generators by Iftah/Generators/Patterns by Iftah.amxd",
+      "name": "Patterns by Iftah",
+      "root": "packs",
+      "path": "Generators by Iftah/Generators/Patterns by Iftah.amxd",
+      "pack": "Generators by Iftah",
+      "sha256": "a62c4b96e8c638027ad6c541fec79b16bc9190db225a15d7dcff60556e1f4e8f",
+      "size_bytes": 772677,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Generators by Iftah/Generators/Sting by Iftah.amxd",
+      "name": "Sting by Iftah",
+      "root": "packs",
+      "path": "Generators by Iftah/Generators/Sting by Iftah.amxd",
+      "pack": "Generators by Iftah",
+      "sha256": "04d60e5fef945df5d35c64ee735675c3ec5edd9e4b798b323bc9509558640143",
+      "size_bytes": 237820,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Granulator III/Granulator III/Ableton Folder Info/Granulator III.amxd",
+      "name": "Granulator III",
+      "root": "packs",
+      "path": "Granulator III/Granulator III/Ableton Folder Info/Granulator III.amxd",
+      "pack": "Granulator III",
+      "sha256": "fc24708159d826ebf967b65d7c7420db768effa624a3565ed5b160524a1d1302",
+      "size_bytes": 23122455,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/Calculus.amxd",
+      "name": "Calculus",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/Calculus.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "24e96534ef9c1edd85dffed71581b82cdf706722f316c8394802c50f06b677a2",
+      "size_bytes": 182042,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/Slink Filter.amxd",
+      "name": "Slink Filter",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/Slink Filter.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "e7ef33d97c2fb890f4492f4db89145605a2b74467640ad073ee573761074cac8",
+      "size_bytes": 1323219,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/Slink LFO CV.amxd",
+      "name": "Slink LFO CV",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/Slink LFO CV.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "4f4871cee715874c31dff9621f0b32e917cea480c8945897fb05f0af838b9e80",
+      "size_bytes": 1862466,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/Slink LFO.amxd",
+      "name": "Slink LFO",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/Slink LFO.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "99a7dbbb8c50999826775e1120c96001af33ed2ea91a539901eb97b7bb1e86b1",
+      "size_bytes": 1780631,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/Slink MIDI.amxd",
+      "name": "Slink MIDI",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/Slink MIDI.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "fe9e5c6835ae2a80fdbb15564602112951d38781f670d414e946078f2c40ca13",
+      "size_bytes": 4297795,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/Slink Pan.amxd",
+      "name": "Slink Pan",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/Slink Pan.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "2f05ea3dfe7c4142513086e42f03c2b499235a957ce429c30904d4455e97be04",
+      "size_bytes": 1361283,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Hypnus Records (Legacy)/The Spellbook.amxd",
+      "name": "The Spellbook",
+      "root": "packs",
+      "path": "Hypnus Records (Legacy)/The Spellbook.amxd",
+      "pack": "Hypnus Records (Legacy)",
+      "sha256": "d9ef32ff43fc59a6e4b4cda044462265d22aec293d249b9b7d1524068fe3e54e",
+      "size_bytes": 1182933,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:MIDI Tools by Philip Meyer/MIDI Tools/Generators/Phase Pattern.amxd",
+      "name": "Phase Pattern",
+      "root": "packs",
+      "path": "MIDI Tools by Philip Meyer/MIDI Tools/Generators/Phase Pattern.amxd",
+      "pack": "MIDI Tools by Philip Meyer",
+      "sha256": "2fd89747944e06a59a952dc21af6da8792b2b80c9e396ffaf445e0a2ab00bd69",
+      "size_bytes": 431391,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:MIDI Tools by Philip Meyer/MIDI Tools/Generators/Polyrhythm.amxd",
+      "name": "Polyrhythm",
+      "root": "packs",
+      "path": "MIDI Tools by Philip Meyer/MIDI Tools/Generators/Polyrhythm.amxd",
+      "pack": "MIDI Tools by Philip Meyer",
+      "sha256": "06502ab0904ccc6f7339a61cd63ca3b6f39b287372cbd4f4d293e67f1795439e",
+      "size_bytes": 167748,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:MIDI Tools by Philip Meyer/MIDI Tools/Generators/Stages.amxd",
+      "name": "Stages",
+      "root": "packs",
+      "path": "MIDI Tools by Philip Meyer/MIDI Tools/Generators/Stages.amxd",
+      "pack": "MIDI Tools by Philip Meyer",
+      "sha256": "25c0a21f312ab6695158e243ca6a48b63a8f52ede81317c482c4e744c0701634",
+      "size_bytes": 378093,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:MIDI Tools by Philip Meyer/MIDI Tools/Transformations/Retrigger.amxd",
+      "name": "Retrigger",
+      "root": "packs",
+      "path": "MIDI Tools by Philip Meyer/MIDI Tools/Transformations/Retrigger.amxd",
+      "pack": "MIDI Tools by Philip Meyer",
+      "sha256": "484e2d3d79b042710f82813694d514c72b152fd738dee51c95deba25ad2a353e",
+      "size_bytes": 413835,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:MIDI Tools by Philip Meyer/MIDI Tools/Transformations/Slice Shuffler.amxd",
+      "name": "Slice Shuffler",
+      "root": "packs",
+      "path": "MIDI Tools by Philip Meyer/MIDI Tools/Transformations/Slice Shuffler.amxd",
+      "pack": "MIDI Tools by Philip Meyer",
+      "sha256": "e6a31ff1b10a20ee8e539f7f8fadf0732fa7c97adcbd837da26fd7e05438a4f2",
+      "size_bytes": 100993,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Performance Pack by Iftah/Arrangement Looper/Ableton Folder Info/Arrangement Looper.amxd",
+      "name": "Arrangement Looper",
+      "root": "packs",
+      "path": "Performance Pack by Iftah/Arrangement Looper/Ableton Folder Info/Arrangement Looper.amxd",
+      "pack": "Performance Pack by Iftah",
+      "sha256": "48124101d2acac0a9b21e4c34f486b9fcf45a17f4647e789064e961dffcda24c",
+      "size_bytes": 245525,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Performance Pack by Iftah/Performer/Ableton Folder Info/Performer.amxd",
+      "name": "Performer",
+      "root": "packs",
+      "path": "Performance Pack by Iftah/Performer/Ableton Folder Info/Performer.amxd",
+      "pack": "Performance Pack by Iftah",
+      "sha256": "191835d940d9e5a905d1fd63556e59b8079ddb92ef9fdd438e8d16f23515fba5",
+      "size_bytes": 4459536,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Performance Pack by Iftah/Prearranger/Ableton Folder Info/Prearranger.amxd",
+      "name": "Prearranger",
+      "root": "packs",
+      "path": "Performance Pack by Iftah/Prearranger/Ableton Folder Info/Prearranger.amxd",
+      "pack": "Performance Pack by Iftah",
+      "sha256": "4197ba53fbbe9ea466be1dd7edd34c5a234f114ac05be1eb564806b89ee2ec25",
+      "size_bytes": 914952,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Performance Pack by Iftah/Variations/Ableton Folder Info/Variations.amxd",
+      "name": "Variations",
+      "root": "packs",
+      "path": "Performance Pack by Iftah/Variations/Ableton Folder Info/Variations.amxd",
+      "pack": "Performance Pack by Iftah",
+      "sha256": "e263fd217afbbbe8d1dc7cee4c3da5b68db04b4d2e4d3bb68b913f9155ac3772",
+      "size_bytes": 3043974,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Probability Pack by Sonic Faction/Dr Chaos.amxd",
+      "name": "Dr Chaos",
+      "root": "packs",
+      "path": "Probability Pack by Sonic Faction/Dr Chaos.amxd",
+      "pack": "Probability Pack by Sonic Faction",
+      "sha256": "017cfe536e22c539eb5aba251243164f406c9d04c3383ad41fa055894de47c95",
+      "size_bytes": 7857121,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Probability Pack by Sonic Faction/Melodic Probability.amxd",
+      "name": "Melodic Probability",
+      "root": "packs",
+      "path": "Probability Pack by Sonic Faction/Melodic Probability.amxd",
+      "pack": "Probability Pack by Sonic Faction",
+      "sha256": "f4cbe89bfa67e13f02d4069bfff4b5be168cb507336b78f4ca31a57656d53970",
+      "size_bytes": 7856196,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Probability Pack by Sonic Faction/Probability Arp.amxd",
+      "name": "Probability Arp",
+      "root": "packs",
+      "path": "Probability Pack by Sonic Faction/Probability Arp.amxd",
+      "pack": "Probability Pack by Sonic Faction",
+      "sha256": "4318ebf730b1fc4f44f47d9ad7b8f46c703fcc4639cb78c3d6ed746f3f985636",
+      "size_bytes": 561577,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Probability Pack by Sonic Faction/Rhythmic Probability.amxd",
+      "name": "Rhythmic Probability",
+      "root": "packs",
+      "path": "Probability Pack by Sonic Faction/Rhythmic Probability.amxd",
+      "pack": "Probability Pack by Sonic Faction",
+      "sha256": "c6141b6311bb326c77b507b467d0da4acbe68fd1ae2bde9c22df700e3a8e9e8f",
+      "size_bytes": 6732927,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Probability Pack by Sonic Faction/Step Divider.amxd",
+      "name": "Step Divider",
+      "root": "packs",
+      "path": "Probability Pack by Sonic Faction/Step Divider.amxd",
+      "pack": "Probability Pack by Sonic Faction",
+      "sha256": "5b957358e35996f1445d2f6896cbcf00fc8858dfb3eb4f693b1f5e5f696b2da9",
+      "size_bytes": 8557996,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Sequencers/Rhythmic Steps/Ableton Folder Info/Rhythmic Steps.amxd",
+      "name": "Rhythmic Steps",
+      "root": "packs",
+      "path": "Sequencers/Rhythmic Steps/Ableton Folder Info/Rhythmic Steps.amxd",
+      "pack": "Sequencers",
+      "sha256": "0cb27f836643356ccb43710186ad37bb0577873a91e7a5b28b23184045413435",
+      "size_bytes": 1221363,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Sequencers/SQ Sequencer/Ableton Folder Info/SQ Sequencer.amxd",
+      "name": "SQ Sequencer",
+      "root": "packs",
+      "path": "Sequencers/SQ Sequencer/Ableton Folder Info/SQ Sequencer.amxd",
+      "pack": "Sequencers",
+      "sha256": "f9d0b66f21a0aae02bcf5a8083b2a58c27d854d6b0f37ee24cf3c004eb9a09a1",
+      "size_bytes": 1424552,
+      "owner_ticket": 2690
+    },
+    {
+      "id": "packs:Sequencers/Step Arp/Ableton Folder Info/Step Arp.amxd",
+      "name": "Step Arp",
+      "root": "packs",
+      "path": "Sequencers/Step Arp/Ableton Folder Info/Step Arp.amxd",
+      "pack": "Sequencers",
+      "sha256": "35bf15396db5ce01201e53e9390f51cff693b88a56c7b1f5090d0cec56a736f0",
+      "size_bytes": 1083895,
+      "owner_ticket": 2690
+    }
+  ],
+  "native_preset_groups": [
+    {
+      "root": "core",
+      "path": "Audio Effects/Amp",
+      "preset_count": 12
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Auto Filter",
+      "preset_count": 24
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Auto Pan-Tremolo",
+      "preset_count": 23
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Auto Shift",
+      "preset_count": 19
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Beat Repeat",
+      "preset_count": 13
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Cabinet",
+      "preset_count": 11
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Channel EQ",
+      "preset_count": 18
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Chorus-Ensemble",
+      "preset_count": 15
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Compressor",
+      "preset_count": 18
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Corpus",
+      "preset_count": 26
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Delay",
+      "preset_count": 33
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Drum Buss",
+      "preset_count": 22
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Dynamic Tube",
+      "preset_count": 6
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/EQ Eight",
+      "preset_count": 62
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/EQ Three",
+      "preset_count": 7
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Echo",
+      "preset_count": 48
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Envelope Follower",
+      "preset_count": 5
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Erosion",
+      "preset_count": 9
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Filter Delay",
+      "preset_count": 15
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Gate",
+      "preset_count": 5
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Glue Compressor",
+      "preset_count": 16
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Grain Delay",
+      "preset_count": 19
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Hybrid Reverb",
+      "preset_count": 72
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/LFO",
+      "preset_count": 8
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Auto Filter Legacy",
+      "preset_count": 25
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Auto Pan",
+      "preset_count": 13
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Chorus",
+      "preset_count": 13
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Erosion Legacy",
+      "preset_count": 8
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Flanger",
+      "preset_count": 9
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Frequency Shifter",
+      "preset_count": 16
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Phaser",
+      "preset_count": 15
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Legacy/Redux Legacy",
+      "preset_count": 6
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Limiter",
+      "preset_count": 11
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Looper",
+      "preset_count": 6
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Multiband Dynamics",
+      "preset_count": 12
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Overdrive",
+      "preset_count": 5
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Pedal",
+      "preset_count": 15
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Phaser-Flanger",
+      "preset_count": 12
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Redux",
+      "preset_count": 9
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Resonators",
+      "preset_count": 11
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Reverb",
+      "preset_count": 79
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Roar",
+      "preset_count": 64
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Saturator",
+      "preset_count": 22
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Shaper",
+      "preset_count": 12
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Shifter",
+      "preset_count": 24
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Spectral Resonator",
+      "preset_count": 8
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Spectral Time",
+      "preset_count": 6
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Spectrum",
+      "preset_count": 11
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Utility",
+      "preset_count": 10
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Vinyl Distortion",
+      "preset_count": 7
+    },
+    {
+      "root": "core",
+      "path": "Audio Effects/Vocoder",
+      "preset_count": 7
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Analog",
+      "preset_count": 58
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Collision",
+      "preset_count": 33
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Drift",
+      "preset_count": 89
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Electric",
+      "preset_count": 17
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Impulse",
+      "preset_count": 13
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Meld",
+      "preset_count": 84
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Operator",
+      "preset_count": 331
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Sampler",
+      "preset_count": 76
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Simpler",
+      "preset_count": 38
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Tension",
+      "preset_count": 107
+    },
+    {
+      "root": "core",
+      "path": "Instruments/Wavetable",
+      "preset_count": 270
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Arpeggiator",
+      "preset_count": 7
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Chord",
+      "preset_count": 21
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Envelope MIDI",
+      "preset_count": 5
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/MPE Control",
+      "preset_count": 7
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Note Echo",
+      "preset_count": 10
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Note Length",
+      "preset_count": 4
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Pitch",
+      "preset_count": 3
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Random",
+      "preset_count": 8
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Scale",
+      "preset_count": 36
+    },
+    {
+      "root": "core",
+      "path": "MIDI Effects/Velocity",
+      "preset_count": 15
+    }
+  ],
+  "limitations": [
+    "filesystem presence does not establish browser visibility, licensing or successful loading",
+    "device control laws, defaults, latency and native acceptance require separate specifications and experiments",
+    "pack vendor metadata is recorded verbatim; first-party/distribution rights are not inferred",
+    "user library and third-party plugins are outside this installed factory inventory"
+  ]
+}
