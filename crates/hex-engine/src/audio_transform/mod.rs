@@ -1,5 +1,6 @@
 //! Control-owned immutable audio transformation, cache and retained PCM accounting.
 mod budget;
+mod events;
 mod mapping;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
@@ -521,6 +522,11 @@ impl AudioTransformPreparation {
         };
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+        if edit.domain.events.is_some() {
+            let _scratch_reservation = self.budget.reserve(bytes)?;
+            rendered.frames =
+                events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
+        }
         mapping::apply_fade(
             &mut rendered.frames,
             edit,
@@ -555,7 +561,8 @@ impl AudioTransformPreparation {
         edit.validate(clip, project.tempo_map(), asset.playback_frames())?;
         let (_, _, view_start, view_end) = edit.projected_domain(project.tempo_map())?;
         let domain = &edit.domain;
-        let direct = domain.pitch_cents == 0
+        let direct = domain.events.is_none()
+            && domain.pitch_cents == 0
             && !domain.warp_enabled
             && domain.source_gain.is_empty()
             && domain.fade.fade_in() == 0
@@ -605,7 +612,7 @@ impl AudioTransformPreparation {
         }
         let PreparedAudioSourceRef::Resident(source) = source else {
             return Err(Invalid(
-                "pitch, warp and source-envelope preparation currently requires resident audio; streamed source changes were not committed",
+                "audio events, pitch, warp and source-envelope preparation currently requires resident audio; streamed source changes were not committed",
             ));
         };
         let audio = self.prepare_audio(project, edit, asset, source)?;

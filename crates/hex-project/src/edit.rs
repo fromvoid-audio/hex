@@ -15,6 +15,10 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    EditAudioEvents {
+        clip: ClipId,
+        operation: crate::AudioEventEdit,
+    },
     /// One prepared history operation creates a normal hybrid track with a device.
     InsertTrackWithDevice {
         name: String,
@@ -1144,6 +1148,10 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::EditAudioEvents { clip, operation } => {
+                crate::audio_events::apply(self, clip, operation)?;
+                Ok(Created::None)
+            }
             Command::SpliceGainTouchBatch {
                 track,
                 expected_epoch,

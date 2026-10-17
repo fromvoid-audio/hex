@@ -199,3 +199,7 @@ Their strict reader requires gain on every audio clip, requires `audio_edit` on
 every Arrangement clip in21 and forbids it in20. No-audio envelopes are rejected
 as ambiguous. Root keys both present select only main's historical20/21 reader,
 including when null/malformed; errors never retry another format.
+
+Schema26 preserves the complete existing envelope plus a strict, complete
+audio-event table. Historical schemas keep their explicit readers and implicit
+single-event migration; see [audio events](../../docs/audio-events.md).

@@ -104,10 +104,11 @@ fn schema_seventeen_migrates_absent_and_rejects_provenance_backport() {
     let empty = Project::new(48_000).unwrap();
     assert!(empty.import_provenance().is_none());
     let mut legacy: Value = serde_json::from_slice(&encode(&empty).unwrap()).unwrap();
-    assert_eq!(legacy["version"], 25);
+    assert_eq!(legacy["version"], 26);
     assert!(legacy["import_provenance"].is_null());
     legacy["version"] = json!(17);
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("audio_event_state");
     legacy.as_object_mut().unwrap().remove("audio_feeds");
     legacy.as_object_mut().unwrap().remove("midi_routes");
     legacy.as_object_mut().unwrap().remove("routing");

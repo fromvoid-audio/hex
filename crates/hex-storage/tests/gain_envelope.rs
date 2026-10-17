@@ -75,7 +75,7 @@ fn schema21_roundtrip_retains_every_lane_feed_send_provenance_and_opaque_payload
     let p = fixture();
     let bytes = encode(&p).unwrap();
     let doc: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 25);
+    assert_eq!(doc["version"], 26);
     assert_eq!(decode(&bytes).unwrap(), p);
     assert!(encode_schema20(&p).is_err());
     let dir = std::env::temp_dir().join(format!(
@@ -134,6 +134,7 @@ fn strict_new_lane_fields_order_modes_roles_limits_and_backports_refuse() {
         invalid = base.clone();
         invalid["version"] = json!(version);
         invalid.as_object_mut().unwrap().remove("audio_clip_state");
+        invalid.as_object_mut().unwrap().remove("audio_event_state");
         invalid.as_object_mut().unwrap().remove("audio_feeds");
         invalid.as_object_mut().unwrap().remove("midi_routes");
         assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
@@ -149,7 +150,7 @@ fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
     let bytes = encode(&p).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        25
+        26
     );
     assert_eq!(decode(&bytes).unwrap(), p);
     let mut s = p.snapshot();
@@ -158,7 +159,7 @@ fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
     let bytes = encode(&p).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        25
+        26
     );
     assert_eq!(decode(&bytes).unwrap(), p);
 }
@@ -171,7 +172,7 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        25
+        26
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut editor = Editor::new(project.clone(), 8).unwrap();
@@ -314,7 +315,7 @@ fn schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and
     let project = Project::from_snapshot(snapshot).unwrap();
     let bytes = encode(&project).unwrap();
     let document: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(document["version"], 25);
+    assert_eq!(document["version"], 26);
     assert_eq!(document["tracks"][0]["gain_touch_epoch"], 23);
     assert!(
         document["tracks"][0]["gain_touch_spans"]

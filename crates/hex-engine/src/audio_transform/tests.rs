@@ -506,6 +506,15 @@ fn neutral_faded_streamed_commands_move_and_trim_match_resident_and_transform_fa
     );
     assert!(failure.is_err());
     assert_eq!(editor.project(), &before);
+    let failure = editor.execute_prepared(
+        Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 2000 },
+        },
+        |candidate| crate::compile::project_with_prepared_audio_sources(candidate, &sources, 1),
+    );
+    assert!(failure.is_err());
+    assert_eq!(editor.project(), &before);
 }
 #[test]
 fn resident_beat_anchor_without_warp_has_exact_audible_waveform_root() {
@@ -751,4 +760,97 @@ fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
     assert_eq!(budget.used(), 64);
     drop(source);
     assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn nested_audio_events_are_exact_through_splits_overwrite_silence_seek_and_blocks() {
+    use hex_project::AudioEventEdit;
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 2000 },
+        })
+        .unwrap();
+    let split = prepare(&editor, &media, &context);
+    assert_eq!(render(&split, 0, 8000, 1), baseline);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Move {
+                event: 1,
+                start: 4000,
+            },
+        })
+        .unwrap();
+    let revision = prepare(&editor, &media, &context);
+    let actual = render(&revision, 0, 8000, 257);
+    let mut expected = vec![[0.0; 2]; 8000];
+    expected[2000..4000].copy_from_slice(&baseline[2000..4000]);
+    expected[4000..6000].copy_from_slice(&baseline[0..2000]);
+    expected[6000..8000].copy_from_slice(&baseline[6000..8000]);
+    assert_eq!(actual, expected);
+    assert_eq!(render(&revision, 3993, 2100, 17), expected[3993..6093]);
+    editor
+        .execute(Command::SplitClip { clip, frame: 5100 })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 127),
+        expected
+    );
+}
+
+#[test]
+fn musical_event_split_preserves_every_sample_in_all_existing_warp_modes() {
+    for mode in [
+        None,
+        Some(WarpMode::RePitch),
+        Some(WarpMode::Tones { grain_ms: 32 }),
+        Some(WarpMode::Complex),
+    ] {
+        let (mut editor, clip, media) = fixture(true);
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        if let Some(mode) = mode {
+            let settings = default_audio_warp(
+                editor.project().clip(clip).unwrap(),
+                editor.project().tempo_map(),
+                mode,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        }
+        let context = AudioTransformPreparation::default();
+        let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 173);
+        let root = editor.project().clip(clip).unwrap().audio_event_root();
+        let at = (root.view_start + root.view_end) / 2;
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::Split { at },
+            })
+            .unwrap();
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 8000, 257),
+            baseline
+        );
+    }
 }

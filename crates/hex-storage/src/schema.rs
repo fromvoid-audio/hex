@@ -1,3 +1,4 @@
+pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
 pub(crate) mod combined;
 pub(crate) mod gain_envelopes;
@@ -2026,6 +2027,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 26 {
+            return audio_events::decode(bytes);
         }
         if header.version == 25 {
             return musical_audio::DocumentV25::decode(bytes);

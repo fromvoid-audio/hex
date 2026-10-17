@@ -234,3 +234,8 @@ or Return removes incident routes in the same undoable edit; removing an
 instrument with an incoming MIDI route requires clearing that route first.
 Project owns validation/history only; engine owns bounded source scheduling,
 audio processing, latency alignment and runtime admission.
+
+Nested audio-event sequences and typed edits belong to this canonical model.
+They retain immutable source coordinates, use bounded nonoverlapping intervals
+and participate in normal transactional history; see
+[audio events](../../docs/audio-events.md).

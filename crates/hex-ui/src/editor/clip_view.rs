@@ -26,7 +26,7 @@ impl EditorView {
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
         self.device_panel_active = false;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -38,7 +38,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = None;
         self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
     }
@@ -58,7 +58,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = Some(return_track);
         self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
