@@ -4349,7 +4349,6 @@ the next unchanged full candidate may supply merge evidence.
   tooltips, including the sampled-note preview popup over clip headers. Header
   selection/drag/rename and distinct control tooltips are unchanged. Native hover
   acceptance remains pending in the coordinated optimized candidate.
-## latest-main launch by default — pulse2749 / PR359, 17 october 2026
 
 Cloud continuation for Pulse2752 / PR362 verified the canonical checkpoint and
 integrated main `070cacc3`, retaining the narrow two-container tooltip removal.
@@ -4496,6 +4495,8 @@ W06 positive ordering proof: exacte009db34 passes all six focused host binding
 tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
 drag stays finalized and a later real drag works. Final integration/review/full
 local CI and broader W06 deliverables remain pending; no native result claimed.
+
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
 
 The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
 non-divergent local `main`, runs full local CI, builds and installs the optimized
