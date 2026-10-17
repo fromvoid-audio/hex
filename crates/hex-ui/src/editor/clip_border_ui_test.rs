@@ -143,18 +143,19 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                 })),
                 "{id:?} selected border"
             );
+            let zero = gpui::ScaledPixels::default();
             assert!(
-                f32::from(widths.top) > 0.0
-                    && f32::from(widths.bottom) > 0.0
-                    && f32::from(widths.left) > 0.0
-                    && f32::from(widths.right) > 0.0
+                widths.top > zero
+                    && widths.bottom > zero
+                    && widths.left > zero
+                    && widths.right > zero
             );
             let current = visual.debug_bounds(selector).unwrap();
             assert_eq!(
                 current, bounds[index],
                 "selection does not change clip geometry"
             );
-            assert!(f32::from(mask.size.width) > 0.0 && f32::from(mask.size.height) > 0.0);
+            assert!(mask.size.width > zero && mask.size.height > zero);
             let fill = editor.read_with(&visual, |view: &EditorView, _| {
                 let source = view.state.as_ref().unwrap().project.track(track).unwrap();
                 let flavor = source
