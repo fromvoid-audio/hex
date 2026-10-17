@@ -6,7 +6,7 @@ impl SessionPlayback {
         &mut self,
         output: &mut [Frame],
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         for chain in &mut self.device_chains {
             chain.begin_block();
@@ -77,6 +77,7 @@ impl SessionPlayback {
                 }
                 for (frame_index, frame) in frames.iter_mut().enumerate() {
                     let mixed = track.mix_at(self.arrangement_frame).apply_frame(*frame);
+                    *frame = mixed;
                     chunk[frame_index][0] += mixed[0];
                     chunk[frame_index][1] += mixed[1];
                     for send in track.sends() {
@@ -85,6 +86,11 @@ impl SessionPlayback {
                         self.return_scratch[send.return_index][frame_index][1] +=
                             mixed[1] * send.gain;
                     }
+                }
+                if let Some(capture) = capture.as_mut()
+                    && let Some(id) = track.canonical_track_id()
+                {
+                    capture.add(OutputCaptureId::Track(id), offset, frames)?;
                 }
             }
             self.render_return_buses(chunk, offset, None, observer, capture)?;

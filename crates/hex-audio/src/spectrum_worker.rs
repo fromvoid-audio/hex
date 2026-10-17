@@ -7,8 +7,14 @@
 
 use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
 mod native;
+mod project;
 pub(crate) use native::{
     NativeSpectrumIdentity, NativeSpectrumReceipt, spawn_native_spectrum_worker,
+};
+pub(crate) use project::ProjectSelectionMailbox;
+pub use project::{
+    MAX_PROJECT_CONTRIBUTION_FRAMES, MAX_PROJECT_LAYERS, MAX_PROJECT_PAYLOAD_BYTES,
+    MAX_PROJECT_TRACKS, PROJECT_DISPLAY_STALE_AFTER, ProjectSelection, PublishedProjectSpectrum,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
@@ -93,6 +99,7 @@ pub struct SpectrumCapture {
     next_sequence: u64,
     exhausted: bool,
     native: Option<NativeSpectrumReceipt>,
+    pub(crate) project: Option<project::ProjectCapture>,
 }
 
 impl SpectrumCapture {
@@ -215,9 +222,20 @@ pub struct SpectrumReader {
     results: Receiver<PublishedSpectra>,
     latest: Option<PublishedSpectra>,
     native: Option<NativeSpectrumIdentity>,
+    project: Option<project::ProjectReader>,
 }
 
 impl SpectrumReader {
+    pub fn project_available(&self) -> bool {
+        self.project.is_some()
+    }
+    pub fn try_latest_project_at(
+        &mut self,
+        now: Instant,
+        selection: ProjectSelection,
+    ) -> Option<PublishedProjectSpectrum> {
+        self.project.as_mut()?.latest_at(now, selection)
+    }
     /// Return the newest result, clearing cached display data after 100 ms.
     pub fn try_latest(&mut self) -> Option<PublishedSpectrum> {
         self.try_latest_at(Instant::now())
@@ -322,6 +340,8 @@ pub enum SpectrumWorkerError {
     ThreadSpawn(std::io::Error),
     ThreadPanicked,
     StorageOverflow,
+    PoolCapacity,
+    Allocation,
 }
 
 impl fmt::Display for SpectrumWorkerError {
@@ -333,7 +353,9 @@ impl fmt::Display for SpectrumWorkerError {
             Self::ThreadSpawn(error) => {
                 write!(formatter, "could not start spectrum worker: {error}")
             }
+            Self::PoolCapacity => formatter.write_str("spectrum packet pool capacity refused"),
             Self::StorageOverflow => formatter.write_str("spectrum storage size overflow"),
+            Self::Allocation => formatter.write_str("could not reserve spectrum storage"),
             Self::ThreadPanicked => formatter.write_str("spectrum worker exited unexpectedly"),
         }
     }
@@ -356,13 +378,26 @@ fn spawn_worker(
         .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
 
     let core = SpectrumCore::new(kernel, initial_stamp.sample_rate_hz);
+    let (project_capture, project_reader, project_worker) = if fixed_native {
+        let (capture, reader, worker) = project::channel(initial_stamp.sample_rate_hz)?;
+        (Some(capture), Some(reader), Some(worker))
+    } else {
+        (None, None, None)
+    };
     let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
     let (result_sender, result_receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
     let stop = Arc::new(AtomicBool::new(false));
     let receipt = if fixed_native {
         Some(
-            NativeSpectrumReceipt::new(&producer, &stop, &core, initial_stamp.sample_rate_hz)
-                .ok_or(SpectrumWorkerError::StorageOverflow)?,
+            NativeSpectrumReceipt::new(
+                &producer,
+                &stop,
+                &core,
+                initial_stamp.sample_rate_hz,
+                project_capture.as_ref(),
+                project_worker.as_ref(),
+            )
+            .ok_or(SpectrumWorkerError::StorageOverflow)?,
         )
     } else {
         None
@@ -374,7 +409,7 @@ fn spawn_worker(
             if let Some(entry) = entry {
                 entry();
             }
-            worker_loop(consumer, result_sender, worker_stop, core)
+            worker_loop(consumer, result_sender, worker_stop, core, project_worker)
         })
         .map_err(SpectrumWorkerError::ThreadSpawn)?;
 
@@ -384,11 +419,13 @@ fn spawn_worker(
             next_sequence: 0,
             exhausted: false,
             native: receipt,
+            project: project_capture,
         },
         SpectrumReader {
             results: result_receiver,
             latest: None,
             native: receipt.map(|receipt| receipt.identity),
+            project: project_reader,
         },
         SpectrumReaper {
             stop,
@@ -416,6 +453,7 @@ fn worker_loop(
     result_sender: SyncSender<PublishedSpectra>,
     stop: Arc<AtomicBool>,
     mut core: SpectrumCore,
+    mut project: Option<project::ProjectWorker>,
 ) {
     while !stop.load(Ordering::Acquire) {
         let mut drained = 0;
@@ -429,6 +467,9 @@ fn worker_loop(
         let now = Instant::now();
         if let Some(result) = core.analyze_pair_if_due(now) {
             let _ = result_sender.try_send(result);
+        }
+        if let Some(project) = project.as_mut() {
+            drained += project.poll(now);
         }
         if drained == 0 {
             thread::sleep(IDLE_POLL_INTERVAL);
@@ -794,6 +835,7 @@ mod tests {
             next_sequence: 0,
             exhausted: false,
             native: None,
+            project: None,
         };
         let context = stamp(1, 2, 48_000, 3);
         assert_eq!(
@@ -873,6 +915,7 @@ mod tests {
             next_sequence: 0,
             exhausted: false,
             native: None,
+            project: None,
         };
         let frames = [[0.25; 2]; MAX_CAPTURE_FRAMES];
         let context = stamp(1, 2, 8_000, 10);
@@ -989,6 +1032,7 @@ mod tests {
             results: receiver,
             latest: None,
             native: None,
+            project: None,
         };
         // Receipt happens now, but the channel carries the original capture
         // timestamp so expensive/queued processing cannot refresh stale audio.
@@ -1109,6 +1153,7 @@ mod tests {
             next_sequence: u64::MAX,
             exhausted: false,
             native: None,
+            project: None,
         };
         assert_eq!(
             capture.submit(stamp(1, 2, 8_000, 1), &[[0.0, 0.0]]),
@@ -1128,6 +1173,7 @@ mod tests {
             next_sequence: 0,
             exhausted: false,
             native: None,
+            project: None,
         };
         let context = stamp(1, 1, 8_000, 1);
         assert_eq!(

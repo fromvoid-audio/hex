@@ -337,6 +337,8 @@ impl Render for EditorView {
         self.reconcile_clip_name(window, cx);
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
+        self.reconcile_clip_selection();
+        self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
@@ -388,8 +390,11 @@ impl Render for EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .child(self.fade_pointer_events(cx))
+            .child(self.project_spectrum_pointer_events(cx))
             .track_focus(&self.focus)
-            .key_context(if self.clip_name_edit.is_some() {
+            .key_context(if self.track_name.is_editing() {
+                "hex_track_name hex_text_editing"
+            } else if self.clip_name_edit.is_some() {
                 "hex_clip_name hex_text_editing"
             } else if self.tuning.open {
                 "hex_tuning"
@@ -521,8 +526,19 @@ impl Render for EditorView {
             .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
                 view.search_browser(window, cx);
             }))
+            .on_action(cx.listener(|view, _: &super::RenameTrack, window, cx| {
+                view.begin_track_name(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CommitTrackName, window, cx| {
+                view.finish_track_name(true, window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CancelTrackName, window, cx| {
+                view.finish_track_name(false, window, cx);
+            }))
             .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
-                view.begin_clip_name(window, cx);
+                if !view.track_header_focused(window) {
+                    view.begin_clip_name(window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &super::CommitClipName, window, cx| {
                 view.finish_clip_name(true, window, cx);
@@ -616,7 +632,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-                if view.cancel_trim_gesture(cx) | view.cancel_track_resize(cx) {
+                if view.cancel_project_spectrum_resize(cx)
+                    | view.cancel_trim_gesture(cx)
+                    | view.cancel_track_resize(cx)
+                {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
                     return;
@@ -1104,6 +1123,7 @@ impl Render for EditorView {
             }))
             .child(self.title_bar(cx))
             .child(self.transport(cx))
+            .child(self.project_spectrum_panel(window, cx))
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
