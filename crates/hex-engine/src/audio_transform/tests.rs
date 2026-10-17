@@ -1235,3 +1235,83 @@ fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
         }
     }
 }
+
+#[test]
+fn sample_bpm_and_edge_stretch_keep_pcm_pitch_and_partition_seek_consistency() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(
+            16_000,
+            (0..8_000)
+                .map(|i| {
+                    let phase = i as f64 / 16_000.0 * std::f64::consts::TAU;
+                    [
+                        (phase * 400.0).sin() as f32 * 0.4,
+                        (phase * 800.0).sin() as f32 * 0.3,
+                    ]
+                })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let warp = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipSampleBpm {
+            clip,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 4_000);
+    for length in [4_000, 6_000] {
+        if length == 6_000 {
+            editor
+                .execute(Command::StretchAudioClipEdge {
+                    clip,
+                    edge: hex_project::TrimEdge::Right,
+                    frame: length,
+                })
+                .unwrap();
+        }
+        let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+        let revision = prepare(&editor, &media, &context);
+        let pcm = render(&revision, 0, length as usize, 127);
+        assert_eq!(pcm, render(&revision, 0, length as usize, 1));
+        assert_eq!(&pcm[719..], render(&revision, 719, pcm.len() - 719, 257));
+        let signal = &pcm[500..pcm.len() - 500];
+        for (channel, hz) in [(0, 400.0), (1, 800.0)] {
+            let crossings = signal
+                .windows(2)
+                .filter(|pair| pair[0][channel] <= 0.0 && pair[1][channel] > 0.0)
+                .count();
+            let measured = crossings as f64 * 16_000.0 / signal.len() as f64;
+            assert!(
+                (measured - hz).abs() < hz * 0.04,
+                "duration{length} channel{channel} measured{measured}"
+            );
+        }
+    }
+}

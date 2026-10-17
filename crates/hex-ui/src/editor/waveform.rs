@@ -41,6 +41,17 @@ pub(super) fn preview_waveform_view_cached(
         return None;
     }
     if let Some(edit) = preview.audio_edit() {
+        if original
+            .audio_edit()
+            .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
+        {
+            return super::waveform_stretch::stretch_waveform_view(
+                request,
+                visible_start,
+                visible_end,
+                cache,
+            );
+        }
         let old = original.audio_edit()?;
         // A crop shares the immutable full processing root. A changed root must
         // supply its own validated preview projection, never raw-asset peaks.
@@ -185,7 +196,7 @@ pub(super) fn waveform_summary_view(waveform: Arc<CachedWaveform>) -> Div {
     waveform_source_segment_view(waveform, 0, 0, end)
 }
 
-fn waveform_canvas(
+pub(super) fn waveform_canvas(
     waveform: Arc<CachedWaveform>,
     mapping: WaveformMapping,
     visible_start: u64,
@@ -529,7 +540,12 @@ pub(super) fn timeline_source_ranges_at(
     ranges
 }
 
-fn push_source_range(ranges: &mut SourceRanges, start: u64, end: u64, available_frames: usize) {
+pub(super) fn push_source_range(
+    ranges: &mut SourceRanges,
+    start: u64,
+    end: u64,
+    available_frames: usize,
+) {
     let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
         return;
     };

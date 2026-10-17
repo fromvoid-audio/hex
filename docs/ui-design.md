@@ -415,6 +415,20 @@ their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
 context menus and renaming retain their existing behavior. Distinct controls,
 including fade handles and track names, retain their own descriptive tooltips.
 
+## track creation shortcut — #2767 / PR375, 17 october 2026
+
+Command-T in editor focus invokes the same canonical `AddTrack` action as the
+existing new-track control. It retains the existing track naming, routing
+and model/history behavior. Browser search, clip-name editing and active numeric
+text drafts keep ownership of their keys; the shortcut requires editor focus
+outside text editing. Rendered key-dispatch tests cover these focus boundaries
+and route the dispatched command through one canonical Undo/Redo. Existing
+project/storage tests retain canonical track persistence coverage. Native
+acceptance remains: focus the Arrangement, press Command-T, verify one new track,
+Undo/Redo, save/reopen; repeat the key while typing in search/name/numeric fields
+and confirm no track is added. Coordinator schedules this with the combined
+optimized app; no running app replacement is implied by source checks.
+
 ## arrangement track sizing
 
 The right-hand track-header column resizes from its left edge, including the

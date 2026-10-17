@@ -39,7 +39,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if view.mode != super::EditorMode::Arrangement {
         return None;
     }
-    let state = view.state.as_ref()?;
+    let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
         view.selected_clip_data()?;
     let clip = state.project.clip(clip_id)?;
