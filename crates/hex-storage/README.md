@@ -1,5 +1,12 @@
 # hex-storage
 
+Device asset references use a strict schema30 manifest over the complete
+schema29 body; asset-free projects retain schema29. Every device has one bounded
+manifest entry. Legacy writers and asset-unaware presets explicitly refuse these
+references. Storage preserves neutral identities and resolves them through the
+project model, without decoding device payloads or loading PCM. See
+[device assets](../../docs/device-assets.md).
+
 ## Purpose
 
 Versioned native project metadata serialization, create-new saves, and recoverable
@@ -151,8 +158,8 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema28, preserving audio events, inherited track colors and per-clip flavors
-(see `docs/element-colors.md`) plus the schema26 envelope for device host gains,
+New saves use schema29: schema28 audio events, schema27 inherited track colors/per-clip flavors,
+schema26 names, required fade-shape metadata and device host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
 and recording epochs with independent Arrangement clip names. All playback
 consumers share the admitted lane model. The
@@ -210,3 +217,13 @@ Historical schema26, adding complete validated Arrangement clip names to
 the schema25 musical-audio envelope. Session names retain their existing fields.
 Schemas1–25 migrate Arrangement names to `clip`; explicit legacy writers refuse
 authored Arrangement names. See [clip names](../../docs/clip-names.md).
+
+
+Schema29 adds the bounded `fade_shapes` table for every Arrangement audio clip.
+Each ID occurs exactly once and carries the lower-handle offsets and integer
+curve bends. The existing fade domain remains in its historical DTO or retained
+musical root; the table augments that domain before final canonical validation.
+Schemas25–28 migrate to edge-aligned linear defaults and reject the new table;
+schema29 rejects missing/null, duplicate, orphan, malformed or oversized entries.
+Explicit historical encoders refuse shaped envelopes. Named clips retain their
+complete schema26 metadata. See [clip fades](../../docs/clip-fades.md).

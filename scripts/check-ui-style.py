@@ -56,6 +56,9 @@ widgets = (
     'editor)', 'sidebar)', 'panel.w_full(', 'self.browser_sidebar_resize(',
     'super::super::waveform::waveform_summary_view(',
     'self.browser_sections(', 'self.browser_places(', 'self.browser_instrument_row(',
+    # Sample source filters route labels through theme::text.
+    'self.sample_filters(', 'filters)',
+
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
@@ -106,6 +109,8 @@ widgets = (
     'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
     'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
+    # Fade pointer capture is a typed canvas listener with no rendered text.
+    'self.fade_pointer_events(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
     source = path.read_text()

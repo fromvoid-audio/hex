@@ -204,6 +204,16 @@ impl SessionPlayback {
             self.render_keyboard_monitor(output, &mut observer, &mut capture)
         };
         if result.is_err() {
+            for chain in self
+                .device_chains
+                .iter_mut()
+                .chain(self.return_chains.iter_mut())
+            {
+                chain.rollback_block();
+            }
+            for chain in self.tail_groups.iter_mut().flatten() {
+                chain.rollback_block();
+            }
             if let Some(keyboard) = &mut self.computer_keyboard {
                 keyboard.rollback();
             }

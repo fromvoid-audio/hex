@@ -113,7 +113,7 @@ pub(super) fn overlay(
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 pub(crate) fn refuse_legacy_audio(project: &Project) -> Result<(), StorageError> {
-    if project.tracks().iter().flat_map(|t|t.clips()).any(|c|c.gain()!=hex_project::ClipGain::UNITY || c.audio_edit().is_some())
+    if project.tracks().iter().flat_map(|t|t.clips()).any(|c|c.gain()!=hex_project::ClipGain::UNITY || c.audio_edit().is_some() || c.fade().has_shape())
         || project.session_cells().iter().any(|c|matches!(c.content(),hex_project::SessionCellContent::Audio(c) if c.gain()!=hex_project::ClipGain::UNITY)) {
         return Err(StorageError::Invalid("older schema cannot save clip gain or musical audio state"));
     }

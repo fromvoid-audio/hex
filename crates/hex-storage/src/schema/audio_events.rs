@@ -51,7 +51,7 @@ struct Event {
 #[derive(Serialize)]
 pub(crate) struct Document<'a> {
     #[serde(flatten)]
-    base: super::appearance::DocumentV27,
+    pub(super) base: super::appearance::DocumentV27,
     audio_event_state: Vec<EncodeState<'a>>,
 }
 #[derive(Serialize)]
@@ -189,7 +189,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
 // Value's normal map decoder discards duplicate fields. Validate the original
 // token stream before adapting the versioned envelope so strict historical
 // parsing cannot accidentally accept an ambiguous document.
-struct UniqueKeys;
+pub(super) struct UniqueKeys;
 impl<'de> Deserialize<'de> for UniqueKeys {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;

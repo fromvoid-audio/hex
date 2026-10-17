@@ -3493,7 +3493,7 @@ mod tests {
 
     #[cfg(feature = "allocation-probe")]
     #[test]
-    fn clip_gain_with_fades_and_replacement_allocates_and_frees_nothing_in_callback() {
+    fn clip_gain_with_shaped_fades_and_replacement_allocates_and_frees_nothing_in_callback() {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
         let hex_project::Created::Imported { asset, clip, .. } = editor
@@ -3507,12 +3507,12 @@ mod tests {
         else {
             panic!("import")
         };
+        let fade = hex_project::ClipFade::new(1_024, 0, 64, 64)
+            .unwrap()
+            .with_shape(4, 4, 700, -700)
+            .unwrap();
         editor
-            .execute(hex_project::Command::SetClipFades {
-                clip,
-                fade_in: 64,
-                fade_out: 64,
-            })
+            .execute(hex_project::Command::SetClipFadeEnvelope { clip, fade })
             .unwrap();
         let audio = hex_engine::Audio::new(48_000, vec![[0.5, -0.25]; 1_024]).unwrap();
         let media = std::collections::BTreeMap::from([(asset, audio)]);
@@ -3551,7 +3551,14 @@ mod tests {
         );
         let gain = hex_project::ClipGain::new(-6_000).unwrap().linear();
         assert_eq!(prefix[0], [0.0; 2]);
-        assert_eq!(prefix[64], [0.5 * gain, -0.25 * gain]);
+        assert_eq!(
+            prefix[32],
+            [
+                0.5 * fade.gain_at(32) * gain,
+                -0.25 * fade.gain_at(32) * gain
+            ]
+        );
+        assert_eq!(prefix[68], [0.5 * gain, -0.25 * gain]);
         editor
             .execute(hex_project::Command::SetAudioClipGain {
                 clip,

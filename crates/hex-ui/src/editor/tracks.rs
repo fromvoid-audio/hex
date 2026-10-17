@@ -1090,10 +1090,6 @@ impl EditorView {
                     )
                 })
                 .take(midi_shape_budget);
-            let description = format!(
-                "{} source notes · {} arrangement occurrences · sampled preview",
-                preview.authored_note_count, preview.occurrence_count,
-            );
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -1127,12 +1123,6 @@ impl EditorView {
                     }),
                 );
             midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
-            midi = midi.tooltip(move |_, cx| {
-                cx.new(|_| ClipTooltip {
-                    name: description.clone(),
-                })
-                .into()
-            });
             let mut shown = 0;
             for (x, w, pitch) in note_shapes {
                 shown += 1;
@@ -1202,8 +1192,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let ClipViewTimeline { viewport, grid, .. } = timeline;
+        let clip = self.fade_trim_preview(clip.id()).unwrap_or(clip);
         let clip_id = clip.id();
-        let clip_duration = clip.duration();
         let trim_preview_clip = self
             .active_trim_drag
             .as_ref()
@@ -1295,8 +1285,20 @@ impl EditorView {
         if !active_trim_preview {
             content = content.children([clip_grid_layer(grid, visible_start, visible_end)]);
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip.id()) {
+                // The immutable prepared peaks cover the retained root. Cropping
+                // changes its visible offset, never its processing/source origin.
+                let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
+                    let (_, _, offset, _) = clip
+                        .audio_edit()?
+                        .projected_domain(state.project.tempo_map())
+                        .ok()?;
+                    let mut preview = prepared.clone();
+                    preview.offset = offset;
+                    preview.length = clip.duration();
+                    Some(preview)
+                });
                 content = content.child(super::waveform::prepared_waveform_view_cached(
-                    prepared,
+                    preview.as_ref().unwrap_or(prepared),
                     clip,
                     visible_start,
                     visible_end,
@@ -1335,17 +1337,15 @@ impl EditorView {
                 }
             }
         }
-        let fade = clip.retained_fade();
+        let fade_preview = self.fade_preview(clip.id());
+        let fade = fade_preview.unwrap_or(clip.retained_fade());
         let envelope_width = self
             .drag_lanes
             .get(&track)
             .map(|lane| (lane.width * width as f32).max(3.0))
             .unwrap_or(0.0);
-        if !active_trim_preview
-            && envelope_width >= 40.0
-            && (fade.fade_in() > 0 || fade.fade_out() > 0)
-        {
-            let samples = if clip.audio_edit().is_some() {
+        if !active_trim_preview && envelope_width > 0.0 && !fade.is_neutral() {
+            let samples = if clip.audio_edit().is_some() && fade_preview.is_none() {
                 super::waveform::projected_fade_envelope_samples(
                     clip,
                     state.project.tempo_map(),
@@ -1381,7 +1381,10 @@ impl EditorView {
                     },
                 )
                 .absolute()
-                .inset_0()]);
+                .top(px(super::clip_name::CLIP_NAME_HEIGHT))
+                .left_0()
+                .right_0()
+                .bottom_0()]);
             }
         }
         let clip_pixel_width = self
@@ -1403,12 +1406,6 @@ impl EditorView {
             .child(self.clip_name_header(track, clip.id(), clip.name(), cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
-            .tooltip(move |_, cx| {
-                cx.new(|_| ClipTooltip {
-                    name: format!("clip {} · {} frames", clip_id.value(), clip_duration),
-                })
-                .into()
-            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
@@ -1444,10 +1441,20 @@ impl EditorView {
                 }));
             content = content.children([move_surface]).children(trim_handles);
         }
+        if !active_trim_preview {
+            content = content.children(self.fade_handles(
+                state,
+                track,
+                clip,
+                (visible_start, visible_end),
+                viewport,
+                cx,
+            ));
+        }
         content
     }
 
-    fn drag_available(&self) -> bool {
+    pub(super) fn drag_available(&self) -> bool {
         self.clip_name_edit.is_none()
             && !self.opening_project
             && !self.close_prompt_open

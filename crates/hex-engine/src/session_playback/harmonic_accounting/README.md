@@ -40,8 +40,9 @@ refused. Roots and generation advancement are borrowed inputs, never mutated.
 ## Current-source qualification
 
 The current v14 companion context increases the actual recipe charge: the
-complete-context boundary test now admits 426 recipes and refuses the next
-one under the same 2,097,152-byte budget. The 430 count above describes the
+complete-context boundary test now admits 425 recipes, including authored
+asset-reference metadata, and refuses the next one under the same
+2,097,152-byte budget. The 430 count above describes the
 frozen historical layout, not the current fixture.
 
 The following measurements describe the frozen checkpoint above. Integration

@@ -1,4 +1,6 @@
 //! Compact, bounded left-side media and project browser.
+mod samples;
+
 use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme;
 use gpui::{
@@ -154,6 +156,7 @@ pub(super) struct BrowserState {
     places_save_in_flight: bool,
     pending_places_save: Option<BrowserPlaces>,
     pub(super) places_status: Option<String>,
+    samples: samples::SampleBrowser,
     listing: Option<DirectoryListing>,
     loading: bool,
     scans: ScanCoordinator,
@@ -218,6 +221,7 @@ impl BrowserState {
             places_save_in_flight: false,
             pending_places_save: None,
             places_status: None,
+            samples: samples::SampleBrowser::default(),
             listing: None,
             loading: false,
             scans: ScanCoordinator::default(),
@@ -356,6 +360,7 @@ impl EditorView {
     pub(super) fn browser_scan_initial(&mut self, cx: &mut Context<Self>) {
         self.start_browser_places_load(cx);
         self.request_browser_scan(self.browser.directory.clone(), cx);
+        self.start_sample_catalog(cx);
     }
 
     pub(super) fn start_browser_places_load(&mut self, cx: &mut Context<Self>) {
@@ -420,6 +425,7 @@ impl EditorView {
                 }
             }
         }
+        self.refresh_sample_catalog(cx);
     }
 
     pub(super) fn queue_browser_places_save(&mut self, cx: &mut Context<Self>) {
@@ -615,10 +621,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(
-            self.browser.section,
-            BrowserSection::All | BrowserSection::Samples
-        ) {
+        if self.browser.section == BrowserSection::Instruments {
             return;
         }
         if let Some(entry) = self
@@ -974,6 +977,7 @@ impl EditorView {
         let mut next = pending;
         if is_current {
             let selection = self.browser_selected_item(cx);
+            self.browser.samples.invalidate_listing();
             match result {
                 Ok(listing) => {
                     self.browser.listing = Some(listing);
@@ -1195,27 +1199,30 @@ impl EditorView {
         }
     }
 
-    fn browser_visible_entries(&self, cx: &App) -> Vec<LibraryEntry> {
+    fn browser_visible_entries(&self, cx: &App) -> Arc<Vec<LibraryEntry>> {
         let query = self.browser.search.read(cx).content.to_lowercase();
-        self.browser
+        let listing = self
+            .browser
             .listing
             .as_ref()
-            .filter(|listing| listing.directory == self.browser.directory)
-            .map(|listing| {
+            .filter(|listing| listing.directory == self.browser.directory);
+        match self.browser.section {
+            BrowserSection::Samples => self.browser.samples.visible(&query),
+            BrowserSection::All => self
+                .browser
+                .samples
+                .visible_with_listing(&query, None, listing),
+            BrowserSection::Projects => Arc::new(
                 listing
-                    .entries
-                    .iter()
-                    .filter(|entry| match self.browser.section {
-                        BrowserSection::All => true,
-                        BrowserSection::Samples => entry.kind != EntryKind::Project,
-                        BrowserSection::Projects => entry.kind != EntryKind::WaveAudio,
-                        BrowserSection::Instruments => false,
-                    })
+                    .into_iter()
+                    .flat_map(|listing| listing.entries.iter())
+                    .filter(|entry| entry.kind != EntryKind::WaveAudio)
                     .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(&query))
                     .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+                    .collect(),
+            ),
+            BrowserSection::Instruments => Arc::new(Vec::new()),
+        }
     }
 
     fn browser_visible_devices(
@@ -1333,7 +1340,10 @@ impl EditorView {
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         let toolbar = self.browser_toolbar(cx);
-        if section != BrowserSection::Instruments {
+        if section == BrowserSection::Samples {
+            panel = panel.child(self.sample_filters(cx));
+        }
+        if matches!(section, BrowserSection::All | BrowserSection::Projects) {
             panel =
                 panel.child(
                     div()
@@ -1465,6 +1475,23 @@ impl EditorView {
                                 ))),
                         );
                     }
+                }
+            }
+            BrowserSection::Samples => {
+                if row_count == 0 {
+                    panel = panel.child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .pt_2()
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                            .child(theme::text(
+                                "no matching samples · add a folder or change filters",
+                            )),
+                    );
+                } else {
+                    panel = panel.child(rows.flex_1());
                 }
             }
             _ if row_count == 0
@@ -1715,6 +1742,9 @@ impl EditorView {
         let mut row = div()
             .id(("library-entry", index))
             .debug_selector(|| format!("browser-entry-{index}"))
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .h(px(ROW_HEIGHT))
             .px_1()
             .flex()
@@ -1843,7 +1873,23 @@ impl EditorView {
                 .text_ellipsis()
                 .text_xs()
                 .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                .child(theme::text(entry.name)),
+                .child(theme::text(
+                    if matches!(
+                        self.browser.section,
+                        BrowserSection::All | BrowserSection::Samples
+                    ) && entry.kind == EntryKind::WaveAudio
+                    {
+                        format!(
+                            "{} · {}",
+                            entry.name,
+                            entry.path.parent().map_or_else(String::new, |path| path
+                                .to_string_lossy()
+                                .into_owned())
+                        )
+                    } else {
+                        entry.name
+                    },
+                )),
         )
     }
 
@@ -2028,7 +2074,10 @@ impl EditorView {
                                         Some("browser folder limit reached".into());
                                 }
                             }
-                            view.request_browser_scan(path, cx);
+                            view.refresh_sample_catalog(cx);
+                            if view.browser.section != BrowserSection::Samples {
+                                view.request_browser_scan(path, cx);
+                            }
                         }
                     }
                     Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),

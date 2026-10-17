@@ -959,3 +959,274 @@ fn event_scratch_reclaims_unused_committed_and_pending_cache() {
         }
     }
 }
+
+#[test]
+fn shaped_outer_fades_follow_moved_event_output_coordinates_and_recursive_splits() {
+    use hex_project::{AudioEventEdit, ClipFade};
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 2000 },
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Move {
+                event: 1,
+                start: 4000,
+            },
+        })
+        .unwrap();
+    let fade = ClipFade::new(8000, 0, 2300, 2900)
+        .unwrap()
+        .with_shape(100, 200, 600, -500)
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    let mut expected = vec![[0.0; 2]; 8000];
+    expected[2000..4000].copy_from_slice(&baseline[2000..4000]);
+    expected[4000..6000].copy_from_slice(&baseline[0..2000]);
+    expected[6000..8000].copy_from_slice(&baseline[6000..8000]);
+    for (index, frame) in expected.iter_mut().enumerate() {
+        let gain = fade.gain_at(index as u64);
+        frame[0] *= gain;
+        frame[1] *= gain;
+    }
+    let prepared = prepare(&editor, &media, &context);
+    assert_eq!(render(&prepared, 0, 8000, 257), expected);
+    assert_eq!(render(&prepared, 3993, 2100, 17), expected[3993..6093]);
+    let Created::Clip(right) = editor
+        .execute(Command::SplitClip { clip, frame: 5100 })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    editor
+        .execute(Command::SplitClip {
+            clip: right,
+            frame: 6500,
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 127),
+        expected
+    );
+    assert!(editor.undo());
+    assert!(editor.undo());
+    assert!(editor.redo());
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 1),
+        expected
+    );
+}
+
+#[test]
+fn endpoint_only_fades_prepare_and_play_in_output_coordinates() {
+    for (start, end) in [(100, 0), (0, 200), (100, 200)] {
+        let (mut editor, clip, media) = fixture(false);
+        let asset = editor.project().clip(clip).unwrap().asset();
+        let fade = hex_project::ClipFade::new(8000, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 500, -500)
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        assert!(editor.project().clip(clip).unwrap().audio_edit().is_none());
+        let mut expected = media[&asset].frames().to_vec();
+        expected[..start as usize].fill([0.0; 2]);
+        expected[8000 - end as usize..].fill([0.0; 2]);
+        let prepared = prepare(&editor, &media, &AudioTransformPreparation::default());
+        assert_eq!(render(&prepared, 0, 8000, 127), expected);
+        assert_eq!(render(&prepared, 91, 500, 1), expected[91..591]);
+    }
+}
+
+#[test]
+fn endpoint_only_fades_on_edited_streams_refuse_before_commit_and_preserve_history() {
+    for (start, end) in [(100, 0), (0, 200), (100, 200)] {
+        let (mut editor, clip, _) = fixture(false);
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 1 })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 0 })
+            .unwrap();
+        assert!(editor.project().clip(clip).unwrap().audio_edit().is_some());
+        let asset = editor.project().clip(clip).unwrap().asset();
+        let metadata = Arc::new(
+            crate::StreamedSourceMetadata::new(
+                crate::StreamSourceKey::new(1, asset),
+                16_000,
+                16_000,
+                8000,
+                8000,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let sources = BTreeMap::from([(
+            asset,
+            crate::compile::PreparedAudioSource::Streamed(metadata),
+        )]);
+        crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1).unwrap();
+        let before = editor.project().clone();
+        // Leave a real redo branch; refusal must preserve both history stacks.
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track: before.tracks()[0].id(),
+                start: 300,
+            })
+            .unwrap();
+        let moved = editor.project().clone();
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        let fade = hex_project::ClipFade::new(8000, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 600, -500)
+            .unwrap();
+        let failure = editor
+            .execute_prepared(Command::SetClipFadeEnvelope { clip, fade }, |candidate| {
+                crate::compile::project_with_prepared_audio_sources(candidate, &sources, 1)
+            });
+        let Err(error) = failure else {
+            panic!("edited streamed fade must refuse before commit")
+        };
+        assert!(error.0.contains("resident audio"), "{error}");
+        assert!(error.0.contains("fade"), "{error}");
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &moved);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.undo());
+        assert_eq!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            1
+        );
+    }
+}
+
+#[test]
+fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
+    struct Pages<'a> {
+        key: crate::StreamSourceKey,
+        frames: &'a [crate::Frame],
+    }
+    impl crate::MediaPages for Pages<'_> {
+        fn page(
+            &mut self,
+            key: crate::StreamSourceKey,
+            index: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            if key != self.key {
+                return None;
+            }
+            let start = usize::try_from(index)
+                .ok()?
+                .checked_mul(crate::STREAM_PAGE_FRAMES)?;
+            let end = start
+                .checked_add(crate::STREAM_PAGE_FRAMES)?
+                .min(self.frames.len());
+            Some(crate::BorrowedMediaPage {
+                page_index: index,
+                frames: self.frames.get(start..end)?,
+            })
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            panic!("every fixture page is resident")
+        }
+    }
+    for (start, end) in [(1000, 0), (0, 1200), (1000, 1200)] {
+        let (mut editor, clip, mut media) = fixture(false);
+        let asset = editor.project().clip(clip).unwrap().asset();
+        media.insert(asset, Audio::new(16_000, vec![[0.25, -0.5]; 8000]).unwrap());
+        let fade = hex_project::ClipFade::new(8000, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 600, -500)
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        assert!(editor.project().clip(clip).unwrap().audio_edit().is_none());
+        let key = crate::StreamSourceKey::new(1, asset);
+        let metadata = Arc::new(
+            crate::StreamedSourceMetadata::new(
+                key,
+                16_000,
+                16_000,
+                8000,
+                8000,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let sources = BTreeMap::from([(
+            asset,
+            crate::compile::PreparedAudioSource::Streamed(metadata),
+        )]);
+        let mut expected = vec![[0.25, -0.5]; 8000];
+        expected[..start as usize].fill([0.0; 2]);
+        expected[8000 - end as usize..].fill([0.0; 2]);
+        let mut pages = Pages {
+            key,
+            frames: media[&asset].frames(),
+        };
+        for split in [false, true] {
+            if split {
+                editor
+                    .execute(Command::SplitClip { clip, frame: 2000 })
+                    .unwrap();
+            }
+            let streamed =
+                crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1)
+                    .unwrap();
+            for block in [1, 127] {
+                let mut renderer = crate::Renderer::new(&streamed);
+                renderer.play();
+                let mut actual = vec![[0.0; 2]; 8000];
+                for chunk in actual.chunks_mut(block) {
+                    renderer.render_with_pages(chunk, &mut pages).unwrap();
+                }
+                assert_eq!(
+                    actual, expected,
+                    "endpoints={start}/{end}, split={split}, block={block}"
+                );
+                renderer.seek(800);
+                let mut seek = vec![[0.0; 2]; 3000];
+                renderer.render_with_pages(&mut seek, &mut pages).unwrap();
+                assert_eq!(seek, expected[800..3800]);
+            }
+        }
+    }
+}
