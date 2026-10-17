@@ -1,3 +1,26 @@
+## browser outward tag editor and resizable picker — 17 october 2026
+
+The tag editor adds a right column without consuming results/preview width.
+The picker has its own drag divider, an icons-only mode and lowercase hover
+labels for collections, sections and places. Width/settings remain session-only.
+See [browser layout](docs/browser-layout.md) for the finite native checklist.
+Automated validation results are recorded with this change; native macOS
+resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
+
+## held-clip intersection accent — #2696 / PR314, 17 october 2026
+
+Arrangement landing previews tint only occupied audio/MIDI intersections with the
+editable secondary theme accent. Gaps and exact touches stay clear; moves exclude
+the original clip, copies include it, and overlapping victims share uniform tint.
+Browser samples use the same landing path. Viewport bounds and drag cleanup follow
+the existing preview lifetime; project edits and overwrite behavior are unchanged.
+
+The two rendered pointer/modifier regressions pass; the span boundary/merge check
+passes. Architecture, GPUI/dependency/style/layout guards, formatting and affected
+strict Clippy pass at the source milestone. Final full local-CI evidence belongs
+to [PR314](https://github.com/PORTALSURFER/hex/pull/314); native macOS visual/input
+acceptance is pending. See [the finite checklist](docs/clip-drag.md).
+
 ## clip selection and inline names — #2660 / PR276, 17 october 2026
 
 Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
@@ -11,10 +34,13 @@ separate and unverified. No optimized macOS build is produced on this Linux host
 
 ## arrangement clip painting — 17 october 2026
 
-Double-click empty track space, hold the second press, drag right, then release
-creates an empty MIDI clip through the existing undoable placement command.
+Double-click empty track space, hold the second press, drag left or right, then
+release creates an empty MIDI clip through the existing undoable placement command.
 Snapped/free preview and cancellation are source implemented. Four focused rendered
-UI tests and the source/format guards pass; native user acceptance is pending. See [clip painting](docs/clip-paint.md)
+UI tests now cover both directions, crossing the anchor, preview bounds and
+undo/redo; they pass after reproducing the prior leftward limitation. The user
+confirmed rightward painting works. Native leftward/reversal acceptance remains
+pending. See [clip painting](docs/clip-paint.md)
 for scope and the finite native checklist.
 
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
@@ -3975,3 +4001,11 @@ Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
 new-node controls pass in the rendered fixture, alongside strict UI Clippy and
 page-boundary checks. The prior full run was interrupted for this repair; only
 the next unchanged full candidate may supply merge evidence.
+
+## adaptive arranger grid — 17 october 2026
+
+- Arranger snapping uses one adaptive size with shared painting/snap spacing;
+  the toolbar toggles adaptive/off instead of cycling fixed sizes.
+- Future context-menu size selection: Pulse #2694, Hex 0.1.
+- Native zoom/snap/toggle acceptance remains pending; automated evidence is
+  recorded with the focused PR.
