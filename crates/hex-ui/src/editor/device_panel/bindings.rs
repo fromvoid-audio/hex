@@ -31,30 +31,103 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct CapturedBinding {
+    generation: u64,
+    owner: Option<DevicePanelOwner>,
+    key: ParameterKey,
+    identity: DeviceControlIdentity,
+    descriptor: ParameterDescriptor,
+}
+
+impl CapturedBinding {
+    fn current(self, view: &EditorView, require_enabled: bool) -> bool {
+        if self.generation != view.project_generation || self.owner != view.device_panel.owner {
+            return false;
+        }
+        let Some(state) = view.state.as_ref() else {
+            return false;
+        };
+        let device = match (self.owner, self.identity.class) {
+            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Instrument) => state
+                .project
+                .track(id)
+                .and_then(|track| track.instrument())
+                .filter(|device| device.id() == self.key.device),
+            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Effect) => {
+                state.project.track(id).and_then(|track| {
+                    track
+                        .devices()
+                        .iter()
+                        .find(|device| device.id() == self.key.device)
+                })
+            }
+            (Some(DevicePanelOwner::Return(id)), NativeDeviceClass::Effect) => state
+                .project
+                .return_tracks()
+                .iter()
+                .find(|track| track.id() == id)
+                .and_then(|track| {
+                    track
+                        .devices()
+                        .iter()
+                        .find(|device| device.id() == self.key.device)
+                }),
+            _ => None,
+        };
+        let Some(device) = device else {
+            return false;
+        };
+        if device.state().type_id() != self.identity.type_id {
+            return false;
+        }
+        if self.key.parameter == hex_engine::DEVICE_INPUT_GAIN.id {
+            return self.descriptor == hex_engine::DEVICE_INPUT_GAIN;
+        }
+        if self.key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
+            return self.descriptor == hex_engine::DEVICE_OUTPUT_GAIN;
+        }
+        if let Some((class, cached_state, cached_view)) =
+            view.device_panel.views.get(&self.key.device)
+            && *class == self.identity.class
+            && cached_state == device.state()
+        {
+            return cached_view.as_ref().ok().is_some_and(|metadata| {
+                metadata.parameters.iter().any(|parameter| {
+                    parameter.descriptor == self.descriptor
+                        && (!require_enabled || parameter.enabled)
+                })
+            });
+        }
+        hex_engine::native_device_view_for_class(self.identity.class, device.state()).is_ok_and(
+            |metadata| {
+                metadata.parameters.iter().any(|parameter| {
+                    parameter.descriptor == self.descriptor
+                        && (!require_enabled || parameter.enabled)
+                })
+            },
+        )
+    }
+}
+
 pub(super) enum ParameterControl {
     Float {
         lease: NumericGestureLease,
         entity: Entity<NumericControl>,
         _subscription: Subscription,
-        class: NativeDeviceClass,
-        type_id: hex_lattice_contract::DeviceTypeId,
-        descriptor: ParameterDescriptor,
+        binding: CapturedBinding,
         tab_navigation: bool,
     },
     Bool {
         entity: Entity<Toggle>,
         _subscription: Subscription,
-        class: NativeDeviceClass,
-        type_id: hex_lattice_contract::DeviceTypeId,
-        descriptor: ParameterDescriptor,
+        binding: CapturedBinding,
         tab_navigation: bool,
     },
     Choice {
         entity: Entity<Selector>,
         _subscription: Subscription,
-        class: NativeDeviceClass,
-        type_id: hex_lattice_contract::DeviceTypeId,
-        descriptor: ParameterDescriptor,
+        binding: CapturedBinding,
         tab_navigation: bool,
         values: Vec<u32>,
     },
@@ -64,11 +137,16 @@ pub(super) fn parameter_control_matches_identity(
     control: &ParameterControl,
     identity: DeviceControlIdentity,
 ) -> bool {
-    match control {
-        ParameterControl::Float { class, type_id, .. }
-        | ParameterControl::Bool { class, type_id, .. }
-        | ParameterControl::Choice { class, type_id, .. } => {
-            *class == identity.class && *type_id == identity.type_id
+    let binding = control.binding();
+    binding.identity.class == identity.class && binding.identity.type_id == identity.type_id
+}
+
+impl ParameterControl {
+    fn binding(&self) -> CapturedBinding {
+        match self {
+            Self::Float { binding, .. }
+            | Self::Bool { binding, .. }
+            | Self::Choice { binding, .. } => *binding,
         }
     }
 }
@@ -191,42 +269,14 @@ pub(super) fn render_parameter(
         }
         return unsupported_parameter(descriptor.label);
     }
-    let matching = match view.device_panel.controls.get(&key) {
-        Some(ParameterControl::Float {
-            class: old_class,
-            type_id: old_type,
-            descriptor: old_descriptor,
-            ..
-        }) => {
-            *old_class == identity.class
-                && *old_type == identity.type_id
-                && *old_descriptor == descriptor
-                && matches!(descriptor.kind, ParameterKind::Float { .. })
-        }
-        Some(ParameterControl::Bool {
-            class: old_class,
-            type_id: old_type,
-            descriptor: old_descriptor,
-            ..
-        }) => {
-            *old_class == identity.class
-                && *old_type == identity.type_id
-                && *old_descriptor == descriptor
-                && matches!(descriptor.kind, ParameterKind::Bool)
-        }
-        Some(ParameterControl::Choice {
-            class: old_class,
-            type_id: old_type,
-            descriptor: old_descriptor,
-            ..
-        }) => {
-            *old_class == identity.class
-                && *old_type == identity.type_id
-                && *old_descriptor == descriptor
-                && matches!(descriptor.kind, ParameterKind::Choice { .. })
-        }
-        None => false,
-    };
+    let matching = view.device_panel.controls.get(&key).is_some_and(|control| {
+        let binding = control.binding();
+        binding.generation == view.project_generation
+            && binding.owner == view.device_panel.owner
+            && binding.identity.class == identity.class
+            && binding.identity.type_id == identity.type_id
+            && binding.descriptor == descriptor
+    });
     if !matching {
         if let Some(mut old) = view.device_panel.controls.remove(&key) {
             cancel_control(view, cx, key, &mut old);
@@ -447,6 +497,13 @@ fn create_parameter_control(
     } = rendering;
 
     let descriptor = parameter.descriptor;
+    let binding = CapturedBinding {
+        generation: view.project_generation,
+        owner: view.device_panel.owner,
+        key,
+        identity,
+        descriptor,
+    };
     let value = parameter.value;
     let BindingPolicy {
         tab_navigation,
@@ -529,14 +586,11 @@ fn create_parameter_control(
             };
             let lease = Rc::new(Cell::new(None));
             let event_lease = lease.clone();
-            let generation = view.project_generation;
-            let owner = view.device_panel.owner;
             let subscription = cx.subscribe(
                 &entity,
                 move |view, emitter, event: &NumericControlEvent, cx| {
                     let is_current = |view: &EditorView| {
-                        view.project_generation == generation
-                            && view.device_panel.owner == owner
+                        binding.current(view, event.phase != NumericEventPhase::Cancel)
                             && matches!(view.device_panel.controls.get(&key),
                                 Some(ParameterControl::Float { entity, .. })
                                     if entity.entity_id() == emitter.entity_id())
@@ -572,9 +626,7 @@ fn create_parameter_control(
                     lease,
                     entity,
                     _subscription: subscription,
-                    class: identity.class,
-                    type_id: identity.type_id,
-                    descriptor,
+                    binding,
                     tab_navigation,
                 },
             );
@@ -592,7 +644,9 @@ fn create_parameter_control(
             .with_appearance(appearance);
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
-            let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
+            let subscription = cx.subscribe(&entity, move |view, emitter, event: &ToggleChanged, cx| {
+                if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                    Some(ParameterControl::Bool { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                 // A discrete control may hide a numeric field (for example,
                 // switching Operator tuning to fixed frequency). Do not let
                 // that transition strand an invalid draft offscreen.
@@ -641,9 +695,7 @@ fn create_parameter_control(
                 ParameterControl::Bool {
                     entity,
                     _subscription: subscription,
-                    class: identity.class,
-                    type_id: identity.type_id,
-                    descriptor,
+                    binding,
                     tab_navigation,
                 },
             );
@@ -679,7 +731,9 @@ fn create_parameter_control(
             let target = key;
             let event_values = values.clone();
             let subscription =
-                cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
+                cx.subscribe(&entity, move |view, emitter, event: &SelectorChanged, cx| {
+                    if !binding.current(view, true) || !matches!(view.device_panel.controls.get(&key),
+                        Some(ParameterControl::Choice { entity, .. }) if entity.entity_id() == emitter.entity_id()) { return; }
                     let Some(&value) = event_values.get(event.index) else {
                         return;
                     };
@@ -702,9 +756,7 @@ fn create_parameter_control(
                 ParameterControl::Choice {
                     entity,
                     _subscription: subscription,
-                    class: identity.class,
-                    type_id: identity.type_id,
-                    descriptor,
+                    binding,
                     tab_navigation,
                     values,
                 },

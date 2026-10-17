@@ -131,3 +131,80 @@ fn numeric_binding_lease_cannot_adopt_a_newer_same_parameter_gesture(cx: &mut Te
         }
     });
 }
+
+#[gpui::test]
+fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let metadata =
+        hex_engine::native_device_view(state.project.device(device).unwrap().state()).unwrap();
+    let parameter = metadata
+        .parameters
+        .iter()
+        .find(|p| matches!(p.value, ParameterValue::Float(_)))
+        .unwrap();
+    let key = ParameterKey {
+        device,
+        parameter: parameter.descriptor.id,
+    };
+    let (_, editor) = actor_editor_window(cx, service, state, track);
+    let (retired, old_entity, current_entity) = editor.update(cx, |view, cx| {
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        let identity = DeviceControlIdentity {
+            class: NativeDeviceClass::Effect,
+            type_id: metadata.type_id,
+        };
+        let _ = parameter_control_with_presentation(
+            view,
+            cx,
+            device,
+            identity,
+            parameter,
+            ControlPresentation::Standard,
+            ControlText::default(),
+        );
+        let retired = view.device_panel.controls.remove(&key).unwrap();
+        let ParameterControl::Float {
+            entity: old_entity, ..
+        } = &retired
+        else {
+            panic!("float");
+        };
+        let old_entity = old_entity.clone();
+        let _ = parameter_control_with_presentation(
+            view,
+            cx,
+            device,
+            identity,
+            parameter,
+            ControlPresentation::Standard,
+            ControlText::default(),
+        );
+        let ParameterControl::Float { entity, .. } = view.device_panel.controls.get(&key).unwrap()
+        else {
+            panic!("float");
+        };
+        (retired, old_entity, entity.clone())
+    });
+    current_entity.update(cx, |_, cx| {
+        cx.emit(NumericControlEvent {
+            phase: NumericEventPhase::Begin,
+            value: 0.0,
+        })
+    });
+    let before = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap());
+    for phase in [
+        NumericEventPhase::Begin,
+        NumericEventPhase::Change,
+        NumericEventPhase::Commit,
+        NumericEventPhase::Cancel,
+    ] {
+        old_entity.update(cx, |_, cx| {
+            cx.emit(NumericControlEvent { phase, value: 0.25 })
+        });
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.device_gesture.snapshot(), Some(before));
+            assert!(!view.device_gesture.has_pending_terminal());
+        });
+    }
+    drop(retired);
+}
