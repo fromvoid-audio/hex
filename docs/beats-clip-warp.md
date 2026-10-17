@@ -80,3 +80,9 @@ The final merge then incorporates already-verified original-rate retentionPR370;
 only todo.md conflicted. Both work-log sections were preserved, with this task's
 entry appended to avoid competing insertions. Final integrated-source checks
 remain required by the repository's exact-candidate/conflict-resolution rule.
+
+The integrated7d2538c4 candidate also passed20/20 checks. During that runPR374
+added the browser-preview lifecycle and its own work-log footer. Clip DSP/model/UI
+did not conflict; the footer insertion did. Both records remain intact, with the
+Beats entry now between stable native-work sections. The resulting final candidate
+requires exact checks under the same repository rule; prior PASS evidence remains.

@@ -12,6 +12,17 @@ retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
+## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+
+The selected Arrangement audio clip now exposes Warp and a direct implemented
+algorithm picker above source controls. Beats defaults to transient preservation;
+existing modes, parameters, canonical maps/history and worker preparation remain.
+Independent PCM, persistence, engine seek/partition, native/export and both
+actual-input UI checks pass. An unused UI-test import was removed after the first
+full run was deliberately interrupted; corrected exact-source full checks remain.
+See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
+No Mac execution or app installation; full sampler/resource work stays open.
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
@@ -4559,13 +4570,12 @@ this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
 
-## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+## browser audition lifecycle — pulse2766 / PR374, 17 october 2026
 
-The selected Arrangement audio clip now exposes Warp and a direct implemented
-algorithm picker above source controls. Beats defaults to transient preservation;
-existing modes, parameters, canonical maps/history and worker preparation remain.
-Independent PCM, persistence, engine seek/partition, native/export and both
-actual-input UI checks pass. An unused UI-test import was removed after the first
-full run was deliberately interrupted; corrected exact-source full checks remain.
-See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
-No Mac execution or app installation; full sampler/resource work stays open.
+Callback-derived request generations distinguish preparing, playing and finite
+completion, including retirement pressure. Cancel silences pending/queued/active
+PCM independently of project transport; stale decode cannot restart it. Faults
+and shutdown report unavailable. Two fixed atomic acknowledgements add no
+callback allocation, locks or final PCM disposal. Browser layout and transport
+integration remain canonical Pulse2664 / PR280. Source does not establish that
+the reported endless audition is a backend loop; native listening remains open.
