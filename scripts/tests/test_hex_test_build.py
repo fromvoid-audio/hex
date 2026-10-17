@@ -233,6 +233,15 @@ class DeliveryTests(unittest.TestCase):
                     self.fail("second installer entered")
 
     def test_production_build_assembles_and_replaces_stable_app(self):
+        self.assert_production_build(build_only=False)
+
+    def test_build_only_assembles_without_ci_and_records_untested_source(self):
+        self.assert_production_build(build_only=True)
+
+    def test_build_only_source_drift_during_build_preserves_installed_app(self):
+        self.assert_production_build(build_only=True, drift=True)
+
+    def assert_production_build(self, *, build_only, drift=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -252,7 +261,8 @@ class DeliveryTests(unittest.TestCase):
         executable.chmod(0o755)
         candidate = "a" * 40
         report = self.root / "ci.json"
-        report.write_text('{"status":"passed"}')
+        if not build_only:
+            report.write_text('{"status":"passed"}')
         included = self.root / "included.json"
         included.write_text(json.dumps([{"pr":"https://github.com/PORTALSURFER/hex/pull/168",
                                          "head":candidate}]))
@@ -271,11 +281,13 @@ class DeliveryTests(unittest.TestCase):
             if argv[:2] == ["cargo", "metadata"]:
                 return json.dumps({"packages":[{"name":"hex-desktop", "version":"0.1.0"}]})
             return ""
-        args = SimpleNamespace(ci_report=report, candidate=candidate,
+        args = SimpleNamespace(ci_report=None if build_only else report, candidate=candidate, build_only=build_only,
                                included=included, checklist=checklist)
         @contextmanager
         def artifact_guard(*args, **kwargs):
             try:
+                if drift:
+                    runner.summary["start_tree"] = {**runner.summary["start_tree"], "content_sha256": "changed"}
                 yield executable, {"build_argv":["cargo", "build", "--release"],
                     "profile":"release", "source":runner.summary["start_tree"], "packages":[],
                     "target_directory":str(target.parent.parent), "owner_path":"fixture-owner",
@@ -287,25 +299,57 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery.sys, "platform", "darwin"), \
                 patch.dict(os.environ, {"HEX_DEV_APP_PATH":str(self.app)}), \
                 patch.object(delivery.ci, "LocalCiRunner", return_value=runner), \
-                patch.object(delivery, "validate_ci", return_value={}), \
+                patch.object(delivery, "validate_ci", return_value={},
+                             side_effect=AssertionError("CI required for build-only") if build_only else None), \
+                patch.object(runner, "run", side_effect=AssertionError("tests during packaging")), \
+                patch.object(runner, "_capture_repository_state", return_value=True), \
                 patch.object(runner, "_resolve_cargo_identity", return_value=True), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
                 patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event))):
+            if drift:
+                with self.assertRaisesRegex(delivery.DeliveryError, "source is dirty, changed"):
+                    delivery.build(args)
+                self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"old")
+                self.assertFalse(self.workspace.exists())
+                runner.target_lock.release.assert_called_once()
+                return
             receipt = delivery.build(args)
         verified = delivery.verify(self.app)
         self.assertEqual(verified["source"], candidate)
         self.assertEqual(verified["profile"], "release")
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
         self.assertEqual((self.app / "Contents/Resources/USER-TEST.md").read_text(), checklist.read_text())
-        self.assertEqual((self.app / "Contents/Resources/local-ci-summary.json").read_bytes(), report.read_bytes())
+        if build_only:
+            self.assertIsNone(receipt["ci_report"])
+            self.assertIsNone(receipt["ci_report_sha256"])
+            self.assertEqual(receipt["verification"], {"mode": "source-only", "tests": "not_run"})
+            self.assertFalse((self.app / "Contents/Resources/local-ci-summary.json").exists())
+            source_report = json.loads((self.app / "Contents/Resources/source-verification.json").read_text())
+            self.assertEqual(source_report["source"], runner.summary["start_tree"])
+            self.assertEqual(source_report["tests"], "not_run")
+        else:
+            self.assertEqual((self.app / "Contents/Resources/local-ci-summary.json").read_bytes(), report.read_bytes())
         self.assertEqual((self.app / "Contents/Resources/licenses/ioskeley-mono-OFL.txt").read_text(), "font license")
         self.assertNotIn("rollback_path", receipt)
         self.assertFalse(self.workspace.exists())
         self.assertEqual(list(self.root.glob(".hex-rollback-*.app")), [])
         self.assertEqual(json.loads((self.root / "hex-test-build-receipt.json").read_text()), receipt)
         runner.target_lock.release.assert_called_once()
+
+    def test_build_only_source_gate_rejects_dirty_wrong_or_changed_candidate(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "digest"}
+        runner.summary["start_tree"] = tree
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            expected = delivery.validate_source(runner, tree["commit"])
+            for changed in ({**tree, "dirty": True}, {**tree, "commit": "b" * 40},
+                            {**tree, "content_sha256": "changed"}):
+                with self.subTest(tree=changed):
+                    runner.summary["start_tree"] = changed
+                    with self.assertRaises(delivery.DeliveryError):
+                        delivery.validate_source(runner, tree["commit"], expected)
 
     def test_ci_gate_rejects_shortcuts_stale_and_changed_source(self):
         runner = delivery.ci.LocalCiRunner(self.root, steps=(delivery.ci.Step("fake", ("true",)),))
