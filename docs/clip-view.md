@@ -174,3 +174,5 @@ final optimized build:
 
 Pitch, warp, beat anchoring, source envelopes and remaining issue 27 gestures
 remain separate work; this stage does not establish full musical editing.
+
+Clip selection and Command-R inline names are described in [clip names](clip-names.md).

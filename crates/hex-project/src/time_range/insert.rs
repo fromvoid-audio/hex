@@ -409,6 +409,7 @@ fn materialize_shifted_midi(
         }
     }
     Ok(MidiClip {
+        name: original.name.clone(),
         id,
         start,
         length,

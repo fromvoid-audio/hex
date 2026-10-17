@@ -1,6 +1,7 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
 mod audio_edit;
+mod clip_name;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
     BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
@@ -315,6 +316,7 @@ impl ClipGain {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
+    pub(crate) name: String,
     pub(crate) id: ClipId,
     pub(crate) asset: AssetId,
     pub(crate) start: u64,
@@ -328,6 +330,9 @@ pub struct Clip {
     pub(crate) edit: Option<Arc<AudioClipEdit>>,
 }
 impl Clip {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
     pub fn id(&self) -> ClipId {
         self.id
     }

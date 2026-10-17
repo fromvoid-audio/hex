@@ -932,13 +932,7 @@ impl EditorView {
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
                         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .truncate()
-                                .child(theme::text(title)),
-                        )
+                        .child(self.clip_name_label(clip_id, &title))
                         .child(
                             self.session_icon(
                                 "▶",
@@ -1004,13 +998,7 @@ impl EditorView {
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
                         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .truncate()
-                                .child(theme::text(clip.name().to_lowercase())),
-                        )
+                        .child(self.clip_name_label(clip_id, clip.name()))
                         .child(
                             self.session_icon(
                                 "▶",

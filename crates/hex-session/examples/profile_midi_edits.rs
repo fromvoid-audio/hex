@@ -42,6 +42,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip_id,
                 start_raw: 0,
                 length_raw: 256 << 32,

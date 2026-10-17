@@ -28,6 +28,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         let mut midi_clips = Vec::new();
         for position in 0..50_u64 {
             audio_clips.push(ClipSnapshot {
+                name: "clip".into(),
                 id: id(),
                 asset: 1,
                 start: position * 48_000,
@@ -53,6 +54,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
                 });
             }
             midi_clips.push(MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip,
                 start_raw: BeatTime::from_quarters(position * 2)?.raw(),
                 length_raw: length,

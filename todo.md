@@ -1,3 +1,14 @@
+## clip selection and inline names — #2660 / PR276, 17 october 2026
+
+Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
+and press Command-R to edit its name in place. Enter/blur commit, Escape cancels;
+typing owns editing keys. Canonical RenameClip, history, copy/split preservation,
+strict schema26 names and legacy defaults are implemented. See
+[clip names](docs/clip-names.md) for contracts and native checklist.
+Focused project/storage and rendered rename tests pass; exact final-source local
+CI evidence is retained with PR276. Native macOS visual/input acceptance remains
+separate and unverified. No optimized macOS build is produced on this Linux host.
+
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
 
 Native effect/instrument registries validate owned descriptors for each current

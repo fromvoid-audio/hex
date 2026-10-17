@@ -56,6 +56,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             }),
             instrument_position: Some(0),
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip,
                 start_raw: 0,
                 length_raw: 16 << 32,
@@ -149,6 +150,7 @@ pub fn finite_oracle(
                 return Err("oracle source is not midi".into());
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                name: "clip".into(),
                 id: clip.id,
                 start_raw: 0,
                 length_raw: 16 << 32,

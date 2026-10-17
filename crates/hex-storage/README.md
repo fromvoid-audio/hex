@@ -199,3 +199,8 @@ Their strict reader requires gain on every audio clip, requires `audio_edit` on
 every Arrangement clip in21 and forbids it in20. No-audio envelopes are rejected
 as ambiguous. Root keys both present select only main's historical20/21 reader,
 including when null/malformed; errors never retry another format.
+
+Current writes use schema26, adding complete validated Arrangement clip names to
+the schema25 musical-audio envelope. Session names retain their existing fields.
+Schemas1–25 migrate Arrangement names to `clip`; explicit legacy writers refuse
+authored Arrangement names. See [clip names](../../docs/clip-names.md).
