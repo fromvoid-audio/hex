@@ -1381,6 +1381,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
         instrument: None,
         instrument_position: None,
         content: TrackContentSnapshot::Instrument(vec![hex_project::MidiClipSnapshot {
+            name: "clip".into(),
             id: other_clip_id,
             start_raw: beat(8).raw(),
             length_raw: beat(4).raw(),

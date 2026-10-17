@@ -54,12 +54,13 @@ fn explicit_schema20_legacy_and_migrations_keep_provenance_opaque_states_and_def
     assert_eq!(doc["routing"], json!([]));
     assert_eq!(decode(&bytes).unwrap(), project);
     let default: Value = serde_json::from_slice(&encode(&project).unwrap()).unwrap();
-    assert_eq!(default["version"], 25);
+    assert_eq!(default["version"], 26);
     assert_eq!(default["import_provenance"], doc["import_provenance"]);
     assert_eq!(default["return_tracks"], doc["return_tracks"]);
     let mut legacy = doc;
     legacy["version"] = json!(19);
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("clip_names");
     legacy.as_object_mut().unwrap().remove("audio_feeds");
     legacy.as_object_mut().unwrap().remove("midi_routes");
     assert_eq!(
@@ -68,6 +69,7 @@ fn explicit_schema20_legacy_and_migrations_keep_provenance_opaque_states_and_def
     );
     legacy["version"] = json!(18);
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
+    legacy.as_object_mut().unwrap().remove("clip_names");
     legacy.as_object_mut().unwrap().remove("audio_feeds");
     legacy.as_object_mut().unwrap().remove("midi_routes");
     assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
@@ -87,7 +89,7 @@ fn valid_feed_decode_load_and_save_preserve_canonical_state_and_input() {
     assert_eq!(decode(&encode(&decoded).unwrap()).unwrap(), decoded);
     assert_eq!(
         serde_json::from_slice::<Value>(&encode(&decoded).unwrap()).unwrap()["version"],
-        25
+        26
     );
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -145,6 +147,7 @@ fn schema20_refuses_cycles_id_collisions_zero_gain_unknown_fields_and_capacity()
     invalid = base;
     invalid["version"] = json!(19);
     invalid.as_object_mut().unwrap().remove("audio_clip_state");
+    invalid.as_object_mut().unwrap().remove("clip_names");
     invalid.as_object_mut().unwrap().remove("audio_feeds");
     invalid.as_object_mut().unwrap().remove("midi_routes");
     assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
