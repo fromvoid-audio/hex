@@ -511,6 +511,12 @@ impl<'a> AudioRootStorageLedger<'a> {
         }
         Ok(())
     }
+    /// Control-side closure of selected actual constructor-paired handles.
+    /// Counter equality cannot create provenance, prove retirement, cover
+    /// unselected allocations or grant publication/runtime admission rights.
+    pub fn validate_selected_shared_handles_on_control(&self) -> Result<(), AudioStorageError> {
+        self.validate_closed_shared_handles()
+    }
     pub(crate) fn shared_resource_counts(&self) -> (usize, usize) {
         let allocations = self
             .data

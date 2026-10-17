@@ -140,7 +140,55 @@ pub fn decode_wav_file(
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
     let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
-    let (audio, sample_rate, frames) = decode_wav_inner(&bytes, limits.max_frames)?;
+    let layout = wav::scan(
+        &mut std::io::Cursor::new(&bytes),
+        bytes.len() as u64,
+        usize::MAX,
+    )?;
+    let (audio, sample_rate, frames) = if layout.format.channels == 2
+        && hex_engine::audio_storage_constructor_layout_supported()
+    {
+        // Enter the existing native family BEFORE identity-rate sharing in
+        // Session/resample/waveform. No caller-created Arc is adopted.
+        let working = limits
+            .max_file_bytes
+            .checked_add(
+                limits
+                    .max_frames
+                    .checked_mul(8)
+                    .ok_or(ImportError::LimitExceeded("native decode working buffers"))?,
+            )
+            .and_then(|n| n.checked_add(usize::from(u16::MAX) * 8))
+            .ok_or(ImportError::LimitExceeded("native decode working buffers"))?;
+        let source = decode_device_source(
+            &bytes,
+            DeviceSourceDecodeLimits {
+                media: limits,
+                max_chunk_headers: bytes.len() / 8,
+                max_decode_work_frames: limits.max_frames.saturating_add(usize::from(u16::MAX)),
+                max_working_buffer_bytes: working,
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .map_err(|error| match error {
+            DeviceSourceImportError::Media(error) => error,
+            DeviceSourceImportError::Storage(_) | DeviceSourceImportError::Resource(_) => {
+                ImportError::Invalid("native stereo source construction refused")
+            }
+        })?;
+        let sample_rate = source.sample_rate();
+        let frames = usize::try_from(source.frames())
+            .map_err(|_| ImportError::LimitExceeded("decoded frames"))?;
+        let audio = source
+            .try_into_native_audio_on_control()
+            .map_err(|_| ImportError::Invalid("native stereo source transfer refused"))?;
+        (audio, sample_rate, frames)
+    } else {
+        // Portable decoding and current mono Session workflow remain explicit.
+        // Typed native Mono still uses decode_device_source; its Session
+        // original-source storage adoption remains a separate required slice.
+        decode_wav_inner(&bytes, limits.max_frames)?
+    };
     Ok(DecodedAudio {
         path,
         audio,

@@ -23,16 +23,21 @@ impl OwnedAudioClipSource {
 impl ClipSourceKind {
     pub(crate) fn try_clone_source_on_control(
         source: &SourceKind,
+        handle: u64,
     ) -> Result<Self, AudioStorageError> {
         Ok(match source {
-            SourceKind::Resident(audio) => Self::Resident(audio.clone()),
+            SourceKind::Resident(audio) => {
+                Self::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
             SourceKind::ResidentMono(_) => return Err(AudioStorageError::UnsupportedGraph),
             SourceKind::Streamed(metadata) => Self::Streamed(metadata.clone_on_control()),
         })
     }
-    pub(crate) fn clone_on_control(&self) -> Self {
+    pub(crate) fn clone_on_control(&self, handle: u64) -> Self {
         match self {
-            Self::Resident(audio) => Self::Resident(audio.clone()),
+            Self::Resident(audio) => {
+                Self::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
             Self::Streamed(metadata) => Self::Streamed(metadata.clone_on_control()),
         }
     }

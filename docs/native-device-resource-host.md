@@ -237,3 +237,22 @@ refusals preserve caller custody. Whole-workspace all-target type checking cover
 the API change. This is PCM backing/summary work only; cloud6 renderer geometry
 and sampling-grid files are untouched. Source ownership was checked against its
 completed UI handoff before editing. Session source publication remains pending.
+
+Native stereo file import now establishes constructor lineage before Session
+shares original, project-rate and waveform PCM. Identity-rate imports reuse the
+same allocation; nonidentity resampling constructs a fresh native stereo owner.
+The existing Audio representation carries a private physical handle per native
+owner. Its clones preserve actual constructor provenance and issue distinct
+handles without copying PCM. Unknown origins and identity exhaustion remain
+unqualified. Moving between Audio and OwnedAudioSource conserves the same handle;
+neither Arc counts nor caller-provided identities can establish provenance.
+
+An actual stereo Session import test checks independent PCM, original buffer
+identity, both project-rate cases, waveform custody, resident limits and Undo/
+Redo. A selected resource root cannot close its handle inventory while Session
+and cache owners are omitted; after their control-side retirement, its retained
+source remains readable and the actual selected inventory closes. This is a
+stereo ingress and retention proof, not complete graph admission. Mono Session
+original storage, processed-media budget ownership, all-role coexistence and
+publication/reaper qualification remain open. Resource-backed registry
+processing remains refused until those actual host proofs are complete.

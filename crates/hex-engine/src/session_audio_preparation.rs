@@ -345,7 +345,7 @@ impl SessionSourceConstruction {
                 .get(row.source)
                 .ok_or(AudioStorageError::SourceMismatch)?
                 .1;
-            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind)?;
+            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind, row.handle)?;
             row.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: row.handle,
@@ -357,7 +357,7 @@ impl SessionSourceConstruction {
                 .get(row.cache)
                 .and_then(|c| c.owner.as_ref())
                 .ok_or(AudioStorageError::SourceMismatch)?;
-            let kind = cache.kind.clone_on_control();
+            let kind = cache.kind.clone_on_control(row.handle);
             row.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: row.handle,

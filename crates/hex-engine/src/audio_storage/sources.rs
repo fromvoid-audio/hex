@@ -1,6 +1,22 @@
 use super::*;
 use crate::audio_only_inputs::{SourceStorage, SourceStorageKind};
 impl<'a> AudioRootStorageLedger<'a> {
+    /// The actual native stereo Audio field joins the SAME resource union.
+    /// Unknown origin remains unknown; IDs/counts do not mint declarations.
+    pub fn borrow_native_audio_on_control(
+        &mut self,
+        audio: &'a crate::Audio,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            let handle = audio
+                .native_handle
+                .map(|h| h.get())
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            ledger.root(audio, role)?;
+            ledger.resident(audio, Owner::exclusive(audio), handle)
+        })
+    }
     pub(crate) fn inputs(&mut self, inputs: &'a OwnedAudioInputs) -> Result<(), AudioStorageError> {
         self.vec(&inputs.sources)?;
         self.vec(&inputs.aliases)?;
@@ -76,6 +92,9 @@ impl<'a> AudioRootStorageLedger<'a> {
             .pcm_arc_receipt
             .and_then(|r| r.checked_allocations(audio))
             .ok_or(AudioStorageError::UnknownStorage)?;
+        if audio.native_handle.map(|h| h.get()) != Some(handle) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         self.shared(&audio.frames, Some(allocations[0]), field, handle, None)?;
         let (payload, overhead) = allocations[1];
         self.data(

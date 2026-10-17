@@ -1033,7 +1033,7 @@ impl AudioPreparationCustody {
                 .ok_or(AudioStorageError::SourceMismatch)?
                 .sources[slot.source]
                 .1;
-            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind)?;
+            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind, slot.handle)?;
             slot.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: slot.handle,

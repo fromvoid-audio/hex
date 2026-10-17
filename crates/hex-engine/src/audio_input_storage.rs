@@ -44,10 +44,16 @@ pub struct AudioInputStorageRefusal {
 }
 fn allocation_parts(source: &impl SourceStorage) -> Result<[(usize, usize); 2], AudioStorageError> {
     match source.storage_kind() {
-        SourceStorageKind::Resident(audio) => audio
-            .pcm_arc_receipt
-            .and_then(|receipt| receipt.checked_allocations(audio))
-            .ok_or(AudioStorageError::UnknownStorage),
+        SourceStorageKind::Resident(audio) => {
+            let allocations = audio
+                .pcm_arc_receipt
+                .and_then(|receipt| receipt.checked_allocations(audio))
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            if audio.native_handle.map(|h| h.get()) != Some(source.storage_handle()) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            Ok(allocations)
+        }
         SourceStorageKind::ResidentMono(source) => Ok([
             source.parts().ok_or(AudioStorageError::UnknownStorage)?,
             (
@@ -286,7 +292,9 @@ impl AudioInputStorageAndObligations {
         }
         let handle = handle()?;
         let kind = match &source.kind {
-            SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
+            SourceKind::Resident(audio) => {
+                SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
             SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
             SourceKind::Streamed(_) => return Err(AudioStorageError::UnsupportedGraph),
         };

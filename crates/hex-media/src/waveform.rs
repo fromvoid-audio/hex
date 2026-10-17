@@ -82,6 +82,14 @@ impl Waveform {
             _ => None,
         }
     }
+    /// Borrow the actual stereo backing field for control-side union inventory.
+    /// Audio native lineage is retained; this does not create an owning alias.
+    pub fn audio_source(&self) -> Option<&Audio> {
+        match &self.samples {
+            Some(SampleBacking::Audio(audio)) => Some(audio),
+            _ => None,
+        }
+    }
 
     /// Construct immutable cached peaks without resident PCM (e.g. fixtures).
     pub fn from_peaks(source_frames: usize, bins: Vec<[Peak; 2]>) -> Result<Self, ImportError> {

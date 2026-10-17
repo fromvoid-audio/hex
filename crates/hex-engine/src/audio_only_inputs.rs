@@ -52,6 +52,14 @@ pub struct ResidentMonoSourceRefusal {
     pub reason: AudioStorageError,
     pub samples: Vec<f32>,
 }
+pub struct NativeAudioMoveRefusal {
+    pub reason: AudioStorageError,
+    pub source: OwnedAudioSource,
+}
+pub struct NativeAudioIngressRefusal {
+    pub reason: AudioStorageError,
+    pub audio: Audio,
+}
 pub(crate) struct MonoSourceData {
     pub(crate) sample_rate: u32,
     pub(crate) samples: Vec<f32>,
@@ -95,6 +103,69 @@ impl SourceStorage for OwnedAudioSource {
     }
 }
 impl OwnedAudioSource {
+    /// Borrow this actual unbound decoded owner before an AssetId/bank exists.
+    pub fn view(&self) -> OwnedAudioSourceView<'_> {
+        OwnedAudioSourceView { kind: &self.kind }
+    }
+    /// Move a known native stereo owner into the existing clip/media Audio
+    /// representation, conserving the same physical owning handle and PCM.
+    /// Mono/streamed/refused owners return intact; no raw Arc escapes.
+    pub fn try_into_native_audio_on_control(self) -> Result<Audio, Box<NativeAudioMoveRefusal>> {
+        let known = match &self.kind {
+            SourceKind::Resident(audio) => {
+                audio.native_handle.map(|h| h.get()) == Some(self.handle)
+                    && audio
+                        .pcm_arc_receipt
+                        .and_then(|r| r.checked_allocations(audio))
+                        .is_some()
+            }
+            _ => false,
+        };
+        if !known {
+            let reason = if matches!(&self.kind, SourceKind::Resident(_)) {
+                AudioStorageError::UnknownStorage
+            } else {
+                AudioStorageError::UnsupportedGraph
+            };
+            return Err(Box::new(NativeAudioMoveRefusal {
+                reason,
+                source: self,
+            }));
+        }
+        match self.kind {
+            SourceKind::Resident(audio) => Ok(audio),
+            kind => Err(Box::new(NativeAudioMoveRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                source: Self {
+                    kind,
+                    handle: self.handle,
+                },
+            })),
+        }
+    }
+    /// Consume actual native Audio lineage. Unknown/caller-created Arc values
+    /// are never adopted, and Arc counts cannot establish this provenance.
+    pub fn try_from_native_audio_on_control(
+        audio: Audio,
+    ) -> Result<Self, Box<NativeAudioIngressRefusal>> {
+        let handle = audio.native_handle.map(|h| h.get()).filter(|_| {
+            audio
+                .pcm_arc_receipt
+                .and_then(|r| r.checked_allocations(&audio))
+                .is_some()
+                && std::sync::Arc::weak_count(&audio.frames) == 0
+        });
+        match handle {
+            Some(handle) => Ok(Self {
+                kind: SourceKind::Resident(audio),
+                handle,
+            }),
+            None => Err(Box::new(NativeAudioIngressRefusal {
+                reason: AudioStorageError::UnknownStorage,
+                audio,
+            })),
+        }
+    }
     /// Exact mono custody in the existing native source/bank ownership family.
     /// Refusals precede the owning wrapper allocation and return the same Vec.
     pub fn try_resident_mono(
@@ -162,6 +233,7 @@ impl OwnedAudioSource {
                         _derived: None,
                     }),
                     pcm_arc_receipt: Some(receipt),
+                    native_handle: std::num::NonZeroU64::new(handle),
                 }),
                 handle,
             }),
@@ -483,7 +555,9 @@ impl OwnedAudioInputs {
             .ok_or(AudioStorageError::HandleExhausted)?;
         let handle = handle()?;
         let kind = match &self.checked_source(token)?.kind {
-            SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
+            SourceKind::Resident(audio) => {
+                SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
             SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
             SourceKind::Streamed(source) => SourceKind::Streamed(source.clone_on_control()),
         };

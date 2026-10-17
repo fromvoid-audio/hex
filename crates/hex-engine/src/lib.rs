@@ -65,8 +65,9 @@ pub use audio_input_storage::{
 };
 pub use audio_only_inputs::{
     AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
-    AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
-    ResidentMonoSourceRefusal, ResidentSourceRefusal, StreamedSourceRefusal,
+    AudioStorageReservation, NativeAudioIngressRefusal, NativeAudioMoveRefusal, OwnedAudioInputs,
+    OwnedAudioSource, OwnedAudioSourceView, ResidentMonoSourceRefusal, ResidentSourceRefusal,
+    StreamedSourceRefusal,
 };
 pub mod native_device_resources;
 mod owned_shared;
@@ -387,11 +388,26 @@ impl Tempo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Audio {
     sample_rate: u32,
     frames: Arc<AudioData>,
     pcm_arc_receipt: Option<pcm_arc::PcmArcReceipt>,
+    // Issued only by the native constructor or a lineage-preserving owner fork.
+    // None is unqualified; an ID alone is never ownership/admission proof.
+    native_handle: Option<std::num::NonZeroU64>,
+}
+impl Clone for Audio {
+    fn clone(&self) -> Self {
+        // Existing public clones do not allocate PCM. Unknown origin remains
+        // unknown; identity exhaustion refuses native qualification, not audio
+        // data retention. Native source/clip plans use their PRE-reserved handle.
+        let handle = self
+            .pcm_arc_receipt
+            .and_then(|r| r.checked_allocations(self))
+            .and_then(|_| audio_only_inputs::handle().ok());
+        self.clone_with_native_handle_on_control(handle)
+    }
 }
 #[derive(Debug)]
 struct AudioData {
@@ -405,6 +421,19 @@ impl std::ops::Deref for AudioData {
     }
 }
 impl Audio {
+    pub(crate) fn clone_with_native_handle_on_control(&self, handle: Option<u64>) -> Self {
+        let native_handle = self
+            .pcm_arc_receipt
+            .and_then(|r| r.checked_allocations(self))
+            .and(handle)
+            .and_then(std::num::NonZeroU64::new);
+        Self {
+            sample_rate: self.sample_rate,
+            frames: Arc::clone(&self.frames),
+            pcm_arc_receipt: self.pcm_arc_receipt,
+            native_handle,
+        }
+    }
     pub(crate) fn from_derived(
         sample_rate: u32,
         frames: Vec<Frame>,
@@ -416,6 +445,7 @@ impl Audio {
         Ok(Self {
             sample_rate,
             pcm_arc_receipt: None,
+            native_handle: None,
             frames: Arc::new(AudioData {
                 values: frames,
                 _derived: Some(reservation),
@@ -450,6 +480,7 @@ impl Audio {
         Ok(Self {
             sample_rate,
             pcm_arc_receipt: None,
+            native_handle: None,
             frames: Arc::new(AudioData {
                 values: frames,
                 _derived: None,

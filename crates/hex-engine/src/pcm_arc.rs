@@ -35,7 +35,8 @@ impl PcmArcReceipt {
         })
     }
     pub(crate) fn checked_allocations(self, audio: &crate::Audio) -> Option<[(usize, usize); 2]> {
-        (self.len == audio.frames.values.len()
+        (audio.native_handle.is_some()
+            && self.len == audio.frames.values.len()
             && self.capacity == audio.frames.values.capacity()
             && audio.frames._derived.is_none())
         .then_some([

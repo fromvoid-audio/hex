@@ -47,8 +47,17 @@ pub fn resample(
         .map_err(|_| ImportError::AllocationFailed)?;
     output.resize(output_capacity, [0.0; 2]);
     plan.render_window(0, source.frames(), 0, &mut output)?;
-    Audio::new(target_rate, output)
-        .map_err(|_| ImportError::Invalid("resampler produced invalid audio"))
+    if hex_engine::audio_storage_constructor_layout_supported() {
+        // Fresh computed PCM enters the native constructor, never an upgraded
+        // shared raw Arc. Original-file provenance remains a separate concern.
+        hex_engine::OwnedAudioSource::try_resident(target_rate, output)
+            .map_err(|_| ImportError::Invalid("resampler produced invalid native audio"))?
+            .try_into_native_audio_on_control()
+            .map_err(|_| ImportError::Invalid("native resampler owner transfer refused"))
+    } else {
+        Audio::new(target_rate, output)
+            .map_err(|_| ImportError::Invalid("resampler produced invalid audio"))
+    }
 }
 
 /// Immutable global-phase conversion configuration for bounded output windows.

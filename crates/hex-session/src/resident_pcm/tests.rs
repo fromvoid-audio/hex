@@ -8,27 +8,34 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn decoded(rate: u32, frames: u32) -> DecodedAudio {
+    decoded_channels(rate, frames, 1)
+}
+fn decoded_channels(rate: u32, frames: u32, channels: u16) -> DecodedAudio {
     let path = std::env::temp_dir().join(format!(
         "hex-original-pcm-{}-{}.wav",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let bytes = frames * 2;
+    let align = channels * 2;
+    let bytes = frames * u32::from(align);
     let mut wav = Vec::new();
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36 + bytes).to_le_bytes());
     wav.extend_from_slice(b"WAVEfmt ");
     wav.extend_from_slice(&16_u32.to_le_bytes());
     wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&channels.to_le_bytes());
     wav.extend_from_slice(&rate.to_le_bytes());
-    wav.extend_from_slice(&(rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&(rate * u32::from(align)).to_le_bytes());
+    wav.extend_from_slice(&align.to_le_bytes());
     wav.extend_from_slice(&16_u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&bytes.to_le_bytes());
     for index in 0..frames {
         wav.extend_from_slice(&(1000 + index as i16 * 113).to_le_bytes());
+        if channels == 2 {
+            wav.extend_from_slice(&(-2000 - index as i16 * 71).to_le_bytes());
+        }
     }
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -235,4 +242,163 @@ fn batch_union_refuses_atomically_and_session_cells_retain_original_rate() {
     assert_eq!(session.source_audio(id).unwrap().frames().len(), 12);
     assert!(session.redo());
     assert_eq!(session.resident_frames(), 18);
+}
+
+#[test]
+fn actual_stereo_import_preserves_native_original_identity_derivative_and_snapshot_owners() {
+    use hex_engine::native_device_resources::{
+        DeviceResourceBank, DeviceResourceCatalog, OriginalResourceLayout, OriginalResourceSource,
+        ResourceCatalogReservation,
+    };
+    use hex_engine::{
+        AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageReservation,
+        AudioStorageRole, OwnedAudioInputs, OwnedAudioSource,
+    };
+    use std::sync::atomic::AtomicBool;
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported constructor; no native Session import proof");
+        return;
+    }
+    for project_rate in [32_000, 16_000] {
+        let decoded = decoded_channels(32_000, 12, 2);
+        let original_pointer = decoded.audio().frames().as_ptr();
+        let expected: Vec<_> = (0..12)
+            .map(|n| {
+                [
+                    (1000 + n * 113) as f32 / 32768.0,
+                    (-2000 - n * 71) as f32 / 32768.0,
+                ]
+            })
+            .collect();
+        let prepared = PreparedImport::at_rate(
+            decoded,
+            project_rate,
+            ResampleLimits {
+                max_source_frames: 1024,
+                max_output_frames: 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared.source_audio.frames().as_ptr(), original_pointer);
+        assert_eq!(prepared.source_audio.frames(), expected);
+        assert_eq!(
+            prepared.source_audio.shares_pcm_with(&prepared.audio),
+            project_rate == 32_000
+        );
+        assert!(prepared.waveform.shares_audio_with(&prepared.audio));
+        // Both playback and waveform backing carry actual native owner lineage.
+        let playback = OwnedAudioSource::try_from_native_audio_on_control(prepared.audio.clone())
+            .ok()
+            .unwrap();
+        let backing = OwnedAudioSource::try_from_native_audio_on_control(
+            prepared.waveform.audio_source().unwrap().clone(),
+        )
+        .ok()
+        .unwrap();
+        drop(playback);
+        drop(backing);
+        let mut session = Session::new(project_rate, 16, 18).unwrap();
+        let id = asset(session.import_prepared_revision(prepared, None).unwrap().0);
+        assert_eq!(
+            session.resident_frames(),
+            if project_rate == 32_000 { 12 } else { 18 }
+        );
+        let saved = session.project().clone();
+        assert!(session.undo());
+        assert!(session.redo());
+        assert_eq!(session.project(), &saved);
+        let source = OwnedAudioSource::try_from_native_audio_on_control(
+            session.source_audio(id).unwrap().clone(),
+        )
+        .ok()
+        .unwrap();
+        let bank = OwnedAudioInputs::try_new(
+            vec![(id, source)],
+            AudioStorageReservation {
+                allocation_items: 8,
+                handle_obligations: 8,
+                max_prepared_data_bytes: 65_536,
+                max_construction_data_bytes: 65_536,
+                caller_retained_bytes: 0,
+                caller_construction_bytes: 0,
+            },
+        )
+        .ok()
+        .unwrap()
+        .prepare_input_storage_on_control()
+        .ok()
+        .unwrap();
+        let catalog = DeviceResourceCatalog::prepare_on_control(
+            &bank,
+            &[OriginalResourceSource {
+                asset: id,
+                sample_rate: 32_000,
+                frames: 12,
+                layout: OriginalResourceLayout::Stereo,
+            }],
+            ResourceCatalogReservation {
+                metadata_bytes: 65_536,
+                hash_frames: 12,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let root = DeviceResourceBank::try_new_on_control(
+            bank,
+            catalog,
+            65_536,
+            65_536,
+            &AtomicBool::new(false),
+        )
+        .ok()
+        .unwrap();
+        let snapshot = root.borrow_original_source_on_control(id, 4096).unwrap();
+        assert_eq!(
+            snapshot.view().unwrap().resident_frames().unwrap().as_ptr(),
+            original_pointer
+        );
+        // Real Session/project/history/cache owners remain live; they cannot be
+        // excluded merely because a standalone resource bank fits its budget.
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 16,
+                root_rows: 8,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            })
+            .unwrap();
+        ledger
+            .borrow_device_resource_bank_on_control(&root, AudioStorageRole::Caller)
+            .unwrap();
+        ledger
+            .borrow_original_source_lease_on_control(&snapshot, AudioStorageRole::Archive)
+            .unwrap();
+        assert_eq!(
+            ledger.validate_selected_shared_handles_on_control(),
+            Err(hex_engine::AudioStorageError::UnknownStorage)
+        );
+        drop(ledger);
+        drop(root);
+        drop(session); // Control retirement of all actual media/history/cache owners.
+        assert_eq!(
+            snapshot.view().unwrap().resident_frames().unwrap(),
+            expected
+        );
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 16,
+                root_rows: 8,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            })
+            .unwrap();
+        ledger
+            .borrow_original_source_lease_on_control(&snapshot, AudioStorageRole::Archive)
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+    }
 }
