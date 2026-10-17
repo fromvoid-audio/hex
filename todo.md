@@ -12,6 +12,17 @@ retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
 
+## sample bpm and shift edge stretching — pulse2781 / PR387, 17 october2026
+
+Authored original sample BPM, canonical affine edge stretch and metadata-only
+preview/release wiring are implemented in a separate follow-up. Four model/storage
+fixtures, independent stereo pitch/seek/partition PCM, numeric actual-input and
+stationary Shift gesture checks pass; excessive stretch refuses project/history
+commit. Final exact-source CI remains pending. Cloud6 owns waveform disappearance
+and the coordinated live preview renderer in2764/PR372; this follow-up is draft
+until that mapping integrates. See docs/sample-bpm-stretch.md for behavior and
+finite coordinator-only native checklist. No Mac execution or app replacement.
+
 ## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
 
 The selected Arrangement audio clip now exposes Warp and a direct implemented

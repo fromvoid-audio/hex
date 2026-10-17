@@ -4,6 +4,7 @@ use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::{BeatTime, BeatsPreserve, BeatsTail, ClipId, WarpMode};
 mod actions;
+pub(crate) mod sample_bpm;
 use actions::{Action, command, mode_name, modes};
 #[cfg(test)]
 use hex_project::Command;
@@ -15,7 +16,11 @@ struct Capture {
     generation: u64,
 }
 /// Selected-clip stretch controls stay above the scrollable source fields.
-pub(super) fn warp_header(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorView>) -> Div {
+pub(super) fn warp_header(
+    view: &mut EditorView,
+    clip_id: ClipId,
+    cx: &mut Context<EditorView>,
+) -> Div {
     let mut controls = div().flex().flex_col().gap(px(2.0)).flex_shrink_0();
     let Some(state) = view.state.as_ref() else {
         return controls;
@@ -43,6 +48,7 @@ pub(super) fn warp_header(view: &EditorView, clip_id: ClipId, cx: &mut Context<E
         )
         .debug_selector(|| "audio-clip-warp-toggle".into()),
     );
+    controls = controls.child(sample_bpm::field(view, clip_id, cx));
     if active {
         controls = controls.child(musical_control_label(&format!(
             "algorithm · {}",

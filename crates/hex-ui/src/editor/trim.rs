@@ -47,6 +47,7 @@ fn replace_midi_trim_preview(
 /// Bounded metadata-only payload; the model helper builds previews without project or PCM copies.
 #[derive(Clone, Debug)]
 pub(super) struct TrimDrag {
+    pub(super) stretch_modifier: Rc<Cell<bool>>,
     project_generation: u64,
     revision: u64,
     pub(super) source_track: TrackId,
@@ -232,16 +233,31 @@ fn preview_for_pointer(
     viewport: Viewport,
 ) -> Option<TrimPreviewState> {
     let frame = snapped_edge_frame(drag, project, pointer_x, lane, viewport)?;
-    let clip = drag
-        .clip
-        .preview_edge_trim_with_tempo(
+    let clip = preview_clip(drag, project, frame).ok()?;
+    Some(TrimPreviewState { clip })
+}
+
+fn preview_clip(
+    drag: &TrimDrag,
+    project: &Project,
+    frame: u64,
+) -> Result<Clip, hex_project::Invalid> {
+    if drag.stretch_modifier.get() {
+        hex_project::preview_audio_clip_stretch(
+            &drag.clip,
+            drag.edge,
+            frame,
+            project.tempo_map(),
+            drag.asset_playback_frames,
+        )
+    } else {
+        drag.clip.preview_edge_trim_with_tempo(
             drag.edge,
             frame,
             drag.asset_playback_frames,
             project.tempo_map(),
         )
-        .ok()?;
-    Some(TrimPreviewState { clip })
+    }
 }
 
 fn midi_edge_beat(clip: &MidiClip, edge: TrimEdge) -> Option<BeatTime> {
@@ -545,6 +561,7 @@ impl EditorView {
     ) -> Stateful<Div> {
         let clip_id = clip.id();
         let payload = TrimDrag {
+            stretch_modifier: Rc::new(Cell::new(false)),
             project_generation: self.project_generation,
             revision: state.revision,
             source_track: track,
@@ -641,6 +658,7 @@ impl EditorView {
                 let pointer_x = f32::from(window.mouse_position().x);
                 payload.last_pointer_x.set(Some(pointer_x));
                 payload.snap_modifier.set(window.modifiers().platform);
+                payload.stretch_modifier.set(window.modifiers().shift);
                 preview_owner_entity.update(cx, |view, cx| {
                     view.begin_trim_drag(payload);
                     view.update_trim_preview(payload, pointer_x, cx);
@@ -664,6 +682,7 @@ impl EditorView {
                 let pointer_x = f32::from(event.event.position.x);
                 drag.last_pointer_x.set(Some(pointer_x));
                 drag.snap_modifier.set(event.event.modifiers.platform);
+                drag.stretch_modifier.set(event.event.modifiers.shift);
                 drag_entity.update(cx, |view, cx| view.update_trim_preview(drag, pointer_x, cx));
             })
     }
@@ -714,9 +733,18 @@ impl EditorView {
         changed
     }
 
-    pub(super) fn refresh_trim_snap_modifier(&mut self, held: bool, cx: &mut Context<Self>) {
+    pub(super) fn refresh_trim_snap_modifier(
+        &mut self,
+        held: bool,
+        stretch: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(drag) = self.active_trim_drag.clone()
-            && drag.snap_modifier.replace(held) != held
+            && {
+                let snap_changed = drag.snap_modifier.replace(held) != held;
+                let stretch_changed = drag.stretch_modifier.replace(stretch) != stretch;
+                snap_changed || stretch_changed
+            }
             && let Some(pointer_x) = drag.last_pointer_x.get()
         {
             self.update_trim_preview(&drag, pointer_x, cx);
@@ -896,22 +924,25 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Ok(preview) = drag.clip.preview_edge_trim_with_tempo(
-            drag.edge,
-            frame,
-            drag.asset_playback_frames,
-            state.project.tempo_map(),
-        ) else {
+        let Ok(preview) = preview_clip(drag, &state.project, frame) else {
             return;
         };
         if preview_is_noop(&drag.clip, &preview) {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
-        self.enqueue(Request::Edit(Command::TrimClipEdge {
-            clip: drag.clip.id(),
-            edge: drag.edge,
-            frame,
+        self.enqueue(Request::Edit(if drag.stretch_modifier.get() {
+            Command::StretchAudioClipEdge {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame,
+            }
+        } else {
+            Command::TrimClipEdge {
+                clip: drag.clip.id(),
+                edge: drag.edge,
+                frame,
+            }
         }));
         self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
         cx.notify();
@@ -1262,6 +1293,7 @@ mod tests {
 
     fn trim_drag(track: TrackId, clip: Clip, asset_playback_frames: u64) -> TrimDrag {
         TrimDrag {
+            stretch_modifier: Rc::new(Cell::new(false)),
             project_generation: 4,
             revision: 7,
             source_track: track,

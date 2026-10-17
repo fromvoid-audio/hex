@@ -394,7 +394,7 @@ impl Render for EditorView {
                 "hex_controller_input"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
-            } else if self.gain_numeric_editing(cx) {
+            } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
@@ -413,6 +413,7 @@ impl Render for EditorView {
                     && let Some(drag) = view.active_trim_drag.clone()
                 {
                     drag.snap_modifier.set(event.modifiers.platform);
+                    drag.stretch_modifier.set(event.modifiers.shift);
                     drag.last_pointer_x.set(Some(f32::from(event.position.x)));
                     view.update_trim_preview(&drag, f32::from(event.position.x), cx);
                 }
@@ -442,7 +443,11 @@ impl Render for EditorView {
                         cx.notify();
                     }
                     view.update_fade_gesture(window.mouse_position(), event.modifiers.platform, cx);
-                    view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
+                    view.refresh_trim_snap_modifier(
+                        event.modifiers.platform,
+                        event.modifiers.shift,
+                        cx,
+                    );
                     view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
                 });
                 window.refresh();
