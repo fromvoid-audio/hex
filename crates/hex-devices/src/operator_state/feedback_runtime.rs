@@ -751,6 +751,7 @@ pub(super) fn export_harmonic_history(
     };
     let spectrum = builtin_spectrum(&base)?;
     Some(Legacy {
+        tuning: None,
         rate: runtime.sample_rate,
         companion: super::companion::Settings::default(),
         local_frame: 0,

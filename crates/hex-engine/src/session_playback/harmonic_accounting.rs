@@ -183,7 +183,7 @@ fn candidate_pool_charge_with_admitted_track_and_effect_inventory() {
     assert!(preflight + pool <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
     assert_eq!(
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
-        344
+        352
     );
 }
 
