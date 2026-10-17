@@ -1586,6 +1586,7 @@ impl EditorView {
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
             self.edit_cursor = None;
+            self.clip_paint_gesture = None;
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
