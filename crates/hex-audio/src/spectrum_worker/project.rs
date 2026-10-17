@@ -452,6 +452,7 @@ impl ProjectReader {
 }
 
 pub(crate) struct ProjectWorker {
+    pending_return: Option<Box<ProjectPacket>>,
     consumer: Consumer<Box<ProjectPacket>>,
     returned: Producer<Box<ProjectPacket>>,
     results: SyncSender<PublishedProjectSpectrum>,
@@ -460,6 +461,14 @@ pub(crate) struct ProjectWorker {
 }
 impl ProjectWorker {
     pub(crate) fn poll(&mut self, now: Instant) -> usize {
+        // A full return ring retains the same owner off callback and pauses
+        // consumption. One retry per turn; EQ remains serviced by the shared loop.
+        if let Some(packet) = self.pending_return.take()
+            && let Err(rtrb::PushError::Full(packet)) = self.returned.push(packet)
+        {
+            self.pending_return = Some(packet);
+            return 0;
+        }
         let mut drained = 0;
         // Freeze the one aligned rolling window until its incremental analysis
         // completes. The fixed packet queue absorbs incoming capture; overload
@@ -470,10 +479,11 @@ impl ProjectWorker {
                     break;
                 };
                 self.core.ingest(&packet);
-                assert!(
-                    self.returned.push(packet).is_ok(),
-                    "project spectrum packet custody violated"
-                );
+                if let Err(rtrb::PushError::Full(packet)) = self.returned.push(packet) {
+                    self.pending_return = Some(packet);
+                    self.core.clear();
+                    return drained + 1;
+                }
                 drained += 1;
             }
         }
@@ -509,6 +519,7 @@ impl ProjectWorker {
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
         use crate::native_callback_owner::ChannelStorage;
         let Self {
+            pending_return: _,
             consumer: _,
             returned,
             results: _,
@@ -696,8 +707,14 @@ fn zeroed_frames(count: usize) -> Result<Box<[Frame]>, SpectrumWorkerError> {
 pub(crate) fn channel(
     rate: u32,
 ) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
+    channel_with_return_capacity(rate, PROJECT_PACKET_OWNERS)
+}
+fn channel_with_return_capacity(
+    rate: u32,
+    return_capacity: usize,
+) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
     let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
-    let (mut returned, free) = RingBuffer::new(PROJECT_PACKET_OWNERS);
+    let (mut returned, free) = RingBuffer::new(return_capacity);
     let mut packet = None;
     let mut pool_bytes = 0usize;
     for index in 0..PROJECT_PACKET_OWNERS {
@@ -720,10 +737,9 @@ pub(crate) fn channel(
         if index == 0 {
             packet = Some(owner);
         } else {
-            assert!(
-                returned.push(owner).is_ok(),
-                "project pool construction capacity"
-            );
+            returned
+                .push(owner)
+                .map_err(|_| SpectrumWorkerError::PoolCapacity)?;
         }
     }
     let (results, receiver) = sync_channel(1);
@@ -759,6 +775,7 @@ pub(crate) fn channel(
         contribution_frames_left: MAX_PROJECT_CONTRIBUTION_FRAMES,
     };
     let worker = ProjectWorker {
+        pending_return: None,
         consumer,
         returned,
         results,
@@ -820,6 +837,78 @@ mod tests {
             capture.finish(now, 11, true),
             Some(CaptureOutcome::Queued { .. })
         ));
+    }
+    #[test]
+    fn insufficient_constructor_return_capacity_refuses_without_panicking() {
+        assert!(matches!(
+            channel_with_return_capacity(48_000, 1),
+            Err(SpectrumWorkerError::PoolCapacity)
+        ));
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn return_backpressure_retains_exact_owner_and_resumes_without_allocating_or_dropping() {
+        let (mut capture, _reader, mut worker) = channel(48_000).unwrap();
+        let (returned, mut free) = RingBuffer::new(1);
+        worker.returned = returned;
+        let blocker = capture.returned.pop().unwrap();
+        assert!(worker.returned.push(blocker).is_ok());
+        let now = Instant::now();
+        let selection = selected(&[1, 6]);
+        let original = capture.packet.as_deref().unwrap() as *const ProjectPacket;
+        observe(&mut capture, selection, 0, now);
+        let info = allocation_counter::measure(|| {
+            assert_eq!(worker.poll(now), 1);
+            assert_eq!(
+                worker.pending_return.as_deref().unwrap() as *const ProjectPacket,
+                original
+            );
+            assert_eq!(
+                worker.core.filled, 0,
+                "failed handoff invalidates the partial window"
+            );
+            for _ in 0..4 {
+                assert_eq!(worker.poll(now), 0);
+            }
+        });
+        assert_eq!(
+            (
+                info.count_total,
+                info.bytes_total,
+                info.count_current,
+                info.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let _blocker = free.pop().unwrap();
+        let info = allocation_counter::measure(|| {
+            assert_eq!(worker.poll(now), 0);
+        });
+        assert_eq!(
+            (
+                info.count_total,
+                info.bytes_total,
+                info.count_current,
+                info.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(worker.pending_return.is_none());
+        let recovered = free.pop().unwrap();
+        assert_eq!(
+            recovered.as_ref() as *const ProjectPacket,
+            original,
+            "same packet, no replacement owner"
+        );
+        for sequence in 1..=16 {
+            observe(&mut capture, selection, sequence, now);
+            worker.poll(now);
+            let _ = free.pop();
+        }
+        assert!(
+            worker.core.filled > 0,
+            "capture/analysis resumes on a new valid window"
+        );
     }
     #[test]
     fn mailbox_reads_only_selected_prefix_and_refuses_concurrent_publication() {

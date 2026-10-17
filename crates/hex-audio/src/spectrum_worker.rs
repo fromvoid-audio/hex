@@ -340,6 +340,7 @@ pub enum SpectrumWorkerError {
     ThreadSpawn(std::io::Error),
     ThreadPanicked,
     StorageOverflow,
+    PoolCapacity,
     Allocation,
 }
 
@@ -352,6 +353,7 @@ impl fmt::Display for SpectrumWorkerError {
             Self::ThreadSpawn(error) => {
                 write!(formatter, "could not start spectrum worker: {error}")
             }
+            Self::PoolCapacity => formatter.write_str("spectrum packet pool capacity refused"),
             Self::StorageOverflow => formatter.write_str("spectrum storage size overflow"),
             Self::Allocation => formatter.write_str("could not reserve spectrum storage"),
             Self::ThreadPanicked => formatter.write_str("spectrum worker exited unexpectedly"),

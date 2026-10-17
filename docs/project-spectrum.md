@@ -45,14 +45,19 @@ the selected prefix and adds real borrowed contributions. At most 263168 stereo
 contribution frames are accepted per callback, including retained tails. Budget
 exhaustion rejects the complete batch without dropping a selected layer or
 changing audio. Queue-full paths retain or return existing owners: no callback
-allocation, lock, logging, final owner destruction or FFT.
+allocation, lock, logging, final owner destruction or FFT. Worker-side return
+backpressure retains one existing packet, invalidates the partial window, and
+retries once per turn while pausing consumption; it never panics or discards that
+owner. Constructor capacity failure returns an explicit error. Both paths have
+focused refusal/retention regressions.
 
 Selection mailbox reads load only the published ID prefix (zero ID atomics for
 Master-only or cleared selections), with one bounded seqlock attempt. The immutable
 compiled-project owner table is sorted during control-side construction and stored
 inline in the existing immutable root, charged through that root's actual size.
 Playback borrows its existing project owner; publication errors stay small.
-Callback validation merges sorted selected IDs with that table in at most 256 owner comparisons, with no allocation or sorting.
+Callback validation merges sorted selected IDs with that table in at most 256
+owner comparisons, with no allocation or sorting.
 Malformed, unsorted, duplicate or missing IDs refuse the whole batch.
 
 UI render data uses validated immutable shared layer storage. Steady repaints clone
@@ -109,8 +114,9 @@ layout CI) measured the actual capture/worker with all selected layers enabled:
 | 256 | 257 | 169.508 | 639.471 | 101.237 | 114.196 | 20.710 |
 
 The known project payload was 26319848 bytes at every selection size because the
-pool/window capacity is fixed. Two warmups preceded five measured trials; each
-trial captured sixteen 256-frame packets and analyzed one complete aligned window.
+pool/window capacity is fixed. This historical profile predates the added
+8-byte worker pending-return slot; current known project payload is26319856 bytes.
+Two warmups preceded five measured trials; each trial captured sixteen 256-frame packets and analyzed one complete aligned window.
 Timings include observed scheduling outliers, without attributing their cause.
 They exclude the driver, graph DSP and native paint/input. The 32-track 30 Hz and
 256-track 5 Hz rates are upper caps, not guaranteed update frequencies. Retained
