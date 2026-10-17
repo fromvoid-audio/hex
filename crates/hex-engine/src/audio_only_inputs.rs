@@ -187,8 +187,9 @@ impl OwnedAudioSource {
             }),
         }
     }
-    // Owning alias creation intentionally absent until bounded caller custody
-    // is decided. A bare clone would escape the consumed bank's handle ledger.
+    // No public bare owning clone. OriginalSourceLease's bounded control-only
+    // plan alias returns this same closed source type, with a distinct handle;
+    // both banks must be included in the real coexistence ledger.
     pub fn sample_rate(&self) -> u32 {
         match &self.kind {
             SourceKind::Resident(a) => a.sample_rate(),
@@ -432,7 +433,7 @@ impl OwnedAudioInputs {
             alias: None,
         })
     }
-    fn checked_source(
+    pub(crate) fn checked_source(
         &self,
         token: &AudioSourceToken,
     ) -> Result<&OwnedAudioSource, AudioStorageError> {

@@ -270,5 +270,56 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     let lease = owner.prepare_lease_on_control(&state, 4096).unwrap();
     verify_callbacks(&state, &lease);
     assert_eq!(owner.input_storage_summary(), before);
+    // Actual media/source-plan bridge: clone only the closed source handles
+    // into a candidate bank, then retire all old root/lease custody on control.
+    let originals: Vec<_> = ids
+        .iter()
+        .map(|&id| owner.borrow_original_source_on_control(id, 4096).unwrap())
+        .collect();
+    let candidate_sources: Vec<_> = ids
+        .iter()
+        .zip(&originals)
+        .map(|(&id, source)| (id, source.alias_for_resource_plan_on_control(4096).unwrap()))
+        .collect();
+    let candidate_bank = OwnedAudioInputs::try_new(
+        candidate_sources,
+        AudioStorageReservation {
+            allocation_items: 8,
+            handle_obligations: 8,
+            max_prepared_data_bytes: 65_536,
+            max_construction_data_bytes: 65_536,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap()
+    .prepare_input_storage_on_control()
+    .ok()
+    .unwrap();
+    let candidate_catalog = DeviceResourceCatalog::prepare_on_control(
+        &candidate_bank,
+        &sources,
+        ResourceCatalogReservation {
+            metadata_bytes: 65_536,
+            hash_frames: 128,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let candidate = hex_engine::native_device_resources::DeviceResourceBank::try_new_on_control(
+        candidate_bank,
+        candidate_catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let candidate_lease = candidate.prepare_lease_on_control(&state, 4096).unwrap();
+    drop(originals);
+    drop(lease);
+    drop(owner);
+    verify_callbacks(&state, &candidate_lease);
     eprintln!("native bank callback probe: supported-controls=completed");
 }

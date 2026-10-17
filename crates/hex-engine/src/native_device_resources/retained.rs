@@ -228,6 +228,28 @@ impl<'a> AudioRootStorageLedger<'a> {
 }
 
 impl OriginalSourceLease {
+    /// Reuse original PCM in a new prepared input bank without a second buffer.
+    /// The result stays in the existing closed source family. Caller must reserve
+    /// the destination bank and all coexistence roles before publication; an
+    /// unselected returned owner prevents closed-handle validation of this root.
+    pub fn alias_for_resource_plan_on_control(
+        &self,
+        max_metadata_bytes: usize,
+    ) -> Result<crate::OwnedAudioSource, ResourcePreparationError> {
+        if std::mem::size_of::<crate::OwnedAudioSource>() > max_metadata_bytes {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        let source = self
+            .root
+            .catalog
+            .sources
+            .get(self.source)
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        Ok(self
+            .root
+            .bank
+            .alias_resource_source_on_control(&source.token)?)
+    }
     /// O(1) immutable borrow, tied to this actual retained root. No owner clone,
     /// hash, allocation, decode, wait or temporary-owner lifetime is involved.
     pub fn view(&self) -> Result<crate::OwnedAudioSourceView<'_>, AudioStorageError> {

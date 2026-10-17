@@ -273,6 +273,25 @@ impl AudioInputStorageAndObligations {
     ) -> Result<OwnedAudioSourceView<'_>, AudioStorageError> {
         self.inputs.source_view(token)
     }
+    /// Closed source-plan transfer only; not a raw Audio/Arc alias or admission.
+    /// All declaration/identity failures precede the owning control clone.
+    pub(crate) fn alias_resource_source_on_control(
+        &self,
+        token: &AudioSourceToken,
+    ) -> Result<OwnedAudioSource, AudioStorageError> {
+        let source = self.inputs.checked_source(token)?;
+        parts(source)?;
+        if matches!(&source.kind, SourceKind::Streamed(_)) {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        let handle = handle()?;
+        let kind = match &source.kind {
+            SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
+            SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
+            SourceKind::Streamed(_) => return Err(AudioStorageError::UnsupportedGraph),
+        };
+        Ok(OwnedAudioSource { kind, handle })
+    }
     /// Verify actual anchored owners/handle locations, never Arc counts or IDs
     /// alone. There is no lifetime-closed/admission authority in this operation.
     pub fn validate_unresolved_on_control(&self) -> Result<(), AudioStorageError> {

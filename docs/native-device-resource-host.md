@@ -196,3 +196,19 @@ This prepares the narrow Session/waveform backing handoff without altering
 waveform geometry or silently converting already-shared raw Audio into custody.
 Session publication, all-role memory reservations and complete native retirement
 remain open acceptance work.
+
+Source plans can obtain a bounded control alias from an `OriginalSourceLease`
+into a new `OwnedAudioInputs` bank. The result remains a closed `OwnedAudioSource`
+with a fresh physical handle and the same constructor-paired mono/stereo PCM;
+no raw Audio/Arc or extra sample buffer escapes. Failed destination construction
+returns that actual source intact. Both old and candidate banks, snapshots and
+provider leases must be included before handle closure can succeed.
+
+A mixed mono/stereo current/candidate test pins both actual buffer pointers,
+refused-destination recovery, four unique shared allocations (two PCM owners and
+two resource roots), all nine physical handles and exact-minus-one union refusal.
+Candidate PCM remains correct after old-root retirement. The existing analytic/
+effect/mutable callback allocation probe also traverses this real source-plan
+alias path, retires old control custody, and retains its exact PCM sums with zero
+total/net allocations or frees. This is source-plan custody evidence, not a
+complete all-host/native publication permit.

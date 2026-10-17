@@ -683,3 +683,203 @@ fn original_media_views_share_actual_root_and_close_every_handle_before_control_
         retired_before + 1
     );
 }
+
+#[test]
+fn current_candidate_original_source_plans_share_pcm_and_require_the_actual_cross_root_union() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    if !crate::pcm_arc::native_layout_known() {
+        eprintln!("unsupported constructor; no native cross-root proof");
+        return;
+    }
+    let ids = ids();
+    let reservation = AudioStorageReservation {
+        allocation_items: 8,
+        handle_obligations: 8,
+        max_prepared_data_bytes: 65_536,
+        max_construction_data_bytes: 65_536,
+        caller_retained_bytes: 0,
+        caller_construction_bytes: 0,
+    };
+    let original_inputs = OwnedAudioInputs::try_new(
+        vec![
+            (
+                ids[0],
+                OwnedAudioSource::try_resident_mono(44_100, vec![0.25, -0.5, 0.75, -1.0])
+                    .ok()
+                    .unwrap(),
+            ),
+            (
+                ids[1],
+                OwnedAudioSource::try_resident(44_100, PCM.to_vec())
+                    .ok()
+                    .unwrap(),
+            ),
+        ],
+        reservation,
+    )
+    .ok()
+    .unwrap()
+    .prepare_input_storage_on_control()
+    .ok()
+    .unwrap();
+    let mut expected = specs(&ids);
+    expected[0].layout = OriginalResourceLayout::Mono;
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &original_inputs,
+        &expected,
+        limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let current = DeviceResourceBank::try_new_on_control(
+        original_inputs,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let mono = current
+        .borrow_original_source_on_control(ids[0], 4096)
+        .unwrap();
+    let stereo = current
+        .borrow_original_source_on_control(ids[1], 4096)
+        .unwrap();
+    let mono_pointer = mono
+        .view()
+        .unwrap()
+        .resident_mono_samples()
+        .unwrap()
+        .as_ptr();
+    let stereo_pointer = stereo.view().unwrap().resident_frames().unwrap().as_ptr();
+    assert!(matches!(
+        mono.alias_for_resource_plan_on_control(std::mem::size_of::<OwnedAudioSource>() - 1),
+        Err(ResourcePreparationError::MetadataCapacity)
+    ));
+    // A failed destination preserves its real closed owner; dropping it on
+    // control must leave no phantom source alias in the next union inventory.
+    let failed = OwnedAudioInputs::try_new(
+        vec![(
+            ids[0],
+            mono.alias_for_resource_plan_on_control(4096).unwrap(),
+        )],
+        AudioStorageReservation {
+            handle_obligations: 0,
+            ..reservation
+        },
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failed.reason, AudioStorageError::Capacity);
+    assert_eq!(failed.sources[0].1.frames(), 4);
+    drop(failed);
+    let candidate_inputs = OwnedAudioInputs::try_new(
+        vec![
+            (
+                ids[0],
+                mono.alias_for_resource_plan_on_control(4096).unwrap(),
+            ),
+            (
+                ids[1],
+                stereo.alias_for_resource_plan_on_control(4096).unwrap(),
+            ),
+        ],
+        reservation,
+    )
+    .ok()
+    .unwrap()
+    .prepare_input_storage_on_control()
+    .ok()
+    .unwrap();
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &candidate_inputs,
+        &expected,
+        limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let candidate = DeviceResourceBank::try_new_on_control(
+        candidate_inputs,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let provider = candidate
+        .prepare_lease_on_control(&state(ids[0]), 4096)
+        .unwrap();
+    let DeviceResourcePcm::Mono(pcm) = provider.get(0).unwrap().pcm else {
+        panic!("mono")
+    };
+    assert_eq!(pcm.as_ptr(), mono_pointer);
+    assert_eq!(pcm, [0.25, -0.5, 0.75, -1.0]);
+    let inspect = candidate
+        .borrow_original_source_on_control(ids[1], 4096)
+        .unwrap();
+    assert_eq!(
+        inspect.view().unwrap().resident_frames().unwrap().as_ptr(),
+        stereo_pointer
+    );
+    drop(inspect);
+    let ledger_reservation = AudioStorageLedgerReservation {
+        data_rows: 96,
+        handle_rows: 16,
+        root_rows: 8,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_reservation).unwrap();
+    ledger
+        .borrow_device_resource_bank_on_control(&current, AudioStorageRole::Current)
+        .unwrap();
+    ledger
+        .borrow_original_source_lease_on_control(&mono, AudioStorageRole::Archive)
+        .unwrap();
+    ledger
+        .borrow_original_source_lease_on_control(&stereo, AudioStorageRole::PendingReclaim)
+        .unwrap();
+    // All handles in the first root are present, but its actual PCM also has
+    // owners in the candidate. The omitted candidate cannot be self-certified.
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    ledger
+        .borrow_device_resource_bank_on_control(&candidate, AudioStorageRole::Caller)
+        .unwrap();
+    assert!(ledger.validate_closed_shared_handles().is_err());
+    ledger
+        .borrow_device_resource_lease_on_control(&provider, AudioStorageRole::Predecessor)
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+    assert_eq!(ledger.shared_resource_counts(), (4, 9)); // two PCM allocations, two actual roots
+    let exact = ledger.summary().unwrap().retained_bytes;
+    drop(ledger);
+    let mut refused = AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+        max_retained_bytes: exact - 1,
+        ..ledger_reservation
+    })
+    .unwrap();
+    refused
+        .borrow_device_resource_bank_on_control(&current, AudioStorageRole::Current)
+        .unwrap();
+    refused
+        .borrow_original_source_lease_on_control(&mono, AudioStorageRole::Archive)
+        .unwrap();
+    refused
+        .borrow_original_source_lease_on_control(&stereo, AudioStorageRole::PendingReclaim)
+        .unwrap();
+    refused
+        .borrow_device_resource_bank_on_control(&candidate, AudioStorageRole::Caller)
+        .unwrap();
+    assert_eq!(
+        refused.borrow_device_resource_lease_on_control(&provider, AudioStorageRole::Predecessor),
+        Err(AudioStorageError::ReservationExceeded)
+    );
+    assert!(refused.summary().is_err());
+    drop(refused);
+    drop(mono);
+    drop(stereo);
+    drop(current);
+    assert_eq!(provider.get(0).unwrap().pcm.frame(2), Some([0.75; 2]));
+}
