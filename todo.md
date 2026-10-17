@@ -4417,3 +4417,16 @@ Developer full exact-candidate checks remain required before merging this change
 PR355 owns pending signing integration. One coordinator-controlled serial Mac
 thread will verify native behavior and the single combined delivery; cloud tests
 cannot establish keychain signing, installed launch or permission persistence.
+
+## terminal launch activity — pulse2760 / PR368, 17 october 2026
+
+The launcher now shows stage activity while fetching and verifying the installed
+app; the shared runner animates logged test/check steps and optimized compilation.
+Animation requires both stdout and stderr to be terminals. Redirected output stays
+plain, and no ticker writes over live child output. The worker stops, joins and
+clears before success/failure/interruption output resumes; narrow frames cannot
+wrap. Existing default fetch/build/start without tests, explicit `--test` full CI
+and installed-only `--open` remain. Focused deterministic terminal/redirected,
+failure/interrupt, diagnostic and release-guard regressions accompany the change.
+Final exact-source checks and finite Mac terminal acceptance remain with PR368;
+this cloud task does not install or restart the app.
