@@ -973,7 +973,7 @@ impl EditorView {
             if clip.start() >= viewport_end || end <= viewport.start {
                 continue;
             }
-            let selected_clip = self.selected_clip() == Some(clip.id());
+            let selected_clip = self.clip_is_selected(clip.id());
             if clip_intersects_exclusions(clip, exclusions) {
                 for fragment in clip_fragments_outside(clip, exclusions, state.project.tempo_map())
                     .into_iter()
@@ -1054,7 +1054,7 @@ impl EditorView {
                 }
                 continue;
             }
-            let selected_clip = self.selected_clip() == Some(clip.id());
+            let selected_clip = self.clip_is_selected(clip.id());
             let left = start.max(viewport.start).saturating_sub(viewport.start) as f64
                 / viewport.length as f64;
             let width = end
@@ -1714,10 +1714,13 @@ impl EditorView {
                 lane.height * super::time_selection::SELECTION_HANDLE_FRACTION
             ))
             .cursor(gpui::CursorStyle::OpenHand)
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.set_selected_clip(source_track, clip_id, window, cx);
-                cx.notify();
-            }))
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.select_clip_header(source_track, clip_id, event.modifiers(), window, cx);
+                    cx.notify();
+                }),
+            )
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.drag_start_is_current(&mouse_down_payload) {

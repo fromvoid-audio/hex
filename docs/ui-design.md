@@ -415,6 +415,30 @@ their name/grab headers or bodies (Pulse #2752). Selection, header dragging,
 context menus and renaming retain their existing behavior. Distinct controls,
 including fade handles and track names, retain their own descriptive tooltips.
 
+## contiguous clip header selection — #2769 / PR377
+
+Clicking a clip header starts a clip-selection anchor. Shift-click selects the
+inclusive chronological interval between that anchor and the clicked clip on
+the same track, including audio and MIDI clips. Reverse clicks work; repeated
+Shift-clicks resize the interval around the original anchor. Equal start times
+use stable clip-ID order. A Shift-click on another track starts a new anchor;
+this change defines no cross-track range. Command-click toggles membership and
+sets the anchor; Command-Shift-click adds the interval to existing membership.
+The existing body time-selection and header drag contracts remain separate.
+
+Every member receives the existing selected fill. A membership epoch invalidates
+retained clip scenes even when the primary clip stays the same. This selection
+is view state and creates no project edit or Undo step. The separate border
+request is Pulse2719/PR335; whole-clip clipboard handling is2770/PR378.
+
+Rendered tests exercise five alternating audio/MIDI clips, forward/reverse and
+repeated ranges, additive toggle/union, another-track clicks and retained-scene
+repainting with an unchanged primary selection. Required full-source evidence is
+recorded on the canonical PR. Native acceptance remains with the coordinator:
+on the approved optimized candidate, click first then Shift-click fifth, reverse
+and shrink the range, toggle/add with Command, click another row, then confirm
+header dragging and body time-selection still work. No app replacement or Mac
+execution is part of these source checks.
 ## inline track naming — #2768 / PR376
 
 Clicking an Arrangement track header (its name or empty background) focuses that

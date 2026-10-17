@@ -74,6 +74,14 @@ new project generation. Five rendered gesture/bounds/control/scroll regressions 
 Required exact final source checks and remaining native acceptance are tracked in
 Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
 
+## contiguous clip selection — pulse2769 / PR377, 17 october 2026
+
+A stable same-track clip-header anchor supports inclusive Shift ranges in either
+direction, repeated range changes, Command toggles and Command-Shift union. Audio
+and MIDI members paint selected; a membership epoch refreshes retained scenes
+when the primary selection is unchanged. Another-track Shift-click starts a new
+anchor. This is view state; body/time-range and header-drag behavior stay separate.
+Focused/full source checks and remaining native acceptance are recorded in Pulse.
 ## inline track rename — pulse2768 / PR376, 17 october 2026
 
 Actual header focus routes Command-R to a compact inline name draft, Enter to

@@ -14,6 +14,7 @@ mod clip_content_cache;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_drag_ui_test;
 mod clip_name;
+mod clip_selection;
 
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -518,6 +519,7 @@ pub(super) struct EditorView {
     routing_open: bool,
     routing_page: usize,
     pub(in crate::editor) selected_clip: Option<ClipId>,
+    clip_selection: clip_selection::ClipSelection,
     clip_name_edit: Option<clip_name::NameEdit>,
     track_name: track_name::TrackNameState,
     pub(in crate::editor) mode: EditorMode,
@@ -902,6 +904,7 @@ impl EditorView {
             routing_open: false,
             routing_page: 0,
             selected_clip: None,
+            clip_selection: clip_selection::ClipSelection::default(),
             clip_name_edit: None,
             track_name: track_name::TrackNameState::default(),
             mode: EditorMode::Arrangement,
@@ -1308,6 +1311,7 @@ impl EditorView {
             self.update_track_selection_status();
         }
         self.selected_clip = Some(clip);
+        self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
     }
