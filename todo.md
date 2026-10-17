@@ -42,10 +42,21 @@ coverage and final caller validation; legacy output APIs remain supported.
 The explicit spectrum control enables capture; input defaults visible and
 hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
 Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
-storage/allocation regressions. Portable tests and earlier integrated full runs pass; final-source CI is rerun
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun
 when published foundations change. Native acceptance remains open under the
 coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
 See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## owned history example feature — #2747 / PR357, 17 october 2026
+
+The conformance-only owned-history profile now declares its required Cargo
+feature. Default isolated lattice tests previously failed E0432 because Cargo
+compiled the example without its gated provider. The same command now passes
+55 tests; explicitly enabling conformance runs the optimized example and its
+independent PCM oracle at all four documented rates. Runtime code, features,
+dependencies and admission limits are unchanged. Full final-source CI remains
+pending; retained failure/success logs are separate from native acceptance.
 
 ## device asset state storage proof — pulse2681 / PR297, 17 october 2026
 
@@ -4360,6 +4371,45 @@ new-node controls pass in the rendered fixture, alongside strict UI Clippy and
 page-boundary checks. The prior full run was interrupted for this repair; only
 the next unchanged full candidate may supply merge evidence.
 
+## arrangement clip hover popups — 17 october 2026 / pulse2752 / PR362
+
+- 17 October 2026 / Pulse #2752: removed Arrangement audio/MIDI container hover
+  tooltips, including the sampled-note preview popup over clip headers. Header
+  selection/drag/rename and distinct control tooltips are unchanged. Native hover
+  acceptance remains pending in the coordinated optimized candidate.
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
+
+Cloud continuation for Pulse2752 / PR362 verified the canonical checkpoint and
+integrated main `070cacc3`, retaining the narrow two-container tooltip removal.
+All six quick source/format checks pass; full exact-candidate runner evidence is
+recorded on the PR independently. Native audio/MIDI hover, selection, drag,
+rename, context-menu and distinct-control tooltip checks remain for the
+coordinator's serial Mac follow-up and launcher's combined optimized delivery.
+
+## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+
+- Lower fade handles use one model-owned trim-and-envelope command, including
+  neutral `f` handles, source/retained-root limits, loop phase and musical crop
+  anchoring. Upper/curve edits keep their existing behavior.
+- Metadata-only previews resize the actual clip/header/waveform crop; release
+  recomputes grid/Command snapping and makes one undoable edit. Existing inward
+  endpoint offsets are absorbed only by a meaningful drag.
+- Focused source coverage checks source/loop laws, transformed warp/events,
+  preview/command identity, history, roundtrip, saved export/playback PCM and
+  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
+  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
+
+Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
+integrated main `070cacc3` without changing the separate tooltip PR362 scope.
+A rendered regression reproduces the missing stationary Command refresh before
+the repair; the production modifier event now recomputes at the current pointer,
+while mouse-up still uses its own current modifiers. Both lower edges, Command
+press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
+pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
+CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
+native physical input/listening and optimized coordinated Mac delivery remain
+pending with the coordinator's serial follow-up workflow.
+
 ## adaptive arranger grid — 17 october 2026
 
 - Arranger snapping uses one adaptive size with shared painting/snap spacing;
@@ -4474,8 +4524,6 @@ W06 positive ordering proof: exacte009db34 passes all six focused host binding
 tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
 drag stays finalized and a later real drag works. Final integration/review/full
 local CI and broader W06 deliverables remain pending; no native result claimed.
-
-## latest-main launch by default — pulse2749 / PR359, 17 october 2026
 
 The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
 non-divergent local `main`, runs full local CI, builds and installs the optimized

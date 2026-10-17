@@ -593,6 +593,6 @@ impl AudioClipEdit {
 mod commands;
 pub use commands::default_audio_warp;
 pub(crate) use commands::{
-    apply, move_clip, project_clip, reset_region, set_fade_envelope, set_fades, source_policy,
-    trim_view,
+    apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
+    set_fades, source_policy, trim_view,
 };
