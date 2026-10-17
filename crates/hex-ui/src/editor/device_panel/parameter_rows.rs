@@ -156,26 +156,7 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             .controls
             .iter()
             .filter_map(|(key, control)| {
-                let (old_class, old_type, old_descriptor) = match control {
-                    ParameterControl::Float {
-                        class,
-                        type_id,
-                        descriptor,
-                        ..
-                    }
-                    | ParameterControl::Bool {
-                        class,
-                        type_id,
-                        descriptor,
-                        ..
-                    }
-                    | ParameterControl::Choice {
-                        class,
-                        type_id,
-                        descriptor,
-                        ..
-                    } => (*class, *type_id, *descriptor),
-                };
+                let (old_class, old_type, old_descriptor) = control.metadata();
                 let valid = descriptors.get(key).is_some_and(
                     |(class, type_id, descriptor, compatible, _)| {
                         *class == old_class
