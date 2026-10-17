@@ -8,8 +8,27 @@ payload, not a historical30 dispatch reader. Existing older readers stay intact;
 legacy writers continue to refuse data loss. Combined non-octave tuning/assets,
 Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
 covered by the owning storage fixtures. All storage/project/tuning tests and
-strict affected all-target Clippy pass; final complete integrated checks remain
-required. No historical30 reader or automatic user-file conversion was added.
+strict affected all-target Clippy pass. Source20cd1de3 passed all20 local checks
+with stale=false; checks for the current main integration remain required. No historical30 reader or automatic user-file conversion was added.
+
+## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
+
+The borrowed kernel now reports a checked exclusive end age: Trigger follows
+natural source exhaustion, Gate follows the earlier source/release bound, and
+loop gate-plus-release overflow refuses. No shared host/resource/schema/tuning
+or device-registration behavior changes. All11 sampler tests and strict device
+Clippy pass; actual PCM exhaustion/rate/pitch/reverse/slice/partition/overflow
+fixtures cover the new query. Final full CI remains pending; full2679 stays open.
+
+## owned history example feature — #2747 / PR357, 17 october 2026
+
+The conformance-only owned-history profile now declares its required Cargo
+feature. Default isolated lattice tests previously failed E0432 because Cargo
+compiled the example without its gated provider. The same command now passes
+55 tests; explicitly enabling conformance runs the optimized example and its
+independent PCM oracle at all four documented rates. Runtime code, features,
+dependencies and admission limits are unchanged. Full final-source CI remains
+pending; retained failure/success logs are separate from native acceptance.
 
 ## device asset state storage proof — pulse2681 / PR297, 17 october 2026
 
@@ -4323,6 +4342,44 @@ Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
 new-node controls pass in the rendered fixture, alongside strict UI Clippy and
 page-boundary checks. The prior full run was interrupted for this repair; only
 the next unchanged full candidate may supply merge evidence.
+
+## arrangement clip hover popups — 17 october 2026 / pulse2752 / PR362
+
+- 17 October 2026 / Pulse #2752: removed Arrangement audio/MIDI container hover
+  tooltips, including the sampled-note preview popup over clip headers. Header
+  selection/drag/rename and distinct control tooltips are unchanged. Native hover
+  acceptance remains pending in the coordinated optimized candidate.
+
+Cloud continuation for Pulse2752 / PR362 verified the canonical checkpoint and
+integrated main `070cacc3`, retaining the narrow two-container tooltip removal.
+All six quick source/format checks pass; full exact-candidate runner evidence is
+recorded on the PR independently. Native audio/MIDI hover, selection, drag,
+rename, context-menu and distinct-control tooltip checks remain for the
+coordinator's serial Mac follow-up and launcher's combined optimized delivery.
+
+## lower fade handles resize arrangement clips — 17 october 2026 / pulse2751 / PR361
+
+- Lower fade handles use one model-owned trim-and-envelope command, including
+  neutral `f` handles, source/retained-root limits, loop phase and musical crop
+  anchoring. Upper/curve edits keep their existing behavior.
+- Metadata-only previews resize the actual clip/header/waveform crop; release
+  recomputes grid/Command snapping and makes one undoable edit. Existing inward
+  endpoint offsets are absorbed only by a meaningful drag.
+- Focused source coverage checks source/loop laws, transformed warp/events,
+  preview/command identity, history, roundtrip, saved export/playback PCM and
+  rendered lower-handle gestures/cancellation. Exact final local CI, optimized
+  delivery and native interaction/listening evidence remain with PR361/Pulse2751.
+
+Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
+integrated main `070cacc3` without changing the separate tooltip PR362 scope.
+A rendered regression reproduces the missing stationary Command refresh before
+the repair; the production modifier event now recomputes at the current pointer,
+while mouse-up still uses its own current modifiers. Both lower edges, Command
+press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
+pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
+CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
+native physical input/listening and optimized coordinated Mac delivery remain
+pending with the coordinator's serial follow-up workflow.
 
 ## adaptive arranger grid — 17 october 2026
 

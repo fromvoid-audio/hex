@@ -268,6 +268,17 @@ pub(crate) fn set_fade_envelope(
         .clip(id)
         .cloned()
         .ok_or(Invalid("audio clip is missing"))?;
+    set_clip_fade_envelope(&mut clip, fade, project.tempo_map())?;
+    validate_clip(project, &clip)?;
+    *project.clip_mut(id)? = clip;
+    Ok(crate::Created::None)
+}
+
+pub(crate) fn set_clip_fade_envelope(
+    clip: &mut Clip,
+    fade: ClipFade,
+    tempo: &TempoMap,
+) -> Result<(), Invalid> {
     let mut owned_edit = clip
         .edit
         .clone()
@@ -277,15 +288,12 @@ pub(crate) fn set_fade_envelope(
     domain.fade = fade;
     domain.fade_start = edit.view_start;
     domain.fade_projection = edit.musical_start.map(|beat| AudioFadeProjection {
-        tempo: project.tempo_map().clone(),
+        tempo: tempo.clone(),
         origin_beat_raw: i128::from(beat.raw()),
         local_start_raw: edit.view_start,
     });
     clip.edit = Some(owned_edit);
-    project_clip(&mut clip, project.tempo_map())?;
-    validate_clip(project, &clip)?;
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    project_clip(clip, tempo)
 }
 
 pub(crate) fn source_policy(
