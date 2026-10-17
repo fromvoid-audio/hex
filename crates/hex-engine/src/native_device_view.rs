@@ -94,6 +94,7 @@ fn catalog_entries<D: NativeDeviceMetadata + ?Sized>(
 ) -> Result<Vec<NativeDeviceCatalogEntry>, Invalid> {
     definitions
         .iter()
+        .filter(|definition| definition.type_id().as_str() != Ok("hex.eq8"))
         .map(|definition| {
             let type_id = definition.type_id();
             Ok(NativeDeviceCatalogEntry {
@@ -461,7 +462,7 @@ mod tests {
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
         assert_eq!(effects.len(), 6);
         assert!(effects.iter().any(|entry| entry.name == "utility"));
-        assert!(effects.iter().any(|entry| entry.name == "eq eight"));
+        assert!(effects.iter().any(|entry| entry.name == "eq"));
         assert!(effects.iter().any(|entry| entry.name == "saturator"));
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));

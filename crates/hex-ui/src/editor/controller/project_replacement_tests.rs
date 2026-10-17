@@ -34,6 +34,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         computer_keyboard_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
+        audio_batch_failure: None,
         save_complete: false,
         open_complete: replaced,
         project_replaced: replaced,
@@ -576,4 +577,52 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
             );
         })
         .unwrap();
+}
+
+#[gpui::test]
+fn failed_batch_worker_event_displays_original_path_in_status_and_tooltip(cx: &mut TestAppContext) {
+    let directory = std::env::temp_dir().join(format!("hex-Batch-UI-{}", std::process::id()));
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let path = directory.join("Kick.WAV");
+    std::fs::write(&path, b"not a wav").expect("malformed mixed-case fixture");
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    window
+        .update(cx, |view, _, _| {
+            receive_worker_event(view);
+            let before = Arc::clone(view.state.as_ref().expect("initial state"));
+            let (request, _) = Request::audio_batch(
+                vec![path.clone()],
+                hex_session::import_batch::AudioBatchDestination::NewTracks {
+                    before_track: None,
+                    start: 0,
+                },
+                hex_session::import_batch_decode::AudioBatchContext {
+                    project_generation: view.project_generation,
+                    revision: before.revision,
+                    active_gesture: false,
+                },
+            )
+            .expect("batch request");
+            view.service.submit(request).expect("submit failed batch");
+            receive_worker_event(view);
+            let error = view.error.as_ref().expect("visible batch failure");
+            let status = error.display_text();
+            let tooltip = super::super::display_error::ErrorTooltip(error.clone()).display_text();
+            let path_text = path.to_str().expect("utf8 fixture");
+            assert!(status.contains(path_text), "displayed status: {status}");
+            assert_eq!(status.as_bytes(), tooltip.as_bytes());
+            assert!(status.starts_with("audio batch refused at file 1 · "));
+            assert_eq!(std::fs::read(&path).unwrap(), b"not a wav");
+            let after = view.state.as_ref().unwrap();
+            assert_eq!(after.project, before.project);
+            assert_eq!(after.revision, before.revision);
+            assert_eq!(after.can_undo, before.can_undo);
+            assert_eq!(after.can_redo, before.can_redo);
+            assert_eq!(after.unsaved, before.unsaved);
+        })
+        .expect("deliver production batch failure");
+    std::fs::remove_dir_all(directory).expect("remove fixture");
 }

@@ -148,7 +148,11 @@ impl EditorView {
             }
             Err(error) => {
                 self.pending_restart_request = None;
-                self.error = Some(format!("could not restart audio · {error:?}").to_lowercase());
+                self.error = Some(
+                    format!("could not restart audio · {error:?}")
+                        .to_lowercase()
+                        .into(),
+                );
                 self.status = "audio unavailable".into();
                 false
             }
@@ -481,7 +485,7 @@ impl EditorView {
                     self.pending_recovery_generation = None;
                     let message = format!("audio unavailable · {}", error.to_lowercase());
                     self.status = message.clone();
-                    self.error = Some(message);
+                    self.error = Some(message.into());
                     changed = true;
                 }
                 crate::EditorAudioEvent::Publication {
@@ -567,7 +571,7 @@ impl EditorView {
                     seek_request_id: pending.seek_request_id,
                     device_preview_identity: pending.device_preview_identity,
                 });
-                self.error = Some(rejected.reason.to_lowercase());
+                self.error = Some(rejected.reason.to_lowercase().into());
             }
         }
         true
@@ -578,13 +582,16 @@ impl EditorView {
     }
 
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
-        let logging_failure = crate::diagnostics::record_state(cx, &self.status, &self.error);
+        let logging_failure =
+            crate::diagnostics::record_state(cx, &self.status, self.error.as_deref());
         let logging_changed = if let Some(failure) = logging_failure {
-            let message = self
-                .error
-                .as_ref()
-                .map_or_else(|| failure.clone(), |error| format!("{error} · {failure}"));
-            replace_error(&mut self.error, &message)
+            let message = self.error.as_ref().map_or_else(
+                || failure.clone().into(),
+                |error| error.with_context(&failure),
+            );
+            let changed = self.error.as_ref() != Some(&message);
+            self.error = Some(message);
+            changed
         } else {
             false
         };
@@ -699,9 +706,7 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
-            return self
-                .redraw_gate
-                .should_redraw(visible_change, None, Instant::now());
+            return self.observe_audio_frame(None, visible_change, Instant::now());
         };
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
             matches!(
@@ -1129,23 +1134,13 @@ impl EditorView {
         } else {
             self.session_routes.clear();
         }
-        let frame = audio.control.status().map(|status| AudioFrame {
-            playing: status.playing.load(Relaxed),
-            position: status.position.load(Relaxed),
-            peak_left: status.peak_left.load(Relaxed),
-            peak_right: status.peak_right.load(Relaxed),
-            applied_revision: status.applied_revision.load(Relaxed),
-            deadline_misses: status.deadline_misses.load(Relaxed),
-            callback_us: status.callback_max_ns.load(Relaxed) / 1_000,
-            render_fault: status.render_fault.load(Relaxed),
-        });
+        let frame = audio.control.status().map(AudioFrame::capture);
         let pending_after = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
-        self.redraw_gate
-            .should_redraw(visible_change, frame, Instant::now())
+        self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
     fn spectrum_target_is_visible_and_current(
@@ -1155,7 +1150,10 @@ impl EditorView {
         if !self.clip_view_open
             || !self.device_panel_active
             || self.project_generation != target.project_generation
-            || target.identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8")
+            || !matches!(
+                target.identity.device_type.as_str(),
+                Ok("hex.eq8" | "hex.eq")
+            )
         {
             return false;
         }
@@ -1232,7 +1230,10 @@ impl EditorView {
         if !self.clip_view_open
             || !self.device_panel_active
             || self.project_generation != target.project_generation
-            || target.identity.device_type != hex_engine::DeviceTypeId::from_static("hex.eq8")
+            || !matches!(
+                target.identity.device_type.as_str(),
+                Ok("hex.eq8" | "hex.eq")
+            )
         {
             return false;
         }
@@ -1419,7 +1420,7 @@ impl EditorView {
                     .is_some_and(|state| state.revision == event.state.revision);
             if current {
                 if let Some(error) = event.error {
-                    self.error = Some(error);
+                    self.error = Some(error.into());
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -1569,7 +1570,7 @@ impl EditorView {
                         {
                             let message = format!("audio unavailable · {}", error.to_lowercase());
                             self.status = message.clone();
-                            self.error = Some(message);
+                            self.error = Some(message.into());
                             self.pending_restart_request = None;
                         }
                         result => result.close(),
@@ -1579,6 +1580,7 @@ impl EditorView {
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
             self.edit_cursor = None;
+            self.clip_paint_gesture = None;
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
@@ -1832,7 +1834,7 @@ impl EditorView {
             .as_ref()
             .and_then(|ack| ack.reason.as_ref())
         {
-            self.error = Some(reason.clone());
+            self.error = Some(reason.clone().into());
         }
         if super::device_gesture::actor_retired_gesture(
             event.project_replaced,
@@ -1919,14 +1921,18 @@ impl EditorView {
             self.error = None;
         }
         if let Some(error) = event.error {
-            self.error = Some(error);
+            self.error = Some(
+                event
+                    .audio_batch_failure
+                    .map_or_else(|| error.into(), Into::into),
+            );
         } else if let Some(error) = stopped_restore_error {
-            self.error = Some(error);
+            self.error = Some(error.into());
         }
         if let Some(message) = playback_capability {
             self.session_capability_message = message.clone();
             if let Some(message) = message {
-                self.error = Some(message);
+                self.error = Some(message.into());
             }
         }
         self.reconcile_publication_observation();
@@ -1973,6 +1979,17 @@ impl EditorView {
         #[cfg(test)]
         if let Request::DropBrowserDeviceOnArrangement { destination, .. } = &request {
             self.last_enqueued_arrangement_device_drop = Some(*destination);
+        }
+        #[cfg(test)]
+        if let Request::ConvertClip {
+            project_generation,
+            revision,
+            clip,
+            to_audio,
+        } = &request
+        {
+            self.last_enqueued_clip_conversion =
+                Some((*project_generation, *revision, *clip, *to_audio));
         }
         #[cfg(test)]
         if let Request::Edit(command) = &request {
@@ -2102,6 +2119,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::Edit(_)
+                | Request::ConvertClip { .. }
                 | Request::CutTimeRange(_)
                 | Request::PasteTimeRange { .. }
                 | Request::InsertTimeRange { .. }
@@ -2406,7 +2424,8 @@ impl EditorView {
                     .and_then(|status| status.session_capability())
                     .and_then(hex_engine::SessionCapabilityStatus::message)
                     .unwrap_or("session playback is unavailable for this project")
-                    .to_lowercase(),
+                    .to_lowercase()
+                    .into(),
             );
             return;
         }
@@ -2458,7 +2477,7 @@ impl EditorView {
                 .and_then(hex_engine::SessionCapabilityStatus::message)
                 .unwrap_or("session playback is unavailable for this project")
                 .to_lowercase();
-            self.error = Some(message);
+            self.error = Some(message.into());
             return;
         }
         let token = match super::play_intent::prepare_admission(
@@ -2984,11 +3003,11 @@ fn reconcile_session_ticket(
     (Some((ticket, generation)), None)
 }
 
-fn replace_error(error: &mut Option<String>, message: &str) -> bool {
+fn replace_error(error: &mut Option<super::display_error::DisplayError>, message: &str) -> bool {
     if error.as_deref() == Some(message) {
         false
     } else {
-        *error = Some(message.to_owned());
+        *error = Some(message.into());
         true
     }
 }

@@ -611,6 +611,129 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
     }
 }
 
+#[test]
+fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_domain() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let path = files.wav(24000, 24000);
+    let mut bytes = fs::read(&path).unwrap();
+    for sample in bytes[44 + 4096 * 2..].chunks_exact_mut(2) {
+        sample.copy_from_slice(&16384i16.to_le_bytes());
+    }
+    fs::write(&path, bytes).unwrap();
+    let mut h = Harness::new();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(path));
+    assert!(imported.playback.is_none());
+    let context = h.context.unwrap();
+    let actual = h.applied(context);
+    let domain = h.domain(context);
+    let play = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command_with_ticket(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        if status.stream_applied_command_prefix.load(Acquire) == play {
+            // The real upsampler has a source-start boundary response. The
+            // end of this block and the next complete block are constant PCM.
+            assert!(output[63].iter().all(|s| (*s - 0.25).abs() < 0.0001));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "first verified page did not play"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let before_seek = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    // Project/device frames, not source frames: 12288 at48k addresses6144
+    // in the real24k file, beyond both the first page and the sample step.
+    let seek = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command_with_ticket(PlaybackCommand::Seek(12288))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.applied_audio_source(), Some(actual));
+        assert!(!status.render_fault.load(Acquire));
+        if status.stream_applied_command_prefix.load(Acquire) == seek {
+            assert_eq!(status.position.load(Acquire), 12288 + 64);
+            assert!(output.iter().flatten().all(|s| (*s - 0.5).abs() < 0.0001));
+            break;
+        }
+        // A missing exact target may buffer, but cannot partially seek or ACK.
+        assert_eq!(status.position.load(Acquire), before_seek);
+        assert_eq!(output, [[0.0; 2]; 64]);
+        assert!(Instant::now() < deadline, "verified seek did not commit");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(h.domain(context), domain);
+    let pause = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command_with_ticket(PlaybackCommand::Pause)
+        .unwrap();
+    for _ in 0..2 {
+        assert_eq!(h.render(), [[0.0; 2]; 64]);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.position.load(Acquire), 12288 + 64);
+        assert_eq!(status.stream_applied_command_prefix.load(Acquire), pause);
+        assert!(!status.playing.load(Acquire));
+    }
+    // Stop has its existing independent priority marker even when the actual
+    // command ring is full; it must not wait for queued transport work.
+    for _ in 0..32 {
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+    }
+    assert_eq!(
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play),
+        Err(PlaybackCommand::Play)
+    );
+    h.audio.as_ref().unwrap().control.stop();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(!status.playing.load(Acquire));
+    assert_eq!(status.position.load(Acquire), 0);
+    assert_eq!(status.applied_audio_source(), Some(actual));
+    assert!(!status.render_fault.load(Acquire));
+}
+
 #[path = "controller_input_tests.rs"]
 mod controller_input_tests;
 #[test]

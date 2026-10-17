@@ -305,6 +305,7 @@ struct RulerCandidates {
 enum LandmarkDensity {
     Meter,
     Adaptive(f32, f32),
+    #[cfg(test)]
     Fixed(u64),
 }
 
@@ -343,6 +344,7 @@ fn ruler_candidates(
                         pixel_width,
                         spacing,
                     ),
+                    #[cfg(test)]
                     LandmarkDensity::Fixed(step) => step,
                     LandmarkDensity::Meter => meter_beat_length,
                 };
@@ -535,6 +537,7 @@ fn snap_to_meter_landmark(
                 adaptive_grid_spacing(pixel_width),
             ),
             SnapGrid::Off => return Some(beat),
+            #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
         .max(1);
@@ -585,6 +588,8 @@ fn adjacent_landmark(
                 width,
                 adaptive_grid_spacing(width),
             ),
+            SnapGrid::Off => return None,
+            #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
         .max(1);
@@ -647,19 +652,20 @@ pub(super) enum SnapGrid {
     Off,
     #[default]
     Adaptive,
+    // Fixed resolutions are retained only as musical-time regression fixtures.
+    #[cfg(test)]
     Quarter,
+    #[cfg(test)]
     Eighth,
+    #[cfg(test)]
     Sixteenth,
 }
 
 impl SnapGrid {
-    pub(super) const fn next(self) -> Self {
+    pub(super) const fn toggled(self) -> Self {
         match self {
-            Self::Adaptive => Self::Quarter,
-            Self::Quarter => Self::Eighth,
-            Self::Eighth => Self::Sixteenth,
-            Self::Sixteenth => Self::Off,
             Self::Off => Self::Adaptive,
+            _ => Self::Off,
         }
     }
 
@@ -667,14 +673,18 @@ impl SnapGrid {
         match self {
             Self::Off => "off",
             Self::Adaptive => "adaptive",
+            #[cfg(test)]
             Self::Quarter => "1/4",
+            #[cfg(test)]
             Self::Eighth => "1/8",
+            #[cfg(test)]
             Self::Sixteenth => "1/16",
         }
     }
 
     /// Q32.32 quarter-note interval; the canonical project map performs all
     /// frame conversion and nearest-grid tie handling.
+    #[cfg(test)]
     pub(super) const fn step_raw(self) -> Option<u64> {
         const QUARTER: u64 = 1_u64 << 32;
         match self {
@@ -692,18 +702,13 @@ impl SnapGrid {
             Self::Adaptive => {
                 LandmarkDensity::Adaptive(pixel_width, adaptive_grid_spacing(pixel_width))
             }
+            #[cfg(test)]
             fixed => LandmarkDensity::Fixed(fixed.step_raw().unwrap_or(1)),
         }
     }
 
     pub(super) const fn with_platform_modifier(self, held: bool) -> Self {
-        if !held {
-            return self;
-        }
-        match self {
-            Self::Off => Self::Adaptive,
-            Self::Adaptive | Self::Quarter | Self::Eighth | Self::Sixteenth => Self::Off,
-        }
+        if held { self.toggled() } else { self }
     }
 
     pub(super) fn adjacent_beat(
@@ -759,9 +764,9 @@ impl SnapGrid {
 }
 
 impl super::EditorView {
-    pub(super) fn cycle_snap_grid(&mut self) {
-        self.snap_grid = self.snap_grid.next();
-        self.status = format!("clip move · snap {}", self.snap_grid.label());
+    pub(super) fn toggle_snap_grid(&mut self) {
+        self.snap_grid = self.snap_grid.toggled();
+        self.status = format!("arranger · snap {}", self.snap_grid.label());
     }
 
     fn cursor_beat(&self) -> Option<BeatTime> {
@@ -1052,13 +1057,10 @@ mod tests {
     }
 
     #[test]
-    fn snap_choice_is_local_opt_in_and_cycles_back_to_off() {
+    fn arranger_snap_toggles_between_adaptive_and_off() {
         assert_eq!(SnapGrid::default(), SnapGrid::Adaptive);
-        assert_eq!(SnapGrid::Adaptive.next(), SnapGrid::Quarter);
-        assert_eq!(SnapGrid::Quarter.next(), SnapGrid::Eighth);
-        assert_eq!(SnapGrid::Eighth.next(), SnapGrid::Sixteenth);
-        assert_eq!(SnapGrid::Sixteenth.next(), SnapGrid::Off);
-        assert_eq!(SnapGrid::Off.next(), SnapGrid::Adaptive);
+        assert_eq!(SnapGrid::Adaptive.toggled(), SnapGrid::Off);
+        assert_eq!(SnapGrid::Off.toggled(), SnapGrid::Adaptive);
         assert_eq!(SnapGrid::Off.step_raw(), None);
         assert_eq!(SnapGrid::Adaptive.step_raw(), None);
         assert_eq!(SnapGrid::Quarter.step_raw(), Some(1_u64 << 32));

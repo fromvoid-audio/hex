@@ -528,7 +528,7 @@ mod tests {
         let current = crate::encode(&original).unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
-            25
+            27
         );
         assert_eq!(crate::decode(&current).unwrap(), original);
     }

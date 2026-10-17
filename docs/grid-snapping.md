@@ -4,7 +4,13 @@ Implemented source contract, 9 October 2026; native acceptance pending. The late
 grid across tracks AND blank Arrangement space, including zero tracks. It
 supersedes the briefly requested track-only grid. Snapping is enabled by
 default and shares its adaptive spacing/meter origins with the displayed grid;
-fixed/off settings remain coherent.
+the toolbar toggles adaptive snapping on/off. There is one adaptive size: an
+18 px target spacing, bounded to 256 grid lines. Zooming resolves musical
+subdivisions from this shared target for painting and snapping. Fixed sizes
+are no longer offered by the toolbar. The control fits its adaptive label.
+
+Pulse #2694 (Hex 0.1) tracks a future arranger context menu for choosing
+adaptive size/density. Native review of the simplified toggle remains pending.
 
 On macOS, Command temporarily inverts snapping while dragging: enabled becomes
 free, disabled becomes enabled. The Windows reference uses Alt. Modifier changes

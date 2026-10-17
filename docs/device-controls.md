@@ -615,6 +615,55 @@ The connected001 isolated review process also crashed during a user-reported win
 
 Source verification of the inset correction: all thirteen targeted Operator UI tests pass. The strengthened rendered inset regression fails against previous connected001 runtime source (left control less than four pixels from its row edge) and passes the correction. Retained ignored evidence: `artifacts/operator-navigation-evidence/inset-before-regression.log` and `inset-after-tests.log`. Full exact-final-source local CI and updated native appearance verification remain pending; no crash safety claim. Separate crash coordinator: `01a12a7e-1c78-79f2-841e-605cae703e02`, Pulse #2362.
 
+## windowed chain composition
+
+Track and return rails retain a stable `DeviceId` geometry inventory, an explicit
+GPUI scroll handle and fixed registered card widths. Once the actual rail width
+is observed, composition mounts visible cards plus one maximum-card-width of
+overscan; equal-width placeholders preserve every omitted card's position, gap,
+chain extent and ordered insertion anchors. An unmeasured rail uses a positive finite GPUI window viewport width as a
+conservative upper bound; unavailable bounds retain complete composition. The
+full metadata inventory, including disabled parameters and unsupported-state
+errors, is cached independently of mounted cards. Controls are constructed on
+first mount, then retain their identity and subscriptions across later visibility
+changes. Generic instrument, track-effect and return-effect bodies also window
+vertical parameter rows. Their explicit body viewport, fixed 136px cell width,
+26px float/22px discrete or unsupported heights, padding and row gaps preserve
+all descriptor order and full scroll extent. The visible range includes one
+maximum-height row of overscan. Mixed row heights and width changes reconcile
+geometry while anchoring a surviving parameter. Unknown focus/window context
+retains complete row composition.
+
+A generic row stays mounted for direct control focus, numeric drafts/capture,
+open choice popups, pending values and either parameter of an active paired
+gesture. Previously constructed controls retain identities/subscriptions while
+hidden; descriptor identity/removal and enabled-state reconciliation run against
+the complete metadata inventory before visibility selection. Specialized device
+panels, including Operator, retain their existing layouts.
+Resize and scroll-clamping observations request a fresh composition. Topology
+changes preserve the first surviving visible card's screen position.
+
+A card stays mounted while its focus container contains keyboard focus, a numeric
+control is interacting or editing, optimistic parameter values are pending, a
+canonical device gesture is active, a device drag captures its source or target,
+or EQ8 audition remains active. Visibility
+does not retire cached entities, descriptors, subscriptions, drafts or previews:
+existing project-generation, owner, identity and removal rules remain authoritative.
+Omitted placeholders have no device hit targets. Mounted targets retain the
+existing viewport-clipped drop contract; return rails retain their existing
+return-owned drop behavior. No audio, controller, numeric-control or Operator
+parameter semantics change.
+
+Linux GPUI test-platform CPU timings use no-op text and native drawing; they do
+not establish native frame time, font shaping, presentation, physical input,
+macOS focus/capture or accessibility acceptance. Optimized native review and
+accessible names/roles, readable meters and remaining compact-control acceptance
+for the broader dense-UI request remain pending.
+
+Track and return panel titles derive a readable foreground with
+`theme::readable_text` on their actual surface, including warning titles. The
+saved background/text/accent roles and title strings remain unchanged; a valid
+non-text accent color is not assumed to satisfy the stricter text contrast policy.
 The dated gray68/connected001 color observations above remain historical native
 evidence. Current neutral and identity colors follow the shared theme policy in
 Pulse2471–2473; their layout, spacing and navigation evidence is preserved.
@@ -637,6 +686,19 @@ macOS visual acceptance remains pending: click an instrument then an effect,
 click/adjust a Return effect knob, and verify only the clicked card is highlighted
 while its controls still work.
 
+## windowed navigation integration
+
+Track and Return navigator, panning and window selection share one scroll
+instance. Navigation owns its owner/generation reset; the windowed rail observes
+an alias before geometry reconciliation. Mounted drop wrappers and omitted
+spacers include equal chain padding, so mounting and resizing retain full extent
+and the surviving topology anchor. Focus, drafts and active drag destinations
+keep their existing pins. Numeric ownership and project history are unchanged.
+
+The bottom navigator and 248px output meter retain their fixed controls. Existing
+truncated status fields can shrink to bounded minima with their full tooltip
+text retained, so both controls fit the small supported viewport. Actual native
+glyph readability/truncation and physical panning remain pending.
 ## knob history shortcut regression — 16 october 2026
 
 The rendered shared Operator frequency-control fixture exercises real keyboard
@@ -645,3 +707,18 @@ movement, complete pre-edit state restoration and save/reopen after Redo. It
 passes on current source; the older unspecified native report is not reproduced
 and no speculative runtime fix is applied. Native confirmation remains separate:
 drag or type a value, use one Undo and Redo, and verify the saved/reopened value.
+
+## current-main windowing integration — 16 october 2026
+
+Whole-device parameter-snapshot gestures pin the owning device's generic rows,
+in addition to individual/paired edits, pending values, focus and capture.
+Both host input- and output-gain controls retain their cached identity when
+scrolling; those host-owned descriptors do not depend on DSP metadata rows.
+The shared widget's windowed body owns the normal surface/corners and one
+content inset; row offsets and scroll extent include that inset exactly once.
+When window geometry is unavailable, generic controls keep the complete shared
+wrapped composition. The layout guard verifies both the windowed dispatch and
+its shared body, including a negative control against an unstyled substitute.
+Current model/source snapshot ownership remains unchanged; synthetic metadata
+fixtures do not fabricate or clone the worker-captured canonical-audio source.
+Native dense-control/focus/accessibility acceptance remains separate.

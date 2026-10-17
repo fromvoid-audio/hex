@@ -126,7 +126,7 @@ impl EditorView {
                 match result {
                     Ok(Some(request)) => view.begin_open_request(request),
                     Ok(None) => view.status = "project recovery cancelled".into(),
-                    Err(reason) => view.error = Some(reason.to_lowercase()),
+                    Err(reason) => view.error = Some(reason.to_lowercase().into()),
                 }
                 cx.notify();
             });

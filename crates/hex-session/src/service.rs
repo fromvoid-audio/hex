@@ -80,12 +80,22 @@ pub struct ViewState {
     pub document_path: Option<PathBuf>,
 }
 
+/// Control-side batch failure metadata; no decoded media crosses this boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioBatchMemberFailure {
+    pub member: usize,
+    pub path: PathBuf,
+    pub explanation: String,
+}
+
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
+    /// Original failing batch member, kept separate from app-owned explanation.
+    pub audio_batch_failure: Option<AudioBatchMemberFailure>,
     pub request_complete: bool,
     pub computer_keyboard_complete: Option<u64>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
@@ -354,6 +364,13 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
+    /// Convert against the exact selected canonical clip; delayed stale actions refuse.
+    ConvertClip {
+        project_generation: u64,
+        revision: u64,
+        clip: hex_project::ClipId,
+        to_audio: bool,
+    },
     CopyTimeRange(hex_project::TimeRange),
     CutTimeRange(hex_project::TimeRange),
     PasteTimeRange {
@@ -946,6 +963,7 @@ fn run_worker(
                 playback: Some(native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
+                audio_batch_failure: None,
                 request_complete: false,
                 computer_keyboard_complete: None,
                 live_expression_complete: None,
@@ -969,6 +987,7 @@ fn run_worker(
             playback: None,
             status: None,
             error: Some(error),
+            audio_batch_failure: None,
             request_complete: false,
             computer_keyboard_complete: None,
             live_expression_complete: None,
@@ -1000,6 +1019,7 @@ fn run_worker(
         let mut live_expression_complete = None;
         let mut computer_keyboard_playback = None;
         let mut audio_batch_complete = None;
+        let mut audio_batch_failure = None;
         let mut open_complete = false;
         let mut save_complete = false;
         let mut project_replaced = false;
@@ -1033,6 +1053,7 @@ fn run_worker(
                 | Request::LoadDevicePreset { .. }
                 | Request::Export(_)
                 | Request::ExportRange { .. }
+                | Request::ConvertClip { .. }
         );
         let mut barrier_failure = None;
         if barrier {
@@ -1330,6 +1351,18 @@ fn run_worker(
                         Err(reason) => {
                             control.refuse();
                             error = Some(reason.to_string());
+                            if let crate::import_batch_decode::AudioBatchError::Member {
+                                member,
+                                path,
+                                source,
+                            } = reason
+                            {
+                                audio_batch_failure = Some(AudioBatchMemberFailure {
+                                    member,
+                                    path,
+                                    explanation: source.to_string(),
+                                });
+                            }
                         }
                     }
                 }
@@ -1783,6 +1816,54 @@ fn run_worker(
                                     error = Some(format!("device preset refused · {reason}"))
                                 }
                             }
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::ConvertClip {
+                    project_generation: expected_generation,
+                    revision: expected_revision,
+                    clip,
+                    to_audio,
+                } => {
+                    let result = if expected_generation != project_generation
+                        || expected_revision != revision
+                    {
+                        Err("clip conversion canceled · project changed".to_owned())
+                    } else if to_audio {
+                        untitled_recovery_path().and_then(|path| {
+                            let root = path
+                                .parent()
+                                .and_then(Path::parent)
+                                .ok_or("bounce media folder is unavailable")?
+                                .join("media/bounces");
+                            session.bounce_midi_clip(
+                                clip,
+                                &root,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            )
+                        })
+                    } else {
+                        session
+                            .command_prepared_revision(
+                                Command::ConvertAudioClipToMidi(clip),
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            )
+                            .map_err(|e| e.to_string())
+                    };
+                    match result {
+                        Ok((result, prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            created = Some(result);
+                            status = Some(
+                                if to_audio {
+                                    "clip bounced to audio"
+                                } else {
+                                    "clip converted to empty midi"
+                                }
+                                .into(),
+                            );
                         }
                         Err(reason) => error = Some(reason),
                     }
@@ -2243,6 +2324,7 @@ fn run_worker(
             computer_keyboard_complete,
             live_expression_complete,
             audio_batch_complete,
+            audio_batch_failure,
             save_complete,
             open_complete,
             project_replaced,
