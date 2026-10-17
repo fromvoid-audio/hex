@@ -134,8 +134,11 @@ query. Cached name filtering combines current-folder supported files and native
 devices; category filters, dragging and sample preview remain available. Search is
 bounded/nonrecursive, matching the current library contract; no all-place index
 or Live parity claim. See docs/browser-places.md for the native user checklist.
-Focused browser tests pass, including global focus/query replacement,
-category filtering and existing drag/preview coverage. Source guards pass.
+Focused browser tests pass, including global focus/query replacement, first-arrow
+selection, selection identity across scan completion, Session device-click focus
+and category scroll reset. Unfinished gain numeric drafts refuse search without
+losing focus or text; Escape then Command-F restores normal search. All 35 browser
+and 17 gain-lane tests pass, with existing drag/preview coverage preserved.
 Full runner results are recorded in the PR and Pulse; native acceptance remains
 pending.
 

@@ -65,8 +65,14 @@ as category filters. Repeating Command-F from search/results replaces the query;
 Escape clears it. Open context/controller menus are dismissed; leaving theme
 settings cancels its unsaved preview (an in-flight save must finish first).
 A clip-name draft commits using the existing blur behavior before search takes focus.
+An unfinished gain numeric draft keeps its focus and value: finish it with Enter
+or cancel with Escape before invoking Command-F.
 Device rows retain drag-to-track/rail behavior; Enter on an
-all-view device displays that instruction rather than importing a file.
+all-view device displays that instruction rather than importing a file. Clicking a
+device keeps browser keyboard focus in Session too. The first arrow key selects
+the first match; subsequent arrows move through results. Query/category changes
+reveal the first row. Accepted background scans preserve the selected file path
+or device identity when new files change row offsets.
 
 The existing library listing remains nonrecursive and capped at 2048 enumerated
 entries. This is not an index of every subfolder or saved place. Folder scans stay

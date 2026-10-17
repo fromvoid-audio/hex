@@ -28,6 +28,7 @@ const PLACE_CAPACITY: usize = 16;
 const DEFAULT_PLACE_COUNT: usize = 2;
 const ROW_HEIGHT: f32 = 22.0;
 const PREVIEW_CACHE_CAPACITY: usize = 16;
+const GAIN_SEARCH_ERROR: &str = "finish or cancel the gain value edit before search";
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct PreviewKey {
@@ -132,6 +133,11 @@ pub(super) enum BrowserSection {
     Projects,
 }
 
+enum BrowserItemKey {
+    File(PathBuf),
+    Device(hex_engine::NativeDeviceClass, hex_engine::DeviceTypeId),
+}
+
 pub(super) struct BrowserState {
     pub open: bool,
     layout: layout::BrowserLayout,
@@ -183,8 +189,7 @@ impl BrowserState {
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
         let observer = cx.observe(&search, |view, _, cx| {
-            view.browser.selected_index = 0;
-            view.browser.results_focused = false;
+            view.browser.reset_results();
             cx.notify();
         });
         let places = if music != home {
@@ -226,6 +231,12 @@ impl BrowserState {
             preview_pending: None,
             device_catalog: None,
         }
+    }
+
+    fn reset_results(&mut self) {
+        self.selected_index = 0;
+        self.results_focused = false;
+        self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
     }
 
     pub(super) fn scan_generation(&self) -> u64 {
@@ -476,6 +487,9 @@ impl EditorView {
     }
 
     fn request_browser_scan(&mut self, directory: PathBuf, cx: &mut Context<Self>) {
+        if directory != self.browser.directory {
+            self.browser.reset_results();
+        }
         let start = self.browser.scans.request(directory.clone());
         self.browser.directory = directory.clone();
         self.browser.error = None;
@@ -954,6 +968,7 @@ impl EditorView {
         let (is_current, pending) = self.browser.scans.complete(request.generation);
         let mut next = pending;
         if is_current {
+            let selection = self.browser_selected_item(cx);
             match result {
                 Ok(listing) => {
                     self.browser.listing = Some(listing);
@@ -976,6 +991,7 @@ impl EditorView {
                     self.browser.loading = false;
                 }
             }
+            self.restore_browser_selection(selection, cx);
         }
         if let Some(request) = next {
             self.start_browser_scan(request, cx);
@@ -1011,6 +1027,18 @@ impl EditorView {
     }
 
     pub(super) fn search_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.gain_numeric_editing(cx) {
+            self.error = Some(GAIN_SEARCH_ERROR.into());
+            cx.notify();
+            return;
+        }
+        if self
+            .error
+            .as_ref()
+            .is_some_and(|error| error.as_ref() == GAIN_SEARCH_ERROR)
+        {
+            self.error = None;
+        }
         if self.clip_name_edit.is_some() {
             self.finish_clip_name(true, window, cx);
         }
@@ -1029,11 +1057,7 @@ impl EditorView {
         self.browser.open = true;
         self.browser.section = BrowserSection::All;
         self.browser.layout.reveal_all();
-        self.browser.results_focused = false;
-        self.browser.selected_index = 0;
-        self.browser
-            .scroll
-            .scroll_to_item(0, gpui::ScrollStrategy::Top);
+        self.browser.reset_results();
         self.browser.search.update(cx, |input, cx| {
             input.focus_and_select_all(window, cx);
         });
@@ -1052,24 +1076,26 @@ impl EditorView {
     }
 
     pub(super) fn browser_previous(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.browser.results_focused = true;
-        self.browser.selected_index = self.browser.selected_index.saturating_sub(1);
-        self.browser
-            .scroll
-            .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
-        cx.notify();
+        self.move_browser_selection(false, cx);
     }
 
     pub(super) fn browser_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.browser.results_focused = true;
+        self.move_browser_selection(true, cx);
+    }
+
+    fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
         let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
-        if count > 0 {
-            self.browser.selected_index =
-                self.browser.selected_index.saturating_add(1).min(count - 1);
-            self.browser
-                .scroll
-                .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
-        }
+        self.browser.selected_index = if !self.browser.results_focused || count == 0 {
+            0
+        } else if next {
+            self.browser.selected_index.saturating_add(1).min(count - 1)
+        } else {
+            self.browser.selected_index.saturating_sub(1).min(count - 1)
+        };
+        self.browser.results_focused = count > 0;
+        self.browser
+            .scroll
+            .scroll_to_item(self.browser.selected_index, gpui::ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -1119,6 +1145,44 @@ impl EditorView {
             self.browser.results_focused = true;
         }
         cx.notify();
+    }
+
+    fn browser_selected_item(&self, cx: &App) -> Option<BrowserItemKey> {
+        if !self.browser.results_focused {
+            return None;
+        }
+        let files = self.browser_visible_entries(cx);
+        if let Some(entry) = files.get(self.browser.selected_index) {
+            Some(BrowserItemKey::File(entry.path.clone()))
+        } else {
+            self.browser_visible_devices(cx)
+                .get(self.browser.selected_index.checked_sub(files.len())?)
+                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id))
+        }
+    }
+
+    fn restore_browser_selection(&mut self, selection: Option<BrowserItemKey>, cx: &App) {
+        let files = self.browser_visible_entries(cx);
+        let index = match selection {
+            Some(BrowserItemKey::File(path)) => files.iter().position(|entry| entry.path == path),
+            Some(BrowserItemKey::Device(class, type_id)) => self
+                .browser_visible_devices(cx)
+                .iter()
+                .position(|(candidate_class, entry)| {
+                    *candidate_class == class && entry.type_id == type_id
+                })
+                .map(|index| files.len() + index),
+            None => None,
+        };
+        if let Some(index) = index {
+            self.browser.selected_index = index;
+            self.browser.results_focused = true;
+            self.browser
+                .scroll
+                .scroll_to_item(index, gpui::ScrollStrategy::Top);
+        } else {
+            self.browser.reset_results();
+        }
     }
 
     fn browser_visible_entries(&self, cx: &App) -> Vec<LibraryEntry> {
@@ -1811,9 +1875,13 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, _, cx| {
+                cx.listener(move |view, _, window, cx| {
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
+                    view.browser
+                        .search
+                        .update(cx, |input, _| input.focus(window));
+                    window.prevent_default();
                     cx.notify();
                 }),
             )

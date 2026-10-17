@@ -253,8 +253,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
                             view.browser.section = section;
-                            view.browser.selected_index = 0;
-                            view.browser.results_focused = false;
+                            view.browser.reset_results();
                             cx.notify();
                         }),
                     )
@@ -307,7 +306,7 @@ impl EditorView {
                                                 layout.visible.iter().position(|v| *v)
                                         {
                                             view.browser.section = SECTIONS[next].0;
-                                            view.browser.selected_index = 0;
+                                            view.browser.reset_results();
                                         }
                                         cx.notify();
                                     }),

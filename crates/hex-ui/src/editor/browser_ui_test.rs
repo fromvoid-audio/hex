@@ -189,7 +189,16 @@ fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mu
         assert!(view.browser_visible_devices(cx).is_empty());
     });
 
-    cx.simulate_keystrokes(handle, "down cmd-f");
+    cx.simulate_keystrokes(handle, "down");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.browser.selected_index, 0,
+            "first down selects first match"
+        )
+    });
+    cx.simulate_keystrokes(handle, "down");
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.selected_index, 1));
+    cx.simulate_keystrokes(handle, "cmd-f");
     cx.simulate_input(handle, "utility");
     editor.read_with(cx, |view, cx| {
         assert_eq!(view.browser.search.read(cx).content, "utility");
@@ -247,6 +256,155 @@ fn command_f_commits_clip_name_draft_then_routes_typing_to_browser(cx: &mut Test
         assert_eq!(view.browser.search.read(cx).content, "utility");
         assert_eq!(view.browser.section, BrowserSection::All);
     });
+}
+
+#[gpui::test]
+fn command_f_scan_completion_preserves_selected_device(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "utility");
+    let request = editor.update(cx, |view, cx| {
+        view.browser.listing = None;
+        view.browser.loading = true;
+        view.browser.scans = Default::default();
+        let request = view
+            .browser
+            .scans
+            .request(view.browser.directory.clone())
+            .unwrap();
+        cx.notify();
+        request
+    });
+    cx.simulate_keystrokes(handle, "down");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility")
+    });
+    editor.update(cx, |view, cx| {
+        let directory = view.browser.directory.clone();
+        view.browser_scan_finished(
+            request,
+            Ok(DirectoryListing {
+                directory: directory.clone(),
+                entries: vec![LibraryEntry {
+                    name: "utility.hex".into(),
+                    path: directory.join("utility.hex"),
+                    kind: EntryKind::Project,
+                }],
+                enumerated_entries: 1,
+                truncated: false,
+            }),
+            cx,
+        );
+        cx.notify();
+    });
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.browser_selected_label(cx).to_lowercase(),
+            "utility",
+            "late files must not retarget device selection"
+        );
+        assert_eq!(view.browser.selected_index, 1);
+    });
+    cx.simulate_keystrokes(handle, "enter");
+    editor.read_with(cx, |view, _| {
+        assert!(view.status.contains("drag a browser device"))
+    });
+}
+
+#[gpui::test]
+fn command_f_device_click_retains_browser_keys_in_session(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.mode = crate::editor::EditorMode::Session;
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("utility");
+    visual.run_until_parked();
+    let row = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .expect("utility result");
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert_eq!(view.browser_key_context(window, cx), "hex_browser")
+        });
+    });
+    visual.simulate_keystrokes("enter escape");
+    editor.read_with(visual, |view, cx| {
+        assert!(
+            view.last_transport_command.is_none(),
+            "browser enter must not launch session playback"
+        );
+        assert!(view.status.contains("drag a browser device"));
+        assert!(view.browser.search.read(cx).content.is_empty());
+    });
+}
+
+#[gpui::test]
+fn command_f_category_switch_scrolls_first_result_into_view(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("cmd-f");
+    editor.update(visual, |view, cx| {
+        let directory = view.browser.directory.clone();
+        let entries = (0..50)
+            .flat_map(|index| {
+                [
+                    LibraryEntry {
+                        name: format!("sample-{index}.wav"),
+                        path: directory.join(format!("sample-{index}.wav")),
+                        kind: EntryKind::WaveAudio,
+                    },
+                    LibraryEntry {
+                        name: format!("project-{index}.hex"),
+                        path: directory.join(format!("project-{index}.hex")),
+                        kind: EntryKind::Project,
+                    },
+                ]
+            })
+            .collect();
+        view.browser.listing = Some(DirectoryListing {
+            directory,
+            entries,
+            enumerated_entries: 100,
+            truncated: false,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let samples = visual.debug_bounds("browser-section-samples").unwrap();
+    visual.simulate_mouse_down(samples.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(samples.center(), MouseButton::Left, Modifiers::default());
+    editor.update(visual, |view, cx| {
+        view.browser
+            .scroll
+            .scroll_to_item_strict(20, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("browser-entry-20").is_some(),
+        "scroll target is painted"
+    );
+    assert!(
+        visual.debug_bounds("browser-entry-0").is_none(),
+        "first row is outside the painted viewport"
+    );
+    let projects = visual.debug_bounds("browser-section-projects").unwrap();
+    visual.simulate_mouse_down(projects.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(projects.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("browser-entry-0").is_some(),
+        "new category's first result must be visible"
+    );
 }
 
 #[gpui::test]
