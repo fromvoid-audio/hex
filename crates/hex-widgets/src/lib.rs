@@ -47,7 +47,7 @@ pub use numeric_control::{
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphEvent, ResponseGraphModel,
-    ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
 };
 pub use style::{
     CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,

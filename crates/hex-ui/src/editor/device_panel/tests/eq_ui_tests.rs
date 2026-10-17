@@ -74,6 +74,172 @@ fn plot(
 }
 
 #[gpui::test]
+fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+    visual.simulate_click(auto.center(), Modifiers::default());
+    visual.run_until_parked();
+    let point = plot(&mut visual, device, 0.25, 0.6);
+    visual.simulate_click(point, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).lanes.len() == 1
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |view, _| read(view, device));
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            read(view, device),
+            before,
+            "automation point identity must not delete a band"
+        )
+    });
+    let auto = visual.debug_bounds(selector("eq-auto", device)).unwrap();
+    visual.simulate_click(auto.center(), Modifiers::default());
+    visual.run_until_parked();
+    let original = editor.read_with(cx, |view, _| read(view, device));
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("backspace");
+    pump_until(&editor, cx, |view| {
+        settled(view)
+            && (view.state.as_ref().unwrap().project.track(track).is_none()
+                || read(view, device).nodes.is_empty())
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state.as_ref().unwrap().project.track(track).is_some(),
+            "EQ Backspace must never delete its track"
+        );
+        assert!(read(view, device).nodes.is_empty());
+        assert!(
+            read(view, device).lanes.is_empty(),
+            "node removal atomically removes its automation"
+        );
+    });
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state.as_ref().unwrap().project.track(track).is_some(),
+            "empty focused EQ consumes Backspace"
+        )
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == original
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_some()
+        )
+    });
+    let removed = editor.read_with(cx, |view, _| read(view, device));
+    assert_eq!(removed.next_node_id, original.next_node_id);
+    let path = std::env::temp_dir().join(format!(
+        "hex-eq-backspace-{}-{}.hex",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump_until(&editor, cx, |view| settled(view) && path.exists());
+    let reload = Service::new(48000, 8, 8000000).unwrap();
+    let _ = receive_service_event(&reload);
+    reload.submit(Request::Open(path.clone())).unwrap();
+    let reopened = receive_service_event(&reload);
+    assert!(reopened.error.is_none());
+    assert!(reopened.state.project.track(track).is_some());
+    assert_eq!(
+        EqState::decode(reopened.state.project.device(device).unwrap().state()).unwrap(),
+        removed
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[gpui::test]
+fn eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device) = fixture(false);
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1500.0), px(650.0)));
+    visual.run_until_parked();
+    let position = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_click(position, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == 1
+    });
+    visual.run_until_parked();
+    let original = editor.read_with(cx, |view, _| read(view, device));
+    editor.update(cx, |view, _| view.worker_requests_pending = 1);
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        view.worker_requests_pending = 0;
+        assert_eq!(read(view, device), original);
+        assert!(view.pending_requests.is_empty());
+    });
+    let id = original.nodes[0].id;
+    enter_typed_value(
+        &mut visual,
+        device,
+        id.parameter(hex_engine::eq::NodeParameter::Frequency)
+            .unwrap(),
+        "1234",
+    );
+    visual.simulate_keystrokes("backspace enter");
+    pump_until(&editor, cx, |view| {
+        settled(view) && (read(view, device).nodes[0].frequency_hz - 123.0).abs() < 0.01
+    });
+    editor.read_with(cx, |view, _| {
+        let state = read(view, device);
+        assert_eq!(state.nodes.len(), 1);
+        assert_eq!(state.nodes[0].id, id);
+        assert!(view.state.as_ref().unwrap().project.track(track).is_some());
+    });
+    // A held creation is a preview, not a removable canonical node. The key
+    // must neither commit that preview nor escape into editor deletion.
+    let blank = plot(&mut visual, device, 0.8, 0.6);
+    visual.simulate_mouse_down(blank, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("backspace escape");
+    visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| assert_eq!(read(view, device).nodes.len(), 1));
+}
+
+#[gpui::test]
 fn eq_layout_contains_full_controls_without_overlap_at_supported_widths(cx: &mut TestAppContext) {
     let (service, state, track, device) = fixture(false);
     let (handle, editor) = actor_editor_window(cx, service, state, track);

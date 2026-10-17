@@ -32,6 +32,13 @@ cut/notch dragging edits frequency/Q. Selected-node controls expose enabled,
 shape, frequency, gain, Q and cut slope (12/24/36/48 db/octave). The channel-bank
 buttons choose the bank receiving new nodes; the global mode selects audible
 banks. Remove deletes the selected node and all its automation atomically.
+When the response graph owns keyboard focus, **Backspace** removes its selected
+node through that same atomic history command. An empty graph consumes the key;
+text/numeric editors retain their own Backspace behavior. Held gestures,
+creation previews, pending/stale work and old project generations cannot remove
+a node. Focused Escape cancels a held graph pointer before editor bindings.
+Automation point focus consumes Backspace without interpreting a lane
+index as a node identity; its explicit **− point** action remains available.
 Scalar gestures, opaque state edits, undo/redo and project/preset persistence use
 the existing canonical device path.
 

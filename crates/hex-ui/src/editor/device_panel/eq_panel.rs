@@ -108,6 +108,7 @@ pub(super) fn render_body(
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
+            graph.set_backspace_removal(true);
             graph
         });
         let generation = view.project_generation;
@@ -1164,6 +1165,22 @@ fn handle_event(
     };
     let (selected, automation, bank, page) =
         (panel.selected, panel.automation, panel.bank, panel.page);
+    if event.phase == ResponseGraphPhase::Remove {
+        // Automation point IDs are lane-local indices, never stable band IDs.
+        // The graph consumes the key in that mode, without deleting a band.
+        if automation.is_some()
+            || panel.creation.is_some()
+            || panel.preview.is_some()
+            || panel.creation_selection.is_some()
+            || current(view, device).as_ref() != Some(&panel.authored_state)
+        {
+            return;
+        }
+        if let Some(id) = selected.filter(|id| id.value() == event.node_id) {
+            edit(view, cx, device, 0, move |state, _| state.remove(id));
+        }
+        return;
+    }
     if automation.is_none() && event.node_id == 0 {
         if event.phase == ResponseGraphPhase::Create {
             begin_creation(view, cx, device, event.position, bank);
