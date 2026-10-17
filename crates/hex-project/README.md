@@ -234,3 +234,7 @@ or Return removes incident routes in the same undoable edit; removing an
 instrument with an incoming MIDI route requires clearing that route first.
 Project owns validation/history only; engine owns bounded source scheduling,
 audio processing, latency alignment and runtime admission.
+
+Arrangement and Session clip labels are canonical independent metadata.
+`RenameClip` validates a stable clip ID/name and shares normal transactional
+history. Splits/copies retain names. See [clip names](../../docs/clip-names.md).

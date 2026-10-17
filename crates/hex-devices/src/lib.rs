@@ -8,6 +8,7 @@ pub mod gate;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
+pub mod sampler;
 pub mod saturator;
 pub mod utility;
 pub mod utility_filters;

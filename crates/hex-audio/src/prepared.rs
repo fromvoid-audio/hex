@@ -2785,6 +2785,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    name: "clip".into(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -2914,6 +2915,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    name: "clip".into(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -3031,6 +3033,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    name: "clip".into(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,
@@ -3160,6 +3163,7 @@ mod tests {
                 instrument: None,
                 instrument_position: None,
                 content: TrackContentSnapshot::Audio(vec![ClipSnapshot {
+                    name: "clip".into(),
                     edit: None,
                     gain: hex_project::ClipGain::UNITY,
                     id: CLIP_ID,

@@ -1,3 +1,14 @@
+## clip selection and inline names — #2660 / PR276, 17 october 2026
+
+Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
+and press Command-R to edit its name in place. Enter/blur commit, Escape cancels;
+typing owns editing keys. Canonical RenameClip, history, copy/split preservation,
+strict schema26 names and legacy defaults are implemented. See
+[clip names](docs/clip-names.md) for contracts and native checklist.
+Focused project/storage and rendered rename tests pass; exact final-source local
+CI evidence is retained with PR276. Native macOS visual/input acceptance remains
+separate and unverified. No optimized macOS build is produced on this Linux host.
+
 ## arrangement clip painting — 17 october 2026
 
 Double-click empty track space, hold the second press, drag right, then release
@@ -57,6 +68,25 @@ native/user-test delivery remain separate work; this entry does not claim them.
 - See docs/streaming-100-track-workload.md for generation, hashes, explicit smoke
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
+
+## Sampler / Simpler request — #2679 / PR296, 17 october 2026
+
+The requested device is named sampler and targets Ableton Simpler, including
+Classic, One-Shot and Slice. The standalone original borrowed-PCM kernel now
+supports pitched/rate-converted stereo regions, forward/reverse loops, manual
+slice selection, gate/trigger and linear ADSR. Eight focused fixtures pass;
+all296 device unit tests and affected integration tests pass, as does strict
+device Clippy. The standalone release profile is recorded in
+[the contract](docs/sampler.md); it establishes no host deadlines or Live match.
+
+The device is not registered or available in the app. Generic device-asset
+leases/admission/persistence, loading, the native panel, filter/LFO/warp and
+the full reference inventory/acceptance remain unfinished. Do not raise analytic
+payload budgets or store PCM in opaque state to simulate this integration.
+Pulse2679 retains the complete user request; PR296 is its first focused kernel
+prerequisite. Linux cannot run the installed macOS Live reference or provide
+native macOS listening/visual evidence. Full local CI and final PR evidence
+are recorded on the ticket; targeted checks do not authorize merge.
 
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
@@ -3883,6 +3913,10 @@ and exact full local CI are recorded externally; PR239 UI composition and origin
   fingerprint, early insufficient allowance and retained worker-panic controls
   pass. Root N2 slot integration and desktop/UI connection remain open.
 
+17 October 2026 — split browser visual composition: Pulse #2678 / PR294;
+see docs/browser-layout.md for scope and native review checklist. Full functional
+follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
+Command-F. Tag assignment/filtering, collections and history remain pending.
 
 ## 17 October 2026 — sparse eq (Pulse #2654 / PR #270)
 
