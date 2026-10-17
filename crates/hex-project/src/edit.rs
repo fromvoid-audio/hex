@@ -440,6 +440,17 @@ pub enum Command {
         clip: ClipId,
         enabled: bool,
     },
+    /// Change the declared original sample tempo while Warp is active.
+    SetAudioClipSampleBpm {
+        clip: ClipId,
+        tempo: crate::Tempo,
+    },
+    /// Affine retiming of the retained source map; opposite visible edge stays fixed.
+    StretchAudioClipEdge {
+        clip: ClipId,
+        edge: TrimEdge,
+        frame: u64,
+    },
     SetAudioClipWarp {
         clip: ClipId,
         settings: Option<crate::WarpSettings>,
@@ -2148,6 +2159,8 @@ impl Project {
             command @ (Command::SetAudioClipPitch { .. }
             | Command::SetAudioClipMusical { .. }
             | Command::SetAudioClipWarp { .. }
+            | Command::SetAudioClipSampleBpm { .. }
+            | Command::StretchAudioClipEdge { .. }
             | Command::SetAudioClipSourceGain { .. }) => crate::audio_edit::apply(self, command),
             Command::SetAudioClipGain { clip, millidb } => {
                 let gain = crate::ClipGain::new(millidb)?;
