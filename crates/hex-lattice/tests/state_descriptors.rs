@@ -61,6 +61,34 @@ impl NativeDeviceMetadata for DynamicDefinition {
             _ => vec![DESCRIPTOR],
         })
     }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        _id: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        use hex_lattice_contract::{
+            ParameterAccess as A, ParameterAutomation as E, ParameterChangeImpact as I,
+            ParameterModulation as M, ParameterNormalization as N, ParameterSemantics,
+            ParameterSmoothing as S, ParameterStepping as T,
+        };
+        self.migrate_state(state)?;
+        if !matches!(state.payload()[0], 8 | 9) {
+            return Ok(None);
+        }
+        Ok(Some(ParameterSemantics {
+            access: A::ReadOnly,
+            normalization: N::Linear,
+            stepping: if state.payload()[0] == 9 {
+                T::Choice
+            } else {
+                T::Continuous
+            },
+            automation: E::Unsupported,
+            modulation: M::Unsupported,
+            smoothing: S::None,
+            change_impact: I::ValueOnly,
+        }))
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         NativeDeviceState::new(self.type_id(), 1, vec![0, 0])
     }
@@ -185,4 +213,30 @@ fn both_registries_use_current_dynamic_descriptors_for_validation_and_atomic_pat
     let malformed = NativeDeviceState::new(definition.type_id(), 1, vec![]).unwrap();
     assert!(effects.migrate_state(&malformed).is_err());
     assert!(instruments.migrate_state(&malformed).is_err());
+}
+
+#[test]
+fn both_registries_refuse_read_only_and_invalid_semantics_before_private_patching() {
+    let definition = DynamicDefinition {
+        patches: AtomicUsize::new(0),
+    };
+    let effects: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let instruments: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let effects = NativeDeviceRegistry::new(&effects).unwrap();
+    let instruments = NativeInstrumentRegistry::new(&instruments).unwrap();
+    let snapshot =
+        DeviceParameterSnapshot::new(&[(DYNAMIC_ID, ParameterValue::Float(0.5))]).unwrap();
+    for mode in [8, 9] {
+        let source = NativeDeviceState::new(definition.type_id(), 1, vec![mode, 0]).unwrap();
+        for result in [
+            effects.patch_parameter(&source, DYNAMIC_ID, ParameterValue::Float(0.5)),
+            instruments.patch_parameter(&source, DYNAMIC_ID, ParameterValue::Float(0.5)),
+            effects.patch_parameters(&source, &snapshot),
+            instruments.patch_parameters(&source, &snapshot),
+        ] {
+            assert!(result.is_err());
+        }
+        assert_eq!(source.payload(), &[mode, 0]);
+    }
+    assert_eq!(definition.patches.load(Ordering::Relaxed), 0);
 }
