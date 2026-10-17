@@ -408,7 +408,7 @@ pub(in crate::editor) fn view(
             })
             .into()
         })
-        .w(px(super::super::tracks::TRACK_HEADER_WIDTH))
+        .w(px(view.track_header_width()))
         .flex_shrink_0()
         .text_xs()
         .overflow_hidden()

@@ -1,3 +1,15 @@
+## track header width and row height — pulse2714 / PR330
+
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
@@ -11,6 +23,17 @@ actual declared workload; targeted worker case passes. Failed full evidence is
 retained, including the second mixed-rate clip fixture reservation repair.
 The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
 resource-root/handle/callback lease admission; full W10/sampler remain open.
+
+## selected clip transient beats warp — pulse2771 / PR379, 17 october2026
+
+The selected Arrangement audio clip now exposes Warp and a direct implemented
+algorithm picker above source controls. Beats defaults to transient preservation;
+existing modes, parameters, canonical maps/history and worker preparation remain.
+Independent PCM, persistence, engine seek/partition, native/export and both
+actual-input UI checks pass. An unused UI-test import was removed after the first
+full run was deliberately interrupted; corrected exact-source full checks remain.
+See docs/beats-clip-warp.md for workflow, scope and finite native acceptance.
+No Mac execution or app installation; full sampler/resource work stays open.
 
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
@@ -4620,3 +4643,48 @@ and shutdown report unavailable. Two fixed atomic acknowledgements add no
 callback allocation, locks or final PCM disposal. Browser layout and transport
 integration remain canonical Pulse2664 / PR280. Source does not establish that
 the reported endless audition is a backend loop; native listening remains open.
+
+## compact browser audition — pulse2664 / PR280, 17 october 2026
+
+Replace the overflowing bottom preview column with one 22 px auto/Play-Stop/mini
+waveform row below the existing tags. Default-on automatic audition covers changed
+mouse/Up/Down selection; manual Play/Right remains independent. Real callback
+state distinguishes preparation, audible PCM, completion and unavailable output.
+Stop and selection resets invalidate stale requests without touching project
+transport. Cached neutral combined-channel extrema preserve out-of-phase peaks;
+no per-paint decoding or callback allocation is introduced. Headless regressions
+cover width bounds, focus, toggle/manual semantics, completion, cancellation,
+actual Client-to-callback silence and list-boundary retrigger prevention. Native
+layout/listening and broader historical scrub/playhead wishlist remain open;
+Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
+
+
+## browser waveform cache stability — pulse2778 / PR384
+
+Visible row composition no longer mutates the16-entry metadata cache. Selected
+waveform, in-flight and pending keys stay protected; failed hover previews do not
+retry automatically. Reproduced selected-cache loss before repair; real pointer
+hover/selection regression checks no repeated preparation/audition, stable metadata,
+unchanged project state and surrounding lane geometry/style. Native flicker
+acceptance remains coordinator-serial on the next combined launcher delivery.
+
+
+## browser waveform-position audition — pulse2779 / PR385
+
+Manual waveform clicks resolve bounded hit position against decoded preview PCM;
+existing generation/ownership queues replace previews and silence Stop without
+project transport. Exact-end starts finish silently. Callback position publication
+feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation,
+locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
+focus and unavailable-output regressions cover the browser strip. Native pointer,
+listening and position acceptance remains coordinator-serial.
+
+
+## deliberate sample insertion — pulse2780 / PR386
+
+Sample-result double-click no longer imports; consume its bubble after ordinary
+selection/automatic audition. Actual second-mouse-down regression with a valid
+target track failed before repair, and verifies no import/canonical mutation with
+auto on/off while retaining manual Right/search focus and explicit Enter import.
+Existing deliberate drag/drop coverage remains required. Other file/device
+handlers unchanged. Native double-click behavior remains coordinator-serial.

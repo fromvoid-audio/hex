@@ -305,3 +305,12 @@ stale/no-longer-retained revisions are UnknownRevision, and callback Applying or
 Complete remains distinct from cancellation. Mirror replacement/destruction is
 worker-side outside the slot mutex. Verified opt-in still requires the virgin
 empty cell and never admits these owning Resident requests.
+
+
+Browser preview `publish_from`/`Client::preview_publish_from` admits an absolute
+frame offset into the existing immutable decoded PCM owner. Bounds are checked on
+control; the callback retains its ordinary cursor and finite end, including a
+silent exact-end start. Snapshots expose absolute frame/total length using one
+additional constructor-allocated atomic cursor; generation acknowledgements keep
+old requests isolated. Constructor channel accounting includes its paired payload.
+UI hit normalization/decoding stays outside this crate and project transport.

@@ -94,6 +94,9 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+mod track_layout;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_layout_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -582,7 +585,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_focus: FocusHandle,
     _midi_focus_lifecycle: [gpui::Subscription; 3],
     _scrub_focus_lifecycle: gpui::Subscription,
-    track_scroll: gpui::UniformListScrollHandle,
+    track_scroll: track_layout::TrackScroll,
+    track_layout: track_layout::TrackLayout,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -798,7 +802,11 @@ impl EditorView {
         let scrub_focus_blur = cx.on_blur(&focus, window, |view, window, cx| {
             if !view.focus.is_focused(window) {
                 view.cancel_fade_gesture(cx);
+<<<<<<< HEAD
                 view.cancel_project_spectrum_resize(cx);
+=======
+                view.cancel_track_resize(cx);
+>>>>>>> origin/main
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
@@ -823,7 +831,11 @@ impl EditorView {
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 view.cancel_fade_gesture(cx);
+<<<<<<< HEAD
                 view.cancel_project_spectrum_resize(cx);
+=======
+                view.cancel_track_resize(cx);
+>>>>>>> origin/main
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
                 view.audio_event_editor.gesture = None;
@@ -841,7 +853,11 @@ impl EditorView {
         });
         let window_bounds = cx.observe_window_bounds(window, |view, _, cx| {
             view.cancel_fade_gesture(cx);
+<<<<<<< HEAD
             view.cancel_project_spectrum_resize(cx);
+=======
+            view.cancel_track_resize(cx);
+>>>>>>> origin/main
             view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture() | view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
@@ -952,7 +968,8 @@ impl EditorView {
             midi_focus,
             _midi_focus_lifecycle: [focus_blur, window_activation, window_bounds],
             _scrub_focus_lifecycle: scrub_focus_blur,
-            track_scroll: gpui::UniformListScrollHandle::new(),
+            track_scroll: track_layout::TrackScroll::new(),
+            track_layout: track_layout::TrackLayout::default(),
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
