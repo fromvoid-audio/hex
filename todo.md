@@ -1,3 +1,13 @@
+## portable sample catalog fixtures — #2723 / PR339, 17 october 2026
+
+The original Unix invalid-byte filename fixture reproduced macOS OS92 before
+scanner execution. Valid native UTF-8 paths now exercise real Unix scan/cache
+roundtrip and symlink cycle/alias exclusion. A filesystem-independent catalog
+roundtrip preserves original non-UTF8 bytes on all Unix targets; Linux retains
+the original real invalid-byte filename fixture. No production path handling
+changes. Focused red/green and full local-CI evidence are recorded with PR339.
+Linux execution remains separately reported rather than inferred from macOS.
+
 ## shared stereo/gain kernels — #2671 / PR288, 17 october 2026
 
 Real production stereo kernels move to dependency-free hex-dsp with Lattice API

@@ -112,7 +112,10 @@ fn database_round_trips_and_refuses_malformed_oversized_and_future_data() {
     assert_eq!(SampleCatalog::load(&path).unwrap(), catalog);
 }
 
-#[cfg(unix)]
+// Linux filesystems support this arbitrary-byte filename; macOS filesystems
+// may reject it before the scanner is called. The byte codec is tested below
+// on every Unix target independently of filesystem filename restrictions.
+#[cfg(target_os = "linux")]
 #[test]
 fn preserves_native_path_bytes_and_skips_symlink_cycles_and_file_aliases() {
     use std::{
@@ -183,5 +186,52 @@ fn global_search_unions_index_and_folder_without_duplicate_or_lost_wavs() {
             .search_with_listing("", None)
             .iter()
             .all(|entry| entry.kind == EntryKind::WaveAudio)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn valid_native_path_scan_preserves_bytes_and_skips_symlink_cycles_and_aliases() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let path = fixture.file("Kick-🔊.WAV");
+    symlink(&fixture.0, fixture.0.join("cycle")).unwrap();
+    symlink(&path, fixture.0.join("alias.wav")).unwrap();
+    let scan = scan_samples(std::slice::from_ref(&fixture.0));
+    assert!(!scan.truncated);
+    assert!(scan.errors.is_empty());
+    assert_eq!(scan.catalog.entries().len(), 1);
+    assert_eq!(scan.catalog.entries()[0].path, path);
+    let db = fixture.0.join("native.db");
+    scan.catalog.save(&db).unwrap();
+    assert_eq!(SampleCatalog::load(&db).unwrap(), scan.catalog);
+}
+
+#[cfg(unix)]
+#[test]
+fn database_preserves_non_utf8_path_bytes_without_creating_that_sample_file() {
+    use std::{
+        ffi::OsString,
+        os::unix::ffi::{OsStrExt, OsStringExt},
+    };
+    let fixture = Fixture::new();
+    let path = fixture
+        .0
+        .join(OsString::from_vec(b"kick-\xff.wav".to_vec()));
+    // Sample entries may refer to offline files; only the cache file is opened.
+    let catalog = SampleCatalog {
+        entries: vec![LibraryEntry {
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            path: path.clone(),
+            kind: EntryKind::WaveAudio,
+        }],
+    };
+    let db = fixture.0.join("non-utf8.db");
+    catalog.save(&db).unwrap();
+    let restored = SampleCatalog::load(&db).unwrap();
+    assert_eq!(restored, catalog);
+    assert_eq!(
+        restored.entries()[0].path.as_os_str().as_bytes(),
+        path.as_os_str().as_bytes()
     );
 }
