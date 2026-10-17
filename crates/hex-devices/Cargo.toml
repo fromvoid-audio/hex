@@ -9,5 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+hex-dsp = { path = "../hex-dsp" }
 hex-lattice = { path = "../hex-lattice" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
+
+[dev-dependencies]
+hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

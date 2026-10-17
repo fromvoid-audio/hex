@@ -479,7 +479,37 @@ class ReleaseCargoTests(unittest.TestCase):
                         self.fail("unsupported package handoff built")
                 self.assertEqual(delivery.sha(target / "release/fixture-app"), before)
                 self.assertEqual(json.loads(Path(first["owner_path"]).read_text())["state"], "ready")
-            print("real release A -> B -> A: incompatible APIs/outputs, dependency/dev hashes, retained binaries, reuse and removed/renamed refusal verified", flush=True)
+            # Pure additions retain every old package, so Cargo can clean the
+            # complete current workspace and compile the newly added dependency.
+            (root / "extra/src").mkdir(parents=True)
+            extra_manifest = root / "extra/Cargo.toml"
+            extra_manifest.write_text('[package]\nname="fixture-extra"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "extra/src/lib.rs").write_text('pub fn bonus() -> u32 { 1 }\n')
+            (root / "Cargo.toml").write_text('[workspace]\nmembers=["api", "app", "extra"]\nresolver="2"\n')
+            (root / "app/Cargo.toml").write_text(manifest + 'fixture-extra={path="../extra"}\n')
+            (root / "app/src/main.rs").write_text(
+                'fn main() { println!("{}", fixture_api::value() + external_helper::suffix() + fixture_extra::bonus()); }\n')
+            command(["cargo", "generate-lockfile", "--offline"])
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "add workspace dependency"])
+            addition = build(root, "release-addition", "17", guarded_env)
+            self.assertEqual(addition["cleanup_status"], "passed")
+            self.assertTrue(any("fixture-extra" in argument for argument in addition["cleanup_argv"]))
+            self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)
+            self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
+            owner = Path(addition["owner_path"])
+            owner_before = owner.read_bytes()
+            binary_before = delivery.sha(target / "release/fixture-app")
+            extra_manifest.write_text(extra_manifest.read_text().replace('version="0.1.0"', 'version="0.2.0"'))
+            command(["cargo", "generate-lockfile", "--offline"])
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "change existing member version"])
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "removed, renamed or version-changed"):
+                with delivery.optimized_artifact(runner(root, "version-changed"), package="fixture-app"):
+                    self.fail("version-changed handoff built")
+            self.assertEqual(delivery.sha(target / "release/fixture-app"), binary_before)
+            self.assertEqual(owner.read_bytes(), owner_before)
+            print("real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified", flush=True)
 
 
 if __name__ == "__main__":

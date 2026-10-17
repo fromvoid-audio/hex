@@ -22,6 +22,7 @@ impl Scene {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClip {
+    pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) name: String,
     pub(crate) source: Arc<MidiSource>,
@@ -30,6 +31,7 @@ pub struct SessionMidiClip {
 /// Frame-anchored, one-shot audio source assigned to one Session cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAudioClip {
+    pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) name: String,
     pub(crate) asset: crate::AssetId,
@@ -38,6 +40,9 @@ pub struct SessionAudioClip {
     pub(crate) gain: crate::ClipGain,
 }
 impl SessionAudioClip {
+    pub fn flavor(&self) -> crate::ClipFlavor {
+        self.flavor
+    }
     pub fn id(&self) -> ClipId {
         self.id
     }
@@ -58,6 +63,9 @@ impl SessionAudioClip {
     }
 }
 impl SessionMidiClip {
+    pub fn flavor(&self) -> crate::ClipFlavor {
+        self.flavor
+    }
     pub fn id(&self) -> ClipId {
         self.id
     }
@@ -171,6 +179,7 @@ pub(crate) fn apply(
                 track,
                 scene,
                 content: SessionCellContent::Midi(SessionMidiClip {
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     name,
                     source: Arc::new(MidiSource::defaults(source_length)),
@@ -200,6 +209,7 @@ pub(crate) fn apply(
                 track,
                 scene,
                 content: SessionCellContent::Audio(SessionAudioClip {
+                    flavor: crate::ClipFlavor::default(),
                     id,
                     name,
                     asset,
@@ -232,12 +242,13 @@ pub(crate) fn apply(
             ensure_clip_room(project, 1)?;
             reserve_cell(project)?;
             let id = ClipId(project.allocate_id()?);
-            let name = format!("audio {}", source.value());
+            let name = original.name().to_owned();
             crate::edit::name_valid(&name)?;
             project.session.cells.push(SessionCell {
                 track,
                 scene,
                 content: SessionCellContent::Audio(SessionAudioClip {
+                    flavor: original.flavor,
                     id,
                     name,
                     gain: original.gain(),
@@ -281,8 +292,9 @@ pub(crate) fn apply(
                 track,
                 scene,
                 content: SessionCellContent::Midi(SessionMidiClip {
+                    flavor: original.flavor,
                     id,
-                    name: "midi copy".to_owned(),
+                    name: original.name.clone(),
                     source: Arc::new(source),
                 }),
             });
@@ -618,6 +630,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     .map_err(|_| Invalid("could not reserve duplicated midi notes"))?;
                 notes.extend(source.notes.iter().cloned());
                 SessionCellContent::Midi(SessionMidiClip {
+                    flavor: clip.flavor,
                     id: ClipId(0),
                     name,
                     source: Arc::new(MidiSource {
@@ -636,6 +649,7 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     .map_err(|_| Invalid("could not reserve session clip name storage"))?;
                 name.push_str(&clip.name);
                 SessionCellContent::Audio(SessionAudioClip {
+                    flavor: clip.flavor,
                     id: ClipId(0),
                     name,
                     asset: clip.asset,

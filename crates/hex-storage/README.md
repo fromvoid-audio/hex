@@ -151,9 +151,11 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema25, the complete envelope for device input/output host gains,
+New saves use schema28, preserving audio events, inherited track colors and per-clip flavors
+(see `docs/element-colors.md`) plus the schema26 envelope for device host gains,
 exact provenance, typed audio/MIDI routing, Return feeds, gain points/touch spans
-and recording epochs. All playback consumers share the admitted lane model. The
+and recording epochs with independent Arrangement clip names. All playback
+consumers share the admitted lane model. The
 ordinary writer does not select formats based on which fields happen to be empty.
 
 Historical versions18 and19 have two recorded shapes from independent branches.
@@ -199,3 +201,12 @@ Their strict reader requires gain on every audio clip, requires `audio_edit` on
 every Arrangement clip in21 and forbids it in20. No-audio envelopes are rejected
 as ambiguous. Root keys both present select only main's historical20/21 reader,
 including when null/malformed; errors never retry another format.
+
+Schema28 preserves the appearance/clip-name envelope plus a strict, complete
+audio-event table. Historical schemas keep their explicit readers and implicit
+single-event migration; see [audio events](../../docs/audio-events.md).
+
+Historical schema26, adding complete validated Arrangement clip names to
+the schema25 musical-audio envelope. Session names retain their existing fields.
+Schemas1–25 migrate Arrangement names to `clip`; explicit legacy writers refuse
+authored Arrangement names. See [clip names](../../docs/clip-names.md).

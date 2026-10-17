@@ -1,5 +1,8 @@
 //! Native, disposable layout catalog. No audio, project or preferences I/O.
+// The gallery samples shared compositions; the live windowed controller also
+// uses helpers which this disposable fixture does not mount.
 #[path = "../src/device_composition.rs"]
+#[allow(dead_code)]
 mod device_composition;
 #[path = "layout_review/gallery.rs"]
 mod gallery;

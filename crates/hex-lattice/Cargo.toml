@@ -8,5 +8,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+conformance = []
+
 [dependencies]
+hex-dsp = { path = "../hex-dsp" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }

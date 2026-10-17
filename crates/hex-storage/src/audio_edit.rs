@@ -292,6 +292,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         });
         Ok(AudioClipEdit {
             domain: Arc::new(AudioClipDomain {
+                events: None,
                 source_offset: d.source_offset,
                 source_length: d.source_length,
                 source_phase: d.source_phase,

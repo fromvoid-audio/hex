@@ -113,19 +113,17 @@ impl EditorView {
                     .id("editor-status-message")
                     .debug_selector(|| "editor-status-message".into())
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(50.0))
                     .truncate()
                     .tooltip({
                         let message = error.clone();
                         move |_, cx| {
-                            cx.new(|_| super::transport::MiniTooltip {
-                                description: message.clone().into(),
-                            })
-                            .into()
+                            cx.new(|_| super::display_error::ErrorTooltip(message.clone()))
+                                .into()
                         }
                     })
                     .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                    .child(theme::text(error)),
+                    .child(error.display_text()),
             );
         } else {
             bar = bar.child(
@@ -133,7 +131,7 @@ impl EditorView {
                     .id("editor-status-message")
                     .debug_selector(|| "editor-status-message".into())
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(50.0))
                     .truncate()
                     .tooltip({
                         let message = self.status.clone();
@@ -178,7 +176,7 @@ impl EditorView {
                 .id("editor-revision-status")
                 .debug_selector(|| "editor-revision-status".into())
                 .w(px(176.0))
-                .flex_shrink_0()
+                .min_w(px(64.0))
                 .truncate()
                 .text_right()
                 .tooltip({
@@ -235,38 +233,19 @@ impl EditorView {
                     String::new()
                 },
             ));
+        let meter_input = self.output_meter_frame.map_or(
+            crate::output_meter::MeterInput::Offline,
+            super::refresh::AudioFrame::meter_input,
+        );
+        bar = bar.child(
+            crate::output_meter::render(meter_input).tooltip(move |_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: crate::output_meter::description(meter_input).into(),
+                })
+                .into()
+            }),
+        );
         if let Some(status) = self.audio_status() {
-            let left = f32::from_bits(status.peak_left.load(Relaxed)).clamp(0.0, 1.0);
-            let right = f32::from_bits(status.peak_right.load(Relaxed)).clamp(0.0, 1.0);
-            bar = bar.child(
-                div()
-                    .w(px(38.0))
-                    .h(px(7.0))
-                    .flex()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * left))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                            .child(
-                                div()
-                                    .h(px(7.0 * right))
-                                    .w_full()
-                                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-                            ),
-                    ),
-            );
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
             let callback_us = status.callback_max_ns.load(Relaxed) / 1_000;
@@ -287,7 +266,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .tooltip({
@@ -312,7 +291,7 @@ impl EditorView {
                     .id("editor-audio-diagnostics")
                     .debug_selector(|| "editor-audio-diagnostics".into())
                     .w(px(168.0))
-                    .flex_shrink_0()
+                    .min_w(px(64.0))
                     .truncate()
                     .text_right()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -335,7 +314,7 @@ fn status_slot(
         .debug_selector(move || id.into())
         .w(px(width))
         .h_full()
-        .flex_shrink_0()
+        .min_w(px(32.0))
         .truncate()
         .text_right();
     if !label.is_empty() {
@@ -354,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_clip_name(window, cx);
         if self.clip_view_open && self.gain_lane.track.is_some() {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
@@ -366,7 +346,7 @@ impl Render for EditorView {
         self.clip_content_cache
             .reconcile(self.project_generation, self.state.as_ref(), cx);
         self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
-        let clip_view = self.clip_detail_view(cx);
+        let clip_view = self.clip_detail_view(window, cx);
         let workspace_content = if self.mode == super::EditorMode::Session {
             div()
                 .flex_1()
@@ -404,7 +384,9 @@ impl Render for EditorView {
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .font_family(theme::FONT_FAMILY)
             .track_focus(&self.focus)
-            .key_context(if self.theme_settings.open {
+            .key_context(if self.clip_name_edit.is_some() {
+                "hex_clip_name hex_text_editing"
+            } else if self.theme_settings.open {
                 "hex_theme_settings"
             } else if self.controller_input_is_open() {
                 "hex_controller_input"
@@ -446,6 +428,9 @@ impl Render for EditorView {
                         event.modifiers.platform,
                         event.modifiers.alt,
                     ) {
+                        cx.notify();
+                    }
+                    if view.refresh_audio_event_modifiers(event.modifiers.platform) {
                         cx.notify();
                     }
                     view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
@@ -499,6 +484,15 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     cx.notify();
                 }
+            }))
+            .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
+                view.begin_clip_name(window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CommitClipName, window, cx| {
+                view.finish_clip_name(true, window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &super::CancelClipName, window, cx| {
+                view.finish_clip_name(false, window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
@@ -569,7 +563,8 @@ impl Render for EditorView {
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
-                let time_selection_canceled = view.cancel_time_selection_gesture();
+                let time_selection_canceled =
+                    view.cancel_time_selection_gesture() | view.cancel_clip_paint();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
                     view.midi_selection.clear()
@@ -781,6 +776,14 @@ impl Render for EditorView {
                         frames: view.step_frames() as i64,
                     }));
                 }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::ToggleSnapGrid, _, cx| {
+                view.snap_grid = if view.snap_grid == super::musical_time::SnapGrid::Off {
+                    super::musical_time::SnapGrid::Adaptive
+                } else {
+                    super::musical_time::SnapGrid::Off
+                };
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopyTimeSelection, window, cx| {

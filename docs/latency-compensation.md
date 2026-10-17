@@ -30,7 +30,7 @@ without authored audio feeds retain the existing block path and arithmetic.
 Logical MIDI-only routes use that block path with independent audio and MIDI
 source ownership; positive declared latency still uses the compensation graph.
 
-Exact arrangement frame, loop pass and Q32.32 performance beat history travel
+Exact arrangement frame, loop pass and distinct Q32.32 performance/Arrangement beat histories travel
 with delayed content. Native clock queries and downstream gain evaluation use
 the origin at their node, including across loop wraps. Startup history is
 explicit silence; it never substitutes current content for unavailable past
@@ -38,6 +38,14 @@ content. Pause freezes state, loop wrap retains it, and Stop/Seek reset it.
 Recording receipts wait the remaining fader-to-Main delay. Output capture observes
 aligned track/Return contributions before the single master stage; processor
 observations retain their processing-offset diagnostic contract.
+
+EQ Arrangement automation uses the explicit `arrangement_beat_at_offset` clock,
+never the continuously advancing performance beat. Ordinary Track/Return blocks
+borrow the authored tempo map; compensated nodes receive the Arrangement beat
+stored with their original content frame. Warmup remains unknown and stopped
+monitoring does not advance authored automation. Linear export uses the same
+clock without transport-loop wrapping. The extra stamp field is included in
+the existing capacity-based compensation storage accounting.
 
 Compatible layout handoffs preserve in-flight delay/DSP state while applying
 candidate coefficients. Changed latency/topology and incompatible histories while
@@ -66,3 +74,10 @@ returns unknown observations. Stopped audition explicitly reports a stopped
 transport and no advancing performance origin, even though its musical audition
 clock can advance. Stamp storage remains charged against existing compensation
 limits using the actual type size and allocated ring capacities; no limit rises.
+
+Arrangement beat stamps are optional when a content frame cannot be represented
+in Q32.32. The exact frame/performance clock remains valid; effects observe an
+unavailable beat, matching the ordinary clock path. This does not introduce a
+new tempo-conversion failure for non-automated audio. EQ uses its documented
+authored-base behavior for unavailable beat clocks. Stamp storage accounting uses
+the complete optional-field layout.

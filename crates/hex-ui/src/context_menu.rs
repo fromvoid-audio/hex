@@ -11,6 +11,8 @@ const EDGE: f32 = 4.0;
 
 pub(crate) struct MenuItem<A> {
     pub label: &'static str,
+    pub swatch: Option<u32>,
+    pub checked: bool,
     pub action: A,
 }
 
@@ -79,6 +81,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
     for (index, item) in menu.items.iter().enumerate() {
         let action = item.action.clone();
+        let label = item.label;
         panel = panel.children([div()
             .id(("context-menu-item", index))
             .debug_selector(|| "context-menu-item".into())
@@ -93,7 +96,21 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
                 theme::color(theme::PaletteRole::Surface)
             }))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::PrimaryDark))))
+            .children(item.swatch.map(|color| {
+                div()
+                    .debug_selector(move || format!("context-menu-swatch-{label}"))
+                    .w(px(12.0))
+                    .h(px(12.0))
+                    .mr(px(8.0))
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .bg(rgb(color))
+            }))
             .child(theme::text(item.label))
+            .children(
+                item.checked
+                    .then(|| div().ml_auto().child(theme::text("✓"))),
+            )
             .on_click(
                 cx.listener(move |owner, _, window, cx| select(owner, action.clone(), window, cx)),
             )]);

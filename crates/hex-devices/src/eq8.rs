@@ -14,6 +14,9 @@ use hex_lattice_contract::{
 use std::any::Any as StdAny;
 use std::sync::Arc;
 
+#[path = "eq/mod.rs"]
+pub mod flexible;
+
 pub const EQ8_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq8");
 pub const BAND_COUNT: usize = 8;
 pub const EQ8_RUNTIME_BYTES: usize = std::mem::size_of::<Eq8Runtime>();
@@ -197,7 +200,7 @@ impl NativeDeviceMetadata for Eq8Definition {
         EQ8_TYPE_ID
     }
     fn display_name(&self) -> Option<&'static str> {
-        Some("eq eight")
+        Some("eq")
     }
     fn state_version(&self) -> u32 {
         STATE_VERSION
@@ -815,14 +818,14 @@ impl NativeProcessorRuntime for Eq8Runtime {
 
 impl NativeProcessorAudition for Eq8Runtime {
     fn can_select(&self, selection: ProcessorAuditionSelection) -> bool {
-        Eq8AuditionSelection::new(usize::from(selection.index), usize::from(selection.lane))
+        Eq8AuditionSelection::new(selection.index as usize, usize::from(selection.lane))
             .is_ok_and(|selection| self.selection_is_enabled(selection))
     }
 
     fn requested_selection(&self) -> Option<ProcessorAuditionSelection> {
         self.audition_request
             .map(|selection| ProcessorAuditionSelection {
-                index: selection.band,
+                index: u32::from(selection.band),
                 lane: selection.edit_lane,
             })
     }
@@ -831,7 +834,7 @@ impl NativeProcessorAudition for Eq8Runtime {
         // `can_select` preflights this exact stable mapping on both twins;
         // the host then dispatches infallibly before either twin is rendered.
         let selection = selection.map(|selection| Eq8AuditionSelection {
-            band: selection.index,
+            band: selection.index as u8,
             edit_lane: selection.lane,
         });
         self.audition_request = selection;
