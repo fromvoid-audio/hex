@@ -192,6 +192,7 @@ impl EditorView {
             .cursor_pointer()
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    cx.stop_propagation();
                     if view
                         .clip_name_edit
                         .as_ref()
