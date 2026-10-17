@@ -224,3 +224,9 @@ Reference audition retains a pending preparation owner until its matching worker
 completion is consumed, so cancellation before event delivery cannot hide a
 preparation error. Stop, focus loss, close and replacement still cancel ownership
 immediately; stale completions cannot report over a newer owner.
+
+Library actions queued behind a device gesture keep their FIFO reservation. A
+current-context action binds its revision only at that exact matched terminal
+acknowledgement; a previously opened dialog retains its captured context and
+stale refusal. New import/export dialogs wait for the terminal before capturing
+context. Failed terminals retire dependent writes without changing queue limits.

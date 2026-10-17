@@ -94,6 +94,12 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    Loading/importing the identical scale must preserve clean state and Redo.
    Start Undo or another canonical edit, then immediately try a new tuning edit:
    it must wait rather than resurrect an older whole tuning value.
+   While a device gesture is finishing, request a current tuning-library action:
+   it must observe that exact terminal without an unnecessary stale retry and
+   retain FIFO order with a later canonical edit. New import/export dialogs wait
+   before capturing context. A dialog opened earlier must still refuse after a
+   revision change and preserve its chosen existing destination; do not overwrite
+   user presets or files to manufacture this check.
 5. With no selected track and project tuning disabled, audition triangle, square
    and saw; change level/attack/release and tuning while holding/releasing notes.
    Numeric/text focus must not play notes. Modified key release, deactivation,

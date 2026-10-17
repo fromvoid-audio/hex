@@ -4992,3 +4992,9 @@ handlers unchanged. Native double-click behavior remains coordinator-serial.
   worker/key-handler regression fails before repair (9541ec14), passes afterward
   (cdb30fde). Explicit cancellation/stale owners remain terminal. Final combined
   full CI and native interaction acceptance remain separate and pending.
+
+- 2026-10-17 tuning/MTS library follow-up: actual current Export failed behind
+  its device terminal on1251 (457acab2). Matching operation/gesture context now
+  rebinds in place at the exact terminal, keeping FIFO and earlier-dialog stale
+  refusal; focused three-case real-worker regression passes d6babcc0. New
+  dialogs defer and failed writes retire. Fresh final full CI remains pending.

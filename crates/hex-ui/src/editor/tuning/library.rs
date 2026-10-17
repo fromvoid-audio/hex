@@ -127,6 +127,7 @@ impl EditorView {
             return;
         }
         self.tuning.library_pending = None;
+        self.tuning.library_terminal = None;
         self.tuning.slots = result
             .slots
             .iter()
