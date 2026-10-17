@@ -113,6 +113,15 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                     ..Modifiers::default()
                 },
             );
+            // Inspect deselection away from hover; unselected hover keeps its
+            // existing separate affordance. The first pass also covers a
+            // selected clip under the pointer.
+            visual.simulate_mouse_move(
+                gpui::point(lane.right() - gpui::px(4.0), lane.bottom() - gpui::px(4.0)),
+                None,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
         }
         for (index, ((id, _), selector)) in clips.iter().zip(&selectors).enumerate() {
             let selected = !(toggled && index == 2);
