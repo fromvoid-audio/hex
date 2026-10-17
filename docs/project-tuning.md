@@ -56,11 +56,12 @@ it. Status describes this prerequisite, not completion of the entire feature.
 `hex-tuning` is std-only control-side scale math, analysis, portable preset codec
 and validated fixed-size values. `hex-project` owns one `ProjectTuning`, snapshot
 and typed `SetTuning` command. Existing transactional history prepares candidates
-before committing. `hex-storage` schema 30 persists enabled state, complete scale
-and audition settings; every older schema defaults explicitly to disabled A440
-12-TET. Local slot names and process-global MTS state are not serialized.
+before committing. `hex-storage` current schema 31 requires enabled state, the complete scale,
+audition settings and the complete device-asset manifest. The superseded alpha
+schema 30 is explicitly unsupported. Existing readers through schema 29 retain
+their disabled A440 12-TET defaults; no new historical conversion is added. Local slot names and process-global MTS state are not serialized.
 
-New/old untouched projects preserve the legacy equal-temperament formula. Opening
+Untuned projects preserve the legacy equal-temperament formula. Opening
 the editor must not enable tuning, change the scale or dirty the project. The
 Freqs seven-degree major scale (key 60 at 220 Hz) remains a deliberate selection,
 not a migration default. Enabled scales support 3–48 ordered degrees with at least
@@ -148,3 +149,12 @@ nonzero PCM without a selected track; the callback retarget test checked an
 independent waveform oracle with zero total/net callback allocations; GPUI tests
 covered root/numeric focus, modified key release and close cancellation. Native
 Mac listening, focus and physical deadline acceptance remain pending.
+
+The pitch line also projects admitted Arrangement and Session MIDI gates from the
+exact audio-applied prepared revision and route snapshot, including notes omitted
+from the 32-note drawing preview. It queries a reusable fixed buffer on the UI
+side at most about30 times per second, uses the applied source while edits are
+pending, and keeps a400ms recent marker. Stop, faults, unavailable source/route
+identity and project replacement clear held playback gates. These are MIDI gate
+observations at the reported transport cursor, not synth loudness/release-tail or
+physical hardware-input telemetry. Reference audition retains its actual held mask.

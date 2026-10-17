@@ -341,7 +341,12 @@ impl<'a> NativeInstrumentRegistry<'a> {
             .definition(type_id)
             .ok_or(DeviceContractError::WrongDeviceType)?;
         let state = definition.default_state()?;
-        self.validate_current(definition, definition.migrate_state(&state)?)
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&state)?
+                .with_host_metadata_from(&state)?,
+        )
     }
 
     pub fn migrate_state(
@@ -351,9 +356,12 @@ impl<'a> NativeInstrumentRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        self.validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )
     }
 
     pub fn patch_parameters(
@@ -364,17 +372,22 @@ impl<'a> NativeInstrumentRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         hex_lattice_contract::validate_parameter_snapshot_for_write(
             definition, &current, snapshot,
         )?;
         let patched = definition.patch_parameters(&current, snapshot)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
 
     pub fn patch_parameter(
@@ -386,15 +399,20 @@ impl<'a> NativeInstrumentRegistry<'a> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         hex_lattice_contract::validate_parameter_write(definition, &current, parameter, value)?;
         let patched = definition.patch_parameter(&current, parameter, value)?;
-        self.validate_current(definition, definition.migrate_state(&patched)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())
+        self.validate_current(
+            definition,
+            definition
+                .migrate_state(&patched)?
+                .with_host_metadata_from(state)?,
+        )
     }
 
     pub fn prepare_instrument(
@@ -405,20 +423,24 @@ impl<'a> NativeInstrumentRegistry<'a> {
         self.prepare_instrument_with_tuning(state, sample_rate, &crate::TuningTable::default())
     }
 
-    /// Validate canonical state and prepare against the exact effective project table.
+    /// Prepare the exact effective table; resource bindings refuse before
+    /// provider migration until the host supplies actual resource leases.
     pub fn prepare_instrument_with_tuning(
         &self,
         state: &NativeDeviceState,
         sample_rate: u32,
         tuning: &crate::TuningTable,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        state.require_asset_free_processing()?;
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
-        let current = self
-            .validate_current(definition, definition.migrate_state(state)?)?
-            .with_input_gain_millidb(state.input_gain_millidb())?
-            .with_output_gain_millidb(state.output_gain_millidb())?;
+        let current = self.validate_current(
+            definition,
+            definition
+                .migrate_state(state)?
+                .with_host_metadata_from(state)?,
+        )?;
         definition.prepare_instrument_with_tuning(&current, sample_rate, tuning)
     }
 
@@ -562,6 +584,11 @@ mod tests {
             .with_input_gain_millidb(PATCH_INPUT_GAIN)
             .unwrap()
             .with_output_gain_millidb(PATCH_OUTPUT_GAIN)
+            .unwrap()
+            .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                slot: hex_lattice_contract::DeviceAssetSlot::new(1).unwrap(),
+                asset: hex_lattice_contract::DeviceAssetKey::new(42).unwrap(),
+            }])
             .unwrap();
         let snapshot =
             DeviceParameterSnapshot::new(&[(PATCH_PARAMETER, ParameterValue::Float(1.0))]).unwrap();
@@ -570,6 +597,7 @@ mod tests {
 
         assert_eq!(patched.input_gain_millidb(), PATCH_INPUT_GAIN);
         assert_eq!(patched.output_gain_millidb(), PATCH_OUTPUT_GAIN);
+        assert_eq!(patched.asset_references(), state.asset_references());
         assert_eq!(
             definition
                 .read_parameter(&patched, PATCH_PARAMETER)

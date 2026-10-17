@@ -3,6 +3,7 @@ pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
+pub(crate) mod device_assets;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
@@ -2045,6 +2046,9 @@ impl DocumentV11 {
             ));
         }
         if header.version == 30 {
+            return Err(StorageError::Invalid("unsupported alpha project format 30"));
+        }
+        if header.version == 31 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {

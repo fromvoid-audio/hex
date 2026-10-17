@@ -350,6 +350,7 @@ fn map_device_contract_error(error: hex_lattice_contract::DeviceContractError) -
         Error::RuntimeBudgetExceeded => "native device runtime exceeds its bounded budget",
         Error::RuntimeAllocation => "native device runtime allocation failed",
         Error::UnsupportedProcessingClass => "native device processing class is not admitted",
+        Error::AssetResourcesUnavailable => "native device asset resources are unavailable",
     })
 }
 
@@ -3058,6 +3059,7 @@ mod tests {
 pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
+mod midi_activity;
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;

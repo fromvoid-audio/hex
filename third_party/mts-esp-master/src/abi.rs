@@ -137,7 +137,7 @@ impl Api {
         let metadata = tuning.metadata;
         let start = metadata.map_start_key.map_or(-1, |key| key as i8);
         let reference = metadata.reference_key as i8;
-        // SAFETY: these five synchronous calls use pointers into the validated
+        // SAFETY: these six synchronous calls use pointers into the validated
         // owned value `tuning`; no pointer is retained by this adapter. MTS does
         // not promise these updates are client-sample-atomic.
         unsafe {

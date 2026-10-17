@@ -1,13 +1,14 @@
-//! Schema30 adds required project tuning to the complete strict schema29 envelope.
+//! One current schema31 requires project tuning and the complete device manifest.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV30<'a> {
+pub(crate) struct DocumentV31<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
+    device_assets: super::device_assets::Manifest,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -127,13 +128,13 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV30<'a> {
+impl<'a> DocumentV31<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
-        let mut base = super::fade_shapes::DocumentV29::from_project(project)?;
-        base.use_tuning_version();
+        let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
             base,
             tuning: project.tuning().into(),
+            device_assets: super::device_assets::Manifest::from_project(project)?,
         })
     }
 }
@@ -144,7 +145,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(30) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(31) {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
     let tuning: Tuning = serde_json::from_value(
@@ -153,9 +154,15 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("project tuning is missing"))?,
     )?;
     let tuning = tuning.into_tuning()?;
+    let manifest: super::device_assets::Manifest = serde_json::from_value(
+        object
+            .remove("device_assets")
+            .ok_or(StorageError::Invalid("device asset manifest is missing"))?,
+    )?;
     object.insert("version".into(), 29.into());
     let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
     snapshot.tuning = tuning;
+    manifest.apply(&mut snapshot)?;
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }

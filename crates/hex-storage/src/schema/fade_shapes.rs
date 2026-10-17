@@ -84,7 +84,12 @@ fn apply_shapes(project: Project, shapes: Vec<FadeShape>) -> Result<Project, Sto
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 impl<'a> DocumentV29<'a> {
-    pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
+    pub(super) fn for_current_envelope(project: &'a Project) -> Result<Self, StorageError> {
+        let mut document = Self::base(project)?;
+        document.base.base.version = 31;
+        Ok(document)
+    }
+    fn base(project: &'a Project) -> Result<Self, StorageError> {
         let mut base = super::audio_events::encode(project)?;
         base.base.version = 29;
         let fade_shapes = project
@@ -103,9 +108,6 @@ impl<'a> DocumentV29<'a> {
             })
             .collect();
         Ok(Self { base, fade_shapes })
-    }
-    pub(super) fn use_tuning_version(&mut self) {
-        self.base.base.version = 30;
     }
     pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         // Validate the original token stream before Value adaptation can discard

@@ -22,6 +22,30 @@ Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilin
 are restored, without raising limits or adding callback table construction.
 All313 device tests, packing proof and volume/history proof pass; renewed full
 workspace/final CI remains required. Earlier failed runner evidence is retained.
+## combined current project format — #2739 / PR350, 17 october 2026
+
+After asset PR297 landed, cloud5 integrates both active capabilities in one
+schema31: required complete tuning and device-asset manifest for every project,
+including empty/default values. Prior alpha30 refuses explicitly without
+conversion, rewriting or deletion. The manifest is a reusable bounded current
+payload, not a historical30 dispatch reader. Existing older readers stay intact;
+legacy writers continue to refuse data loss. Combined non-octave tuning/assets,
+Undo/Redo, strict malformed/duplicate manifests and untouched-file refusal are
+covered by the owning storage fixtures. All storage/project/tuning tests and
+strict affected all-target Clippy pass; final complete integrated checks remain
+required. No historical30 reader or automatic user-file conversion was added.
+
+## device asset state storage proof — pulse2681 / PR297, 17 october 2026
+
+Integrated full checks exposed five stale Operator storage-size/boundary proofs
+at6ed1e8fc. Charge the actual16-byte asset-reference field even when empty:
+shared context3008, capture context2628; the unchanged2MiB retained ceiling fits
+409 typed or412 inline recipes. Boundary refusal and no-mutation checks remain;
+no production cap is raised. All136 Operator-state tests pass after repair.
+The next full run found the same engine boundary:425 recipes fit rather than426;
+the unchanged ceiling and next-recipe refusal remain. Both failed full receipts
+and focused repair logs are retained; final full CI pending.
+
 ## native parameter semantics — #2674 / PR290, 17 october 2026
 
 Optional validated state-aware semantics preserve descriptor literals and authored
@@ -4373,6 +4397,37 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+## device asset reference persistence — #2681 / PR297, 17 october 2026
+
+First W10 slice adds bounded neutral asset-slot identities outside the unchanged
+DSP payload, registry/codec metadata preservation, canonical catalog/history
+validation and strict schema30 persistence when references exist. Asset-free
+projects keep schema29. Older encoders/presets and all supported native processing
+paths refuse references they cannot preserve or admit. Focused checks and source
+review are underway; final full CI remains required. No sampler registration,
+PCM leases, live assignment or complete asset-platform acceptance is claimed.
+See [contract and next slices](docs/device-assets.md). Sampler2679 remains first.
+
+Cloud continuation integrated W05 metadata validation while preserving asset
+bindings (`f3008e71`); 422 portable contract/lattice/project/storage tests pass.
+Host compilation exposed a missing asset-error mapping, repaired at `83e94448`;
+six asset-related device/engine/Session checks and affected strict Clippy pass.
+The failed compile log is retained. Full final-source CI, coordinated tuning/asset
+schema migration and resource leases remain open; no live sampler is admitted.
+
+## stable native signing identity — pulse2745 / PR355, 17 october 2026
+
+Optimized test delivery now requires the configured existing Developer ID
+certificate/team and signs the complete staged bundle as `org.portalsurfer.hex.dev`.
+Strict native seal, exact signer and stable designated-requirement checks cover
+the receipt and executable; bundled pre-sign provenance and adjacent final file
+hashes avoid a signature cycle. Legacy unsigned installed apps still verify on
+normal launch. Signing failures preserve the previous app with no ad-hoc fallback.
+Targeted real macOS fixtures verify equal requirements across changed executables,
+wrong-signer rejection, receipt/resource tamper rejection and legacy compatibility.
+No app installation, privacy-setting changes or native permission-persistence
+acceptance is established by these fixtures; full candidate CI and delivery remain
+with the PR coordinator.
 
 ## native project tuning / freqs — pulse2739–2742, 17 october 2026
 
@@ -4472,3 +4527,18 @@ Developer full exact-candidate checks remain required before merging this change
 PR355 owns pending signing integration. One coordinator-controlled serial Mac
 thread will verify native behavior and the single combined delivery; cloud tests
 cannot establish keychain signing, installed launch or permission persistence.
+
+## signing and build-only launch integration — pulse2745 / PR355, 17 october 2026
+
+Reconciled signing with merged launcher PR364 at main `846078bc`, then
+integrated main `a240d7cf` with the alpha policy and W06 host bindings. Default
+build-only delivery keeps source-only evidence and `tests: not_run`; opt-in
+CI-backed delivery retains full-CI provenance. Both write that evidence before
+Developer ID signing and verify the complete seal and configured identity before
+publication. Source drift during signing and signing failures preserve the
+installed app. Production assembly covers both modes; the native fixture seals
+both CI and build-only source evidence. Standalone `c358550f` passed all 20 CI
+stages on Linux and Mac, including real signing; those reports do not certify
+this changed integration. Exact integrated checks remain with PR355. Persistent
+sample access, real WAV preview and identical-binary relaunch acceptance still
+require the coordinator's serial Mac phase and one launcher-owned delivery.

@@ -35,6 +35,7 @@ fn fixture() -> Value {
     let mut document: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
     document["version"] = json!(19);
     document.as_object_mut().unwrap().remove("tuning");
+    document.as_object_mut().unwrap().remove("device_assets");
     document.as_object_mut().unwrap().remove("track_colors");
     document.as_object_mut().unwrap().remove("accented_clips");
     document.as_object_mut().unwrap().remove("audio_clip_state");
@@ -58,6 +59,7 @@ fn historical(version: u64, provenance: bool, routing: bool) -> Value {
     let mut document = fixture();
     document["version"] = json!(version);
     document.as_object_mut().unwrap().remove("tuning");
+    document.as_object_mut().unwrap().remove("device_assets");
     document.as_object_mut().unwrap().remove("track_colors");
     document.as_object_mut().unwrap().remove("accented_clips");
     document.as_object_mut().unwrap().remove("audio_clip_state");

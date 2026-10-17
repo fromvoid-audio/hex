@@ -2,6 +2,7 @@
 mod audition;
 mod broadcast;
 pub(super) mod library;
+mod midi_activity;
 mod plots;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod ui_tests;
@@ -57,6 +58,9 @@ pub(super) struct TuningState {
     pub(super) audition_input:
         Option<std::sync::Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     held_keys: [u64; 2],
+    midi_keys: [u64; 2],
+    midi_last_query: Option<Instant>,
+    midi_spans: Option<Box<hex_engine::MidiSpanBuffer>>,
     recent_keys: [Option<Instant>; 128],
     pub client: TuningGestureClient,
     pub(super) value: ProjectTuning,
@@ -109,6 +113,9 @@ impl TuningState {
             audition_keyboard: super::computer_keyboard::ComputerKeyboard::default(),
             audition_input: None,
             held_keys: [0; 2],
+            midi_keys: [0; 2],
+            midi_last_query: None,
+            midi_spans: None,
             recent_keys: [None; 128],
             client: TuningGestureClient::default(),
             value,
@@ -274,6 +281,10 @@ impl Field {
 impl EditorView {
     pub(super) fn open_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tuning.open = true;
+        self.tuning.midi_last_query = None;
+        self.tuning
+            .midi_spans
+            .get_or_insert_with(|| Box::new(hex_engine::MidiSpanBuffer::default()));
         self.cancel_computer_keyboard();
         self.tuning.audition_keyboard.enabled = true;
         self.tuning.shift = window.modifiers().shift;
