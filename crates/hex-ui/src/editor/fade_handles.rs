@@ -205,7 +205,7 @@ impl EditorView {
     pub(super) fn update_fade_gesture(
         &mut self,
         position: Point<Pixels>,
-        free_modifier: bool,
+        snap_modifier: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = self.active_fade_drag.as_ref() else {
@@ -250,10 +250,20 @@ impl EditorView {
                 let frame = i128::from(endpoint)
                     .saturating_add(frames)
                     .clamp(0, i128::from(u64::MAX)) as u64;
-                let Some(frame) = drag
-                    .snap_grid
-                    .with_platform_modifier(free_modifier)
-                    .snap_frame(&state.project, frame, drag.viewport, drag.lane.width)
+                // Lower knots resize freely by default. Command opts into the
+                // configured grid; Off uses the ordinary modifier's adaptive grid.
+                let grid = if snap_modifier {
+                    match drag.snap_grid {
+                        super::musical_time::SnapGrid::Off => {
+                            super::musical_time::SnapGrid::Adaptive
+                        }
+                        grid => grid,
+                    }
+                } else {
+                    super::musical_time::SnapGrid::Off
+                };
+                let Some(frame) =
+                    grid.snap_frame(&state.project, frame, drag.viewport, drag.lane.width)
                 else {
                     return;
                 };

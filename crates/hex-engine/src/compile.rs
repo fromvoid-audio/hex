@@ -285,6 +285,11 @@ fn compile_project_inner<'a>(
     shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
     transforms: &crate::audio_transform::AudioTransformPreparation,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
+    // #2740 supplies the pitch-aware runtime. Refuse until then rather than
+    // accepting a saved tuned project and silently playing equal temperament.
+    if snapshot.tuning().enabled() {
+        return Err(Invalid("project tuning playback is not implemented"));
+    }
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;
