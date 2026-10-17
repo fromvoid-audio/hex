@@ -193,8 +193,6 @@ impl ResponseGraph {
         self.creation_drag_enabled = enabled;
     }
 
-    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
-    /// Owners choose participation without changing pointer or edit semantics.
     /// Capture Backspace only while this graph owns focus. Owners decide how
     /// an emitted stable node identity maps to their canonical removal command.
     /// Empty, disabled or held-pointer graphs consume the key without removal.
@@ -204,6 +202,8 @@ impl ResponseGraph {
         self.backspace_removal = enabled;
     }
 
+    /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
+    /// Owners choose participation without changing pointer or edit semantics.
     pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.tab_navigation = enabled;
         let tab_stop = self.tab_navigation && self.editable;
