@@ -3,6 +3,7 @@ pub(crate) mod audio_events;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
+pub(crate) mod device_assets;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
@@ -2033,6 +2034,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid(
                 "unsupported project format or version",
             ));
+        }
+        if header.version == 30 {
+            return device_assets::DocumentV30::decode(bytes);
         }
         if header.version == 29 {
             return fade_shapes::DocumentV29::decode(bytes);
