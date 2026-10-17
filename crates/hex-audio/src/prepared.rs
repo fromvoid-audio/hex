@@ -972,7 +972,9 @@ pub fn channel_with_spectrum(
 
 struct SpectrumStage {
     frames: [[f32; 2]; 256],
+    input_frames: [[f32; 2]; 256],
     seen: [u64; 4],
+    input_seen: [u64; 4],
     expected: usize,
     observed: bool,
     valid: bool,
@@ -984,7 +986,9 @@ impl Default for SpectrumStage {
     fn default() -> Self {
         Self {
             frames: [[0.0; 2]; 256],
+            input_frames: [[0.0; 2]; 256],
             seen: [0; 4],
+            input_seen: [0; 4],
             expected: 0,
             observed: false,
             valid: false,
@@ -997,7 +1001,9 @@ impl Default for SpectrumStage {
 impl SpectrumStage {
     fn begin(&mut self, target: spectrum_target::SpectrumTarget, epoch: u64, expected: usize) {
         self.frames.fill([0.0; 2]);
+        self.input_frames.fill([0.0; 2]);
         self.seen.fill(0);
+        self.input_seen.fill(0);
         self.expected = expected;
         self.observed = false;
         self.valid = expected <= self.frames.len();
@@ -1005,7 +1011,13 @@ impl SpectrumStage {
         self.epoch = epoch;
     }
 
-    fn observe(&mut self, identity: PostNodeIdentity, offset: usize, frames: &[[f32; 2]]) {
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: hex_engine::NodeSignalPhase,
+        offset: usize,
+        frames: &[[f32; 2]],
+    ) {
         let Some(target) = self.target else {
             return;
         };
@@ -1021,11 +1033,15 @@ impl SpectrumStage {
             self.valid = false;
             return;
         }
+        let (samples, seen) = match phase {
+            hex_engine::NodeSignalPhase::Input => (&mut self.input_frames, &mut self.input_seen),
+            hex_engine::NodeSignalPhase::Output => (&mut self.frames, &mut self.seen),
+        };
         for (relative, frame) in frames.iter().enumerate() {
             let index = offset + relative;
             let word = index / 64;
             let mask = 1_u64 << (index % 64);
-            let Some(bits) = self.seen.get_mut(word) else {
+            let Some(bits) = seen.get_mut(word) else {
                 self.valid = false;
                 return;
             };
@@ -1034,7 +1050,7 @@ impl SpectrumStage {
                 return;
             }
             *bits |= mask;
-            self.frames[index] = *frame;
+            samples[index] = *frame;
         }
     }
 
@@ -1042,7 +1058,10 @@ impl SpectrumStage {
         self.valid
             && self.observed
             && self.target.is_some()
-            && (0..self.expected).all(|index| self.seen[index / 64] & (1_u64 << (index % 64)) != 0)
+            && (0..self.expected).all(|index| {
+                let mask = 1_u64 << (index % 64);
+                self.seen[index / 64] & mask != 0 && self.input_seen[index / 64] & mask != 0
+            })
     }
 
     fn clear(&mut self) {
@@ -1051,6 +1070,7 @@ impl SpectrumStage {
         self.observed = false;
         self.valid = false;
         self.seen.fill(0);
+        self.input_seen.fill(0);
     }
 }
 
@@ -2288,8 +2308,9 @@ impl Callback {
             return Ok(());
         }
         let stage = &mut self.spectrum_stage;
-        let mut observe =
-            |identity, offset, frames: &[Frame]| stage.observe(identity, offset, frames);
+        let mut observe = |identity, phase, offset, frames: &[Frame]| {
+            stage.observe_signal(identity, phase, offset, frames)
+        };
         if let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
             && active.streaming_enabled()
         {
@@ -2314,7 +2335,7 @@ impl Callback {
         {
             active
                 .playback
-                .render_with_post_node_observer(output, Some(&mut observe))?;
+                .render_with_node_signal_observer(output, Some(&mut observe))?;
         } else {
             output.fill([0.0; 2]);
         }
@@ -2426,8 +2447,9 @@ impl Callback {
                         .and_then(ActivePublication::current)
                         .map_or(0, |active| active.revision),
                 };
-                Some(capture.submit_at(
+                Some(capture.submit_pair_at(
                     stamp,
+                    &self.spectrum_stage.input_frames[..self.spectrum_stage.expected],
                     &self.spectrum_stage.frames[..self.spectrum_stage.expected],
                     captured_start,
                 ))
@@ -4581,30 +4603,92 @@ mod tests {
     }
 
     #[test]
-    fn spectrum_stage_accumulates_exact_offsets_and_rejects_overlap_or_wrong_owner() {
+    fn spectrum_stage_requires_independent_exact_phase_coverage() {
+        use hex_engine::NodeSignalPhase::{Input, Output};
         let target = spectrum_test_target(hex_engine::ProcessorChainOwner::Track(3), 0, 1, 48_000);
-        let mut stage = SpectrumStage::default();
-        stage.begin(target, 1, 4);
-        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
         let wrong_owner =
             spectrum_test_target(hex_engine::ProcessorChainOwner::Return(3), 0, 1, 48_000);
-        stage.observe(wrong_owner.identity, 2, &[[0.8, 0.9]]);
-        assert!(!stage.complete());
-        stage.observe(target.identity, 2, &[[0.5, 0.6], [0.7, 0.8]]);
-        assert!(stage.complete());
-        assert_eq!(
-            stage.frames[..4],
-            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]
+        let input = [[0.1, -0.2], [0.3, -0.4], [0.5, -0.6], [0.7, -0.8]];
+        let output = [[0.2, -0.4], [0.6, -0.8], [1.0, -1.2], [1.4, -1.6]];
+        let mut stage = SpectrumStage::default();
+        stage.begin(target, 1, 4);
+        stage.observe_signal(target.identity, Input, 0, &input);
+        assert!(!stage.complete(), "input alone cannot publish");
+        stage.observe_signal(target.identity, Output, 2, &output[2..]);
+        stage.observe_signal(wrong_owner.identity, Output, 0, &output[..2]);
+        assert!(
+            !stage.complete(),
+            "the other owner's samples cannot complete a pair"
         );
-
-        stage.begin(target, 2, 4);
-        stage.observe(target.identity, 0, &[[0.1, 0.2], [0.3, 0.4]]);
-        stage.observe(target.identity, 1, &[[0.5, 0.6]]);
+        stage.observe_signal(target.identity, Output, 0, &output[..2]);
+        assert!(stage.complete());
+        assert_eq!(stage.input_frames[..4], input);
+        assert_eq!(stage.frames[..4], output);
+        stage.clear();
         assert!(!stage.complete());
 
-        stage.begin(target, 3, 4);
-        stage.observe(target.identity, usize::MAX, &[[0.1, 0.2]]);
+        for phase in [Input, Output] {
+            for (offset, count) in [(1, 1), (4, 1), (usize::MAX, 1)] {
+                stage.begin(target, 2, 4);
+                stage.observe_signal(target.identity, Input, 0, &input);
+                stage.observe_signal(target.identity, Output, 0, &output);
+                assert!(stage.complete());
+                stage.observe_signal(target.identity, phase, offset, &input[..count]);
+                assert!(
+                    !stage.complete(),
+                    "overlap or out-of-bounds in either phase invalidates the pair"
+                );
+            }
+        }
+        stage.begin(target, 3, 257);
         assert!(!stage.complete());
+    }
+
+    #[test]
+    fn prepared_eq_captures_actual_input_and_processed_output_without_changing_pcm() {
+        let (mut control, mut callback, mut reader, reaper) = spectrum_test_channel();
+        let (playback, identity) = spectrum_eq8_graph_with_params(true, 0, 12.0, 1.0);
+        let (mut oracle, _) = spectrum_eq8_graph_with_params(true, 0, 12.0, 1.0);
+        let revision = control.publish(playback).unwrap();
+        control
+            .spectrum_target
+            .select(identity, 0, revision, 48_000)
+            .unwrap();
+        let mut actual = [[0.0; 2]; 256];
+        let mut expected = actual;
+        oracle.render(&mut expected).unwrap();
+        let mut render = || {
+            callback.begin_block();
+            callback.render(&mut actual).unwrap();
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(&mut render);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        render();
+        assert_eq!(actual, expected);
+        assert!(callback.spectrum_stage.complete());
+        assert_eq!(callback.spectrum_stage.input_frames, [[0.25, -0.4]; 256]);
+        assert_eq!(callback.spectrum_stage.frames, actual);
+        assert!(actual.iter().any(|frame| (frame[0] - 0.25).abs() > 0.001));
+        // Even a fully covered pair must be discarded if final caller validation fails.
+        assert_eq!(
+            callback.finish_spectrum_block(Instant::now(), false),
+            Some(crate::spectrum_worker::CaptureOutcome::Skipped { sequence: 0 })
+        );
+        assert!(!callback.spectrum_stage.complete());
+        assert!(reader.try_latest_pair().is_none());
+        shutdown_spectrum_test_channel(control, callback, reaper);
     }
 
     #[test]

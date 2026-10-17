@@ -4,6 +4,12 @@
 
 Own device output, stream lifetime, bounded real-time control delivery, and backend telemetry.
 
+Selected-device spectra stage actual whole-entry input and output independently,
+then submit a single aligned pair only after final callback output validation.
+The bounded worker shares FFT scratch, cadence, freshness and retirement across
+both layers. Output-only APIs project the output of the same reader; legacy
+captures leave input absent. See [EQ signal and custody contracts](../../docs/eq.md#live-input-and-output-spectra).
+
 The desktop's nonblocking initial open uses `request_initial_open()` and polls
 its one-result handle; the lifecycle worker uses the device's actual default
 rate without assuming a project rate. Recovery uses
@@ -142,8 +148,9 @@ the rolling window. Ordinary applied-revision changes keep contiguous output
 samples and update the published revision. Sample-rate changes reconstruct the
 kernel on the worker. Results expire after 100 ms without accepted capture. The
 worker thread owns FFT construction/reconstruction and analysis. The prepared
-CPAL callback only stages the selected EQ8 post-node output into fixed storage
-and submits bounded batches; it performs no FFT.
+CPAL callback stages the selected EQ entry's actual input/output in fixed storage
+and submits one aligned packet; it performs no FFT. Output-only APIs remain
+projections of the same worker/reader, and legacy captures have no input layer.
 
 The callback owns the capture producer. After a successful stream pause, the
 lifecycle owner drops the stream/callback first, joins the worker reaper second,

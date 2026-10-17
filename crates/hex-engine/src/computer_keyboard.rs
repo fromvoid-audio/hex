@@ -925,6 +925,62 @@ mod tests {
         playback
     }
     #[test]
+    fn stopped_keyboard_pairs_cover_real_device_input_output_and_freeze_clocks() {
+        let (project, track) = fixture();
+        let mut editor = Editor::new(project, 16).unwrap();
+        let state =
+            crate::default_native_device_state(crate::DeviceTypeId::from_static("hex.utility"))
+                .unwrap()
+                .with_input_gain_millidb(6_000)
+                .unwrap()
+                .with_output_gain_millidb(-3_000)
+                .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            })
+            .unwrap();
+        let input = Arc::new(ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut tested = playback(editor.project(), track, &input);
+        let mut oracle = playback(editor.project(), track, &input);
+        let mut actual = [[0.0; 2]; 512];
+        let mut expected = actual;
+        let mut calls = Vec::new();
+        tested
+            .render_with_node_signal_observer(
+                &mut actual,
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    assert_eq!(
+                        identity.owner,
+                        hex_lattice::ProcessorChainOwner::Track(track.value())
+                    );
+                    calls.push((phase, offset, frames.to_vec()));
+                }),
+            )
+            .unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
+        assert_eq!(calls.len(), 4);
+        for (chunk, pair) in calls.chunks_exact(2).enumerate() {
+            assert_eq!(
+                (pair[0].0, pair[0].1),
+                (crate::NodeSignalPhase::Input, chunk * 256)
+            );
+            assert_eq!(
+                (pair[1].0, pair[1].1),
+                (crate::NodeSignalPhase::Output, chunk * 256)
+            );
+            assert_eq!(pair[1].2, actual[chunk * 256..(chunk + 1) * 256]);
+            assert_ne!(pair[0].2, pair[1].2);
+        }
+        assert_eq!((tested.position(), tested.performance_frame()), (0, 0));
+        assert!(!tested.playing());
+    }
+    #[test]
     fn computer_keyboard_stopped_polyphony_release_matches_independent_sine_pcm_and_freezes_transport()
      {
         let (project, track) = fixture();

@@ -101,6 +101,11 @@ fn every_mode_split_recombines_exactly_with_root_pitch_phase_envelope_fades_and_
             tail: BeatsTail::Alternating,
             decay: 75,
         }),
+        Some(WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        }),
         Some(WarpMode::Tones { grain_ms: 40 }),
         Some(WarpMode::Texture {
             grain_ms: 40,
