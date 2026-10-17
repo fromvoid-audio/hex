@@ -41,7 +41,8 @@ history. No PCM or OS clipboard is owned here. See [time selection](../../docs/t
 
 ## Dependencies
 
-Depends on the standard library and `hex-lattice-contract` for opaque, bounded
+Depends on the standard library, `hex-tuning` for validated project tuning and
+audition settings, and `hex-lattice-contract` for opaque, bounded
 native-device state envelopes. The engine consumes read-only snapshots to
 compile playback; storage owns the versioned native metadata file. Device
 payloads remain opaque here; the model does not depend on DSP or UI. Hybrid tracks
@@ -243,3 +244,10 @@ and participate in normal transactional history; see
 Arrangement and Session clip labels are canonical independent metadata.
 `RenameClip` validates a stable clip ID/name and shares normal transactional
 history. Splits/copies retain names. See [clip names](../../docs/clip-names.md).
+
+Project tuning is one validated `ProjectTuning` value, owned independently of local
+scale-library names and device state. New projects default to disabled A440 12-tone
+equal temperament. `Command::SetTuning` replaces tuning and audition settings as
+one atomic history step; snapshot restore preserves both. Prepared admission
+refusal leaves the prior project and undo/redo branches unchanged. This metadata
+contract does not retune instruments or publish an MTS-ESP master.
