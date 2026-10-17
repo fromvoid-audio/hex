@@ -526,8 +526,6 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
     legacy.as_object_mut().unwrap().remove("audio_feeds");
@@ -725,8 +723,6 @@ fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     json.as_object_mut().unwrap().remove("accented_clips");
     json.as_object_mut().unwrap().remove("audio_clip_state");
     json.as_object_mut().unwrap().remove("audio_event_state");
-    json.as_object_mut().unwrap().remove("track_colors");
-    json.as_object_mut().unwrap().remove("accented_clips");
 
     json.as_object_mut().unwrap().remove("clip_names");
     json.as_object_mut().unwrap().remove("audio_feeds");
@@ -1003,15 +999,13 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], 28);
-    json["version"] = 28.into();
+    json["version"] = (json["version"].as_u64().unwrap() + 1).into();
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
     json.as_object_mut().unwrap().remove("track_colors");
     json.as_object_mut().unwrap().remove("accented_clips");
     json.as_object_mut().unwrap().remove("audio_clip_state");
     json.as_object_mut().unwrap().remove("audio_event_state");
-    json.as_object_mut().unwrap().remove("track_colors");
-    json.as_object_mut().unwrap().remove("accented_clips");
 
     json.as_object_mut().unwrap().remove("clip_names");
     json.as_object_mut().unwrap().remove("audio_feeds");
@@ -1146,8 +1140,6 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     json.as_object_mut().unwrap().remove("accented_clips");
     json.as_object_mut().unwrap().remove("audio_clip_state");
     json.as_object_mut().unwrap().remove("audio_event_state");
-    json.as_object_mut().unwrap().remove("track_colors");
-    json.as_object_mut().unwrap().remove("accented_clips");
 
     json.as_object_mut().unwrap().remove("clip_names");
     json.as_object_mut().unwrap().remove("audio_feeds");
@@ -1550,8 +1542,6 @@ fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
     value.as_object_mut().unwrap().remove("accented_clips");
     value.as_object_mut().unwrap().remove("audio_clip_state");
     value.as_object_mut().unwrap().remove("audio_event_state");
-    value.as_object_mut().unwrap().remove("track_colors");
-    value.as_object_mut().unwrap().remove("accented_clips");
 
     value.as_object_mut().unwrap().remove("clip_names");
     value.as_object_mut().unwrap().remove("audio_feeds");
@@ -1800,8 +1790,6 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
     legacy.as_object_mut().unwrap().remove("audio_feeds");
@@ -1831,8 +1819,6 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
     legacy.as_object_mut().unwrap().remove("audio_feeds");
@@ -1927,8 +1913,6 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("audio_clip_state");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
 
     legacy.as_object_mut().unwrap().remove("clip_names");
     remove_gain_lane_fields(&mut legacy);

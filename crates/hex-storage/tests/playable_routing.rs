@@ -138,8 +138,6 @@ fn schema23_migrates_empty_inputs_and_rejects_playable_field_backports() {
     old.as_object_mut().unwrap().remove("accented_clips");
     old.as_object_mut().unwrap().remove("audio_clip_state");
     old.as_object_mut().unwrap().remove("audio_event_state");
-    old.as_object_mut().unwrap().remove("track_colors");
-    old.as_object_mut().unwrap().remove("accented_clips");
 
     old.as_object_mut().unwrap().remove("clip_names");
     assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());

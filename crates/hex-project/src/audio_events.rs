@@ -82,6 +82,12 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS || self.next_id == 0 {
             return Err(Invalid("audio event limit or identity is invalid"));
         }
+        self.validate_geometry(length)
+    }
+    fn validate_geometry(&self, length: u64) -> Result<(), Invalid> {
+        if self.next_id == 0 {
+            return Err(Invalid("audio event identity is invalid"));
+        }
         let mut ids = std::collections::BTreeSet::new();
         let mut previous_end = 0;
         for event in &self.events {
@@ -137,7 +143,17 @@ impl AudioEvents {
         Ok(())
     }
     pub fn edited(&self, operation: AudioEventEdit, length: u64) -> Result<Self, Invalid> {
-        self.validate(length)?;
+        // Cropped views may add two virtual boundary fragments. Only the final
+        // canonical result consumes the event limit, so reducing edits stay usable.
+        if self.events.len() > MAX_AUDIO_EVENTS + 2 {
+            return Err(Invalid("audio event view limit reached"));
+        }
+        let next = self.edited_inner(operation, length)?;
+        next.validate(length)?;
+        Ok(next)
+    }
+    fn edited_inner(&self, operation: AudioEventEdit, length: u64) -> Result<Self, Invalid> {
+        self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
             AudioEventEdit::Split { at } => {
@@ -157,8 +173,8 @@ impl AudioEvents {
                 if start >= end || end > length {
                     return Err(Invalid("invalid audio event split range"));
                 }
-                next = next.edited(AudioEventEdit::Split { at: start }, length)?;
-                next = next.edited(AudioEventEdit::Split { at: end }, length)?;
+                next = next.edited_inner(AudioEventEdit::Split { at: start }, length)?;
+                next = next.edited_inner(AudioEventEdit::Split { at: end }, length)?;
             }
             AudioEventEdit::Insert {
                 at,
@@ -168,7 +184,7 @@ impl AudioEvents {
                 if at > length || span == 0 {
                     return Err(Invalid("invalid audio event insert range"));
                 }
-                next = next.edited(AudioEventEdit::Split { at }, length)?;
+                next = next.edited_inner(AudioEventEdit::Split { at }, length)?;
                 for event in &mut next.events {
                     if event.start >= at {
                         event.end = event
@@ -184,7 +200,7 @@ impl AudioEvents {
                             .ok_or(Invalid("audio event insert position overflow"))?;
                     }
                 }
-                next = next.edited(
+                next = next.edited_inner(
                     AudioEventEdit::Paste {
                         at,
                         length: span,
@@ -254,8 +270,8 @@ impl AudioEvents {
                     .filter(|end| *end <= length)
                     .ok_or(Invalid("audio event range move exceeds its container"))?;
                 let copied = next.copy_range(start, end);
-                next = next.edited(AudioEventEdit::Delete { start, end }, length)?;
-                next = next.edited(
+                next = next.edited_inner(AudioEventEdit::Delete { start, end }, length)?;
+                next = next.edited_inner(
                     AudioEventEdit::Paste {
                         at: destination,
                         length: span,
@@ -310,7 +326,7 @@ impl AudioEvents {
             }
         }
         next.events.sort_by_key(|e| e.start);
-        next.validate(length)?;
+        next.validate_geometry(length)?;
         Ok(next)
     }
     pub fn copy_range(&self, start: u64, end: u64) -> Vec<AudioEvent> {
@@ -343,7 +359,7 @@ impl Clip {
         if root.view_start == 0 && root.view_end == root.domain.clock.length() {
             return Ok(self.audio_events());
         }
-        self.audio_events().edited(
+        self.audio_events().edited_inner(
             AudioEventEdit::SplitRange {
                 start: root.view_start,
                 end: root.view_end,
@@ -632,5 +648,82 @@ mod range_tests {
                 .is_err()
         );
         assert_eq!(sequence.events.len(), MAX_AUDIO_EVENTS);
+    }
+}
+
+#[cfg(test)]
+mod cropped_capacity_regression {
+    use super::*;
+    use crate::{Command, Created, Editor};
+    #[test]
+    fn delete_from_cropped_full_sequence_checks_final_capacity_and_undo() {
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "capacity".into(),
+                path: "capacity.wav".into(),
+                sample_rate: 48000,
+                frames: 4096,
+            })
+            .unwrap()
+        else {
+            panic!("fixture")
+        };
+        let mut project = editor.project().clone();
+        let mut root = project.clip(clip).unwrap().audio_event_root();
+        Arc::make_mut(&mut root.domain).events = Some(Arc::new(AudioEvents {
+            next_id: 1025,
+            events: (0..1024)
+                .map(|i| AudioEvent {
+                    id: i + 1,
+                    start: i * 4,
+                    end: i * 4 + 4,
+                    source_start: i * 4,
+                })
+                .collect(),
+        }));
+        project.clip_mut(clip).unwrap().edit = Some(Arc::new(root));
+        let mut editor = Editor::new(project, 8).unwrap();
+        let Created::Clip(right) = editor
+            .execute(Command::SplitClip { clip, frame: 2 })
+            .unwrap()
+        else {
+            panic!("split")
+        };
+        let before = editor.project().clone();
+        assert!(
+            editor
+                .project()
+                .clip(right)
+                .unwrap()
+                .editable_audio_events()
+                .is_ok(),
+            "virtual crop boundaries must remain editable at capacity"
+        );
+        assert!(
+            editor
+                .execute(Command::EditAudioEvents {
+                    clip: right,
+                    operation: AudioEventEdit::Split { at: 3 },
+                })
+                .is_err(),
+            "an increasing edit must still enforce the final limit"
+        );
+        assert_eq!(*editor.project(), before);
+        editor
+            .execute(Command::EditAudioEvents {
+                clip: right,
+                operation: AudioEventEdit::Delete {
+                    start: 2,
+                    end: 4096,
+                },
+            })
+            .unwrap();
+        let sequence = editor.project().clip(right).unwrap().audio_events();
+        assert_eq!(sequence.events.len(), 1);
+        assert_eq!((sequence.events[0].start, sequence.events[0].end), (0, 2));
+        sequence.validate(4096).unwrap();
+        assert!(editor.undo());
+        assert_eq!(*editor.project(), before);
     }
 }

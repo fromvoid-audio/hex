@@ -45,7 +45,8 @@ visible crop; editing a child makes its own copy without modifying its sibling.
 The container fade and gain apply after event composition, not once per event.
 When an outer cut crops through an existing event, the editable view isolates its
 visible fragment before an inner edit. Copy/move/trim therefore target that
-fragment, while the hidden source intervals and sibling clip stay intact.
+fragment, while the hidden source intervals and sibling clip stay intact. Drag,
+range-move and keyboard destinations stay within the visible crop.
 
 The lower editor owns its editing shortcuts while focused. Returning to a track,
 Arrangement clip, source tab, device panel or closed detail pane releases that
@@ -58,22 +59,27 @@ or different-source paste. It does not silently reinterpret source offsets.
 `hex-project::AudioEvents` owns validated, sorted nonoverlapping intervals and a
 sequence-local identity allocator. References are scoped to clip/revision;
 gestures never retain an unguarded event index. At most 1,024 events exist in one
-root. Malformed IDs, overlap, exhausted IDs, overflow, invalid source coordinates
+root. Crop boundaries may add two temporary view fragments; final canonical edits
+enforce the 1,024-event limit so deletion remains usable at capacity.
+Malformed IDs, overlap, exhausted IDs, overflow, invalid source coordinates
 and over-limit edits fail transactionally without changing history.
 
 One typed `EditAudioEvents` command is one undo step. Candidate preparation must
 succeed before canonical commit. `hex-engine` composes the retained root on the
 worker before applying the outer fade. Temporary composition storage receives a
-separate derived-audio budget reservation. Playback consumes ordinary prepared
+separate derived-audio budget reservation. Both output and temporary reservations
+reclaim evictable committed/pending transforms before refusing an edit. Playback consumes ordinary prepared
 immutable PCM; it never scans event lists or allocates in the audio callback.
 Splits and moves share unchanged media, with source/root identity in cache keys.
 
-Schema27 adds a complete `audio_event_state` table to the existing complete
-schema26 envelope. Every Arrangement audio clip appears exactly once, including
+Schema28 adds a complete `audio_event_state` table to the schema27 appearance
+and clip-name envelope. Every Arrangement audio clip appears exactly once, including
 implicit sequences. Unknown/duplicate fields, missing owners, duplicate/missing
 rows and malformed event bounds are refused. The original JSON token stream is
 checked for duplicate keys before adapting the older envelope. Strict schemas
-1–26 still migrate to implicit events and retain all previous state. Older
+1–27 still migrate to implicit events and retain all previous state. The earlier
+event-only schema27 branch is recognized separately by its strict envelope; mixed
+appearance/event schema27 files are refused instead of dropping either contract. Older
 explicit writers refuse event-bearing processing roots rather than dropping them.
 
 Current preparation uses the existing resident transformed-audio path and its
@@ -94,7 +100,11 @@ compare identity splits, overwrite/gaps, seek/block partitioning, outer splits a
 musical/warp identity splits; streamed preparation refusal preserves the project.
 Headless GPUI tests exercise actual ruler/drag/key input, independent snap state,
 inner-command routing and stale/cancel behavior. They do not establish native
-macOS hit testing, rendering, listening or sustained performance.
+macOS hit testing, rendering, listening or sustained performance. Regression tests
+cover crop-bounded moves/nudges, closing editor focus, capacity-reducing edits and
+scratch-budget reclamation. A PCM-backed waveform regression confirms accepted
+sidecars contain event-composed audio: previews map to the current destination
+interval in that sidecar, rather than reading raw source offsets from it.
 
 Native acceptance remains open: import original audio, split/move/trim events,
 select/cut/copy/paste time, compare snapped/free moves at multiple zoom levels and

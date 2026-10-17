@@ -277,13 +277,22 @@ impl EditorView {
             Kind::RangeMove { start, end } => {
                 let candidate = (i128::from(start) + i128::from(raw) - i128::from(gesture.anchor))
                     .clamp(
-                        0,
-                        i128::from(root.domain.clock.length().saturating_sub(end - start)),
+                        i128::from(root.view_start),
+                        i128::from(
+                            root.view_end
+                                .saturating_sub(end - start)
+                                .max(root.view_start),
+                        ),
                     ) as u64;
                 let destination = self
                     .event_snap_position(candidate, platform)
                     .unwrap_or(candidate)
-                    .min(root.domain.clock.length().saturating_sub(end - start));
+                    .clamp(
+                        root.view_start,
+                        root.view_end
+                            .saturating_sub(end - start)
+                            .max(root.view_start),
+                    );
                 gesture.operation = Some(AudioEventEdit::MoveRange {
                     start,
                     end,
@@ -293,13 +302,22 @@ impl EditorView {
             Kind::Move(event) => {
                 let candidate =
                     (i128::from(event.start) + i128::from(raw) - i128::from(gesture.anchor)).clamp(
-                        0,
-                        i128::from(root.domain.clock.length().saturating_sub(event.length())),
+                        i128::from(root.view_start),
+                        i128::from(
+                            root.view_end
+                                .saturating_sub(event.length())
+                                .max(root.view_start),
+                        ),
                     ) as u64;
                 let start = self
                     .event_snap_position(candidate, platform)
                     .unwrap_or(candidate)
-                    .min(root.domain.clock.length().saturating_sub(event.length()));
+                    .clamp(
+                        root.view_start,
+                        root.view_end
+                            .saturating_sub(event.length())
+                            .max(root.view_start),
+                    );
                 gesture.operation = Some(AudioEventEdit::Move {
                     event: event.id,
                     start,
@@ -388,7 +406,12 @@ impl EditorView {
                 });
             }
         } else {
-            let start = next.min(root.domain.clock.length().saturating_sub(event.length()));
+            let start = next.clamp(
+                root.view_start,
+                root.view_end
+                    .saturating_sub(event.length())
+                    .max(root.view_start),
+            );
             self.event_commit(AudioEventEdit::Move {
                 event: event.id,
                 start,

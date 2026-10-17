@@ -915,3 +915,47 @@ fn editing_the_visible_event_after_an_outer_cut_preserves_its_sibling_and_hidden
         2
     );
 }
+
+#[test]
+fn event_scratch_reclaims_unused_committed_and_pending_cache() {
+    for pending in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        // Each root is 64000 bytes: old cached + output fits, scratch needs eviction.
+        let context = isolated(128_000, 256_000, 8);
+        let check = || {
+            drop(prepare(&editor, &media, &context));
+            let mut next = Editor::new(editor.project().clone(), 8).unwrap();
+            next.execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::Delete {
+                    start: 2000,
+                    end: 4000,
+                },
+            })
+            .unwrap();
+            let accepted = crate::PreparedRevision::prepare_with_audio_transforms(
+                next.project(),
+                &media,
+                Arc::new(crate::SineTable::new()),
+                None,
+                &context,
+            )
+            .expect("scratch can reclaim an inaudible old transform");
+            assert_eq!(context.retained_pcm_bytes(), 64_000);
+            assert!(
+                render(&accepted, 2000, 2000, 127)
+                    .iter()
+                    .all(|x| *x == [0.0, 0.0])
+            );
+            Ok(())
+        };
+        if pending {
+            context.transaction(check).unwrap();
+        } else {
+            check().unwrap();
+        }
+    }
+}

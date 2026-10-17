@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{AudioEventEdit, Command};
 
 #[gpui::test]
@@ -241,4 +241,248 @@ fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestApp
         assert_eq!(clipboard.events[0].source_start, 48000);
         assert!(view.last_enqueued_edit.is_none());
     });
+}
+
+#[gpui::test]
+fn closing_events_releases_focus_and_gesture(cx: &mut TestAppContext) {
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let body = visual.debug_bounds("audio-events-waveform").unwrap();
+    let click = point(body.center().x, body.center().y + px(12.0));
+    visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+    let toggle = visual.debug_bounds("clip-view-toggle").unwrap().center();
+    visual.simulate_mouse_down(toggle, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        editor.read_with(cx, |view, _| {
+            assert!(!view.clip_view_open);
+            assert!(
+                !view.audio_event_focus.is_focused(window),
+                "closed events cannot retain shortcut focus"
+            );
+            assert!(view.focus.is_focused(window));
+            assert!(view.audio_event_editor.gesture.is_none());
+        })
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mut TestAppContext) {
+    let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        let state = view.state.as_ref().unwrap();
+        let mut canonical = hex_project::Editor::new((*state.project).clone(), 8).unwrap();
+        canonical
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 48000 },
+            })
+            .unwrap();
+        let hex_project::Created::Clip(middle) = canonical
+            .execute(Command::SplitClip { clip, frame: 24000 })
+            .unwrap()
+        else {
+            panic!("split")
+        };
+        canonical
+            .execute(Command::SplitClip {
+                clip: middle,
+                frame: 72000,
+            })
+            .unwrap();
+        view.state = Some(std::sync::Arc::new(hex_session::service::ViewState {
+            canonical_audio_source: None,
+            project: std::sync::Arc::new(canonical.project().clone()),
+            waveforms: state.waveforms.clone(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: state.midi_preview.clone(),
+            gain_preview: state.gain_preview.clone(),
+            timeline_frames: state.timeline_frames,
+            can_undo: true,
+            can_redo: false,
+            revision: 2,
+            unsaved: true,
+            document_path: None,
+        }));
+        view.selected_clip = Some(middle);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
+    editor.update(cx, |view, _| {
+        view.audio_event_editor.grid = SnapGrid::Off;
+        let (_, root, _) = view.event_context().unwrap();
+        let events = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .clip(view.selected_clip.unwrap())
+            .unwrap()
+            .editable_audio_events()
+            .unwrap();
+        let first = *events
+            .events
+            .iter()
+            .find(|e| e.start == root.view_start)
+            .unwrap();
+        let last = *events
+            .events
+            .iter()
+            .find(|e| e.end == root.view_end)
+            .unwrap();
+        let left = f32::from(bounds.origin.x);
+        let width = f32::from(bounds.size.width);
+        for (kind, anchor, origin, x) in [
+            (Kind::Move(first), 30000, left + width * 0.125, left),
+            (Kind::Move(last), 60000, left + width * 0.75, left + width),
+            (
+                Kind::RangeMove {
+                    start: root.view_start,
+                    end: root.view_end,
+                },
+                48000,
+                left + width * 0.5,
+                left,
+            ),
+        ] {
+            view.audio_event_editor.gesture = Some(Gesture {
+                anchor,
+                pointer_x: origin,
+                origin_x: origin,
+                moved: false,
+                kind,
+                operation: None,
+            });
+            view.event_update_pointer(x, false);
+            let operation = view
+                .audio_event_editor
+                .gesture
+                .as_ref()
+                .unwrap()
+                .operation
+                .as_ref()
+                .unwrap();
+            let (start, span) = match operation {
+                AudioEventEdit::Move { event, start } => (
+                    *start,
+                    events
+                        .events
+                        .iter()
+                        .find(|e| e.id == *event)
+                        .unwrap()
+                        .length(),
+                ),
+                AudioEventEdit::MoveRange {
+                    start,
+                    end,
+                    destination,
+                } => (*destination, end - start),
+                _ => panic!("move"),
+            };
+            assert!(
+                start >= root.view_start && start + span <= root.view_end,
+                "move escaped visible crop: {operation:?}"
+            );
+        }
+        view.audio_event_editor.gesture = None;
+        view.audio_event_editor.selected = Some(last.id);
+        view.event_nudge(true, false, false);
+        assert!(
+            matches!(
+                view.last_enqueued_edit,
+                Some(Command::EditAudioEvents {
+                    operation: AudioEventEdit::Move { start: 48000, .. },
+                    ..
+                })
+            ),
+            "nudge escaped crop: {:?}",
+            view.last_enqueued_edit
+        );
+    });
+}
+
+#[test]
+fn moved_and_pasted_waveform_positions_read_event_composed_pcm() {
+    use std::{collections::BTreeMap, sync::Arc};
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
+    let hex_project::Created::Imported { clip, asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "wave".into(),
+            path: "wave.wav".into(),
+            sample_rate: 48000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 20 },
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Move {
+                event: 1,
+                start: 40,
+            },
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Paste {
+                at: 0,
+                length: 10,
+                events: vec![AudioEvent {
+                    id: 0,
+                    start: 0,
+                    end: 10,
+                    source_start: 70,
+                }],
+            },
+        })
+        .unwrap();
+    let frames: Vec<_> = (0..100).map(|i| [i as f32 / 100.0; 2]).collect();
+    let media = BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(48000, frames.clone()).unwrap(),
+    )]);
+    let prepared = hex_engine::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        &media,
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+    )
+    .unwrap();
+    let pcm = prepared.arrangement().audio_clip_views()[0].audio.frames();
+    let events = editor.project().clip(clip).unwrap().audio_events();
+    for event in &events.events {
+        let position = view::prepared_waveform_position(*event, *event, event.start).unwrap();
+        assert_eq!(pcm[position as usize], frames[event.source_start as usize]);
+    }
+    let original = *events.events.iter().find(|e| e.id == 1).unwrap();
+    let preview = AudioEvent {
+        start: 60,
+        end: 80,
+        ..original
+    };
+    let position = view::prepared_waveform_position(preview, original, preview.start).unwrap();
+    assert_eq!(position, 40);
+    assert_eq!(pcm[position as usize], frames[0]);
+    assert_ne!(
+        pcm[original.source_start as usize], frames[0],
+        "reading raw source_start in composed PCM paints pasted content instead"
+    );
 }

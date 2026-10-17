@@ -4,7 +4,7 @@ Arrangement audio clips retain their outer editing behavior while a lower event
 editor cuts/reorders non-destructive root intervals. Independent adaptive BPM grid,
 time selection/range movement, trim, cursor/range split, clipboard, duplicate,
 insert-paste, zoom/pan and focused hotkeys use canonical one-step commands.
-Later events overwrite covered audio; gaps are silence. Schema27 preserves event
+Later events overwrite covered audio; gaps are silence. Schema28 preserves event
 state and strict legacy migration; resident worker composition precedes outer
 fades/gain and charges temporary storage. See [contract](docs/audio-events.md).
 

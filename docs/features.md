@@ -121,6 +121,6 @@ Direct numeric entry and draggable detail markers remain deferred; see
 Native visual/interaction acceptance remains pending with the user.
 
 Nested Arrangement [audio events](audio-events.md) now have canonical edits,
-resident preparation, schema27 persistence and a focused lower waveform editor.
+resident preparation, schema28 persistence and a focused lower waveform editor.
 Native acceptance and the documented streamed/cross-root/clock-conversion gaps
 remain open; source completion does not establish those workflows.

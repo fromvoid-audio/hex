@@ -152,10 +152,7 @@ pub(in crate::editor) fn view(
                     && event.source_start < e.source_start + e.length()
             })
         }) {
-            let source_raw = original
-                .start
-                .checked_add(event.source_start.saturating_sub(original.source_start))?
-                .checked_add(raw_a - event.start)?;
+            let source_raw = prepared_waveform_position(*event, *original, raw_a)?;
             let source_root = frame_at(source_raw)?;
             let source_frame = clip
                 .start()
@@ -653,4 +650,17 @@ pub(in crate::editor) fn view(
             }),
         );
     Some(root)
+}
+
+// The sidecar is the accepted, event-composed root (not the original asset).
+// Preview pieces therefore refer back to the current event's destination there.
+pub(super) fn prepared_waveform_position(
+    event: AudioEvent,
+    original: AudioEvent,
+    visible: u64,
+) -> Option<u64> {
+    original
+        .start
+        .checked_add(event.source_start.saturating_sub(original.source_start))?
+        .checked_add(visible.checked_sub(event.start)?)
 }

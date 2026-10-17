@@ -193,9 +193,12 @@ impl EditorView {
                     }
                     view.clip_view_open = !view.clip_view_open;
                     if !view.clip_view_open {
+                        view.audio_event_editor.gesture = None;
                         view.cancel_midi_note_gesture();
                         cancel_eq8_audition(view);
-                        if view.midi_focus.is_focused(window) {
+                        if view.midi_focus.is_focused(window)
+                            || view.audio_event_focus.is_focused(window)
+                        {
                             view.focus.focus(window);
                         }
                     }

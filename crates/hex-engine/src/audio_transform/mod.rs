@@ -427,32 +427,11 @@ impl AudioTransformPreparation {
                 cache.evict_oldest()?;
             }
         }
-        let reservation = loop {
-            match self.budget.reserve(bytes) {
-                Ok(reservation) => break reservation,
-                Err(error) => {
-                    let mut cache = self
-                        .cache
-                        .try_borrow_mut()
-                        .map_err(|_| Invalid("audio transform cache is already borrowed"))?;
-                    if !cache.entries.is_empty() {
-                        cache.evict_oldest()?;
-                        continue;
-                    }
-                    drop(cache);
-                    let mut pending = self
-                        .pending
-                        .try_borrow_mut()
-                        .map_err(|_| Invalid("audio pending cache is already borrowed"))?;
-                    if let Some(entries) = pending.as_mut()
-                        && !entries.is_empty()
-                    {
-                        entries.remove(0);
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
+        let reservation = self.reserve_with_eviction(bytes)?;
+        let scratch_reservation = if edit.domain.events.is_some() {
+            Some(self.reserve_with_eviction(bytes)?)
+        } else {
+            None
         };
         let (map, attacks) = mapping::prepare_map(edit, project.tempo_map(), &self.shutdown)?;
         let mut envelope = Vec::new();
@@ -523,10 +502,10 @@ impl AudioTransformPreparation {
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            let _scratch_reservation = self.budget.reserve(bytes)?;
             rendered.frames =
                 events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
         }
+        drop(scratch_reservation);
         mapping::apply_fade(
             &mut rendered.frames,
             edit,
@@ -547,6 +526,35 @@ impl AudioTransformPreparation {
             source_bytes: std::mem::size_of_val(source.frames()),
         })?;
         Ok(audio)
+    }
+    fn reserve_with_eviction(&self, bytes: usize) -> Result<Reservation, Invalid> {
+        loop {
+            match self.budget.reserve(bytes) {
+                Ok(reservation) => return Ok(reservation),
+                Err(error) => {
+                    let mut cache = self
+                        .cache
+                        .try_borrow_mut()
+                        .map_err(|_| Invalid("audio transform cache is already borrowed"))?;
+                    if !cache.entries.is_empty() {
+                        cache.evict_oldest()?;
+                        continue;
+                    }
+                    drop(cache);
+                    let mut pending = self
+                        .pending
+                        .try_borrow_mut()
+                        .map_err(|_| Invalid("audio pending cache is already borrowed"))?;
+                    if let Some(entries) = pending.as_mut()
+                        && !entries.is_empty()
+                    {
+                        entries.remove(0);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
     }
     pub(crate) fn compile_clip(
         &self,
