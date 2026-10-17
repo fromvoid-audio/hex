@@ -30,7 +30,7 @@ fn expression_snapshot_reserves_three_events_without_reducing_note_capacity() {
         expression: NativeInstrumentExpression::ModWheel(1),
     });
     assert_eq!(
-        r.preflight_events(&events, 1),
+        r.preflight_events(&events, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
         Err(Error::EventCapacityExceeded)
     );
 }
@@ -107,9 +107,10 @@ fn off(id: u64) -> NativeInstrumentEvent {
     }
 }
 fn process(r: &mut Runtime, events: &[NativeInstrumentEvent], frames: usize) -> Vec<StereoFrame> {
-    r.preflight_events(events, frames).unwrap();
+    r.preflight_events(events, frames, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
     let mut out = vec![[0.0; 2]; frames];
-    r.process_block(events, &mut out);
+    r.process_block(events, &mut out, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     out
 }
 fn active(r: &Runtime) -> Vec<u64> {
@@ -133,13 +134,19 @@ fn oldest_stealing_keeps_64_occurrence_admission_and_silent_noteoffs() {
     assert_eq!(r.ledger.held.iter().filter(|h| h.id != 0).count(), 3);
     process(&mut r, &[off(1)], 1);
     assert_eq!(active(&r), vec![2, 3]);
-    assert!(r.preflight_events(&[off(1)], 1).is_err());
-    assert!(r.preflight_events(&[on(2, 60)], 1).is_err());
+    assert!(
+        r.preflight_events(&[off(1)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
+    assert!(
+        r.preflight_events(&[on(2, 60)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
     let mut full = runtime(s);
     let events: Vec<_> = (1..=64).map(|id| on(id, 60 + (id % 12) as u8)).collect();
     process(&mut full, &events, 1);
     assert_eq!(
-        full.preflight_events(&[on(65, 60)], 1),
+        full.preflight_events(&[on(65, 60)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
         Err(Error::EventCapacityExceeded)
     );
     let offs: Vec<_> = (1..=64).map(off).collect();
@@ -208,7 +215,10 @@ fn shrink_pan_quality_expression_and_clock_survive_live_retarget_copy_reset() {
     assert_eq!(process(&mut target, &[], 100), process(&mut copy, &[], 100));
     copy.reset();
     assert!(copy.is_quiescent());
-    assert!(copy.preflight_events(&[off(1)], 1).is_err());
+    assert!(
+        copy.preflight_events(&[off(1)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
 }
 #[test]
 fn expression_modulates_held_pitch_pan_and_time_without_editing_authored_state() {
@@ -253,13 +263,18 @@ fn expression_modulates_held_pitch_pan_and_time_without_editing_authored_state()
                 frame_offset: 0,
                 expression: NativeInstrumentExpression::PitchBend(8192)
             }],
-            1
+            1,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
         )
         .is_err()
     );
     let mut legacy = s;
     legacy.global = global::Settings::legacy();
-    assert!(runtime(legacy).preflight_events(&events, 10).is_err());
+    assert!(
+        runtime(legacy)
+            .preflight_events(&events, 10, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .is_err()
+    );
 }
 #[test]
 fn global_pcm_and_expression_are_partition_independent() {
@@ -433,9 +448,11 @@ fn filters_and_quality_are_finite_at_supported_sample_rate_extremes() {
         )
         .unwrap();
         let mut runtime = factory.create_runtime();
-        runtime.preflight_events(&[on(1, 48)], 1000).unwrap();
+        runtime
+            .preflight_events(&[on(1, 48)], 1000, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         let mut pcm = [[0.0; 2]; 1000];
-        runtime.process_block(&[on(1, 48)], &mut pcm);
+        runtime.process_block(&[on(1, 48)], &mut pcm, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert!(pcm.iter().flatten().all(|v| v.is_finite()));
         assert!(pcm.iter().flatten().any(|v| *v != 0.0));
     }
@@ -514,7 +531,8 @@ fn time_modulated_release_admission_matches_pcm_across_block_boundaries() {
             pcm.extend(process(&mut r, &[], partition.min(4400 - start)));
         }
         assert!(r.is_quiescent());
-        r.preflight_events(&[on(1, 60)], 1).unwrap();
+        r.preflight_events(&[on(1, 60)], 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .unwrap();
         pcm
     }
     assert_eq!(render(1), render(127));

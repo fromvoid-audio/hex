@@ -76,11 +76,13 @@ mod tests {
         backend.render(&mut rendered).unwrap();
         assert_eq!(rendered, [[0.0; 2]; 2], "late decode cannot undo Stop");
         let next = client.preview_request().unwrap();
-        client.preview_publish(next, pcm(3)).unwrap();
+        let positioned =
+            hex_engine::Audio::new(48_000, vec![[0.1, -0.1], [0.2, -0.2], [0.3, -0.3]]).unwrap();
+        client.preview_publish_from(next, positioned, 1).unwrap();
+        assert_eq!(client.preview_snapshot().unwrap().frame, 1);
         backend.render(&mut rendered).unwrap();
-        assert_eq!(client.preview_snapshot().unwrap().phase, Phase::Playing);
-        backend.render(&mut rendered).unwrap();
-        assert_eq!(rendered, [[0.5; 2], [0.0; 2]]);
+        assert_eq!(rendered, [[0.2, -0.2], [0.3, -0.3]]);
+        assert_eq!(client.preview_snapshot().unwrap().frame, 3);
         assert_eq!(client.preview_snapshot().unwrap().phase, Phase::Finished);
         for _ in 0..3 {
             backend.render(&mut rendered).unwrap();

@@ -32,6 +32,13 @@ cut/notch dragging edits frequency/Q. Selected-node controls expose enabled,
 shape, frequency, gain, Q and cut slope (12/24/36/48 db/octave). The channel-bank
 buttons choose the bank receiving new nodes; the global mode selects audible
 banks. Remove deletes the selected node and all its automation atomically.
+When the response graph owns keyboard focus, **Backspace** removes its selected
+node through that same atomic history command. An empty graph consumes the key;
+text/numeric editors retain their own Backspace behavior. Held gestures,
+creation previews, pending/stale work and old project generations cannot remove
+a node. Focused Escape cancels a held graph pointer before editor bindings.
+Automation point focus consumes Backspace without interpreting a lane
+index as a node identity; its explicit **− point** action remains available.
 Scalar gestures, opaque state edits, undo/redo and project/preset persistence use
 the existing canonical device path.
 
@@ -54,6 +61,22 @@ actual Q. Editing a legacy shelf's Q/shape explicitly switches it to the Q law;
 legacy S shelves require that edit before gain/Q/shape automation. Already invalid
 enabled legacy S/gain combinations fail preparation visibly; disabled authored
 values remain preserved.
+
+## Panel layout
+
+The forty-pixel top row contains mode/output controls, channel banks/count and
+analyzer/listen controls, separated by shared theme dividers. The forty-pixel
+footer keeps selected-node controls, automate and remove together. Frequency
+uses a reusable 74-pixel micro dial so full values and units fit; other controls
+keep the shared compact dial, selector and button presentations. The shared host
+[bindings](native-device-bindings.md) own their identity, gesture and retirement
+behavior; panel composition supplies presentation only. Control widths
+never shrink into neighboring labels or readouts. EQ text actions use intrinsic
+nonwrapping label widths plus padding, retaining the shared action paint and
+minimum size. The rendered regression shapes complete labels with the bundled
+font instead of checking only their containers. Automation adds a separate
+sixteen-pixel row containing its field/page controls and playhead readout, while
+the response/automation plot retains the remaining height.
 
 ## EQ-owned arrangement automation
 

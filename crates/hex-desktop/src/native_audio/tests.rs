@@ -17,6 +17,7 @@ static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
+    command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
 }
 // A read-only test observer around the actual sink, not an alternate source,
@@ -69,8 +70,11 @@ impl WorkerAudioSink for ObservedSink {
                 .and_then(|o| o.publication.control())
             && let Some(usage) = control.audio_candidate_domain_usage()
         {
-            self.observation.lock().unwrap().latest =
-                Some((context, domain, usage.occupied_domains));
+            let mut observation = self.observation.lock().unwrap();
+            observation.latest = Some((context, domain, usage.occupied_domains));
+            // The callback can consume a committed publication before the
+            // publisher returns and records its command-admission revision.
+            observation.command_ready = Some((context, control.submitted_revision()));
         }
     }
     fn close(&mut self) {
@@ -871,6 +875,9 @@ fn rapid_new_verified_import_supersession_applies_decoded_pcm() {
                 .unwrap()
                 .applied_audio_source()
                 .is_some_and(|a| a.context == context)
+                && h.observation.lock().unwrap().command_ready.is_some_and(
+                    |(submitted_context, revision)| submitted_context == context && revision > 0,
+                )
             {
                 break;
             }

@@ -322,7 +322,14 @@ impl SharedAnalyticContextTable {
                 continue;
             };
             let prepared = registry
-                .prepare_instrument_with_tuning(device.state(), project.sample_rate(), &tuning)
+                .prepare_instrument(
+                    device.state(),
+                    &hex_lattice::DevicePreparationContext {
+                        sample_rate: project.sample_rate(),
+                        tuning: &tuning,
+                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    },
+                )
                 .map_err(|_| Invalid("track instrument state is unsupported"))?;
             if prepared.prefers_mutable_continuation()
                 || previous.is_some_and(|old| {

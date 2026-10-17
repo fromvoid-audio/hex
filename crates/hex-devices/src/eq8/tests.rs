@@ -122,7 +122,7 @@ fn prepared_processor_is_fixed_bounded_zero_latency_and_rate_safe() {
         let mut runtime = prepared.runtime();
         assert!(runtime.is_quiescent());
         let mut impulse = [[1.0, -0.5]; 128];
-        runtime.process_block(&mut impulse);
+        runtime.process_block(&mut impulse, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert!(impulse.iter().flatten().all(|sample| sample.is_finite()));
         runtime.reset();
         assert!(runtime.is_quiescent());

@@ -32,19 +32,25 @@ pub trait OwnedProcessorRuntime: Any + Send {
     fn fixed_storage_pair_bytes(&self) -> Option<usize>;
     /// Reopening must abandon prior speculative work, preserving committed PCM.
     fn begin_block(&mut self);
-    fn process_block(&mut self, frames: &mut [StereoFrame]);
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn crate::DeviceResources,
+    );
     fn process_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
-        self.process_block(frames);
+        self.process_block(frames, _resources);
     }
     /// Preserve audible dry samples while advancing the same private history.
     fn process_bypassed_block_with_clock(
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
+        _resources: &dyn crate::DeviceResources,
     ) {
         for (offset, frame) in frames.iter_mut().enumerate() {
             let dry = *frame;
@@ -54,6 +60,7 @@ pub trait OwnedProcessorRuntime: Any + Send {
                 shifted
                     .as_ref()
                     .map(|clock| clock as &dyn NativeInstrumentClock),
+                _resources,
             );
             *frame = dry;
         }
@@ -234,11 +241,17 @@ mod tests {
             None
         }
         fn begin_block(&mut self) {}
-        fn process_block(&mut self, _frames: &mut [StereoFrame]) {}
+        fn process_block(
+            &mut self,
+            _frames: &mut [StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+        }
         fn process_block_with_clock(
             &mut self,
             frames: &mut [StereoFrame],
             clock: Option<&dyn NativeInstrumentClock>,
+            _resources: &dyn crate::DeviceResources,
         ) {
             // Test-only observation allocation; this provider is never admitted.
             for (offset, frame) in frames.iter_mut().enumerate() {
@@ -270,7 +283,11 @@ mod tests {
     fn default_owned_bypass_preserves_dry_and_every_shifted_clock_observation() {
         let mut probe = Probe::default();
         let mut frames = [[0.25, -0.5]; 5];
-        probe.process_bypassed_block_with_clock(&mut frames, Some(&Clock));
+        probe.process_bypassed_block_with_clock(
+            &mut frames,
+            Some(&Clock),
+            &crate::EMPTY_DEVICE_RESOURCES,
+        );
         for (offset, observed) in probe.observed.iter().enumerate() {
             assert_eq!(
                 *observed,
@@ -284,7 +301,7 @@ mod tests {
         }
         assert_eq!(probe.running, [Some(false); 5]);
         assert_eq!(frames, [[0.25, -0.5]; 5]);
-        probe.process_bypassed_block_with_clock(&mut frames, None);
+        probe.process_bypassed_block_with_clock(&mut frames, None, &crate::EMPTY_DEVICE_RESOURCES);
         assert_eq!(probe.observed[5..], [[None; 4]; 5]);
         assert_eq!(probe.running[5..], [None; 5]);
         assert_eq!(frames, [[0.25, -0.5]; 5]);
