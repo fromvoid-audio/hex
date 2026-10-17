@@ -93,8 +93,10 @@ rendered gallery harness with:
 cargo test -p hex-ui --example layout_review --features ui-test-support --locked
 ```
 
-This existing gallery is a host-integrated example. A host-independent panel
-adapter and its independently embeddable gallery remain W06 work. Preserve
+This existing gallery is a host-integrated example. The shared scalar
+[host binding module](native-device-bindings.md) retains canonical lifecycle in
+hex-ui and accepts panel-specific presentation policies. A host-independent
+panel adapter and its independently embeddable gallery remain W06 work. Preserve
 canonical Begin/Change/Commit/Cancel, one-Undo behavior, preview/applied separation,
 stale-owner retirement and Track/Return styling. Do not create another widget or
 edit model to finish a device. Native interaction/listening belongs to the user

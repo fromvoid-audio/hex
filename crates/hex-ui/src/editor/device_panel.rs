@@ -251,7 +251,7 @@ pub(super) fn finalize_controls_except(
         .device_panel
         .controls
         .iter()
-        .filter_map(|(key, control)| (!control.binding().current(view, false)).then_some(*key))
+        .filter_map(|(key, control)| (!control.binding().current(view, true)).then_some(*key))
         .collect();
     for key in stale {
         if let Some(mut control) = view.device_panel.controls.remove(&key) {

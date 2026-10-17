@@ -247,3 +247,26 @@ fn synchronous_numeric_owner_finish_does_not_reopen_queued_noop_drag(cx: &mut Te
         assert!(!view.device_gesture.has_pending_terminal());
     });
 }
+
+#[gpui::test]
+fn owner_finalization_retires_a_draft_from_an_old_project_generation(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let revision = state.revision;
+    let parameter = hex_lattice_contract::ParameterId::from_static(3);
+    let key = ParameterKey { device, parameter };
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    enter_typed_value(&mut visual, device, parameter, "250%");
+    editor.update(cx, |view, cx| {
+        // A replacement lifecycle can advance before the next render clears
+        // the old panel. The same numeric IDs must not confer edit ownership.
+        view.project_generation += 1;
+        assert!(finalize_controls(view, cx));
+        assert!(!view.device_panel.controls.contains_key(&key));
+        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_gesture_barriers.is_empty());
+        assert!(view.device_panel.pending_values.is_empty());
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+    });
+}
