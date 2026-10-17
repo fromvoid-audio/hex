@@ -6,6 +6,7 @@ pub(crate) struct NativeSpectrumIdentity {
     capture_buffer: usize,
     stop: usize,
     pub(super) sample_rate: u32,
+    project: Option<(usize, usize)>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct NativeSpectrumReceipt {
@@ -18,6 +19,8 @@ impl NativeSpectrumReceipt {
         stop: &Arc<AtomicBool>,
         core: &SpectrumCore,
         sample_rate: u32,
+        project_capture: Option<&project::ProjectCapture>,
+        project_worker: Option<&project::ProjectWorker>,
     ) -> Option<Self> {
         use crate::native_callback_owner::ChannelStorage;
         // Capture and Reader inline values are already in their actual callback
@@ -25,13 +28,21 @@ impl NativeSpectrumReceipt {
         let data_bytes = core
             .data_bytes()?
             .checked_add(std::mem::size_of::<Option<SpectrumReaper>>())?;
-        let storage = ChannelStorage::ring(producer.buffer())?
+        let mut storage = ChannelStorage::ring(producer.buffer())?
             .plus(ChannelStorage::paired_payload(stop.as_ref()))?
             .plus(ChannelStorage {
                 data_bytes,
                 shared_groups: 1,
                 shared_handles: 2,
             })?;
+        let project = match (project_capture, project_worker) {
+            (Some(capture), Some(worker)) => {
+                storage = storage.plus(worker.storage(capture)?)?;
+                Some(worker.ring_identity(capture)?)
+            }
+            (None, None) => None,
+            _ => return None,
+        };
         // The std result channel is one bounded RESOURCE group with its actual
         // sender/receiver, not an estimate of its opaque allocation layout.
         Some(Self {
@@ -39,6 +50,7 @@ impl NativeSpectrumReceipt {
                 capture_buffer: producer.buffer() as *const _ as usize,
                 stop: Arc::as_ptr(stop) as usize,
                 sample_rate,
+                project,
             },
             storage,
         })
@@ -51,10 +63,12 @@ impl SpectrumCapture {
             next_sequence: _,
             exhausted: _,
             native,
+            project,
         } = self;
         let receipt = (*native)?;
-        (receipt.identity.capture_buffer == producer.buffer() as *const _ as usize)
-            .then_some(receipt)
+        (receipt.identity.capture_buffer == producer.buffer() as *const _ as usize
+            && receipt.identity.project == project.as_ref().map(|project| project.ring_identity()))
+        .then_some(receipt)
     }
 }
 impl SpectrumReader {
@@ -63,8 +77,9 @@ impl SpectrumReader {
             results: _,
             latest: _,
             native,
+            project,
         } = self;
-        *native
+        native.filter(|identity| identity.project == project.as_ref().map(|p| p.ring_identity()))
     }
 }
 impl SpectrumReaper {
@@ -140,7 +155,7 @@ mod tests {
                 receipt.storage.shared_groups,
                 receipt.storage.shared_handles
             ),
-            (3, 6)
+            (6, 12)
         );
         // Four stereo signal-window boxes plus the kernel's window, real,
         // imaginary and one-sided power boxes, excluding headers and queue.
@@ -207,6 +222,24 @@ mod tests {
         drop(capture);
         drop(reader);
         reaper.shutdown_and_join().unwrap();
+    }
+    #[test]
+    fn project_capture_and_reader_cannot_borrow_another_factory_receipt() {
+        let (mut a, mut ar, ap) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
+        let (mut b, mut br, bp) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
+        std::mem::swap(&mut ar.project, &mut br.project);
+        assert!(ar.native_identity().is_none() && br.native_identity().is_none());
+        std::mem::swap(&mut ar.project, &mut br.project);
+        std::mem::swap(&mut a.project, &mut b.project);
+        assert!(a.native_receipt().is_none() && b.native_receipt().is_none());
+        std::mem::swap(&mut a.project, &mut b.project);
+        assert!(a.native_receipt().is_some() && ar.native_identity().is_some());
+        drop(a);
+        drop(b);
+        drop(ar);
+        drop(br);
+        ap.shutdown_and_join().unwrap();
+        bp.shutdown_and_join().unwrap();
     }
     #[test]
     fn actual_factory_worker_join_retains_first_payload_and_never_retries() {
