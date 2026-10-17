@@ -94,6 +94,19 @@ lane geometry/background and selected metadata across hover/selection. Native
 temporal paint acceptance remains separate; no generic GPUI patch is inferred.
 
 
+Browser waveform clicks (Pulse2779 / PR385) are manual audition, independent of
+automatic result-selection audition. The hit is normalized to finite clipped
+bounds; background decoding resolves it once to an absolute frame in the actual
+output-rate preview PCM, avoiding stale display metadata/rate conversions. Exact
+end is valid and finishes silently; invalid/zero-width geometry cannot dispatch.
+Publication moves the existing PCM owner with a starting cursor; there is no
+slicing/copying, new stream or callback seek command. Generation cancellation
+covers repeated clicks, selection and Stop. A one-pixel position marker follows
+actual callback frame acknowledgements; pointer moves cannot start playback.
+Progress invalidation occurs only when the phase or visible pixel changes. The
+lower clip-editor waveform retains its own interaction contracts.
+
+
 Sample-result double-click (Pulse2780 / PR386) selects/auditions according to the
 automatic audition preference and consumes its second-click bubble. It cannot
 import into a track/Session cell or create history. Enter and deliberate drag/drop

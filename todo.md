@@ -4641,6 +4641,17 @@ unchanged project state and surrounding lane geometry/style. Native flicker
 acceptance remains coordinator-serial on the next combined launcher delivery.
 
 
+## browser waveform-position audition — pulse2779 / PR385
+
+Manual waveform clicks resolve bounded hit position against decoded preview PCM;
+existing generation/ownership queues replace previews and silence Stop without
+project transport. Exact-end starts finish silently. Callback position publication
+feeds a one-pixel marker with pixel/phase-change redraws; no callback allocation,
+locks or file work added. Canonical mapping, real PCM offset/end/Stop, UI manual
+focus and unavailable-output regressions cover the browser strip. Native pointer,
+listening and position acceptance remains coordinator-serial.
+
+
 ## deliberate sample insertion — pulse2780 / PR386
 
 Sample-result double-click no longer imports; consume its bubble after ordinary
