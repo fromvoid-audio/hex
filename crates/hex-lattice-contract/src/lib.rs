@@ -1,6 +1,10 @@
 //! Bounded metadata and authored state shared across native device boundaries.
+mod parameter_semantics;
+#[cfg(test)]
+mod parameter_semantics_tests;
 #[cfg(test)]
 mod snapshot_tests;
+pub use parameter_semantics::*;
 use std::{fmt, sync::Arc};
 
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
@@ -492,6 +496,17 @@ pub trait NativeDeviceMetadata: Sync {
     ) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
         Ok(self.descriptors().to_vec())
     }
+    /// Optional current-state semantics. None is undeclared, not an inferred
+    /// capability. Consumers use validated_parameter_semantics/state_parameters.
+    /// A declaring provider must reject writes to read-only parameters in its
+    /// patch methods; registries also enforce this before calling overrides.
+    fn parameter_semantics_for_state(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+        Ok(None)
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError>;
     fn migrate_state(
         &self,
@@ -539,6 +554,7 @@ pub trait NativeDeviceMetadata: Sync {
         let mut candidate = self.migrate_state(state)?;
         snapshot.validate(&validated_state_descriptors(self, &candidate)?)?;
         for &(parameter, value) in snapshot.entries() {
+            require_parameter_writable(self, &candidate, parameter)?;
             candidate = self.patch_parameter(&candidate, parameter, value)?;
         }
         Ok(candidate)

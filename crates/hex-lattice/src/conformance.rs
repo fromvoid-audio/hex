@@ -8,7 +8,7 @@ use crate::{
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterKind,
-    ParameterValue, validated_state_descriptors,
+    ParameterValue,
 };
 use std::{fmt, sync::Arc};
 
@@ -73,9 +73,9 @@ pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
     let descriptors = contract(
         definition,
         "state descriptors",
-        validated_state_descriptors(definition, &state),
+        hex_lattice_contract::validated_state_parameters(definition, &state),
     )?;
-    for descriptor in &descriptors {
+    for (descriptor, semantics) in &descriptors {
         let current = contract(
             definition,
             "read parameter",
@@ -91,6 +91,15 @@ pub fn check_metadata<D: NativeDeviceMetadata + ?Sized>(
             "parameter availability",
             definition.parameter_enabled(&state, descriptor.id),
         )?;
+        if semantics.is_some_and(|s| s.access == hex_lattice_contract::ParameterAccess::ReadOnly) {
+            if definition
+                .patch_parameter(&state, descriptor.id, current)
+                .is_ok()
+            {
+                return Err(fail(definition, "read-only parameter accepted"));
+            }
+            continue;
+        }
         if enabled {
             let patched = contract(
                 definition,
