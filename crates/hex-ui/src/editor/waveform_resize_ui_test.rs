@@ -10,6 +10,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[gpui::test]
 fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let mut failures = Vec::new();
     for (rate, frames, pattern) in [(48_000, 96_000, 0), (44_100, 88_200, 1)] {
         for processing in ["plain", "pitch with warp off", "beats warp"] {
             for edge in [TrimEdge::Left, TrimEdge::Right] {
@@ -185,15 +187,18 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                         assert_eq!(drag.source_track, track);
                         let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
                         assert_eq!(rendered.len(), 1, "only the actual preview waveform is painted");
-                        assert!(rendered[0].spans.iter().all(|span| *span > 1.0), "{rate}/{pattern}/{processing}/{edge:?}: accepted nonzero stereo waveform disappeared: {:?}", rendered[0].spans);
-                        assert!(Arc::ptr_eq(&rendered[0].source, expected_source), "use the accepted root, not raw/fabricated preview peaks");
                         let preview = drag.preview.borrow();
                         let preview = &preview.as_ref().unwrap().clip;
                         let expected_mapping = preview.audio_edit().map(|edit| {
                             let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
                             (preview.start(), offset)
                         });
-                        assert_eq!(rendered[0].prepared, expected_mapping, "preview crop must map into the unchanged processing root");
+                        let root_matches = Arc::ptr_eq(&rendered[0].source, expected_source);
+                        if !rendered[0].spans.iter().all(|span| *span > 1.0)
+                            || !root_matches || rendered[0].prepared != expected_mapping
+                        {
+                            failures.push(format!("{rate}/{pattern}/{processing}/{edge:?}/{distance}: spans={:?}, accepted_root={root_matches}, mapping={:?}, expected={expected_mapping:?}", rendered[0].spans, rendered[0].prepared));
+                        }
                         assert!(view.last_enqueued_edit.is_none());
                         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
                     });
@@ -211,4 +216,9 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
             }
         }
     }
+    assert!(
+        failures.is_empty(),
+        "waveform disappeared or used the wrong root/crop:\n{}",
+        failures.join("\n")
+    );
 }
