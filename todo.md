@@ -61,6 +61,15 @@ integration checks are recorded in PR/Pulse evidence. Native macOS
 visual/listening/restart acceptance remains open;
 no exact Live parity, extra audio codec, or large-library timing claim.
 
+Global search composition follows PR275's verified BrowserItemKey interface:
+All merges indexed WAVs with bounded current-folder files by original path,
+retaining outside-root WAVs; devices share file counts/ordering for preview and
+activation. Folder/catalog publication preserves selection by identity, and
+unchanged catalogs retain result snapshots. Live catalog publication supersedes
+a pending disk-cache bootstrap. Combined-file/cache regressions and all 41 browser
+tests pass at the source milestone; final exact full-CI evidence belongs to
+PR317/Pulse2699. Native appearance/listening/restart acceptance remains separate.
+
 ## held-clip intersection accent — #2696 / PR314, 17 october 2026
 
 Arrangement landing previews tint only occupied audio/MIDI intersections with the

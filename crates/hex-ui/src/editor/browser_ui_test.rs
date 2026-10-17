@@ -287,26 +287,18 @@ fn command_f_replaces_entire_query_during_ime_composition(cx: &mut TestAppContex
 #[gpui::test]
 fn command_f_caret_movement_preserves_result_scroll(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f");
     visual.simulate_input("sample");
-    editor.update(visual, |view, cx| {
-        let directory = view.browser.directory.clone();
-        view.browser.listing = Some(DirectoryListing {
-            directory: directory.clone(),
-            entries: (0..50)
-                .map(|index| LibraryEntry {
-                    name: format!("sample-{index}.wav"),
-                    path: directory.join(format!("sample-{index}.wav")),
-                    kind: EntryKind::WaveAudio,
-                })
-                .collect(),
-            enumerated_entries: 50,
-            truncated: false,
-        });
-        cx.notify();
-    });
+    for index in 0..50 {
+        std::fs::write(
+            directory.0.join(format!("sample-{index}.wav")),
+            mono_pcm_wav(16),
+        )
+        .unwrap();
+    }
+    editor.update(visual, |view, cx| view.refresh_sample_catalog(cx));
     visual.run_until_parked();
     editor.update(visual, |view, cx| {
         view.browser
@@ -449,34 +441,20 @@ fn command_f_device_click_retains_browser_keys_in_session(cx: &mut TestAppContex
 #[gpui::test]
 fn command_f_category_switch_scrolls_first_result_into_view(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f");
+    for index in 0..50 {
+        std::fs::write(
+            directory.0.join(format!("sample-{index}.wav")),
+            mono_pcm_wav(16),
+        )
+        .unwrap();
+        std::fs::write(directory.0.join(format!("project-{index}.hex")), []).unwrap();
+    }
     editor.update(visual, |view, cx| {
-        let directory = view.browser.directory.clone();
-        let entries = (0..50)
-            .flat_map(|index| {
-                [
-                    LibraryEntry {
-                        name: format!("sample-{index}.wav"),
-                        path: directory.join(format!("sample-{index}.wav")),
-                        kind: EntryKind::WaveAudio,
-                    },
-                    LibraryEntry {
-                        name: format!("project-{index}.hex"),
-                        path: directory.join(format!("project-{index}.hex")),
-                        kind: EntryKind::Project,
-                    },
-                ]
-            })
-            .collect();
-        view.browser.listing = Some(DirectoryListing {
-            directory,
-            entries,
-            enumerated_entries: 100,
-            truncated: false,
-        });
-        cx.notify();
+        view.refresh_sample_catalog(cx);
+        view.request_browser_scan(directory.0.clone(), cx);
     });
     visual.run_until_parked();
     let samples = visual.debug_bounds("browser-section-samples").unwrap();
@@ -2355,7 +2333,7 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     cx: &mut TestAppContext,
 ) {
     cx.update(super::super::bind_editor_keys);
-    let (handle, editor, track, _directory, path) = browser_drag_fixture(cx);
+    let (handle, editor, track, directory, path) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     let row = visual.debug_bounds("browser-entry-0").expect("sample row");
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
@@ -2397,20 +2375,13 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
         assert_eq!(view.browser.search.read(cx).content, "loo");
         assert_eq!(view.browser.playback_generation, 2);
     });
+    std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(visual, |view, cx| {
         view.browser.search.update(cx, |input, cx| input.clear(cx));
-        view.browser
-            .listing
-            .as_mut()
-            .unwrap()
-            .entries
-            .push(LibraryEntry {
-                name: "second.wav".into(),
-                path: "/second.wav".into(),
-                kind: EntryKind::WaveAudio,
-            });
+        view.refresh_sample_catalog(cx);
         cx.notify();
     });
+    visual.run_until_parked();
     visual.simulate_keystrokes("down right up right");
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.selected_index, 0);
@@ -2743,6 +2714,12 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
         assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
         assert_eq!(view.browser_selected_label(cx).to_lowercase(), "utility");
     });
+    let unchanged = editor.read_with(cx, |view, cx| view.browser_visible_entries(cx));
+    editor.update(cx, |view, cx| view.refresh_sample_catalog(cx));
+    visual.run_until_parked();
+    editor.read_with(cx, |view, cx| {
+        assert!(Arc::ptr_eq(&unchanged, &view.browser_visible_entries(cx)))
+    });
     std::fs::write(outside.0.join("utility-third.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(cx, |view, cx| {
         view.request_browser_scan(outside.0.clone(), cx)
@@ -2751,6 +2728,11 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
     editor.read_with(cx, |view, cx| {
         assert_eq!(view.browser_visible_entries(cx).len(), 5);
         assert!(matches!(view.browser_selected_item(cx), Some(super::BrowserItemKey::Device(class, id)) if (class, id) == selected_device));
+    });
+    cx.simulate_keystrokes(handle, "enter");
+    editor.read_with(cx, |view, _| {
+        assert!(view.status.contains("drag a browser device"));
+        assert!(view.last_enqueued_import_to_track.is_none());
     });
     editor.update(cx, |view, cx| view.request_browser_scan(nested.clone(), cx));
     visual.run_until_parked();

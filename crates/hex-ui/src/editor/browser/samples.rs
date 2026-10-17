@@ -69,6 +69,8 @@ impl SampleBrowser {
     }
 
     pub(super) fn replace(&mut self, catalog: SampleCatalog) -> bool {
+        // A live publication supersedes a pending disk-cache bootstrap.
+        self.loaded = true;
         if self.catalog == catalog {
             return false;
         }
@@ -138,6 +140,9 @@ impl EditorView {
                     .await;
                 if this
                     .update(cx, |view, cx| {
+                        if view.browser.samples.loaded {
+                            return;
+                        }
                         view.browser.samples.loaded = true;
                         match cached {
                             Ok(mut catalog) if roots == view.sample_roots() => {
@@ -198,7 +203,7 @@ impl EditorView {
         .detach();
     }
 
-    fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
+    pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
         let remap = matches!(
             self.browser.section,
             BrowserSection::All | BrowserSection::Samples

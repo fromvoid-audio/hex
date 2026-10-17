@@ -14,6 +14,16 @@ import and existing waveform-aware Arrangement/Session drag paths remain shared.
 Projects retains its folder browser. Adding a folder persists the existing browser
 place and triggers a catalog scan without navigating away from Samples.
 
+Global Command-F/All search composes this catalog with the current bounded folder
+snapshot and registered devices. It ignores the Samples source filter, deduplicates
+original paths, and retains current-folder WAVs outside indexed roots. File rows
+share one ordered snapshot for rendering, keyboard counts, preview and device row
+offsets. Catalog/folder publications remap the selected file path or device identity
+through the same BrowserItemKey contract; unchanged catalogs retain the cached
+result snapshot and viewport. Folder publication explicitly invalidates combined
+results even if the directory/query did not change. Project search stays bounded
+to the current folder; this adds no recursive project scan.
+
 hex-library owns discovery and the versioned derived database, independent of
 project persistence/history. GPUI runs load, traversal and cache writes on the
 background executor. Startup loads the cache after places load, restricts cached
