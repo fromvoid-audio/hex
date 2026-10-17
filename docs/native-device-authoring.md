@@ -117,3 +117,11 @@ points and the independent native adapter/gallery. Those downstream proofs are
 qualified incrementally under W20; they do not prevent W03–W10 enabling contracts
 from proceeding against this bootstrap. No new catalog device, native acceptance,
 reference parity or full authoring-platform completion is claimed here.
+
+## optional parameter semantics
+
+Providers may declare state-aware normalization, stepping, access and existing
+runtime capabilities without changing descriptor literals. None means undeclared.
+Use the validated neutral queries and preserve stable subobject IDs; read-only
+providers must reject direct patches. Cached host views/report schema2 consume
+these declarations. See [contract and limits](native-parameter-semantics.md).
