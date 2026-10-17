@@ -22,6 +22,34 @@ Existing4072-byte legacy twins/8144-byte pairs and neutral context/recipe ceilin
 are restored, without raising limits or adding callback table construction.
 All313 device tests, packing proof and volume/history proof pass; renewed full
 workspace/final CI remains required. Earlier failed runner evidence is retained.
+## native parameter semantics — #2674 / PR290, 17 october 2026
+
+Optional validated state-aware semantics preserve descriptor literals and authored
+state. Auto Pan and dynamic EQ declare their real normalization/access/stepping/
+smoothing and existing capability boundaries. Cached host views and the standalone
+schema2 report consume them; unknown/deleted IDs and read-only edits refuse.
+Focused numeric, identity, legacy shelf, registry and view tests accompany it.
+See [contract](docs/native-parameter-semantics.md). The first integrated full run
+failed a harmonic-editor worker wait. Batch preflight now avoids redundant
+descriptor scans while each private candidate still rechecks membership, domain
+and access. Both new regressions fail before/pass after; focused contract15,
+registry2, unchanged harmonic UI case and strict affected Clippy pass. A release
+64-parameter profile measured median11.089ms before/4.004ms after; see
+[provenance](research/observations/parameter-semantics-2674/README.md) for limits.
+Fresh full final-source CI remains required. Generic sample-offset
+automation/modulation and full W05/W20 acceptance
+remain open; no DSP, codec or EQ envelope evaluator changes.
+
+## eq edge creation and held-pointer drag — #2729 / PR342, 17 october 2026
+
+Blank presses preview a stable-ID low/high cut in the outer 5% of the logarithmic
+plot or an interior bell. The same held pointer moves it; release atomically
+commits its final position and identity reservation as one history edit. Escape,
+focus loss and stale source/allocator/selection/project discard the preview.
+Existing node and automation-point gestures retain their paths. Targeted rendered
+regressions and source checks are recorded with PR342; full exact-source CI,
+optimized delivery and native interaction/listening remain separate evidence.
+See [eq editing contract](docs/eq.md).
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4358,3 +4386,71 @@ Session admission until #2740 replaces that guard with verified pitch integratio
 Editor/library/audition (#2741) and desktop MTS publication (#2742) remain open;
 this prerequisite provides no native tuning feature or user-test build by itself.
 Targeted and exact final local validation results are retained on the canonical PR.
+
+## 17 October 2026 — W06 host binding extraction in progress
+
+Pulse2675 / PR291 factors persistent scalar controls into
+`device_panel/bindings.rs` and numeric Session adaptation into
+`gesture_adapter.rs`, with Utility, EQ and descriptor panels using the same
+host path. Operator-specific Begin/choice/Tab policy stays in composition.
+The host captures generation/owner/class/type/parameter/emitter identity and
+numeric widgets retain only the exact gesture token they began. Retirement
+cannot cancel a newer same-parameter gesture; synchronous finalization retires
+stale or disabled drafts before submission. Project/session/worker lifecycle
+and compound controls remain in their existing owners; no new UI crate.
+
+Focused original-dispatch and retired-control regressions fail before their
+repairs; the three lease/target tests pass at ab20b1f1. Later identity and
+same-update queued-Begin regression candidates remain unverified while the
+shared native cache checks corrected fade PR309. Architecture/style guards
+pass. The layout guard now follows the extracted production style helper;
+its four source-mutation tests pass. This is incomplete draft work: queued-event
+ordering, final integrated full local CI, final review and native acceptance
+remain open. Independent embedding/catalog/full W06 acceptance is not claimed.
+
+W06 follow-up: at exact8ac4e149 the six-test binding group reports five passes
+and one real rendered ordering failure: a queued Begin reopens a no-op drag
+synchronously finalized in the same App update. Stale-generation and retired
+emitter tests pass. Exacte1abd20a adds a local successful-finish delivery fence;
+independent source review finds no actionable issue. Its positive/later-drag
+checks remain pending while W04 final CI owns the native cache. No GPUI or
+other dependency patch was required; the existing dispatch_input seam is used.
+
+W06 positive ordering proof: exacte009db34 passes all six focused host binding
+tests,0ignored,13.58s after56.66s compile. The formerly failing same-update no-op
+drag stays finalized and a later real drag works. Final integration/review/full
+local CI and broader W06 deliverables remain pending; no native result claimed.
+
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
+
+The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
+non-divergent local `main`, runs full local CI, builds and installs the optimized
+stable app, and opens the verified candidate. `--test` remains an alias; `--open`
+provides installed-only startup. Build mode refuses before CI when either the
+installed app or a raw `hex-desktop` process is active, asking for a normal save
+and quit without terminating processes. Exact source CI, merge and combined
+delivery evidence remain with the canonical PR workflow.
+
+Cloud continuation recovered the pushed `56e11b4c` checkpoint in the published
+Hex environment at `/workspace/hex`, with activated Rust/Cargo 1.94.0 and all
+seven documented native pkg-config packages available. All 17 focused launcher
+tests pass with Python warnings treated as errors, including raw debug/release
+paths with spaces and refusal when process inspection fails. Full Linux runner
+evidence belongs to PR359; its first attempt stopped safely at unclaimed inherited
+target ownership after the Python suite, guards and formatting passed. No complete
+macOS CI, signing, installation or native acceptance is established. Mac execution
+remains paused until the user explicitly resumes it; PR355 owns signing and sample
+permissions, and the eventual combined app uses one exact verified source.
+
+## optional runtime launcher tests — pulse2755 / PR364, 17 october 2026
+
+The user's later direction supersedes PR359's default full-CI launch. Normal
+`./launch` always fetches clean main, builds the optimized exact source, verifies,
+installs and opens it without test suites or an earlier CI receipt. `--test`
+opts into full exact-source CI before building; `--open` remains installed-only.
+Build-only packaging freezes/rechecks clean source and retains guarded release,
+signature/artifact checks and safe publication, recording tests as `not_run`.
+Developer full exact-candidate checks remain required before merging this change.
+PR355 owns pending signing integration. One coordinator-controlled serial Mac
+thread will verify native behavior and the single combined delivery; cloud tests
+cannot establish keychain signing, installed launch or permission persistence.
