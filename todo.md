@@ -1,3 +1,14 @@
+## clip grab headers and editable bodies — pulse2695, 17 october 2026
+
+- Arrangement audio/MIDI clips use a shaded upper-third grab header and open-hand
+  cursor; clicking the header selects the clip and dragging moves/copies it.
+- Lower bodies share empty-lane point/range selection and double-click-hold MIDI
+  clip painting. Visible edge trims and existing time-area move priority remain.
+- Focused rendered input regression covers both clip kinds, body selection,
+  paint preview/release, canonical placement and Undo. Native macOS acceptance
+  remains user-owned: header hover/move/copy, body selection/paint and edge trim.
+  Validation results and the focused PR are retained with Pulse2695.
+
 ## arrangement clip painting — 17 october 2026
 
 Double-click empty track space, hold the second press, drag right, then release

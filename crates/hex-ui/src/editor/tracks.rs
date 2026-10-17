@@ -199,6 +199,20 @@ pub(super) fn clip_grid_layer(
         .children(children)
 }
 
+fn clip_header_layer() -> Div {
+    div()
+        .absolute()
+        .top(px(-1.0))
+        .left(px(-1.0))
+        .right(px(-1.0))
+        .h(px(
+            TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION
+        ))
+        .bg(gpui::black().opacity(0.24))
+        .border_b_1()
+        .border_color(gpui::black().opacity(0.35))
+}
+
 pub(super) struct ClipViewTimeline<'a> {
     pub(super) viewport: Viewport,
     pub(super) grid: &'a [super::musical_time::GridLine],
@@ -947,7 +961,6 @@ impl EditorView {
                 .min(viewport_end)
                 .saturating_sub(start.max(viewport.start)) as f64
                 / viewport.length as f64;
-            let midi_clip_id = clip.id();
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             let trim_preview = self
@@ -1006,7 +1019,7 @@ impl EditorView {
                 .w(relative(width as f32))
                 .min_w(px(4.0))
                 .overflow_hidden()
-                .cursor_pointer()
+                .cursor(gpui::CursorStyle::Arrow)
                 .opacity(if trim_preview.is_some() {
                     0.0
                 } else if selected_clip {
@@ -1020,11 +1033,7 @@ impl EditorView {
                     theme::color(theme::PaletteRole::ClipFill)
                 }))
                 .border_1()
-                .border_color(rgb(0x000000))
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    view.set_selected_clip(track_id, midi_clip_id, window, cx);
-                    cx.notify();
-                }));
+                .border_color(rgb(0x000000));
             midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
             midi = midi.tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
@@ -1060,6 +1069,7 @@ impl EditorView {
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
+            midi = midi.children([clip_header_layer()]);
             if let Some((payload, lane)) = midi_drag_payload {
                 let move_surface = self
                     .clip_drag_surface(
@@ -1178,7 +1188,7 @@ impl EditorView {
             .w(relative(width as f32))
             .min_w(px(3.0))
             .overflow_hidden()
-            .cursor_pointer()
+            .cursor(gpui::CursorStyle::Arrow)
             .opacity(if active_trim_preview { 0.0 } else { 1.0 })
             .bg(rgb(if selected {
                 theme::color(theme::PaletteRole::ClipSelected)
@@ -1295,6 +1305,7 @@ impl EditorView {
             cx,
         );
         let mut content = content
+            .children([clip_header_layer()])
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .tooltip(move |_, cx| {
@@ -1302,11 +1313,7 @@ impl EditorView {
                     name: format!("clip {} · {} frames", clip_id.value(), clip_duration),
                 })
                 .into()
-            })
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.set_selected_clip(track, clip_id, window, cx);
-                cx.notify();
-            }));
+            });
         if let Some((payload, lane)) = drag_payload {
             let move_surface = self
                 .clip_drag_surface(
@@ -1320,8 +1327,7 @@ impl EditorView {
                     clip_id,
                     cx,
                 )
-                // Full-height edge strips reserve only a narrow horizontal inset;
-                // the central body remains the move target at every zoom.
+                // Edge strips retain trimming beside the upper-third move header.
                 .left(px(
                     if !trim_handles.is_empty() && visible_start == clip.start() {
                         super::trim::handle_width(clip_pixel_width)
@@ -1521,6 +1527,7 @@ impl EditorView {
         let mouse_down_entity = drag_entity.clone();
         let mouse_up_entity = drag_entity.clone();
         let move_entity = drag_entity.clone();
+        let source_track = payload.source_track;
         let mouse_down_payload = payload.clone();
         let mouse_up_payload = payload.clone();
         div()
@@ -1530,8 +1537,14 @@ impl EditorView {
             .top(px(-1.0))
             .left_0()
             .right_0()
-            .bottom(px(-1.0))
-            .cursor_pointer()
+            .h(px(
+                lane.height * super::time_selection::SELECTION_HANDLE_FRACTION
+            ))
+            .cursor(gpui::CursorStyle::OpenHand)
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.set_selected_clip(source_track, clip_id, window, cx);
+                cx.notify();
+            }))
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 mouse_down_entity.update(cx, |view, _| {
                     if view.drag_start_is_current(&mouse_down_payload) {

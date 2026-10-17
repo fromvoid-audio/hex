@@ -63,7 +63,7 @@ fn clip_paint_double_click_hold_previews_then_commits_once(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn clip_paint_cancels_and_rejects_existing_content_and_stale_state(cx: &mut TestAppContext) {
+fn clip_paint_cancels_and_rejects_clip_headers_and_stale_state(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, _) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -75,7 +75,7 @@ fn clip_paint_cancels_and_rejects_existing_content_and_stale_state(cx: &mut Test
         (
             (lane.left + lane.width * 0.25, lane.top + 22.0),
             (lane.left + lane.width * 0.5, lane.top + 22.0),
-            (source.left + source.width * 0.125, source.top + 22.0),
+            (source.left + source.width * 0.125, source.top + 7.0),
         )
     });
     editor.update(cx, |view, _| {
@@ -134,4 +134,104 @@ fn clip_paint_free_drag_uses_pointer_beats(cx: &mut TestAppContext) {
         assert!(view.finish_clip_paint(end_x, y, false));
         assert!(matches!(view.last_enqueued_edit, Some(Command::PlaceMidiClip { start: actual, length, .. }) if actual == start && length.raw() == end.raw() - start.raw()));
     });
+}
+
+#[gpui::test]
+fn clip_headers_grab_while_audio_and_midi_bodies_select_and_paint(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        let (project, track, _, clip) = if midi {
+            super::clip_drag_ui_test::midi_project()
+        } else {
+            audio_project()
+        };
+        let mut canonical = Editor::new(project.clone(), 8).expect("canonical editor");
+        let preview = if midi {
+            hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+                .expect("midi preview")
+                .1
+        } else {
+            Default::default()
+        };
+        let (handle, editor) = editor_window(cx, project, Arc::new(preview));
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let header = visual
+            .debug_bounds(Box::leak(
+                format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+            ))
+            .expect("clip header");
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+            ))
+            .expect("lane");
+        assert!((f32::from(header.size.height) - f32::from(lane.size.height) / 3.0).abs() < 1.0);
+        let grab = header.center();
+        visual.simulate_mouse_move(grab, None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::OpenHand)
+        );
+        visual.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(view.pointer_down.is_some());
+            assert!(view.time_selection_gesture.is_none());
+        });
+        visual.simulate_mouse_up(grab, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| assert_eq!(view.selected_clip(), Some(clip)));
+        visual.run_until_parked();
+        let body = point(grab.x, lane.origin.y + lane.size.height * 0.75);
+        let end = point(body.x + lane.size.width * 0.04, body.y);
+        visual.simulate_mouse_move(body, None, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Arrow)
+        );
+        visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| assert!(view.time_selection_gesture.is_some()));
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(view.normalized_time_selection().is_some());
+            assert!(view.active_clip_drag.is_none());
+            assert!(view.selected_clip().is_none());
+            assert!(view.last_enqueued_edit.is_none());
+        });
+        visual.run_until_parked();
+        visual.simulate_event(MouseDownEvent {
+            position: body,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: Modifiers::default(),
+            first_mouse: false,
+        });
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("clip-paint-preview").is_some());
+        editor.read_with(cx, |view, _| {
+            assert!(view.clip_paint_gesture.is_some());
+            assert!(view.last_enqueued_edit.is_none());
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        let command = editor.read_with(cx, |view, _| {
+            assert!(view.clip_paint_gesture.is_none());
+            assert!(view.active_clip_drag.is_none());
+            view.last_enqueued_edit.clone().expect("painted clip edit")
+        });
+        assert!(matches!(command, Command::PlaceMidiClip { track: id, .. } if id == track));
+        let before = canonical.project().clone();
+        let Created::Clip(painted) = canonical.execute(command).expect("paint over clip body")
+        else {
+            panic!("new clip");
+        };
+        assert_ne!(painted, clip);
+        assert!(canonical.project().midi_clip(painted).is_some());
+        assert!(canonical.undo());
+        assert!(canonical.project().midi_clip(painted).is_none());
+        assert_eq!(canonical.project().tracks(), before.tracks());
+        assert!(canonical.redo());
+        assert!(canonical.project().midi_clip(painted).is_some());
+    }
 }

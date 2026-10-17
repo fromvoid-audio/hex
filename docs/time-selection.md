@@ -7,7 +7,10 @@ Click empty track space to place a point selection. Drag horizontally to select
 a half-open frame interval, and vertically to include contiguous tracks. Reverse
 dragging normalizes the interval without changing the endpoint focus: the last
 track reached receives a subtle background highlight. One-track selection focuses
-that track. Outside an existing time area, clip bodies and resize edges retain their drag priority.
+that track. Audio and MIDI clips have a visibly shaded upper-third header with
+an open-hand cursor for clip selection and movement. Their lower two thirds
+accept point/time selection and double-click-and-hold clip painting, just like
+empty track space. Narrow full-height resize edges retain trim priority.
 Inside a selected area, its upper third is a move handle, including over clips;
 dragging below that handle replaces the selection.
 A highlighted area is steady translucent cyan; only a zero-width point selection
@@ -23,7 +26,7 @@ The upper third of each selected track area is normally invisible as a handle.
 Hovering highlights it and shows an open-hand cursor; dragging there moves the
 whole area. Below it, dragging creates a new selection, including from inside
 the existing selection and over selected clips. These gesture zones own input
-inside the area; normal clip dragging resumes outside it.
+inside the area; clip headers resume individual clip dragging outside it.
 
 ## canonical edits and clipboard
 

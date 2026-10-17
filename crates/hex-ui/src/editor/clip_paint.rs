@@ -68,12 +68,7 @@ impl EditorView {
         else {
             return false;
         };
-        let Ok(snapped_frame) = state.project.tempo_map().beat_to_frame(start) else {
-            return false;
-        };
-        if self.track_has_clip_at_frame(track, frame, viewport)
-            || self.track_has_clip_at_frame(track, snapped_frame, viewport)
-        {
+        if self.clip_handle_at_pointer(track, x, y, viewport) {
             return false;
         }
         // A double click without travel creates one grid cell (one beat when free).

@@ -665,7 +665,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
         ))
         .expect("central move target");
-    assert_eq!(move_bounds.size.height, original_bounds.size.height);
+    assert!(
+        (f32::from(move_bounds.size.height) - f32::from(original_bounds.size.height) / 3.0).abs()
+            < 1.0
+    );
     assert!(move_bounds.origin.x + move_bounds.size.width <= handle_bounds.origin.x);
 
     let lane = visual
