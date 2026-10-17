@@ -133,6 +133,14 @@ create no export. Pitch-line dragging includes the first degree; protected-root
 removal remains refused. Audition covers MIDI key127 and consumes each callback
 refusal notification once, so successful edits are not overwritten by an old error.
 
+Project barriers wait for locally coalesced tuning changes and their terminal
+acknowledgement, so Save/reopen observes the latest complete gesture. A failed
+terminal refuses dependent Save/Export writes rather than writing an older scale.
+Close and Quit include acknowledged, uncommitted tuning previews in confirmation.
+Stop cancels the reference input lease even while preparation is queued. Canonical
+edits rebasing an active gesture publish the actual preview graph alongside its
+preview identity; canonical history remains separate.
+
 Slot replacement retains staged same-directory rename. Create-new exports and
 duplicates never replace a destination: where hard links are unavailable, an
 exclusive file creation writes the validated bounded preset. A failed write can

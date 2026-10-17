@@ -223,6 +223,15 @@ impl TuningGestureClient {
         self.active
     }
 
+    /// Includes submitted requests until acknowledgement. Later project
+    /// requests must not overtake a locally coalesced change or terminal.
+    pub fn has_pending_requests(&self) -> bool {
+        self.pending_begin.is_some()
+            || self.latest_change.is_some()
+            || self.terminal.is_some()
+            || self.in_flight.is_some()
+    }
+
     pub fn has_pending_terminal(&self) -> bool {
         self.terminal.is_some()
             || self.in_flight.is_some_and(|request| {

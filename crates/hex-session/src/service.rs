@@ -440,6 +440,27 @@ pub enum Request {
 }
 
 impl Request {
+    /// Control requests that must observe the completed parameter gesture.
+    pub fn finalizes_parameter_gesture(&self) -> bool {
+        matches!(
+            self,
+            Request::Open(_)
+                | Request::OpenWith { .. }
+                | Request::OpenWithAudioMode { .. }
+                | Request::NewWithAudioMode { .. }
+                | Request::Undo
+                | Request::Redo
+                | Request::SaveNew(_)
+                | Request::SaveCurrent
+                | Request::SaveDevicePreset { .. }
+                | Request::LoadDevicePreset { .. }
+                | Request::Export(_)
+                | Request::ExportRange { .. }
+                | Request::ConvertClip { .. }
+                | Request::TuningLibrary { .. }
+        )
+    }
+
     /// Construct bounded owned-path metadata without decoding on the UI thread.
     pub fn audio_batch(
         paths: Vec<PathBuf>,
@@ -1276,23 +1297,7 @@ fn run_worker(
         let mut gesture_request = false;
         let mut preview_prepared = None;
         let mut preview_project = None;
-        let barrier = matches!(
-            &request,
-            Request::Open(_)
-                | Request::OpenWith { .. }
-                | Request::OpenWithAudioMode { .. }
-                | Request::NewWithAudioMode { .. }
-                | Request::Undo
-                | Request::Redo
-                | Request::SaveNew(_)
-                | Request::SaveCurrent
-                | Request::SaveDevicePreset { .. }
-                | Request::LoadDevicePreset { .. }
-                | Request::Export(_)
-                | Request::ExportRange { .. }
-                | Request::ConvertClip { .. }
-                | Request::TuningLibrary { .. }
-        );
+        let barrier = request.finalizes_parameter_gesture();
         let mut barrier_failure = None;
         if barrier {
             if let Some(outcome) = device_gesture.finish(
@@ -2851,14 +2856,14 @@ fn run_worker(
             }),
             _ => None,
         };
-        let playback_uses_preview = canonical_prepared.is_none() && preview_prepared.is_some();
+        let playback_uses_preview = preview_prepared.is_some();
         let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
         } else if computer_keyboard_playback.is_some() {
             computer_keyboard_playback
-        } else if let Some(prepared) = canonical_prepared {
-            Some(native_playback(prepared))
         } else if let Some(prepared) = preview_prepared {
+            Some(native_playback(prepared))
+        } else if let Some(prepared) = canonical_prepared {
             Some(native_playback(prepared))
         } else {
             restore_prepared.map(native_playback)

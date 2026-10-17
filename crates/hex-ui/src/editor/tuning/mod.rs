@@ -2,6 +2,8 @@
 mod audition;
 mod broadcast;
 pub(super) mod library;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod lifecycle_tests;
 mod midi_activity;
 mod plots;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -478,6 +480,42 @@ impl EditorView {
             });
         }
     }
+    pub(in crate::editor) fn finalize_tuning_gesture(&mut self) -> Result<(), &'static str> {
+        self.tuning.drag = None;
+        if self.tuning.client.has_pending_terminal() {
+            return Ok(());
+        }
+        if let Some(snapshot) = self.tuning.client.snapshot() {
+            self.tuning.client.finish(snapshot.tuning)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::editor) fn refuse_tuning_barriers(&mut self) {
+        let effects =
+            super::device_gesture::retire_failed_finalize_barriers(&mut self.pending_requests);
+        if effects.save_refused {
+            self.saving_project = false;
+        }
+        if effects.export_refused {
+            self.export_pending = false;
+            if let Some(control) = self.export_control.take() {
+                control.cancel();
+            }
+            self.export_window = None;
+        }
+        use hex_session::tuning_gesture::TuningLibraryOperation as Operation;
+        if matches!(
+            self.tuning.deferred_library.as_ref(),
+            Some((Operation::Save { .. } | Operation::Export { .. }, _))
+        ) {
+            self.tuning.deferred_library = None;
+        }
+        if self.tuning.deferred_dialog == Some(true) {
+            self.tuning.deferred_dialog = None;
+        }
+    }
+
     pub(super) fn pump_tuning_gesture(&mut self) -> bool {
         let Some(request) = self.tuning.client.next_request() else {
             return false;
@@ -490,7 +528,9 @@ impl EditorView {
             }
             Err(SubmitError::Full(_)) => false,
             Err(_) => {
+                self.refuse_tuning_barriers();
                 self.tuning.client.reset();
+                self.error = Some("project worker cannot accept tuning edit".into());
                 self.tuning.error = Some("project worker cannot accept tuning edit".into());
                 true
             }
