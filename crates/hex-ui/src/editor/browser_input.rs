@@ -56,6 +56,11 @@ impl BrowserSearch {
     pub(super) fn focus(&self, window: &mut Window) {
         self.focus.focus(window);
     }
+    pub(super) fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus(window);
+        self.select_all(&BrowserSelectAll, window, cx);
+    }
+
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.content.clear();
         self.selected = 0..0;
@@ -458,7 +463,7 @@ impl Element for BrowserSearchElement {
         let style = window.text_style();
         let (text, color) = if input.content.is_empty() {
             (
-                "search samples".to_owned(),
+                "search · cmd+f".to_owned(),
                 gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Muted)).into(),
             )
         } else {

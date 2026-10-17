@@ -140,6 +140,90 @@ fn browser_drag_fixture_with_tracks(
 }
 
 #[gpui::test]
+fn command_f_opens_all_search_and_replaces_query_from_editor_and_results(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, track, _directory, _) = browser_drag_fixture(cx);
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            view.browser.open = false;
+            view.browser.section = BrowserSection::Projects;
+            view.browser
+                .listing
+                .as_mut()
+                .expect("listing")
+                .entries
+                .push(LibraryEntry {
+                    name: "Loop.hex".into(),
+                    path: view.browser.directory.join("Loop.hex"),
+                    kind: EntryKind::Project,
+                });
+            view.focus.focus(window);
+            cx.notify();
+        });
+    })
+    .expect("focus editor");
+
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.update_window(handle, |_, window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(view.browser.open);
+            assert_eq!(view.browser.section, BrowserSection::All);
+            assert!(
+                view.browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
+            assert!(!view.browser.results_focused);
+        });
+    })
+    .expect("search focus");
+    cx.simulate_input(handle, "LOOP");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.browser_visible_entries(cx).len(),
+            2,
+            "all includes samples and projects"
+        );
+        assert!(view.browser_visible_devices(cx).is_empty());
+    });
+
+    cx.simulate_keystrokes(handle, "down cmd-f");
+    cx.simulate_input(handle, "utility");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "utility");
+        assert!(view.browser_visible_entries(cx).is_empty());
+        let devices = view.browser_visible_devices(cx);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].1.name.to_lowercase(), "utility");
+        assert!(!view.browser.results_focused);
+    });
+    cx.simulate_keystrokes(handle, "down");
+    editor.read_with(cx, |view, _| assert_eq!(view.browser.selected_index, 0));
+
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |view, cx| {
+            view.mode = super::super::EditorMode::Session;
+            view.open_track_context_menu(point(px(100.0), px(100.0)), Some(track), window, cx);
+        });
+    })
+    .expect("open context menu");
+    cx.simulate_keystrokes(handle, "cmd-f");
+    editor.read_with(cx, |view, _| assert!(view.context_menu.is_none()));
+    cx.simulate_input(handle, "écho");
+    cx.simulate_keystrokes(handle, "cmd-f");
+    cx.simulate_input(handle, "loop");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "loop")
+    });
+    cx.simulate_keystrokes(handle, "escape");
+    editor.read_with(cx, |view, cx| {
+        assert!(view.browser.search.read(cx).content.is_empty())
+    });
+}
+
+#[gpui::test]
 fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let bootstrap = cx.add_window(|_, _| Empty);

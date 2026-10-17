@@ -106,7 +106,7 @@ impl EditorView {
         cx.notify();
     }
 
-    fn dismiss_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn dismiss_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(menu) = self.context_menu.take() {
             window.focus(menu.previous_focus.as_ref().unwrap_or(&self.focus));
             cx.notify();

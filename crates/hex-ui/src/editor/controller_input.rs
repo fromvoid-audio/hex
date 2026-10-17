@@ -317,7 +317,11 @@ impl EditorView {
     pub(super) fn controller_input_is_open(&self) -> bool {
         self.controller_input.menu_focus.is_some()
     }
-    fn close_controller_input_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_controller_input_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.controller_input.menu_focus = None;
         window.focus(
             self.controller_input

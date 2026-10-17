@@ -123,6 +123,7 @@ impl ScanCoordinator {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum BrowserSection {
+    All,
     #[default]
     Samples,
     Instruments,
@@ -589,7 +590,10 @@ impl EditorView {
     }
 
     pub(super) fn browser_preview_selected(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        if self.browser.section != BrowserSection::Samples {
+        if !matches!(
+            self.browser.section,
+            BrowserSection::All | BrowserSection::Samples
+        ) {
             return;
         }
         if let Some(entry) = self
@@ -998,6 +1002,32 @@ impl EditorView {
         }
     }
 
+    pub(super) fn search_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_settings.open {
+            self.cancel_theme_settings(window, cx);
+            if self.theme_settings.open {
+                return;
+            }
+        }
+        if self.context_menu.is_some() {
+            self.dismiss_context_menu(window, cx);
+        }
+        if self.controller_input_is_open() {
+            self.close_controller_input_menu(window, cx);
+        }
+        self.browser.open = true;
+        self.browser.section = BrowserSection::All;
+        self.browser.results_focused = false;
+        self.browser.selected_index = 0;
+        self.browser
+            .scroll
+            .scroll_to_item(0, gpui::ScrollStrategy::Top);
+        self.browser.search.update(cx, |input, cx| {
+            input.focus_and_select_all(window, cx);
+        });
+        cx.notify();
+    }
+
     pub(super) fn toggle_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.browser.open = !self.browser.open;
         if !self.browser.open {
@@ -1018,7 +1048,7 @@ impl EditorView {
 
     pub(super) fn browser_next(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.browser.results_focused = true;
-        let count = self.browser_visible_entries(cx).len();
+        let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
         if count > 0 {
             self.browser.selected_index =
                 self.browser.selected_index.saturating_add(1).min(count - 1);
@@ -1046,6 +1076,10 @@ impl EditorView {
             .get(self.browser.selected_index)
             .cloned()
         else {
+            if !self.browser_visible_devices(cx).is_empty() {
+                self.status = "drag a browser device onto a track or device rail".into();
+                cx.notify();
+            }
             return;
         };
         match entry.kind {
@@ -1084,6 +1118,7 @@ impl EditorView {
                     .entries
                     .iter()
                     .filter(|entry| match self.browser.section {
+                        BrowserSection::All => true,
                         BrowserSection::Samples => entry.kind != EntryKind::Project,
                         BrowserSection::Projects => entry.kind != EntryKind::WaveAudio,
                         BrowserSection::Instruments => false,
@@ -1093,6 +1128,31 @@ impl EditorView {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn browser_visible_devices(
+        &self,
+        cx: &App,
+    ) -> Vec<(
+        hex_engine::NativeDeviceClass,
+        hex_engine::NativeDeviceCatalogEntry,
+    )> {
+        if !matches!(
+            self.browser.section,
+            BrowserSection::All | BrowserSection::Instruments
+        ) {
+            return Vec::new();
+        }
+        let query = self.browser.search.read(cx).content.to_lowercase();
+        self.browser
+            .device_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.as_ref().ok())
+            .into_iter()
+            .flatten()
+            .filter(|(_, entry)| query.is_empty() || entry.name.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
     }
 
     pub(super) fn browser_view(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -1123,37 +1183,47 @@ impl EditorView {
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
         let section = self.browser.section;
-        let query = self.browser.search.read(cx).content.to_lowercase();
-        let entries: Vec<LibraryEntry> = self
-            .browser
-            .listing
-            .as_ref()
-            .filter(|listing| listing.directory == path)
-            .map(|listing| {
-                listing
-                    .entries
-                    .iter()
-                    .filter(|entry| match section {
-                        BrowserSection::Samples => entry.kind != EntryKind::Project,
-                        BrowserSection::Projects => entry.kind != EntryKind::WaveAudio,
-                        BrowserSection::Instruments => false,
-                    })
-                    .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let row_count = entries.len();
+        if matches!(section, BrowserSection::All | BrowserSection::Instruments)
+            && self.browser.device_catalog.is_none()
+        {
+            let catalog = (|| {
+                let mut entries = Vec::new();
+                for class in [
+                    hex_engine::NativeDeviceClass::Instrument,
+                    hex_engine::NativeDeviceClass::Effect,
+                ] {
+                    entries.extend(
+                        hex_engine::native_device_catalog_for_class(class)
+                            .map_err(|error| error.to_string().to_lowercase())?
+                            .into_iter()
+                            .map(|entry| (class, entry)),
+                    );
+                }
+                Ok(entries)
+            })();
+            self.browser.device_catalog = Some(catalog);
+        }
+        let entries = self.browser_visible_entries(cx);
+        let devices = if section == BrowserSection::All {
+            self.browser_visible_devices(cx)
+        } else {
+            Vec::new()
+        };
+        let file_count = entries.len();
+        let row_count = file_count + devices.len();
         let rows = uniform_list(
             "library-browser-entries",
             row_count,
             cx.processor(move |view, range: std::ops::Range<usize>, _window, cx| {
                 range
                     .filter_map(|index| {
-                        entries
-                            .get(index)
-                            .cloned()
-                            .map(|entry| view.browser_row(index, entry, cx))
+                        if let Some(entry) = entries.get(index).cloned() {
+                            Some(view.browser_row(index, entry, cx))
+                        } else {
+                            devices.get(index.saturating_sub(file_count)).cloned().map(
+                                |(class, entry)| view.browser_device_row(index, class, entry, cx),
+                            )
+                        }
                     })
                     .collect()
             }),
@@ -1191,6 +1261,7 @@ impl EditorView {
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Text)))
                         .child(theme::text(match section {
+                            BrowserSection::All => "browser · all",
                             BrowserSection::Samples => "browser · samples",
                             BrowserSection::Instruments => "browser · devices",
                             BrowserSection::Projects => "browser · projects",
@@ -1210,25 +1281,7 @@ impl EditorView {
                 )),
         );
         panel = panel.child(self.browser_sections(cx));
-        if section == BrowserSection::Instruments && self.browser.device_catalog.is_none() {
-            let catalog = (|| {
-                let mut entries = Vec::new();
-                for class in [
-                    hex_engine::NativeDeviceClass::Instrument,
-                    hex_engine::NativeDeviceClass::Effect,
-                ] {
-                    entries.extend(
-                        hex_engine::native_device_catalog_for_class(class)
-                            .map_err(|error| error.to_string().to_lowercase())?
-                            .into_iter()
-                            .map(|entry| (class, entry)),
-                    );
-                }
-                Ok(entries)
-            })();
-            self.browser.device_catalog = Some(catalog);
-        }
-        if section == BrowserSection::Samples || section == BrowserSection::Projects {
+        if section != BrowserSection::Instruments {
             panel = panel.child(self.browser_places(cx));
             panel = panel.child(
                 div()
@@ -1265,6 +1318,29 @@ impl EditorView {
             );
             panel = panel.child(div().px_1().pb_1().child(self.browser.search.clone()));
         }
+        if section == BrowserSection::All {
+            let notice = self
+                .browser
+                .error
+                .clone()
+                .or_else(|| {
+                    self.browser
+                        .device_catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.as_ref().err())
+                        .map(|error| format!("device catalog unavailable · {error}"))
+                })
+                .or_else(|| self.browser.loading.then(|| "scanning folder…".into()));
+            if let Some(notice) = notice {
+                panel = panel.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                        .child(theme::text(notice)),
+                );
+            }
+        }
         match section {
             BrowserSection::Instruments => {
                 panel = panel.child(div().px_1().pb_1().child(self.browser.search.clone()));
@@ -1274,14 +1350,8 @@ impl EditorView {
                     .clone()
                     .unwrap_or_else(|| Ok(Vec::new()))
                 {
-                    Ok(entries) => {
-                        let query = self.browser.search.read(cx).content.to_lowercase();
-                        let entries: Vec<_> = entries
-                            .into_iter()
-                            .filter(|(_, entry)| {
-                                query.is_empty() || entry.name.to_lowercase().contains(&query)
-                            })
-                            .collect();
+                    Ok(_) => {
+                        let entries = self.browser_visible_devices(cx);
                         if entries.is_empty() {
                             panel = panel.child(
                                 div()
@@ -1339,7 +1409,8 @@ impl EditorView {
                     }
                 }
             }
-            _ if self.browser.loading
+            _ if row_count == 0
+                && self.browser.loading
                 && self
                     .browser
                     .listing
@@ -1357,7 +1428,7 @@ impl EditorView {
                         .child(theme::text("scanning folder…")),
                 );
             }
-            _ if self.browser.error.is_some() => {
+            _ if row_count == 0 && self.browser.error.is_some() => {
                 let error = self.browser.error.clone().unwrap_or_default();
                 panel = panel.child(
                     div()
@@ -1379,7 +1450,7 @@ impl EditorView {
                 {
                     "no matching items in first 2048 entries"
                 } else {
-                    "no matching folders or supported files"
+                    "no matching items"
                 };
                 panel = panel.child(
                     div()
@@ -1691,10 +1762,11 @@ impl EditorView {
             .flex()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        for (index, (section, label, icon)) in [
-            (BrowserSection::Samples, "samples", "♫"),
-            (BrowserSection::Instruments, "devices", "⌘"),
-            (BrowserSection::Projects, "projects", "▤"),
+        for (index, (section, label)) in [
+            (BrowserSection::All, "all"),
+            (BrowserSection::Samples, "samples"),
+            (BrowserSection::Instruments, "devices"),
+            (BrowserSection::Projects, "projects"),
         ]
         .into_iter()
         .enumerate()
@@ -1703,7 +1775,7 @@ impl EditorView {
             row = row.child(
                 div()
                     .id(("browser-section", index))
-                    .flex_1()
+                    .flex_grow()
                     .px_1()
                     .flex()
                     .items_center()
@@ -1725,10 +1797,11 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, _, _, cx| {
                             view.browser.section = section;
+                            view.browser.selected_index = 0;
+                            view.browser.results_focused = false;
                             cx.notify();
                         }),
                     )
-                    .child(theme::text(icon))
                     .child(theme::text(label)),
             );
         }
@@ -1831,7 +1904,13 @@ impl EditorView {
             .items_center()
             .gap_1()
             .cursor_pointer()
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+            .bg(rgb(
+                if self.browser.results_focused && self.browser.selected_index == index {
+                    theme::color(theme::PaletteRole::Hover)
+                } else {
+                    theme::color(theme::PaletteRole::Surface)
+                },
+            ))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,

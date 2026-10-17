@@ -49,3 +49,26 @@ User acceptance: add a folder, wait for saved feedback, close/reopen this review
 build and confirm the folder remains and opens. Retest audio/MIDI dragging,
 cross-track preview and second pickup after the edit completes. Running earlier
 apps and unsaved projects are preserved. No native acceptance claim yet.
+
+## Global browser search
+
+Command-F from the editor opens the browser, chooses the compact `all` category,
+focuses its search field and selects the previous query. Typing filters immediately
+by case-insensitive name across supported entries in the current folder and the
+registered native device catalog. Samples, devices and projects remain available
+as category filters. Repeating Command-F from search/results replaces the query;
+Escape clears it. Open context/controller menus are dismissed; leaving theme
+settings cancels its unsaved preview (an in-flight save must finish first).
+Device rows retain drag-to-track/rail behavior; Enter on an
+all-view device displays that instruction rather than importing a file.
+
+The existing library listing remains nonrecursive and capped at 2048 enumerated
+entries. This is not an index of every subfolder or saved place. Folder scans stay
+on the background worker; typing only filters cached results. This UI state is
+transient and does not dirty the project or write preferences.
+
+Native user checklist: press Command-F from Arrangement, Session and a device
+control with the browser collapsed; type a sample/project/device name; confirm
+filtered results, repeat Command-F to replace the query, clear with Escape, and
+drag a matched sample/device to its normal destination. Native macOS interaction
+and reference parity remain unverified by cloud source tests.

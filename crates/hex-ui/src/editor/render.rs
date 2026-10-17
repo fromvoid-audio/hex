@@ -500,6 +500,9 @@ impl Render for EditorView {
                     cx.notify();
                 }
             }))
+            .capture_action(cx.listener(|view, _: &super::SearchBrowser, window, cx| {
+                view.search_browser(window, cx);
+            }))
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))

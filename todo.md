@@ -1,5 +1,18 @@
 ## state-aware native descriptors and effect budgets — #2657 / PR273, 17 october 2026
 
+## Global browser search — #2659 / PR275, 17 october 2026
+
+Command-F opens the browser in `all`, focuses search and selects the previous
+query. Cached name filtering combines current-folder supported files and native
+devices; category tabs, dragging and sample preview remain available. Search is
+bounded/nonrecursive, matching the current library contract; no all-place index
+or Live parity claim. See docs/browser-places.md for the native user checklist.
+All 29 focused browser tests pass, including global focus/query replacement,
+category filtering and existing drag/preview coverage. Source guards pass.
+Full runner results are recorded in the PR and Pulse; native acceptance remains
+pending.
+
+
 Native effect/instrument registries validate owned descriptors for each current
 state; patches, availability and engine read-only views resolve dynamic IDs.
 Static device/catalog APIs and EQ8's 3,792-byte runtime stay unchanged. Effect
