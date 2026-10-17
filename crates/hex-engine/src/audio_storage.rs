@@ -2,6 +2,8 @@
 //! No owner is cloned or transferred; this is never publication/lifetime authority.
 use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, StreamedSourceMetadata};
 use std::{any::Any, sync::Arc};
+mod models;
+pub use models::canonical_midi_storage_layout_supported;
 mod sources;
 mod values;
 
@@ -52,8 +54,18 @@ impl AudioRootStorageSummary {
     }
 }
 type SharedCounts = fn(&dyn Any) -> Option<(usize, usize)>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnerDomain {
+    Exclusive,
+    Shared,
+    DevicePayload,
+    DeviceAssetReferences,
+    CanonicalMidiSource,
+    CanonicalMidiField,
+}
 #[derive(Clone, Copy)]
 pub(crate) struct Owner<'a> {
+    domain: OwnerDomain,
     value: &'a dyn Any,
     compare: fn(&dyn Any, &dyn Any) -> bool,
     counts: Option<SharedCounts>,
@@ -61,6 +73,7 @@ pub(crate) struct Owner<'a> {
 impl<'a> Owner<'a> {
     pub(crate) fn exclusive<T: 'static>(value: &'a T) -> Self {
         Self {
+            domain: OwnerDomain::Exclusive,
             value,
             counts: None,
             compare: |a, b| {
@@ -72,6 +85,7 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn shared<T: 'static + ?Sized>(value: &'a Arc<T>) -> Self {
         Self {
+            domain: OwnerDomain::Shared,
             value,
             counts: Some(|value| {
                 value
@@ -87,6 +101,7 @@ impl<'a> Owner<'a> {
     }
     pub(crate) fn device_payload(value: &'a hex_lattice_contract::NativeDeviceState) -> Self {
         Self {
+            domain: OwnerDomain::DevicePayload,
             value,
             counts: Some(|value| {
                 value
@@ -103,8 +118,30 @@ impl<'a> Owner<'a> {
             },
         }
     }
+    pub(crate) fn device_asset_references(
+        value: &'a hex_lattice_contract::NativeDeviceState,
+    ) -> Self {
+        Self {
+            domain: OwnerDomain::DeviceAssetReferences,
+            value,
+            counts: Some(|value| {
+                value
+                    .downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .and_then(|state| {
+                        state
+                            .asset_reference_storage_observation()
+                            .map(|(_, strong, weak)| (strong, weak))
+                    })
+            }),
+            compare: |a, b| {
+                a.downcast_ref::<hex_lattice_contract::NativeDeviceState>()
+                    .zip(b.downcast_ref::<hex_lattice_contract::NativeDeviceState>())
+                    .is_some_and(|(a, b)| a.shares_asset_reference_storage_with(b))
+            },
+        }
+    }
     fn same(self, other: Self) -> bool {
-        (self.compare)(self.value, other.value)
+        self.domain == other.domain && (self.compare)(self.value, other.value)
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -338,6 +375,12 @@ impl<'a> AudioRootStorageLedger<'a> {
             )?
             .checked_add(std::mem::size_of::<Self>())
     }
+    /// Selected actual field identity, used when immutable source templates are
+    /// shared across revisions. This cannot declare an unseen allocation.
+    pub(crate) fn contains_root<T: 'static>(&self, value: &'a T) -> bool {
+        let owner = Owner::exclusive(value);
+        self.roots.iter().any(|row| row.owner.same(owner))
+    }
     pub(crate) fn root<T: 'static>(
         &mut self,
         value: &'a T,
@@ -473,6 +516,10 @@ impl<'a> AudioRootStorageLedger<'a> {
         )?;
         self.handle(anchor, field, handle)
     }
+    pub(crate) fn contains_shared_storage<T: 'static + ?Sized>(&self, owner: &Arc<T>) -> bool {
+        let owner = Owner::shared(owner);
+        self.data.iter().any(|row| row.owner.same(owner))
+    }
     /// An additional physical field may only refer to DATA already declared by
     /// the actual constructor custody. Equal contents never supply that link.
     pub(crate) fn existing_shared<T: 'static + ?Sized>(
@@ -506,6 +553,18 @@ impl<'a> AudioRootStorageLedger<'a> {
             }
         }
         Ok(())
+    }
+    /// Control-side closure of selected actual constructor-paired handles.
+    /// Counter equality cannot create provenance, prove retirement, cover
+    /// unselected allocations or grant publication/runtime admission rights.
+    pub fn validate_selected_shared_handles_on_control(&self) -> Result<(), AudioStorageError> {
+        self.validate_closed_shared_handles()
+    }
+    /// Observed distinct shared allocations and selected physical handles.
+    /// Includes root/header owners as well as PCM; not allocator RSS, complete
+    /// host storage, retirement proof or permission to publish/process.
+    pub fn selected_shared_counts_on_control(&self) -> (usize, usize) {
+        self.shared_resource_counts()
     }
     pub(crate) fn shared_resource_counts(&self) -> (usize, usize) {
         let allocations = self
@@ -576,3 +635,7 @@ impl<'a> AudioRootStorageLedger<'a> {
 pub fn audio_storage_constructor_layout_supported() -> bool {
     crate::pcm_arc::native_layout_known()
 }
+
+#[cfg(test)]
+#[path = "audio_storage/state_metadata_tests.rs"]
+mod state_metadata_tests;

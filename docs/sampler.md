@@ -7,6 +7,71 @@ contains the first original playback-kernel prerequisite. Sampler is **not yet
 registered, selectable or usable as a device in Hex**. No reference parity or
 native interaction/listening acceptance is claimed.
 
+## next musical-use candidate
+
+The user's next deliverable is a playable, high-quality **Simpler-style** sampler
+with a clean native panel; the other goal3 devices and Instrument Grid do not
+gate it. Pulse2679 revision16 preserves the full existing feature acceptance.
+PR296 and PR369 remain merged kernel/lifetime prerequisites. PR389 remains the
+canonical resource foundation; selected storage/ABI proofs do not complete it.
+
+The finite critical path, in dependency order, is:
+
+1. Close the actual Sampler host graph. Finish prepared graph/container and
+   model/history/media ownership union, source scopes through Arrangement,
+   Session, keyboard and export, old/new preparation peak, atomic candidate
+   publication and saturated existing reaper/control final-drop proof. Qualify
+   actual supported constructors rather than raw Arc/count identities. Keep
+   unsupported referenced graph classes refused. Do not wait for unrelated
+   device algorithms or add a generic owner/cache framework.
+2. Adapt the existing kernel into a real registered device. Prepared notes and
+   mutable voices retain only bounded coefficients/slot facts; callbacks borrow
+   typed original Mono/Stereo PCM from the actual host configuration. No borrowed
+   `Voice` may be made self-referential or stored with a forged static lifetime.
+   Retain Classic, One-Shot and Slice, checked Trigger/Gate lifetime, voices,
+   retrigger/glide, pitch/tuning, region/loop/reverse and amplitude envelope.
+   Complete the required filter/LFO/modulation and warp with actual DSP;
+   quality includes meaningful downsampling/alias, loop seam, transient/stereo
+   and partition oracles, not a claim that linear interpolation is sufficient.
+3. Connect current-format authored state and loading. Use the existing neutral
+   asset references, bounded original media worker/source plan, accepted
+   immutable waveform backing and canonical prepared edits. Load/replace plus
+   assignment is one Undo; preserve asset identity+tuning on save/reopen/preset.
+   Missing/unsupported media, stale/canceled preparation and failed replacement
+   keep the last valid audio and expose a recoverable error. No alpha migration
+   or embedded PCM payload is needed. Warp uses the implemented stretch boundary
+   and prepared worker lifecycle; it must not silently become resampling.
+4. Land the functional panel in `hex-ui/src/editor/device_panel/sampler_panel.rs`
+   beside existing native panels, using `hex-widgets` and Hex theme typography.
+   Put sample identity/load/replace and Classic/One-Shot/Slice above a central
+   waveform; expose direct bounds/loop/slice edits and clear selected/playback
+   state. Group legible pitch/tuning, amplitude/envelope, filter and modulation
+   controls below it, with focused mode-specific controls and an expanded view.
+   Reuse the accepted waveform cache/geometry; no pointer-motion decode/DSP.
+   Use visible loading/empty/missing/disabled states and discoverable essential
+   actions. Every control must reach canonical state, DSP and Undo; no panel or
+   catalog claim before functioning host playback/loading.
+5. Freeze the combined source, run meaningful device/host/session/storage/UI
+   regressions, callback allocation/lifetime and dense-voice release profiling,
+   then the required exact-source local CI. Send one bounded optimized native
+   build/acceptance request to the coordinator, preserving launcher delivery.
+
+The official interaction reference is Live12 manual section31.11/31.11.1,
+[Simpler](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#simpler),
+as verified by the coordinating lane. This cloud's direct request returned403;
+no new installed reference measurements or sonic parity evidence are claimed.
+This target does not add the separate multisample Sampler instrument or zones.
+
+Finite native acceptance on the eventual pinned optimized candidate: load and
+replace an original sample; play from MIDI keyboard and a clip in Arrangement
+and Session; exercise Classic, One-Shot/Trigger and Slice, bounds/loop/reverse,
+envelope/filter/modulation and implemented warp; Undo/Redo; save/reopen a
+disposable current-format project retaining assets+tuning; compare playback and
+export; test missing media/cancel/stale replacement and Stop/seek/retirement.
+Inspect compact/expanded layouts and hear pitch/downsampling/loop/transient
+quality on that same executable. Cloud source tests do not replace this native
+workflow/listening evidence. No other device-family completion is a prerequisite.
+
 ## current source boundary
 
 `hex-devices::sampler` accepts borrowed, validated finite stereo PCM at its

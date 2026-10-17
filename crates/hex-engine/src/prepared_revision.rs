@@ -106,6 +106,17 @@ impl std::fmt::Debug for PreparedRevision {
 }
 
 impl PreparedRevision {
+    pub(crate) fn visit_model_sources_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        for track in &self.mutable_track_revisions {
+            for source in &track.arrangement_midi_sources {
+                ledger.model_source_if_unvisited(&source.source)?;
+            }
+        }
+        Ok(())
+    }
     pub fn prepare(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
@@ -342,6 +353,7 @@ impl PreparedRevision {
                 project,
                 instruments,
                 previous_session.map(|previous| previous.shared_contexts().as_ref()),
+                None,
             )?;
             if shared_contexts.payload_bytes()
                 > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
@@ -357,7 +369,7 @@ impl PreparedRevision {
                     Some(Arc::clone(&sine_table)),
                     effects,
                     instruments,
-                    Some(Arc::clone(&shared_contexts)),
+                    Some(shared_contexts.clone_on_control()),
                     Some(transforms),
                 )?;
             let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
@@ -451,6 +463,7 @@ impl PreparedRevision {
             project,
             &instruments,
             previous_session.map(|previous| previous.shared_contexts().as_ref()),
+            None,
         )?;
         if shared_contexts.payload_bytes()
             > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
@@ -465,7 +478,7 @@ impl PreparedRevision {
                 sources,
                 expected_generation,
                 Some(Arc::clone(&sine_table)),
-                Some(Arc::clone(&shared_contexts)),
+                Some(shared_contexts.clone_on_control()),
                 None,
             )?;
         let session =
@@ -631,7 +644,11 @@ fn prepare_mutable_track_revisions(
             || track
                 .instrument_id
                 .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
-                .is_some_and(|owner| owner.context().import_identity().is_some())
+                .is_some_and(|owner| {
+                    owner
+                        .analytic_context()
+                        .is_some_and(|context| context.import_identity().is_some())
+                })
     };
     let mutable_track_count = arrangement
         .tracks()

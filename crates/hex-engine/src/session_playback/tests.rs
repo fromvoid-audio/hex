@@ -852,6 +852,12 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
     let sampler_bytes = std::mem::size_of::<hex_lattice::PreparedAnalyticNote>();
     assert_eq!(sampler_bytes, 352);
     let added_sampler_bytes = sampler_bytes - 40;
+    let release_scope_bytes = std::mem::size_of::<crate::midi_note_bank::ScopedMidiNote>()
+        - std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>();
+    let span_scope_bytes = std::mem::size_of::<Option<crate::midi_note_bank::ScopedMidiNote>>()
+        - std::mem::size_of::<Option<crate::midi_note_bank::PreparedMidiNote>>();
+    let added_release_bytes = added_sampler_bytes + release_scope_bytes;
+    let added_span_bytes = added_sampler_bytes + span_scope_bytes;
     let release_capacity = super::SESSION_RELEASE_CAPACITY;
     let release_entries_bytes = release_capacity
         .checked_mul(std::mem::size_of::<super::ReleaseEntry>())
@@ -864,7 +870,7 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         .expect("fixed MIDI storage byte count is bounded");
     let shared_owner_slots = crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS
         .checked_mul(std::mem::size_of::<
-            Option<Arc<crate::shared_analytic::SharedContextOwner>>,
+            Option<crate::shared_analytic::SharedContextLease>,
         >())
         .expect("shared context slot table is bounded");
     let lease_plan_bytes = crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS
@@ -884,22 +890,33 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS,
         SESSION_RELEASE_CAPACITY
     );
+    eprintln!(
+        "resource scope host layout: sampler={} scoped_note={} release_entry={} span={} current={} scoped={}",
+        sampler_bytes,
+        std::mem::size_of::<crate::midi_note_bank::ScopedMidiNote>(),
+        std::mem::size_of::<super::ReleaseEntry>(),
+        span_buffer_bytes,
+        current_bytes,
+        scoped_bytes
+    );
     #[cfg(target_pointer_width = "64")]
     {
-        // Sampler authority adds eight bytes; tuning custody uses existing
-        // padding. The admission ceilings remain unchanged.
-        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 488);
-        assert_eq!(span_buffer_bytes, 82_952 + 192 * 8);
-        assert_eq!(current_bytes, 16_075_272);
-        assert_eq!(shared_owner_slots, 131_072);
+        // Scope metadata lives only in actual host voice copies. The 352-byte
+        // sampler and all 16/18/36 MiB admission ceilings remain unchanged.
+        assert_eq!(release_scope_bytes, 16);
+        assert_eq!(span_scope_bytes, 8);
+        assert_eq!(std::mem::size_of::<super::ReleaseEntry>(), 504);
+        assert_eq!(span_buffer_bytes, 82_952 + 192 * 16);
+        assert_eq!(current_bytes, 16_601_096);
+        assert_eq!(shared_owner_slots, 262_144);
         assert_eq!(lease_plan_bytes, 393_216);
-        assert_eq!(scoped_bytes, 16_599_560);
+        assert_eq!(scoped_bytes, 17_256_456);
     }
     let previous_release_entry_size = std::mem::size_of::<super::ReleaseEntry>()
-        .checked_sub(added_sampler_bytes)
+        .checked_sub(added_release_bytes)
         .expect("previous sampler fits the entry");
     let previous_span_buffer_size = span_buffer_bytes
-        .checked_sub(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_sampler_bytes)
+        .checked_sub(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_span_bytes)
         .expect("previous sampler fits the span buffer");
     let previous_bytes = release_capacity
         .checked_mul(previous_release_entry_size)
@@ -907,10 +924,10 @@ fn wide_analytic_release_and_span_storage_stays_within_derived_fixed_bound() {
         .and_then(|bytes| bytes.checked_add(previous_span_buffer_size))
         .expect("previous fixed MIDI storage byte count is bounded");
     let expected_growth = release_capacity
-        .checked_mul(added_sampler_bytes)
+        .checked_mul(added_release_bytes)
         .and_then(|bytes| bytes.checked_mul(2))
         .and_then(|bytes| {
-            bytes.checked_add(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_sampler_bytes)
+            bytes.checked_add(crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY * added_span_bytes)
         })
         .expect("fixed MIDI storage growth is bounded");
     assert_eq!(current_bytes - previous_bytes, expected_growth);
@@ -2487,7 +2504,7 @@ fn full_stateful_tail_bank_refuses_before_mutating_the_live_graph() {
             .first()
             .expect("first handoff captures a release");
         for slot in 1..SESSION_TAIL_GROUP_CAPACITY {
-            active.tail_groups[slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+            active.tail_groups[slot] = Some(crate::EffectRuntimeChain::empty());
             let mut grouped = release;
             grouped.location = ReleaseLocation::new(
                 grouped.location.track_index(),
@@ -2973,6 +2990,7 @@ fn reset_checkpoint_track(playback: &mut SessionPlayback, track: hex_project::Tr
         crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             factory,
             playback.revision.arrangement().sample_rate(),
+            None,
         )
         .unwrap(),
     );
@@ -3114,7 +3132,7 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
         std::mem::size_of_val(contexts.as_ref())
             + hex_project::MAX_TRACKS * std::mem::size_of::<(TrackId, hex_project::DeviceId)>()
             + contexts.context_count()
-                * (std::mem::size_of::<Arc<crate::shared_analytic::SharedContextOwner>>()
+                * (std::mem::size_of::<crate::shared_analytic::SharedContextLease>()
                     + std::mem::size_of::<(crate::shared_analytic::SharedContextId, u16,)>())
     );
 }
@@ -4086,7 +4104,8 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
     }
 
     let mut whole =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     whole.begin_block();
     let mut whole_output = [[0.0; 2]; 8];
     let mut whole_events = Vec::new();
@@ -4136,7 +4155,8 @@ fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
     whole.commit_block();
 
     let mut partitioned =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     partitioned.begin_block();
     let mut partitioned_output = [[0.0; 2]; 8];
     let mut partitioned_events = Vec::new();
@@ -4187,7 +4207,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     };
 
     let mut old =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     old.begin_block();
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     onsets.push(onset).unwrap();
@@ -4217,7 +4238,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     let suppression =
         crate::midi_template::MidiOccurrenceSuppression::mutable(proof.signature, old_deadline);
     let mut candidate =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     candidate.begin_block();
     let mut candidate_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     candidate_onsets.push(onset).unwrap();
@@ -4243,7 +4265,8 @@ fn mutable_occurrence_proof_survives_gateoff_and_suppression_matches_full_signat
     let mut changed = onset;
     changed.pitch += 1;
     let mut changed_runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     changed_runtime.begin_block();
     let mut changed_onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     changed_onsets.push(changed).unwrap();
@@ -4274,7 +4297,8 @@ fn mutable_zero_tail_emits_exclusive_boundary_noteoff_once_across_partitions() {
     let note = clip.notes().first().unwrap();
     let factory = ZeroTailMutableFactory;
     let mut runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     let onset = crate::mutable_instrument::MutableNoteOnset {
         key: crate::mutable_instrument::MutableOccurrenceKey::new(
             track.id(),
@@ -4375,7 +4399,8 @@ fn mutable_query_accepts_full_bounded_sequential_onset_and_edge_budget() {
         release_frames: 8,
     };
     let mut runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     runtime.begin_block();
     let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
     for iteration in 0..128_u64 {
@@ -4430,7 +4455,8 @@ fn mutable_runtime_host_storage_budget_is_checked_and_reported() {
         release_frames: 8,
     };
     let runtime =
-        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+        crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000, None)
+            .unwrap();
     let ledger_bytes = runtime.ledger_capacity_bytes().unwrap();
     let runtime_pair_bytes = runtime.runtime_pair_storage_bytes().unwrap();
     let graph_host_bytes =
@@ -4694,13 +4720,14 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
         .take()
         .expect("mutable release tail");
     let suffix_start = candidate.tail_suffix_starts[tail_slot];
-    candidate.tail_groups[stale_slot] = Some(hex_lattice::NativeRuntimeChain::empty());
+    candidate.tail_groups[stale_slot] = Some(crate::EffectRuntimeChain::empty());
     candidate.tail_suffix_starts[stale_slot] = suffix_start;
     candidate.tail_mutable_instruments[stale_slot] = Some(MutableInstrumentTail {
         track_id,
         runtime: crate::mutable_instrument::MutableInstrumentTrackRuntime::new(
             &ZeroTailMutableFactory,
             48_000,
+            None,
         )
         .unwrap(),
     });
@@ -5215,7 +5242,7 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
 
     // A full preallocated tail bank refuses before either graph is mutated.
     for slot in &mut candidate.tail_groups {
-        *slot = Some(hex_lattice::NativeRuntimeChain::empty());
+        *slot = Some(crate::EffectRuntimeChain::empty());
     }
     let previous_frame = previous.performance_frame;
     let previous_routes = previous.routes.clone();
@@ -11252,3 +11279,122 @@ mod mutable_long_tail_tests;
 
 #[path = "stream_action_tests.rs"]
 mod stream_action_tests;
+
+#[test]
+fn actual_mutable_session_tail_and_checkpoint_inventory_requires_all_configuration_handles() {
+    use crate::native_device_resources::{
+        DeviceResourceBank, DeviceResourceCatalog, tests as fixtures,
+    };
+    let ids = fixtures::ids();
+    let Some(inputs) = fixtures::bank(&ids) else {
+        return;
+    };
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &inputs,
+        &fixtures::specs(&ids),
+        fixtures::limits(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let bank = DeviceResourceBank::try_new_on_control(
+        inputs,
+        catalog,
+        65_536,
+        65_536,
+        &AtomicBool::new(false),
+    )
+    .ok()
+    .unwrap();
+    let (revision, track) = mutable_checkpoint_fixture(8 << 32);
+    let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let factory = revision
+        .session()
+        .mutable_instrument_factory(track)
+        .unwrap();
+    let lease = bank
+        .prepare_lease_on_control(&fixtures::state(ids[0]), 4096)
+        .unwrap();
+    // The existing feedback fixture supplies checkpoint/history behavior. The
+    // borrowed-PCM mutable fixture separately checks actual DSP samples. Here
+    // configuration handles live in the real Session/store fields throughout.
+    playback.mutable_instruments[0] =
+        Some(MutableInstrumentTrackRuntime::new(factory, 48_000, Some(lease)).unwrap());
+    let resources = playback.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .clone_resources_on_control()
+        .unwrap();
+    playback.tail_mutable_instruments[0] = Some(MutableInstrumentTail {
+        track_id: track,
+        runtime: MutableInstrumentTrackRuntime::new_with_configuration(factory, 48_000, resources)
+            .unwrap(),
+    });
+    let mut checkpoints = MutableRuntimeCheckpointStore::new();
+    checkpoints.capture_track(&playback, track).unwrap();
+    let reservation = crate::AudioStorageLedgerReservation {
+        data_rows: 64,
+        handle_rows: 32,
+        root_rows: 16,
+        max_retained_bytes: 1_000_000,
+        max_construction_peak_bytes: 1_000_000,
+    };
+    let inventory = |reservation| {
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+        ledger.borrow_device_resource_bank_on_control(&bank, crate::AudioStorageRole::Caller)?;
+        ledger.borrow_session_mutable_resource_owners_on_control(
+            &playback,
+            crate::AudioStorageRole::Current,
+        )?;
+        assert!(ledger.validate_closed_shared_handles().is_err());
+        let before = ledger.summary()?;
+        ledger.borrow_mutable_checkpoint_resource_owners_on_control(
+            &checkpoints,
+            crate::AudioStorageRole::Archive,
+        )?;
+        ledger.validate_closed_shared_handles()?;
+        let after = ledger.summary()?;
+        assert_eq!(after.data_allocations, before.data_allocations);
+        assert_eq!(
+            after.data_bytes - before.data_bytes,
+            std::mem::size_of::<crate::native_device_resources::DeviceResourceConfiguration>()
+        );
+        Ok::<_, crate::AudioStorageError>(after)
+    };
+    let summary = inventory(reservation).unwrap();
+    assert_eq!(
+        inventory(crate::AudioStorageLedgerReservation {
+            max_retained_bytes: summary.retained_bytes,
+            max_construction_peak_bytes: summary.construction_peak_bytes,
+            ..reservation
+        })
+        .unwrap(),
+        summary
+    );
+    assert!(
+        inventory(crate::AudioStorageLedgerReservation {
+            max_retained_bytes: summary.retained_bytes - 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    assert!(
+        inventory(crate::AudioStorageLedgerReservation {
+            max_construction_peak_bytes: summary.construction_peak_bytes - 1,
+            ..reservation
+        })
+        .is_err()
+    );
+    checkpoints.restore_track(&mut playback, track).unwrap();
+    checkpoints.clear();
+    drop(bank);
+    // The real current/tail handles still close after archive and source-bank
+    // control retirement. This does not claim final callback/reaper admission.
+    let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+    ledger
+        .borrow_session_mutable_resource_owners_on_control(
+            &playback,
+            crate::AudioStorageRole::Current,
+        )
+        .unwrap();
+    ledger.validate_closed_shared_handles().unwrap();
+}

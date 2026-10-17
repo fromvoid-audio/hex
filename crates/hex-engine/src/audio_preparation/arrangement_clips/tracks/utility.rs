@@ -30,7 +30,7 @@ impl UtilityCustody {
         devices: &[hex_project::Device],
         track: hex_project::TrackId,
         rate: u32,
-    ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
+    ) -> Result<OwnedShared<[crate::PreparedEffectInstance]>, AudioStorageError> {
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -43,7 +43,7 @@ impl UtilityCustody {
             .map_err(|_| AudioStorageError::Allocation)?;
         self.construction_overlap = prepared
             .capacity()
-            .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
+            .checked_mul(std::mem::size_of::<crate::PreparedEffectInstance>())
             .ok_or(AudioStorageError::Overflow)?;
         let mut admission = StereoMatrix::identity();
         for device in devices {
@@ -112,16 +112,19 @@ impl UtilityCustody {
                 payload,
                 handles,
             });
-            prepared.push(PreparedRuntimeInstance {
-                meter,
-                owner: ProcessorChainOwner::Track(track.value()),
-                device_id: device.id().value(),
-                device_type: hex_devices::utility::UTILITY_TYPE_ID,
-                matrix,
-                bypassed: device.bypassed(),
-                sample_rate: rate,
-                configuration: Some(configuration),
-                definition: processor.map(hex_lattice::PreparedProcessorFactory::Legacy),
+            prepared.push(crate::PreparedEffectInstance {
+                instance: PreparedRuntimeInstance {
+                    meter,
+                    owner: ProcessorChainOwner::Track(track.value()),
+                    device_id: device.id().value(),
+                    device_type: hex_devices::utility::UTILITY_TYPE_ID,
+                    matrix,
+                    bypassed: device.bypassed(),
+                    sample_rate: rate,
+                    configuration: Some(configuration),
+                    definition: processor.map(hex_lattice::PreparedProcessorFactory::Legacy),
+                },
+                resources: None,
             });
         }
         Ok(if prepared.is_empty() {
@@ -130,11 +133,14 @@ impl UtilityCustody {
             OwnedShared::from_owned_vec(prepared)
         })
     }
-    fn validate(&self, chain: &[PreparedRuntimeInstance]) -> Result<(), AudioStorageError> {
+    fn validate(&self, chain: &[crate::PreparedEffectInstance]) -> Result<(), AudioStorageError> {
         if chain.len() != self.entries.len() {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
+            if value.resources.is_some() {
+                return Err(AudioStorageError::UnknownStorage);
+            }
             if value.device_id != pair.device_id
                 || value.device_type != hex_devices::utility::UTILITY_TYPE_ID
                 || value.definition.is_some() != pair.processor.is_some()
@@ -157,7 +163,7 @@ impl UtilityCustody {
     }
     pub(super) fn bytes(
         &self,
-        chain: &[PreparedRuntimeInstance],
+        chain: &[crate::PreparedEffectInstance],
     ) -> Result<usize, AudioStorageError> {
         self.validate(chain)?;
         let mut bytes = self
@@ -226,7 +232,7 @@ impl UtilityCustody {
     }
     pub(super) fn visit<'a>(
         &'a self,
-        chain: &'a Arc<[PreparedRuntimeInstance]>,
+        chain: &'a Arc<[crate::PreparedEffectInstance]>,
         l: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::{Location, Owner};

@@ -1033,8 +1033,10 @@ fn owned_track_and_return_late_abort_close_transactions_before_retry_or_handoff(
         }
         for value in [&mut tested, &mut reference] {
             let bus = &revision.arrangement().return_buses()[0];
-            let mut chain =
-                hex_lattice::NativeRuntimeChain::new_prepared(bus.device_chain.to_vec()).unwrap();
+            let mut chain = crate::EffectRuntimeChain::new_prepared(
+                crate::effect_resources::clone_prepared_on_control(&bus.device_chain).unwrap(),
+            )
+            .unwrap();
             chain.begin_block();
             chain.process_block(&mut [[0.6, -0.3]; 3]);
             chain.commit_block();

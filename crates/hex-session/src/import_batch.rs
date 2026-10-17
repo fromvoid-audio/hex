@@ -105,7 +105,7 @@ impl Session {
                         self.media
                             .values()
                             .chain(residents.iter())
-                            .flat_map(|m| [&m.source_audio, &m.audio]),
+                            .flat_map(|m| m.pcm()),
                     )?,
                 )
                 .filter(|n| *n <= self.max_resident_frames)

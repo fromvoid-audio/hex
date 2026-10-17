@@ -83,7 +83,7 @@ fn render(
 }
 fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
     AudioTransformPreparation {
-        budget: Arc::new(budget::Budget::new(limit)),
+        budget: budget::BudgetOwner::local(limit),
         cache_limit: cache,
         entry_limit: entries,
         ..AudioTransformPreparation::default()
@@ -746,7 +746,7 @@ fn projected_fade_samples_match_prepared_pcm_after_crop_and_tempo_change() {
 
 #[test]
 fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
-    let budget = Arc::new(budget::Budget::new(1024));
+    let budget = budget::BudgetOwner::local(1024);
     let reservation = budget.reserve(64).unwrap();
     let mut audio = Audio::from_derived(48_000, vec![[0.0; 2]; 8], reservation).unwrap();
     // Even a deliberately forged test receipt cannot relabel a derived owner.

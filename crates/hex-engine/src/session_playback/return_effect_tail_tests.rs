@@ -1,8 +1,8 @@
 use super::return_effect_tails::{ReturnEffectTail, ReturnEffectTailPlan};
 use super::*;
 use hex_lattice::{
-    NativeProcessorRuntime, NativeRuntimeChain, OutputTail, PreparedNativeProcessor,
-    PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+    NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, PreparedProcessorInstance,
+    ProcessorChainOwner, StereoMatrix,
 };
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterValue};
 use hex_project::{DeviceSnapshot, ReturnId, ReturnTrackSnapshot};
@@ -238,9 +238,10 @@ fn active_tail_chain(
     count: usize,
     frames: u64,
     bytes: usize,
-) -> NativeRuntimeChain {
+) -> crate::EffectRuntimeChain {
     let mut chain =
-        NativeRuntimeChain::new(tail_instances(return_id, count, frames, bytes)).unwrap();
+        crate::effect_resources::new_legacy(tail_instances(return_id, count, frames, bytes))
+            .unwrap();
     chain.begin_block();
     chain.process_block(&mut [[0.1, -0.1]]);
     chain.commit_block();
@@ -375,8 +376,9 @@ fn playback(project: &Project) -> SessionPlayback {
     SessionPlayback::new(revision).unwrap()
 }
 
-fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> NativeRuntimeChain {
-    let mut chain = NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+fn active_chain(return_id: ReturnId, matrix: StereoMatrix) -> crate::EffectRuntimeChain {
+    let mut chain =
+        crate::effect_resources::new_legacy(processor_instances(return_id, matrix)).unwrap();
     chain.begin_block();
     chain.process_block(&mut [[0.1, -0.1]]);
     chain.commit_block();
@@ -444,8 +446,8 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         for instance in &mut track_instances {
             instance.owner = ProcessorChainOwner::Track(track_id.value());
         }
-        old.device_chains[0] = NativeRuntimeChain::new(track_instances).unwrap();
-        old.return_chains[0] = NativeRuntimeChain::new(processor_instances(
+        old.device_chains[0] = crate::effect_resources::new_legacy(track_instances).unwrap();
+        old.return_chains[0] = crate::effect_resources::new_legacy(processor_instances(
             return_id,
             StereoMatrix::new([[0.5, 0.5], [0.5, 0.5]]).unwrap(),
         ))
@@ -631,7 +633,8 @@ fn assert_old_return_tail_with_candidate_chain(
     previous.return_chains[0] = active_chain(return_id, old_matrix);
     warm(&mut previous);
     let mut candidate = playback(&new_project);
-    candidate.return_chains[0] = NativeRuntimeChain::new(candidate_instances.clone()).unwrap();
+    candidate.return_chains[0] =
+        crate::effect_resources::new_legacy(candidate_instances.clone()).unwrap();
 
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert_eq!(
@@ -646,7 +649,7 @@ fn assert_old_return_tail_with_candidate_chain(
     assert!(candidate.return_chains[0].committed_range_is_quiescent(0..2));
 
     let mut baseline = playback(&new_project);
-    baseline.return_chains[0] = NativeRuntimeChain::new(candidate_instances).unwrap();
+    baseline.return_chains[0] = crate::effect_resources::new_legacy(candidate_instances).unwrap();
     warm(&mut baseline);
     let mut actual = [[0.0; 2]; 8];
     let mut expected = actual;
@@ -722,10 +725,10 @@ fn unchanged_chain_inherits_history_once_without_a_duplicate_tail() {
     let matrix = playback(&project).revision.arrangement().return_buses()[0].device_chain[0].matrix;
     let instances = processor_instances(return_id, matrix);
     let mut previous = playback(&project);
-    previous.return_chains[0] = NativeRuntimeChain::new(instances.clone()).unwrap();
+    previous.return_chains[0] = crate::effect_resources::new_legacy(instances.clone()).unwrap();
     warm(&mut previous);
     let mut candidate = playback(&project);
-    candidate.return_chains[0] = NativeRuntimeChain::new(instances).unwrap();
+    candidate.return_chains[0] = crate::effect_resources::new_legacy(instances).unwrap();
 
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert!(
@@ -840,10 +843,10 @@ fn gain_only_bus_edit_inherits_history_under_new_controls() {
         playback(&old_project).revision.arrangement().return_buses()[0].device_chain[0].matrix;
     let instances = processor_instances(return_id, matrix);
     let mut previous = playback(&old_project);
-    previous.return_chains[0] = NativeRuntimeChain::new(instances.clone()).unwrap();
+    previous.return_chains[0] = crate::effect_resources::new_legacy(instances.clone()).unwrap();
     warm(&mut previous);
     let mut candidate = playback(&new_project);
-    candidate.return_chains[0] = NativeRuntimeChain::new(instances.clone()).unwrap();
+    candidate.return_chains[0] = crate::effect_resources::new_legacy(instances.clone()).unwrap();
 
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert!(
@@ -855,7 +858,7 @@ fn gain_only_bus_edit_inherits_history_under_new_controls() {
     );
 
     let mut baseline = playback(&new_project);
-    baseline.return_chains[0] = NativeRuntimeChain::new(instances).unwrap();
+    baseline.return_chains[0] = crate::effect_resources::new_legacy(instances).unwrap();
     warm(&mut baseline);
     let mut actual = [[0.0; 2]; 128];
     let mut expected = actual;
@@ -866,11 +869,11 @@ fn gain_only_bus_edit_inherits_history_under_new_controls() {
     let muted_project = prepared_return_project_with_bus(true, 1.0, 0.75, true);
     let mut previous = playback(&old_project);
     previous.return_chains[0] =
-        NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+        crate::effect_resources::new_legacy(processor_instances(return_id, matrix)).unwrap();
     warm(&mut previous);
     let mut muted_candidate = playback(&muted_project);
     muted_candidate.return_chains[0] =
-        NativeRuntimeChain::new(processor_instances(return_id, matrix)).unwrap();
+        crate::effect_resources::new_legacy(processor_instances(return_id, matrix)).unwrap();
     muted_candidate
         .try_inherit_state_from(&mut previous)
         .unwrap();
@@ -894,13 +897,14 @@ fn changed_return_suffix_keeps_old_prefix_state_and_starts_new_chain_fresh() {
     previous.return_chains[0] = active_chain(return_id, old_matrix);
     warm(&mut previous);
     let mut candidate = playback(&new_project);
-    candidate.return_chains[0] = NativeRuntimeChain::new(processor_instances_with_scale(
-        return_id,
-        StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap(),
-        3.0,
-        3,
-    ))
-    .unwrap();
+    candidate.return_chains[0] =
+        crate::effect_resources::new_legacy(processor_instances_with_scale(
+            return_id,
+            StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap(),
+            3.0,
+            3,
+        ))
+        .unwrap();
 
     candidate.try_inherit_state_from(&mut previous).unwrap();
     assert!(candidate.return_chains[0].committed_range_is_quiescent(0..2));
@@ -915,13 +919,14 @@ fn changed_return_suffix_keeps_old_prefix_state_and_starts_new_chain_fresh() {
     );
 
     let mut baseline = playback(&new_project);
-    baseline.return_chains[0] = NativeRuntimeChain::new(processor_instances_with_scale(
-        return_id,
-        StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap(),
-        3.0,
-        3,
-    ))
-    .unwrap();
+    baseline.return_chains[0] =
+        crate::effect_resources::new_legacy(processor_instances_with_scale(
+            return_id,
+            StereoMatrix::new([[0.0, 1.0], [1.0, 0.0]]).unwrap(),
+            3.0,
+            3,
+        ))
+        .unwrap();
     warm(&mut baseline);
     let mut actual = [[0.0; 2]; 8];
     let mut expected = actual;

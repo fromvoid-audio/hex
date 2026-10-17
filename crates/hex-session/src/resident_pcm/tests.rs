@@ -8,27 +8,40 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn decoded(rate: u32, frames: u32) -> DecodedAudio {
+    decoded_channels(rate, frames, 1)
+}
+fn decoded_channels(rate: u32, frames: u32, channels: u16) -> DecodedAudio {
+    let path = write_channels(rate, frames, channels);
+    let decoded = decode_wav_file(&path, Limits::new(8192, 1024)).unwrap();
+    fs::remove_file(path).unwrap();
+    decoded
+}
+fn write_channels(rate: u32, frames: u32, channels: u16) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "hex-original-pcm-{}-{}.wav",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let bytes = frames * 2;
+    let align = channels * 2;
+    let bytes = frames * u32::from(align);
     let mut wav = Vec::new();
     wav.extend_from_slice(b"RIFF");
     wav.extend_from_slice(&(36 + bytes).to_le_bytes());
     wav.extend_from_slice(b"WAVEfmt ");
     wav.extend_from_slice(&16_u32.to_le_bytes());
     wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&channels.to_le_bytes());
     wav.extend_from_slice(&rate.to_le_bytes());
-    wav.extend_from_slice(&(rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&(rate * u32::from(align)).to_le_bytes());
+    wav.extend_from_slice(&align.to_le_bytes());
     wav.extend_from_slice(&16_u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&bytes.to_le_bytes());
     for index in 0..frames {
         wav.extend_from_slice(&(1000 + index as i16 * 113).to_le_bytes());
+        if channels == 2 {
+            wav.extend_from_slice(&(-2000 - index as i16 * 71).to_le_bytes());
+        }
     }
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -37,9 +50,7 @@ fn decoded(rate: u32, frames: u32) -> DecodedAudio {
         .unwrap();
     file.write_all(&wav).unwrap();
     drop(file);
-    let decoded = decode_wav_file(&path, Limits::new(8192, 1024)).unwrap();
-    fs::remove_file(path).unwrap();
-    decoded
+    path
 }
 fn prepared(decoded: DecodedAudio) -> PreparedImport {
     PreparedImport::at_rate(
@@ -155,7 +166,7 @@ fn capacity_is_charged_and_failed_mixed_import_preserves_redo_and_resident_sourc
         source_sample_rate: 16_000,
         source_frames: 4,
         conversion_version: hex_project::IDENTITY_CONVERSION,
-        source_audio: audio.clone(),
+        source_audio: OriginalAudio::Stereo(audio.clone()),
         waveform: waveform::summarize(&audio, 1024).unwrap(),
         audio,
     };
@@ -235,4 +246,322 @@ fn batch_union_refuses_atomically_and_session_cells_retain_original_rate() {
     assert_eq!(session.source_audio(id).unwrap().frames().len(), 12);
     assert!(session.redo());
     assert_eq!(session.resident_frames(), 18);
+}
+
+#[test]
+fn actual_stereo_import_preserves_native_original_identity_derivative_and_snapshot_owners() {
+    use hex_engine::native_device_resources::{
+        DeviceResourceBank, DeviceResourceCatalog, OriginalResourceLayout, OriginalResourceSource,
+        ResourceCatalogReservation,
+    };
+    use hex_engine::{
+        AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageReservation,
+        AudioStorageRole, OwnedAudioInputs, OwnedAudioSource,
+    };
+    use std::sync::atomic::AtomicBool;
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported constructor; no native Session import proof");
+        return;
+    }
+    for project_rate in [32_000, 16_000] {
+        let decoded = decoded_channels(32_000, 12, 2);
+        let original_pointer = decoded.audio().frames().as_ptr();
+        let expected: Vec<_> = (0..12)
+            .map(|n| {
+                [
+                    (1000 + n * 113) as f32 / 32768.0,
+                    (-2000 - n * 71) as f32 / 32768.0,
+                ]
+            })
+            .collect();
+        let prepared = PreparedImport::at_rate(
+            decoded,
+            project_rate,
+            ResampleLimits {
+                max_source_frames: 1024,
+                max_output_frames: 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.source_audio.stereo().unwrap().frames().as_ptr(),
+            original_pointer
+        );
+        assert_eq!(prepared.source_audio.stereo().unwrap().frames(), expected);
+        assert_eq!(
+            prepared
+                .source_audio
+                .stereo()
+                .unwrap()
+                .shares_pcm_with(&prepared.audio),
+            project_rate == 32_000
+        );
+        assert!(prepared.waveform.shares_audio_with(&prepared.audio));
+        // Both playback and waveform backing carry actual native owner lineage.
+        let playback = OwnedAudioSource::try_from_native_audio_on_control(prepared.audio.clone())
+            .ok()
+            .unwrap();
+        let backing = OwnedAudioSource::try_from_native_audio_on_control(
+            prepared.waveform.audio_source().unwrap().clone(),
+        )
+        .ok()
+        .unwrap();
+        drop(playback);
+        drop(backing);
+        let mut session = Session::new(project_rate, 16, 18).unwrap();
+        let id = asset(session.import_prepared_revision(prepared, None).unwrap().0);
+        assert_eq!(
+            session.resident_frames(),
+            if project_rate == 32_000 { 12 } else { 18 }
+        );
+        let saved = session.project().clone();
+        assert!(session.undo());
+        assert!(session.redo());
+        assert_eq!(session.project(), &saved);
+        let source = OwnedAudioSource::try_from_native_audio_on_control(
+            session.source_audio(id).unwrap().clone(),
+        )
+        .ok()
+        .unwrap();
+        let bank = OwnedAudioInputs::try_new(
+            vec![(id, source)],
+            AudioStorageReservation {
+                allocation_items: 8,
+                handle_obligations: 8,
+                max_prepared_data_bytes: 65_536,
+                max_construction_data_bytes: 65_536,
+                caller_retained_bytes: 0,
+                caller_construction_bytes: 0,
+            },
+        )
+        .ok()
+        .unwrap()
+        .prepare_input_storage_on_control()
+        .ok()
+        .unwrap();
+        let catalog = DeviceResourceCatalog::prepare_on_control(
+            &bank,
+            &[OriginalResourceSource {
+                asset: id,
+                sample_rate: 32_000,
+                frames: 12,
+                layout: OriginalResourceLayout::Stereo,
+            }],
+            ResourceCatalogReservation {
+                metadata_bytes: 65_536,
+                hash_frames: 12,
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let root = DeviceResourceBank::try_new_on_control(
+            bank,
+            catalog,
+            65_536,
+            65_536,
+            &AtomicBool::new(false),
+        )
+        .ok()
+        .unwrap();
+        let snapshot = root.borrow_original_source_on_control(id, 4096).unwrap();
+        assert_eq!(
+            snapshot.view().unwrap().resident_frames().unwrap().as_ptr(),
+            original_pointer
+        );
+        // Real Session/project/history/cache owners remain live; they cannot be
+        // excluded merely because a standalone resource bank fits its budget.
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 16,
+                root_rows: 8,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            })
+            .unwrap();
+        ledger
+            .borrow_device_resource_bank_on_control(&root, AudioStorageRole::Caller)
+            .unwrap();
+        ledger
+            .borrow_original_source_lease_on_control(&snapshot, AudioStorageRole::Archive)
+            .unwrap();
+        assert_eq!(
+            ledger.validate_selected_shared_handles_on_control(),
+            Err(hex_engine::AudioStorageError::UnknownStorage)
+        );
+        drop(ledger);
+        drop(root);
+        drop(session); // Control retirement of all actual media/history/cache owners.
+        assert_eq!(
+            snapshot.view().unwrap().resident_frames().unwrap(),
+            expected
+        );
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 16,
+                root_rows: 8,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            })
+            .unwrap();
+        ledger
+            .borrow_original_source_lease_on_control(&snapshot, AudioStorageRole::Archive)
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+    }
+}
+
+#[test]
+fn actual_native_mono_import_keeps_original_layout_capacity_and_history() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported native constructor; no mono Session ownership proof");
+        return;
+    }
+    let samples: Vec<f32> = (0..12).map(|n| (1000 + n * 113) as f32 / 32768.0).collect();
+    for rate in [32_000, 16_000, 48_000] {
+        let limits = ResampleLimits {
+            max_source_frames: 1024,
+            max_output_frames: 1024,
+        };
+        let mut values = Vec::with_capacity(17);
+        values.extend_from_slice(&samples);
+        let pointer = values.as_ptr();
+        let source = hex_engine::OwnedAudioSource::try_resident_mono(32_000, values)
+            .ok()
+            .unwrap();
+        let original_capacity = source.resident_pcm_capacity_frames().unwrap();
+        let member =
+            PreparedImport::from_native_source("mono.wav".into(), source, rate, limits).unwrap();
+        assert!(member.source_audio.stereo().is_none());
+        let OriginalAudio::Mono(original) = &member.source_audio else {
+            panic!("mono custody")
+        };
+        assert_eq!(
+            original.view().resident_mono_samples().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(original.view().resident_mono_samples().unwrap(), samples);
+        let expected = resample(
+            &Audio::new(32_000, samples.iter().map(|x| [*x; 2]).collect()).unwrap(),
+            rate,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(member.audio.frames(), expected.frames());
+        if rate == 32_000 {
+            for (actual, expected) in member.audio.frames().iter().zip(&samples) {
+                assert_eq!(actual[0].to_bits(), expected.to_bits());
+                assert_eq!(actual[1].to_bits(), expected.to_bits());
+            }
+        }
+        assert!(member.waveform.shares_audio_with(&member.audio));
+        let charged = original_capacity as u64 + member.audio.pcm_capacity_frames() as u64;
+        assert_eq!(member.retained_pcm_frames().unwrap(), charged);
+        let mut session = Session::new(rate, 16, charged).unwrap();
+        let (created, revision) = session.import_prepared_revision(member, None).unwrap();
+        let id = asset(created);
+        assert_eq!(session.resident_frames(), charged);
+        assert!(session.source_audio(id).is_none());
+        assert_eq!(
+            session
+                .source_mono(id)
+                .unwrap()
+                .resident_mono_samples()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+        assert_eq!(
+            session.project().asset(id).unwrap().source_sample_rate(),
+            32_000
+        );
+        assert_eq!(session.project().asset(id).unwrap().source_frames(), 12);
+        let mut rendered = vec![[0.0; 2]; expected.frames().len()];
+        let mut renderer = hex_engine::Renderer::new(revision.arrangement());
+        renderer.play();
+        renderer.render(&mut rendered).unwrap();
+        assert_eq!(rendered, expected.frames());
+        let saved = session.project().clone();
+        assert!(session.undo());
+        assert!(session.redo());
+        assert_eq!(session.project(), &saved);
+        assert_eq!(
+            session
+                .source_mono(id)
+                .unwrap()
+                .resident_mono_samples()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+        assert_eq!(session.resident_frames(), charged);
+    }
+}
+
+#[test]
+fn native_mono_file_import_reopen_and_exact_budget_refusal_are_atomic() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let path = write_channels(32_000, 12, 1);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let prepare = || {
+        PreparedImport::decode_at_rate(
+            &path,
+            16_000,
+            Limits::new(8192, 1024),
+            ResampleLimits {
+                max_source_frames: 1024,
+                max_output_frames: 1024,
+            },
+            &cancel,
+        )
+    };
+    let member = prepare().unwrap();
+    assert!(matches!(&member.source_audio, OriginalAudio::Mono(_)));
+    let charge = member.retained_pcm_frames().unwrap();
+    assert_eq!(charge, 18);
+    let mut too_small = Session::new(16_000, 16, charge - 1).unwrap();
+    let before = too_small.project().clone();
+    assert!(too_small.import_prepared_revision(member, None).is_err());
+    assert_eq!(too_small.project(), &before);
+    assert_eq!(too_small.resident_frames(), 0);
+    assert!(!too_small.can_undo());
+    let mut session = Session::new(16_000, 16, charge).unwrap();
+    let id = asset(
+        session
+            .import_prepared_revision(prepare().unwrap(), None)
+            .unwrap()
+            .0,
+    );
+    let saved = session.project().clone();
+    let reopened =
+        Session::from_prepared(saved.clone(), 16, charge, vec![(id, prepare().unwrap())]).unwrap();
+    assert_eq!(reopened.project(), &saved);
+    assert_eq!(
+        reopened
+            .source_mono(id)
+            .unwrap()
+            .resident_mono_samples()
+            .unwrap(),
+        session
+            .source_mono(id)
+            .unwrap()
+            .resident_mono_samples()
+            .unwrap()
+    );
+    assert_eq!(
+        reopened.audio(id).unwrap().frames(),
+        session.audio(id).unwrap().frames()
+    );
+    cancel.store(true, Ordering::Relaxed);
+    assert!(matches!(
+        prepare(),
+        Err(SessionError::Media(MediaInvalid::Cancelled))
+    ));
+    assert_eq!(session.project(), &saved);
+    fs::remove_file(path).unwrap();
 }

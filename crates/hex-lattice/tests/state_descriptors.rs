@@ -379,7 +379,9 @@ fn manually_prepared_chains_refuse_asset_metadata_including_bypassed_instances()
             Err(DeviceContractError::AssetResourcesUnavailable)
         ));
         assert!(matches!(
-            NativeRuntimeChain::new_prepared(vec![instance.into()]),
+            NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance::from(
+                instance
+            )]),
             Err(DeviceContractError::AssetResourcesUnavailable)
         ));
     }

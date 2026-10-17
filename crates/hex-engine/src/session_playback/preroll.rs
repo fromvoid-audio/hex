@@ -278,11 +278,11 @@ impl SessionPlayback {
         checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
-        add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
+        add_capacity::<crate::EffectRuntimeChain>(&mut total, self.device_chains.capacity())?;
         for chain in &self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
         }
-        add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.return_chains.capacity())?;
+        add_capacity::<crate::EffectRuntimeChain>(&mut total, self.return_chains.capacity())?;
         for chain in &self.return_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
         }
@@ -302,10 +302,7 @@ impl SessionPlayback {
             &mut total,
             self.mutable_events.capacity(),
         )?;
-        add_capacity::<Option<hex_lattice::NativeRuntimeChain>>(
-            &mut total,
-            self.tail_groups.capacity(),
-        )?;
+        add_capacity::<Option<crate::EffectRuntimeChain>>(&mut total, self.tail_groups.capacity())?;
         for chain in self.tail_groups.iter().flatten() {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;
         }
@@ -324,7 +321,7 @@ impl SessionPlayback {
         )?;
         add_capacity::<ReleaseEntry>(&mut total, self.releases.capacity())?;
         add_capacity::<ReleaseEntry>(&mut total, self.release_scratch.capacity())?;
-        add_capacity::<Option<Arc<crate::shared_analytic::SharedContextOwner>>>(
+        add_capacity::<Option<crate::shared_analytic::SharedContextLease>>(
             &mut total,
             self.retained_contexts.capacity(),
         )?;
@@ -368,7 +365,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     add_vec(
         &mut total,
         track_count,
-        std::mem::size_of::<hex_lattice::NativeRuntimeChain>(),
+        std::mem::size_of::<crate::EffectRuntimeChain>(),
     )?;
     for track in arrangement.tracks() {
         checked_add(&mut total, track.device_runtime_storage_preflight_bytes()?)?;
@@ -376,12 +373,12 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     add_vec(
         &mut total,
         return_buses.len(),
-        std::mem::size_of::<hex_lattice::NativeRuntimeChain>(),
+        std::mem::size_of::<crate::EffectRuntimeChain>(),
     )?;
     for bus in return_buses {
         checked_add(
             &mut total,
-            hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
+            crate::EffectRuntimeChain::declared_storage_preflight_bytes_for_scoped(
                 &bus.device_chain,
             )?,
         )?;
@@ -421,7 +418,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     add_vec(
         &mut total,
         SESSION_TAIL_GROUP_CAPACITY,
-        std::mem::size_of::<Option<hex_lattice::NativeRuntimeChain>>(),
+        std::mem::size_of::<Option<crate::EffectRuntimeChain>>(),
     )?;
     add_vec(
         &mut total,
@@ -453,7 +450,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     add_vec(
         &mut total,
         crate::shared_analytic::MAX_RETAINED_SHARED_CONTEXTS,
-        std::mem::size_of::<Option<Arc<crate::shared_analytic::SharedContextOwner>>>(),
+        std::mem::size_of::<Option<crate::shared_analytic::SharedContextLease>>(),
     )?;
     add_vec(
         &mut total,

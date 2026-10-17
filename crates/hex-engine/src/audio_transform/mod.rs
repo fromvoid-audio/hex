@@ -4,6 +4,10 @@ mod events;
 mod mapping;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
+mod pcm_inventory;
+pub use pcm_inventory::AudioTransformPcmInventory;
+#[cfg(test)]
+mod prepared_pcm_tests;
 use hex_project::{
     Asset, AudioClipDomain, AudioClipEdit, BeatsTail, Project as CanonicalProject, WarpMode,
 };
@@ -62,7 +66,7 @@ pub struct AudioTransformPreparation {
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
     shutdown: Arc<AtomicBool>,
-    budget: Arc<budget::Budget>,
+    budget: budget::BudgetOwner,
     cache_limit: usize,
     source_limit: usize,
     entry_limit: usize,
@@ -512,7 +516,8 @@ impl AudioTransformPreparation {
             project.tempo_map(),
             &self.shutdown,
         )?;
-        let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
+        let audio =
+            Audio::from_prepared_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
             domain: Arc::clone(&edit.domain),

@@ -533,7 +533,7 @@ impl SignalRuntime {
         &mut self,
         index: usize,
         track: &Track,
-        chain: &mut hex_lattice::NativeRuntimeChain,
+        chain: &mut crate::EffectRuntimeChain,
         mut audio: Frame,
         mut generator: Frame,
         offset: usize,
@@ -588,7 +588,7 @@ impl SignalRuntime {
     pub(crate) fn effects(
         &self,
         nodes: &[usize],
-        chain: &mut hex_lattice::NativeRuntimeChain,
+        chain: &mut crate::EffectRuntimeChain,
         start: usize,
         frame: &mut Frame,
         offset: usize,

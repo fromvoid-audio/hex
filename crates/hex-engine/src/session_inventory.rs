@@ -1,5 +1,7 @@
 //! Immutable control-side inventory of every canonical Session cell.
 pub(crate) mod audio_assembly;
+#[cfg(test)]
+mod midi_storage_tests;
 mod routed_midi;
 use crate::prepared_tempo::{PreparedPeriodicSessionTempo, PreparedTempoError, SessionTimingView};
 use crate::{
@@ -27,7 +29,8 @@ struct PreparedTrackInstrumentConfig {
     tuning_identity: crate::shared_analytic::TuningIdentity,
     state: Option<hex_lattice_contract::NativeDeviceState>,
     bypassed: bool,
-    note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
+    note_bank:
+        Option<crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>>,
     mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
@@ -132,8 +135,8 @@ pub struct PreparedSessionMidiClip {
     pub scene: SceneId,
     pub name: String,
     source_identity: MidiSourceIdentity,
-    source: Arc<PreparedMidiSourceTemplate>,
-    instrument: Arc<PreparedMidiInstrumentTemplate>,
+    source: crate::owned_shared::OwnedShared<PreparedMidiSourceTemplate>,
+    instrument: crate::owned_shared::OwnedShared<PreparedMidiInstrumentTemplate>,
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
     tuning_identity: crate::shared_analytic::TuningIdentity,
@@ -319,6 +322,47 @@ impl std::fmt::Debug for PreparedSessionInventory {
 }
 
 impl PreparedSessionInventory {
+    pub(crate) fn visit_model_sources_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            ledger.model_source_if_unvisited(&clip.source_identity)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn visit_midi_templates_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            crate::midi_template::storage::visit_source(&clip.source, ledger, role)?;
+            crate::midi_template::storage::visit_instrument(&clip.instrument, ledger, role)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn visit_midi_note_banks_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            clip.instrument.visit_note_bank_on_control(ledger, role)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn visit_midi_context_tables_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        for clip in self.midi_clips.iter().chain(&self.routed_midi_clips) {
+            clip.instrument
+                .visit_context_table_on_control(ledger, role)?;
+        }
+        Ok(())
+    }
     pub fn prepare(
         project: &Project,
         sine_table: Arc<SineTable>,
@@ -370,7 +414,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver(
             project,
@@ -413,7 +459,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, crate::Invalid> {
         if expected_generation == 0 {
             return Err(crate::Invalid("stream source generation must be positive"));
@@ -435,7 +483,9 @@ impl PreparedSessionInventory {
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
         instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+        shared_contexts: Option<
+            crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
         mut resolve_source: impl FnMut(
             &'a hex_project::Asset,
             u32,
@@ -450,6 +500,7 @@ impl PreparedSessionInventory {
                 project,
                 instrument_registry,
                 previous.map(|old| old.shared_contexts.as_ref()),
+                None,
             )?,
         };
         let timing = PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate())
@@ -474,13 +525,20 @@ impl PreparedSessionInventory {
             let slot = track.instrument();
             let config = slot
                 .map(|device| {
+                    let resources = shared_contexts.owner_for_device(device.id()).and_then(
+                        crate::shared_analytic::SharedContextOwner::resource_configuration,
+                    );
                     instrument_registry
                         .prepare_instrument(
                             device.state(),
                             &hex_lattice::DevicePreparationContext {
                                 sample_rate: project.sample_rate(),
                                 tuning: shared_contexts.tuning(),
-                                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                                resources: resources.map_or(
+                                    &hex_lattice::EMPTY_DEVICE_RESOURCES
+                                        as &dyn hex_lattice::DeviceResources,
+                                    |configuration| configuration,
+                                ),
                             },
                         )
                         .map_err(|_| crate::Invalid("track instrument state is unsupported"))
@@ -728,7 +786,7 @@ impl PreparedSessionInventory {
                                     && clip.instrument_enabled == enabled
                             })
                     })
-                    .map(|clip| Arc::clone(clip.instrument.note_bank()));
+                    .map(|clip| clip.instrument.note_bank().clone_on_control());
                 config.note_bank = Some(
                     previous_bank
                         .unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
@@ -752,7 +810,7 @@ impl PreparedSessionInventory {
                                     && clip.tuning_identity == config.tuning_identity
                                     && clip.instrument_enabled == enabled
                             })
-                            .map(|clip| Arc::clone(clip.instrument.note_bank()))
+                            .map(|clip| clip.instrument.note_bank().clone_on_control())
                     })
                 })
                 .flatten();
@@ -1079,7 +1137,7 @@ impl PreparedSessionInventory {
             contains_streamed_sources,
             midi_note_bank_storage_bytes: midi_bank_bytes,
             midi_note_bank_reference_count: midi_bank_references,
-            shared_contexts: crate::owned_shared::OwnedShared::untracked(shared_contexts),
+            shared_contexts,
         })
     }
 
@@ -1105,7 +1163,7 @@ impl PreparedSessionInventory {
 
     pub(crate) fn shared_contexts(
         &self,
-    ) -> &Arc<crate::shared_analytic::SharedAnalyticContextTable> {
+    ) -> &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
     }
 
@@ -1222,6 +1280,27 @@ impl PreparedSessionInventory {
     /// Number of compact indices stored by all Session source templates.
     pub fn midi_note_bank_reference_count(&self) -> usize {
         self.midi_note_bank_reference_count
+    }
+
+    pub(crate) fn clone_mutable_resources_on_control(
+        &self,
+        track: TrackId,
+    ) -> Result<
+        Option<crate::native_device_resources::DeviceResourceConfiguration>,
+        crate::mutable_instrument::MutableInstrumentRuntimeError,
+    > {
+        self.shared_contexts
+            .index_for_track(track)
+            .and_then(|index| self.shared_contexts.owner(index))
+            .and_then(crate::shared_analytic::SharedContextOwner::resource_configuration)
+            .map(|configuration| {
+                configuration
+                    .try_clone_on_control(std::mem::size_of::<
+                        crate::native_device_resources::DeviceResourceConfiguration,
+                    >())
+                    .map_err(|_| crate::mutable_instrument::MutableInstrumentRuntimeError::Budget)
+            })
+            .transpose()
     }
 
     pub(crate) fn mutable_instrument_factory(

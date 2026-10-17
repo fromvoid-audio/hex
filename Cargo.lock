@@ -2645,6 +2645,7 @@ dependencies = [
  "hex-project",
  "hex-tuning",
  "hex-warp",
+ "sha2 0.10.9",
 ]
 
 [[package]]

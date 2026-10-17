@@ -6,6 +6,30 @@ use crate::{
     audio_storage::{Location, Owner},
 };
 impl SessionPlayback {
+    pub(crate) fn visit_mutable_resource_owners_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        for runtime in self.mutable_instruments.iter().flatten() {
+            runtime.visit_resource_owner_on_control(ledger, role)?;
+        }
+        for tail in self.tail_mutable_instruments.iter().flatten() {
+            tail.runtime.visit_resource_owner_on_control(ledger, role)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn visit_inline_resource_owners_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        crate::shared_analytic::resource_storage::visit_revision(&self.revision, ledger, role)?;
+        for owner in self.retained_contexts.iter().flatten() {
+            crate::shared_analytic::resource_storage::visit_owner(owner, ledger, role)?;
+        }
+        Ok(())
+    }
     pub(crate) fn visit_fresh_candidate_storage<'a>(
         &'a self,
         l: &mut AudioRootStorageLedger<'a>,
@@ -125,8 +149,8 @@ impl SessionPlayback {
     }
 }
 fn chain_storage<'a>(
-    chain: &'a hex_lattice::NativeRuntimeChain,
-    prepared: &'a [hex_lattice::PreparedRuntimeInstance],
+    chain: &'a crate::EffectRuntimeChain,
+    prepared: &'a [crate::PreparedEffectInstance],
     l: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
     let view = chain.storage_view();
@@ -140,7 +164,8 @@ fn chain_storage<'a>(
         return Err(AudioStorageError::SourceMismatch);
     }
     for (index, (entry, prepared)) in view.entries().zip(prepared).enumerate() {
-        if prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID
+        if prepared.resources.is_some()
+            || prepared.device_type != hex_devices::utility::UTILITY_TYPE_ID
             || !entry.matches_prepared_runtime_storage(prepared)
         {
             return Err(AudioStorageError::UnsupportedGraph);
@@ -183,4 +208,17 @@ fn chain_storage<'a>(
         )?;
     }
     Ok(())
+}
+
+impl<'a> AudioRootStorageLedger<'a> {
+    /// Selected mutable configuration fields of the actual control-held kernel,
+    /// including retained tails. Runtime payloads, surrounding vector capacity,
+    /// active callback custody and whole-graph admission are outside this view.
+    pub fn borrow_session_mutable_resource_owners_on_control(
+        &mut self,
+        session: &'a SessionPlayback,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| session.visit_mutable_resource_owners_on_control(ledger, role))
+    }
 }

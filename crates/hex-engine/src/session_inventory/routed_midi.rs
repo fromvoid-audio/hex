@@ -98,7 +98,9 @@ pub(super) fn prepare_clip(
     clip: &SessionMidiClip,
     config: &PreparedTrackInstrumentConfig,
     source_timing: &SessionTimingView<'_>,
-    shared_contexts: &Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: &crate::owned_shared::OwnedShared<
+        crate::shared_analytic::SharedAnalyticContextTable,
+    >,
     cached: Option<&PreparedSessionMidiClip>,
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
@@ -128,9 +130,9 @@ pub(super) fn prepare_clip(
             && old.instrument_enabled == instrument_enabled
     });
     let source = if let Some(old) = cached {
-        Arc::clone(&old.source)
+        old.source.clone_on_control()
     } else {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiSourceTemplate::prepare_source(
                 destination,
                 clip.id(),
@@ -150,18 +152,18 @@ pub(super) fn prepare_clip(
             && old.mutable_limits == mutable_limits
     });
     let instrument = if let Some(old) = cached_instrument {
-        Arc::clone(&old.instrument)
+        old.instrument.clone_on_control()
     } else if let Some(limits) = mutable_limits {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiInstrumentTemplate::prepare_events(&source, limits)
                 .map_err(template_error)?,
         )
     } else {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiInstrumentTemplate::prepare_with_bank_and_contexts(
                 &source,
-                Arc::clone(bank),
-                Arc::clone(shared_contexts),
+                bank.clone_on_control(),
+                shared_contexts.clone_on_control(),
             )
             .map_err(template_error)?,
         )
@@ -204,7 +206,7 @@ pub(super) fn account_template(
         ))?;
     *bytes = bytes
         .checked_add(std::mem::size_of::<
-            Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+            crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
         >())
         .ok_or(crate::Invalid(
             "Session MIDI bank handle byte count overflow",

@@ -2,6 +2,11 @@
 use crate::Invalid;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument, PreparedSharedAnalyticNote};
 use std::sync::Arc;
+mod scoped;
+pub(crate) mod storage;
+#[cfg(test)]
+mod storage_tests;
+pub(crate) use scoped::ScopedMidiNote;
 
 use crate::{
     Frame,
@@ -135,7 +140,7 @@ impl PreparedMidiNote {
                 ..
             } => {
                 owner
-                    .context()
+                    .require_analytic_context()?
                     .analytic_continuation()
                     .ok_or(Invalid(
                         "shared analytic continuation capability is unavailable",
@@ -156,7 +161,7 @@ impl PreparedMidiNote {
     pub(crate) fn sample(
         &self,
         contexts: &SharedAnalyticContextTable,
-        retained: &[Option<Arc<SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         age_frames: u64,
         gate_frames: u64,
     ) -> Option<Frame> {
@@ -167,7 +172,7 @@ impl PreparedMidiNote {
     pub(crate) fn sample_at(
         &self,
         contexts: &SharedAnalyticContextTable,
-        retained: &[Option<Arc<SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
         performance_frame: u64,
         age_frames: u64,
@@ -187,9 +192,10 @@ impl PreparedMidiNote {
             } => {
                 let owner = match *context {
                     SharedContextRef::Revision(index) => contexts.owner(index),
-                    SharedContextRef::Retained(index) => {
-                        retained.get(usize::from(index)).and_then(Option::as_deref)
-                    }
+                    SharedContextRef::Retained(index) => retained
+                        .get(usize::from(index))
+                        .and_then(Option::as_deref)
+                        .map(Arc::as_ref),
                 }
                 .filter(|owner| owner.id() == *id)
                 .ok_or(Invalid("shared analytic context identity is unavailable"))?;
@@ -203,9 +209,12 @@ impl PreparedMidiNote {
                     AnalyticBinding::Detached(transition) => *transition,
                 };
                 if let Some(transition) = transition {
-                    let provider = owner.context().analytic_continuation().ok_or(Invalid(
-                        "shared analytic continuation capability is unavailable",
-                    ))?;
+                    let provider = owner
+                        .require_analytic_context()?
+                        .analytic_continuation()
+                        .ok_or(Invalid(
+                            "shared analytic continuation capability is unavailable",
+                        ))?;
                     let target = owner.continuation_id()?;
                     let parameters = provider
                         .parameters_at(target, &transition, performance_frame)
@@ -219,15 +228,15 @@ impl PreparedMidiNote {
                             note,
                             age_frames,
                             gate_frames,
-                            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                            owner.resources(),
                         )
                         .map_err(|_| Invalid("shared analytic continuation sample was refused"))
                 } else {
-                    Ok(owner.context().sample(
+                    Ok(owner.require_analytic_context()?.sample(
                         note,
                         age_frames,
                         gate_frames,
-                        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        owner.resources(),
                     ))
                 }
             }
@@ -246,8 +255,8 @@ pub(crate) type NoteKeys = Vec<u16>;
 
 pub(crate) fn prepare_silent(
     keys: &mut NoteKeys,
-    previous: Option<&Arc<PreparedMidiNoteBank>>,
-) -> Result<Arc<PreparedMidiNoteBank>, Invalid> {
+    previous: Option<&crate::owned_shared::OwnedShared<PreparedMidiNoteBank>>,
+) -> Result<crate::owned_shared::OwnedShared<PreparedMidiNoteBank>, Invalid> {
     PreparedMidiNoteBank::prepare(keys, &SilentInstrument, previous, None)
 }
 
@@ -278,8 +287,8 @@ fn silent_sample(
 }
 
 impl PreparedMidiNoteBank {
-    pub(crate) fn empty() -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn empty() -> crate::owned_shared::OwnedShared<Self> {
+        crate::owned_shared::OwnedShared::new_owned(Self {
             entries: Vec::new(),
             context_id: None,
             context_index: None,
@@ -307,9 +316,9 @@ impl PreparedMidiNoteBank {
     pub(crate) fn prepare(
         keys: &mut NoteKeys,
         instrument: &dyn PreparedNativeInstrument,
-        previous: Option<&Arc<Self>>,
+        previous: Option<&crate::owned_shared::OwnedShared<Self>>,
         shared_context: Option<(u16, &SharedContextOwner)>,
-    ) -> Result<Arc<Self>, Invalid> {
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
         keys.sort_unstable();
         keys.dedup();
         let count = keys.len();
@@ -340,7 +349,7 @@ impl PreparedMidiNoteBank {
         if let Some(previous) =
             previous.filter(|bank| bank.matches(keys, count, context_id, context_index))
         {
-            return Ok(Arc::clone(previous));
+            return Ok(previous.clone_on_control());
         }
         let mut entries = Vec::new();
         entries
@@ -350,14 +359,22 @@ impl PreparedMidiNoteBank {
             let pitch = (key >> 8) as u8;
             let velocity = key as u8;
             let sampler = if let Some((context_index, context)) = shared_context {
-                PreparedMidiNote::Shared {
-                    context: SharedContextRef::Revision(context_index),
-                    id: context.id(),
-                    binding: AnalyticBinding::Current,
-                    note: context
-                        .context()
-                        .prepare_note(pitch, velocity)
-                        .map_err(|_| Invalid("midi note cannot be prepared by its instrument"))?,
+                if context.is_inline_resource_scope() {
+                    PreparedMidiNote::Inline(instrument.prepare_note(pitch, velocity).map_err(
+                        |_| Invalid("inline midi note cannot be prepared by its instrument"),
+                    )?)
+                } else {
+                    PreparedMidiNote::Shared {
+                        context: SharedContextRef::Revision(context_index),
+                        id: context.id(),
+                        binding: AnalyticBinding::Current,
+                        note: context
+                            .require_analytic_context()?
+                            .prepare_note(pitch, velocity)
+                            .map_err(|_| {
+                                Invalid("midi note cannot be prepared by its instrument")
+                            })?,
+                    }
                 }
             } else {
                 PreparedMidiNote::Inline(
@@ -373,7 +390,7 @@ impl PreparedMidiNoteBank {
                 "midi note bank admission changed during preparation",
             ));
         }
-        Ok(Arc::new(Self {
+        Ok(crate::owned_shared::OwnedShared::new_owned(Self {
             entries,
             context_id,
             context_index,
@@ -412,19 +429,22 @@ impl PreparedMidiNoteBank {
             .and_then(|index| u16::try_from(index).ok())
     }
 
-    pub(crate) fn sampler(&self, index: u16) -> Option<PreparedMidiNote> {
-        self.entries
-            .get(usize::from(index))
-            .map(|entry| entry.sampler)
+    pub(crate) fn sampler(&self, index: u16) -> Option<ScopedMidiNote> {
+        self.entries.get(usize::from(index)).map(|entry| {
+            ScopedMidiNote::for_bank_entry(entry.sampler, self.context_index.zip(self.context_id))
+        })
     }
 
     pub(crate) fn validate_continuation_notes(
         &self,
         target: &SharedContextOwner,
     ) -> Result<(), Invalid> {
-        let provider = target.context().analytic_continuation().ok_or(Invalid(
-            "shared analytic continuation capability is unavailable",
-        ))?;
+        let provider = target
+            .require_analytic_context()?
+            .analytic_continuation()
+            .ok_or(Invalid(
+                "shared analytic continuation capability is unavailable",
+            ))?;
         for entry in &self.entries {
             if let PreparedMidiNote::Shared { note, .. } = entry.sampler {
                 provider
@@ -443,12 +463,17 @@ impl PreparedMidiNoteBank {
                 bytes.checked_add(
                     std::mem::size_of::<PreparedMidiNoteBank>()
                         .checked_add(2 * std::mem::size_of::<usize>())?
-                        .checked_add(std::mem::size_of::<Arc<PreparedMidiNoteBank>>())?,
+                        .checked_add(std::mem::size_of::<
+                            crate::owned_shared::OwnedShared<PreparedMidiNoteBank>,
+                        >())?,
                 )
             })
             .ok_or(Invalid("midi note bank byte count overflow"))
     }
 
+    // Keep the existing policy byte ceilings below unchanged. The additional
+    // actual receipt-header bytes consume that existing allowance; they do not
+    // increase the project or complete-revision caps.
     pub(crate) fn validate_project_budget(
         bank_bytes: usize,
         index_count: usize,
@@ -600,10 +625,10 @@ mod tests {
             PreparedMidiNoteBank::prepare(&mut keys, &second_instrument, None, None).unwrap();
         let first_sampler = first.sampler(first.index(60, 100).unwrap()).unwrap();
         let second_sampler = second.sampler(second.index(60, 100).unwrap()).unwrap();
-        let PreparedMidiNote::Inline(first_sampler) = first_sampler else {
+        let PreparedMidiNote::Inline(first_sampler) = first_sampler.note else {
             panic!("test instrument should use inline analytic notes");
         };
-        let PreparedMidiNote::Inline(second_sampler) = second_sampler else {
+        let PreparedMidiNote::Inline(second_sampler) = second_sampler.note else {
             panic!("test instrument should use inline analytic notes");
         };
         assert_eq!(

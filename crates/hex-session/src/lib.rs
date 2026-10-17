@@ -20,7 +20,12 @@ use std::{
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
+mod original_audio;
+mod resource_plan;
+pub use resource_plan::{ResidentPcmInventory, ResidentResourcePlanReservation};
 mod resident_pcm;
+pub use original_audio::DecodedOriginal;
+use original_audio::{OriginalAudio, ResidentPcm};
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
@@ -89,12 +94,40 @@ pub struct PreparedImport {
     source_sample_rate: u32,
     source_frames: u64,
     conversion_version: u32,
-    source_audio: Audio,
+    source_audio: OriginalAudio,
     audio: Audio,
     waveform: Waveform,
 }
 
 impl PreparedImport {
+    /// Worker-side original decode before source sharing. Native mono retains
+    /// one actual mono buffer plus the required project-rate stereo derivative.
+    /// Portable imports retain their existing explicit stereo representation.
+    pub fn decode_at_rate(
+        path: impl AsRef<std::path::Path>,
+        project_rate: u32,
+        media_limits: hex_media::Limits,
+        conversion_limits: ResampleLimits,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, SessionError> {
+        let decoded = DecodedOriginal::decode_file(path, media_limits, cancel)?;
+        let prepared = decoded.at_rate(project_rate, conversion_limits)?;
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(MediaInvalid::Cancelled.into());
+        }
+        Ok(prepared)
+    }
+
+    /// Consume actual closed source custody, without raw Arc adoption.
+    pub fn from_native_source(
+        path: PathBuf,
+        source: hex_engine::OwnedAudioSource,
+        project_rate: u32,
+        limits: ResampleLimits,
+    ) -> Result<Self, SessionError> {
+        DecodedOriginal::from_native(path, source)?.at_rate(project_rate, limits)
+    }
+
     /// Prepare an identity import away from the UI and audio callback.
     pub fn new(decoded: DecodedAudio) -> Result<Self, SessionError> {
         let rate = decoded.sample_rate();
@@ -130,7 +163,7 @@ impl PreparedImport {
             } else {
                 hex_project::SINC_CONVERSION_V1
             },
-            source_audio: decoded.into_audio(),
+            source_audio: OriginalAudio::Stereo(decoded.into_audio()),
             audio,
             waveform,
         })
@@ -142,7 +175,7 @@ impl PreparedImport {
 }
 
 struct ResidentAsset {
-    source_audio: Audio,
+    source_audio: OriginalAudio,
     audio: Audio,
     waveform: Arc<Waveform>,
     frames: u64,
@@ -230,7 +263,9 @@ impl Session {
             // needs no new buffer reservation even when remaining capacity is zero.
             let shared_identity = decoded.sample_rate() == project.sample_rate()
                 && prepared_assets.iter().any(|(_, p)| {
-                    decoded.audio().shares_pcm_with(&p.source_audio)
+                    p.source_audio
+                        .stereo()
+                        .is_some_and(|a| decoded.audio().shares_pcm_with(a))
                         || decoded.audio().shares_pcm_with(&p.audio)
                 });
             let output_limit = if shared_identity {
@@ -250,11 +285,8 @@ impl Session {
             )?;
             remaining = remaining
                 .checked_sub(
-                    prepared.additional_pcm_frames(
-                        prepared_assets
-                            .iter()
-                            .flat_map(|(_, p)| [&p.source_audio, &p.audio]),
-                    )?,
+                    prepared
+                        .additional_pcm_frames(prepared_assets.iter().flat_map(|(_, p)| p.pcm()))?,
                 )
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             prepared_assets.push((id, prepared));
@@ -317,7 +349,7 @@ impl Session {
             if prepared.audio.sample_rate() != editor.project().sample_rate()
                 || frames != metadata.playback_frames()
                 || prepared.source_audio.sample_rate() != prepared.source_sample_rate
-                || u64::try_from(prepared.source_audio.frames().len()).ok()
+                || u64::try_from(prepared.source_audio.frames()).ok()
                     != Some(prepared.source_frames)
                 || prepared.source_sample_rate != metadata.source_sample_rate()
                 || prepared.source_frames != metadata.source_frames()
@@ -328,9 +360,7 @@ impl Session {
                 ));
             }
             resident_frames = resident_frames
-                .checked_add(prepared.additional_pcm_frames(
-                    media.values().flat_map(|m| [&m.source_audio, &m.audio]),
-                )?)
+                .checked_add(prepared.additional_pcm_frames(media.values().flat_map(|m| m.pcm()))?)
                 .filter(|total| *total <= max_resident_frames)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             let audio = prepared.audio;
@@ -467,7 +497,7 @@ impl Session {
         &mut self,
         id: AssetId,
         audio: Audio,
-        source_audio: Audio,
+        source_audio: OriginalAudio,
         waveform: Waveform,
         frames: u64,
         accounting: ResidentImportAccounting,
@@ -928,13 +958,7 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(
-                prepared.additional_pcm_frames(
-                    self.media
-                        .values()
-                        .flat_map(|m| [&m.source_audio, &m.audio]),
-                )?,
-            )
+            .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         if self.media.try_reserve(1).is_err() {
@@ -1052,13 +1076,7 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(
-                prepared.additional_pcm_frames(
-                    self.media
-                        .values()
-                        .flat_map(|m| [&m.source_audio, &m.audio]),
-                )?,
-            )
+            .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
@@ -1162,13 +1180,7 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(
-                prepared.additional_pcm_frames(
-                    self.media
-                        .values()
-                        .flat_map(|m| [&m.source_audio, &m.audio]),
-                )?,
-            )
+            .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
@@ -1358,11 +1370,21 @@ impl Session {
         self.media.get(&asset).map(|resident| &resident.audio)
     }
 
-    /// Original decoded source, borrowed on control; not a callback resource lease.
+    /// Stereo original, borrowed on control; native mono uses source_mono.
+    /// Neither control borrow is a callback resource lease.
     pub fn source_audio(&self, asset: AssetId) -> Option<&Audio> {
         self.media
             .get(&asset)
-            .map(|resident| &resident.source_audio)
+            .and_then(|resident| resident.source_audio.stereo())
+    }
+
+    /// Actual native mono original, borrowed on control; not a resource lease.
+    /// Stereo originals remain available through source_audio.
+    pub fn source_mono(&self, asset: AssetId) -> Option<hex_engine::OwnedAudioSourceView<'_>> {
+        match &self.media.get(&asset)?.source_audio {
+            OriginalAudio::Mono(source) => Some(source.view()),
+            OriginalAudio::Stereo(_) => None,
+        }
     }
 
     pub fn waveform(&self, asset: AssetId) -> Option<Arc<Waveform>> {

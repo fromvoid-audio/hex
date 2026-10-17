@@ -131,7 +131,7 @@ fn finite_mutable_tail_admission_rejects_above_horizon_before_constructing_twins
             frames: limit,
             constructions: Arc::clone(&counter),
         };
-        let runtime = MutableInstrumentTrackRuntime::new(&factory, sample_rate).unwrap();
+        let runtime = MutableInstrumentTrackRuntime::new(&factory, sample_rate, None).unwrap();
         assert_eq!(runtime.max_release_tail_frames(), limit);
         assert!(
             MutableInstrumentTrackRuntime::checkpoint_storage_upper_bound(&factory, sample_rate)
@@ -144,7 +144,7 @@ fn finite_mutable_tail_admission_rejects_above_horizon_before_constructing_twins
                 constructions: Arc::clone(&counter),
             };
             assert!(matches!(
-                MutableInstrumentTrackRuntime::new(&too_long, sample_rate),
+                MutableInstrumentTrackRuntime::new(&too_long, sample_rate, None),
                 Err(MutableInstrumentRuntimeError::Budget)
             ));
             assert!(
@@ -170,7 +170,7 @@ fn longest_mutable_tail_keeps_audio_and_occurrence_until_exact_quiescence_with_r
         frames: tail,
         constructions: Arc::new(AtomicUsize::new(0)),
     };
-    let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+    let mut runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000, None).unwrap();
     let storage = runtime.runtime_pair_storage_bytes();
     let mut onsets = MutableOnsetBuffer::default();
     onsets

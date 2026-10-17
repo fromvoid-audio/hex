@@ -47,6 +47,12 @@ history. No PCM or OS clipboard is owned here. See [time selection](../../docs/t
 
 ## Dependencies
 
+Canonical MIDI owners expose narrow borrowed storage observations and actual
+current/Undo/Redo traversal without cloning identities. These are selected
+model-domain facts, not a raw Arc upgrade or host admission. See
+[native MIDI storage](../../docs/native-midi-storage.md) for the constructor/COW
+invariant, separate native layout qualification and remaining custody proof.
+
 Depends on the standard library, `hex-tuning` for validated project tuning and
 audition settings, and `hex-lattice-contract` for opaque, bounded
 native-device state envelopes. The engine consumes read-only snapshots to

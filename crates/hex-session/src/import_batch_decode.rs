@@ -1,8 +1,12 @@
 //! Owned-path control-side audio batches, with bounded polling and cancellation.
 //! Decode and conversion calls are not internally interruptible. No UI, worker
 //! protocol, callback, source-file mutation or partial project event lives here.
-use crate::{PreparedImport, Session, SessionError, import_batch::AudioBatchDestination};
-use hex_media::{Limits, ResampleLimits, decode_wav_file};
+#[cfg(test)]
+use crate::PreparedImport;
+use crate::{Session, SessionError, import_batch::AudioBatchDestination};
+#[cfg(test)]
+use hex_media::decode_wav_file;
+use hex_media::{Limits, ResampleLimits};
 use hex_project::{Created, Project};
 use std::{
     fmt,
@@ -376,32 +380,34 @@ impl AudioBatchImport {
             };
             self.control.publish(1, index + 1, index);
             self.check(current)?;
-            let decoded =
-                decode_wav_file(path, Limits::new(FILE_BYTES, SOURCE_FRAMES)).map_err(|e| {
-                    AudioBatchError::Member {
-                        member: index + 1,
-                        path: original.clone(),
-                        source: SessionError::Media(e),
-                    }
-                })?;
+            let decoded = crate::DecodedOriginal::decode_file(
+                path,
+                Limits::new(FILE_BYTES, SOURCE_FRAMES),
+                &session.shutdown,
+            )
+            .map_err(|e| AudioBatchError::Member {
+                member: index + 1,
+                path: original.clone(),
+                source: e,
+            })?;
             self.check(current)?;
             self.control.publish(2, index + 1, index);
             self.check(current)?;
-            let member = PreparedImport::at_rate(
-                decoded,
-                self.project.sample_rate(),
-                ResampleLimits {
-                    max_source_frames: SOURCE_FRAMES,
-                    max_output_frames: usize::try_from(remaining).map_err(|_| {
-                        SessionError::Invalid("resident frame limit exceeds addressable range")
-                    })?,
-                },
-            )
-            .map_err(|source| AudioBatchError::Member {
-                member: index + 1,
-                path: original.clone(),
-                source,
-            })?;
+            let member = decoded
+                .at_rate(
+                    self.project.sample_rate(),
+                    ResampleLimits {
+                        max_source_frames: SOURCE_FRAMES,
+                        max_output_frames: usize::try_from(remaining).map_err(|_| {
+                            SessionError::Invalid("resident frame limit exceeds addressable range")
+                        })?,
+                    },
+                )
+                .map_err(|source| AudioBatchError::Member {
+                    member: index + 1,
+                    path: original.clone(),
+                    source,
+                })?;
             self.check(current)?;
             remaining = remaining
                 .checked_sub(member.retained_pcm_frames()?)

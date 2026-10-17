@@ -1,7 +1,7 @@
 //! Bounded opt-in import of actual sounding shared analytic occurrences.
 use super::*;
 use crate::{
-    midi_note_bank::{PreparedMidiNote, SharedContextRef},
+    midi_note_bank::{PreparedMidiNote, ScopedMidiNote, SharedContextRef},
     mutable_instrument::{MutableOccurrence, MutableOccurrenceKey, MutableOccurrenceSignature},
 };
 use hex_lattice::NativeInstrumentAnalyticSeed;
@@ -136,7 +136,7 @@ impl SessionPlayback {
                           gate: u64,
                           end: u64,
                           cut: u64,
-                          sampler: PreparedMidiNote|
+                          sampler: ScopedMidiNote|
          -> Result<(), SessionPlaybackError> {
             if start >= cut {
                 return Ok(());
@@ -146,7 +146,7 @@ impl SessionPlayback {
                 note,
                 binding: crate::midi_note_bank::AnalyticBinding::Current,
                 ..
-            } = sampler
+            } = sampler.note
             else {
                 compatible = false;
                 return Ok(());
@@ -170,7 +170,11 @@ impl SessionPlayback {
                 .shared_contexts()
                 .owner(index)
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-            if !factory.can_import_analytic_context(context.context()) {
+            if !factory.can_import_analytic_context(
+                context
+                    .require_analytic_context()
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
+            ) {
                 compatible = false;
                 return Ok(());
             }

@@ -46,7 +46,7 @@ pub(super) struct ContextCapacity {
 }
 impl ContextCapacity {
     pub fn allocated() -> Self {
-        let mut owners = Vec::<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>::new();
+        let mut owners = Vec::<crate::shared_analytic::SharedContextLease>::new();
         owners.try_reserve_exact(TRACKS).unwrap();
         let mut index = Vec::<(crate::shared_analytic::SharedContextId, u16)>::new();
         index.try_reserve_exact(TRACKS).unwrap();
@@ -62,9 +62,7 @@ impl ContextCapacity {
         let per_owner = size_of::<crate::shared_analytic::SharedContextOwner>()
             .checked_add(4 * size_of::<usize>())?;
         self.owners
-            .checked_mul(size_of::<
-                std::sync::Arc<crate::shared_analytic::SharedContextOwner>,
-            >())?
+            .checked_mul(size_of::<crate::shared_analytic::SharedContextLease>())?
             .checked_add(
                 self.index
                     .checked_mul(size_of::<(crate::shared_analytic::SharedContextId, u16)>())?,
@@ -180,6 +178,8 @@ pub(super) enum Guard {
 }
 pub(super) struct HostOwner {
     guard: Guard,
+    // Actual immutable configuration handle; provider pair bytes exclude it.
+    resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     // Mirror the actual host's new inline controller target and frozen value;
     // these bytes are additional to the provider payload and both ledgers.
     expression_identity: Option<hex_project::DeviceId>,

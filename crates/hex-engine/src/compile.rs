@@ -117,7 +117,9 @@ pub(crate) fn project_with_prepared_audio_sources_and_midi_preview_and_contexts(
     sources: &BTreeMap<AssetId, PreparedAudioSource>,
     generation: u64,
     sine_table: Option<Arc<hex_devices::SineTable>>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     if generation == 0 {
@@ -193,7 +195,9 @@ pub(crate) fn project_with_midi_preview_and_table_and_instrument_contexts(
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     compile_with_midi_preview(
@@ -214,7 +218,9 @@ fn compile_with_midi_preview<'a>(
     sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, crate::MidiArrangementPreview), Invalid> {
     let mut previews = Vec::new();
@@ -255,7 +261,9 @@ fn compile_project<'a>(
     _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
     transforms: Option<&crate::audio_transform::AudioTransformPreparation>,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     let fallback = crate::audio_transform::AudioTransformPreparation::default();
@@ -282,7 +290,9 @@ fn compile_project_inner<'a>(
     _prepared_sine_table: Option<Arc<hex_devices::SineTable>>,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
     instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
-    shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+    shared_contexts: Option<
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    >,
     transforms: &crate::audio_transform::AudioTransformPreparation,
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
@@ -321,6 +331,7 @@ fn compile_project_inner<'a>(
             snapshot,
             instrument_registry,
             None,
+            None,
         )?,
     };
     let device_context = hex_lattice::DevicePreparationContext {
@@ -352,7 +363,14 @@ fn compile_project_inner<'a>(
             .instrument()
             .map(|slot| {
                 instrument_registry
-                    .prepare_instrument(slot.state(), &device_context)
+                    .prepare_instrument(slot.state(), &hex_lattice::DevicePreparationContext {
+                        sample_rate: snapshot.sample_rate(),
+                        tuning: shared_contexts.tuning(),
+                        resources: shared_contexts.owner_for_device(slot.id())
+                            .and_then(crate::shared_analytic::SharedContextOwner::resource_configuration)
+                            .map_or(&hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+                                |configuration| configuration),
+                    })
                     .map_err(|_| Invalid("track instrument state is unsupported"))
             })
             .transpose()?;
@@ -440,7 +458,7 @@ fn compile_project_inner<'a>(
                 None,
                 None,
                 None,
-                Arc::clone(&shared_contexts),
+                shared_contexts.clone_on_control(),
                 previews.as_deref_mut(),
             )?;
         }
@@ -461,7 +479,7 @@ fn compile_project_inner<'a>(
                         .instrument()
                         .and_then(|device| shared_contexts.index_for_device(device.id()))
                         .and_then(|index| shared_contexts.owner(index).map(|owner| (index, owner))),
-                    Arc::clone(&shared_contexts),
+                    shared_contexts.clone_on_control(),
                     if source_index == track_index {
                         previews.as_deref_mut()
                     } else {
@@ -638,7 +656,7 @@ struct CompiledEffectPlan {
     fused: Option<hex_lattice::StereoMatrix>,
     prefix: Option<hex_lattice::StereoMatrix>,
     suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
+    device_chain: Vec<crate::PreparedEffectInstance>,
 }
 
 fn compile_device_effects(
@@ -696,16 +714,19 @@ fn compile_effect_devices(
                 .then(trim)
                 .map_err(|error| Invalid(error.0))?;
         }
-        devices.push(hex_lattice::PreparedRuntimeInstance {
-            meter: Default::default(),
-            owner,
-            device_id: device.id().value(),
-            device_type: migrated.type_id(),
-            matrix: prepared,
-            bypassed: device.bypassed(),
-            sample_rate,
-            configuration: Some(std::sync::Arc::new(migrated)),
-            definition: processor,
+        devices.push(crate::PreparedEffectInstance {
+            instance: hex_lattice::PreparedRuntimeInstance {
+                meter: Default::default(),
+                owner,
+                device_id: device.id().value(),
+                device_type: migrated.type_id(),
+                matrix: prepared,
+                bypassed: device.bypassed(),
+                sample_rate,
+                configuration: Some(std::sync::Arc::new(migrated)),
+                definition: processor,
+            },
+            resources: None,
         });
     }
     Ok(CompiledEffectPlan {

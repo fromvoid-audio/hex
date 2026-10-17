@@ -516,3 +516,28 @@ fn endpoint_only_fades_construct_resident_metadata_and_recover_exact_source_bank
         assert!(bank.source_view(&old).is_ok());
     }
 }
+
+#[test]
+fn resource_only_mono_refuses_clip_preparation_before_any_alias_or_transfer() {
+    if !super::session_source_tests::supported("mono_resource_clip_refusal") {
+        return;
+    }
+    let (project, mut bank, _) = fixture(false, false, 2);
+    bank.sources[0].1 = OwnedAudioSource::try_resident_mono(48_000, vec![0.25; 8])
+        .ok()
+        .unwrap();
+    let identity = bank.test_bank_identity();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let refusal = begin(&mut custody, &project, bank).err().unwrap();
+    assert_eq!(refusal.reason, AudioStorageError::UnsupportedGraph);
+    assert_eq!(refusal.inputs.test_bank_identity(), identity);
+    assert!(refusal.inputs.aliases.iter().all(|row| row.owner.is_none()));
+    let crate::audio_only_inputs::SourceKind::ResidentMono(source) =
+        &refusal.inputs.sources[0].1.kind
+    else {
+        panic!("source replaced")
+    };
+    assert_eq!(std::sync::Arc::strong_count(source.arc()), 1);
+    assert_eq!(source.samples, [0.25; 8]);
+    assert_eq!(custody.installed_source_bindings(), 0);
+}

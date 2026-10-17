@@ -112,6 +112,9 @@ fn four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity(
                 (
                     *id,
                     match &source.kind {
+                        SourceKind::ResidentMono(_) => {
+                            panic!("stereo clip fixture contains a resource-only mono source")
+                        }
                         SourceKind::Resident(audio) => {
                             crate::compile::PreparedAudioSource::Resident(audio.clone())
                         }
