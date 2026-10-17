@@ -1090,10 +1090,6 @@ impl EditorView {
                     )
                 })
                 .take(midi_shape_budget);
-            let description = format!(
-                "{} source notes · {} arrangement occurrences · sampled preview",
-                preview.authored_note_count, preview.occurrence_count,
-            );
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -1127,12 +1123,6 @@ impl EditorView {
                     }),
                 );
             midi = midi.children([clip_grid_layer(grid, visible_start, visible_end)]);
-            midi = midi.tooltip(move |_, cx| {
-                cx.new(|_| ClipTooltip {
-                    name: description.clone(),
-                })
-                .into()
-            });
             let mut shown = 0;
             for (x, w, pitch) in note_shapes {
                 shown += 1;
@@ -1203,7 +1193,6 @@ impl EditorView {
     ) -> gpui::Stateful<Div> {
         let ClipViewTimeline { viewport, grid, .. } = timeline;
         let clip_id = clip.id();
-        let clip_duration = clip.duration();
         let trim_preview_clip = self
             .active_trim_drag
             .as_ref()
@@ -1404,12 +1393,6 @@ impl EditorView {
             .child(self.clip_name_header(track, clip.id(), clip.name(), cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
-            .tooltip(move |_, cx| {
-                cx.new(|_| ClipTooltip {
-                    name: format!("clip {} · {} frames", clip_id.value(), clip_duration),
-                })
-                .into()
-            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {

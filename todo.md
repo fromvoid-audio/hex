@@ -4320,3 +4320,8 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+
+- 17 October 2026 / Pulse #2752: removed Arrangement audio/MIDI container hover
+  tooltips, including the sampled-note preview popup over clip headers. Header
+  selection/drag/rename and distinct control tooltips are unchanged. Native hover
+  acceptance remains pending in the coordinated optimized candidate.
