@@ -28,6 +28,13 @@ impl Handle {
         }
     }
 }
+struct FadeControls {
+    lane: LaneBounds,
+    local_fade: ClipFade,
+    reanchors: bool,
+    positions: Vec<(Handle, Point<f32>)>,
+}
+
 #[derive(Clone)]
 pub(super) struct FadeDrag {
     generation: u64,
@@ -264,15 +271,14 @@ impl EditorView {
             })
             .map(|drag| drag.preview)
     }
-    pub(super) fn fade_handles(
+    fn fade_controls(
         &self,
         state: &ViewState,
         track: TrackId,
         clip: &Clip,
         visible: (u64, u64),
         viewport: Viewport,
-        cx: &mut Context<Self>,
-    ) -> Vec<gpui::Stateful<Div>> {
+    ) -> Option<FadeControls> {
         let preview = self.fade_preview(clip.id());
         let active = self
             .active_fade_drag
@@ -280,28 +286,24 @@ impl EditorView {
             .is_some_and(|drag| drag.clip.id() == clip.id());
         let fade = preview.unwrap_or(clip.retained_fade());
         if !self.fade_key_held && fade.is_neutral() && !fade.has_shape() && !active {
-            return Vec::new();
+            return None;
         }
-        let Some(lane) = self.drag_lanes.get(&track).copied() else {
-            return Vec::new();
-        };
+        let lane = self.drag_lanes.get(&track).copied()?;
         if !lane.width.is_finite()
             || lane.width <= 0.0
+            || !lane.height.is_finite()
+            || lane.height <= 0.0
             || viewport.length == 0
             || visible.0 >= visible.1
         {
-            return Vec::new();
+            return None;
         }
-        let local_fade = match fade.reanchor(clip.duration()) {
-            Ok(fade) => fade,
-            Err(_) => return Vec::new(),
-        };
-        let local_controls = self.fade_key_held || preview.is_some();
+        let local_fade = fade.reanchor(clip.duration()).ok()?;
+        let local_controls = self.fade_key_held || preview.is_some() || active;
         let controls = if local_controls { local_fade } else { fade };
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
-        let original_clip = Rc::new(clip.clone());
-        let mut handles = Vec::new();
+        let mut positions = Vec::with_capacity(6);
         for (handle, domain_frame, gain) in knots(controls) {
             if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
                 || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
@@ -341,6 +343,70 @@ impl EditorView {
             let curve_y = (name_height
                 + body_height * (1.0 - gain).clamp(vertical_inset, 1.0 - vertical_inset))
                 / lane.height.max(1.0);
+            let center_y = match handle {
+                Handle::InTop | Handle::OutTop => (name_height + 4.0) / lane.height,
+                Handle::InBottom | Handle::OutBottom => (lane.height - 4.0) / lane.height,
+                Handle::InCurve | Handle::OutCurve => curve_y,
+            };
+            positions.push((handle, gpui::point(fraction, center_y)));
+        }
+        Some(FadeControls {
+            lane,
+            local_fade,
+            reanchors,
+            positions,
+        })
+    }
+    pub(super) fn fade_handle_hit(
+        &self,
+        state: &ViewState,
+        track: TrackId,
+        clip: &Clip,
+        x: f32,
+        y: f32,
+        viewport: Viewport,
+    ) -> bool {
+        let Some(end) = clip.start().checked_add(clip.duration()) else {
+            return false;
+        };
+        let Some(viewport_end) = viewport.end() else {
+            return false;
+        };
+        let visible = (clip.start().max(viewport.start), end.min(viewport_end));
+        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+            return false;
+        };
+        let left = controls.lane.left
+            + controls.lane.width
+                * ((visible.0 - viewport.start) as f64 / viewport.length as f64) as f32;
+        let width = (controls.lane.width
+            * ((visible.1 - visible.0) as f32 / viewport.length as f32))
+            .max(3.0);
+        controls.positions.iter().any(|(_, point)| {
+            let center_x = left + point.x * width;
+            let center_y = controls.lane.top + point.y * controls.lane.height;
+            // Account for the clip's one-pixel border without reserving its body.
+            (x - center_x).abs() <= 5.0 && (y - center_y).abs() <= 5.0
+        })
+    }
+    pub(super) fn fade_handles(
+        &self,
+        state: &ViewState,
+        track: TrackId,
+        clip: &Clip,
+        visible: (u64, u64),
+        viewport: Viewport,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::Stateful<Div>> {
+        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+            return Vec::new();
+        };
+        let lane = controls.lane;
+        let local_fade = controls.local_fade;
+        let reanchors = controls.reanchors;
+        let original_clip = Rc::new(clip.clone());
+        let mut handles = Vec::new();
+        for (handle, position) in controls.positions {
             let clip_id = clip.id();
             let selector = format!("{}-{}", handle.name(), clip_id.value());
             let drag = FadeDrag {
@@ -361,21 +427,12 @@ impl EditorView {
                     .id((handle.name(), clip_id.value()))
                     .debug_selector(move || selector.clone())
                     .absolute()
-                    .left(relative(fraction))
+                    .left(relative(position.x))
                     .ml(px(-4.0))
                     .w(px(8.0))
                     .h(px(8.0))
-                    .when(matches!(handle, Handle::InTop | Handle::OutTop), |this| {
-                        this.top(px(super::clip_name::CLIP_NAME_HEIGHT))
-                    })
-                    .when(
-                        matches!(handle, Handle::InBottom | Handle::OutBottom),
-                        |this| this.bottom_0(),
-                    )
-                    .when(
-                        matches!(handle, Handle::InCurve | Handle::OutCurve),
-                        |this| this.top(relative(curve_y)).mt(px(-4.0)),
-                    )
+                    .top(relative(position.y))
+                    .mt(px(-4.0))
                     .border_1()
                     .border_color(rgb(theme::color(theme::PaletteRole::Background)))
                     .bg(rgb(theme::color(theme::PaletteRole::Secondary)))

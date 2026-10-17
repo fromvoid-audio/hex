@@ -71,7 +71,9 @@ move horizontally. Lower handles move horizontally while preserving the upper
 endpoint. The middle handle moves vertically, bending from convex through linear
 to concave. Geometry stays bounded to visible clips and viewport coordinates;
 short curves receive their own interior samples even on long clips. The curve and
-handles occupy the waveform body below the shared name strip. Existing
+handles occupy the waveform body below the shared upper-third name/grab strip.
+Rendered handle hit regions take precedence over body selection and time-range
+moves, while the rest of the body retains its normal selection behavior. Existing
 inspector step controls retain endpoint/curve settings; reset clears the envelope.
 
 The inward offsets `in_start` and `out_end_offset` default to zero. Before

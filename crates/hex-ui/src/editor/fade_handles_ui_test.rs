@@ -22,7 +22,7 @@ fn key(visual: &mut VisualTestContext, down: bool, key: &str) {
 fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_clip(
     cx: &mut TestAppContext,
 ) {
-    let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
     let original = project.clip(clip).unwrap().clone();
     let (handle, editor) =
         super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
@@ -36,6 +36,16 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
         .debug_bounds(selector)
         .expect("f reveals the actual handle")
         .center();
+    editor.update(&mut visual, |view, cx| {
+        view.time_selection = Some(super::super::time_selection::TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: 0,
+            end_frame: 96_000,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
     visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     let to = point(target.x + px(45.0), target.y);
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
@@ -43,6 +53,10 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
     editor.read_with(&visual, |view, _| {
         assert!(view.active_fade_drag.as_ref().unwrap().preview.fade_in() > 0);
         assert!(view.active_clip_drag.is_none() && view.active_trim_drag.is_none());
+        assert!(
+            view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none(),
+            "fade handles take precedence inside an existing time selection"
+        );
         assert!(
             view.last_enqueued_edit.is_none(),
             "preview does not enqueue project work"
@@ -243,6 +257,15 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
         .expect("f exposes a local edit handle even when the inherited knot is outside this crop")
         .center();
     visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    key(&mut visual, false, "f");
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("fade-in-top-{}", middle.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "active split controls stay visible after f release before pointer movement"
+    );
     let to = point(target.x + px(12.0), target.y);
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
