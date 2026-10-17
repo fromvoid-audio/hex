@@ -601,9 +601,9 @@ impl ProjectCore {
                 || self.analyzed_at.is_some_and(|last| {
                     now.saturating_duration_since(last) < selection.analysis_interval()
                 })
-                || !now
+                || now
                     .checked_duration_since(self.captured_at?)
-                    .is_some_and(|age| age <= selection.stale_after())
+                    .is_none_or(|age| age > selection.stale_after())
             {
                 return None;
             }

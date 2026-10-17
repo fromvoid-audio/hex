@@ -61,9 +61,14 @@ capture/FFT work after already queued work drains. The fixed pool remains owned
 until the audio lifecycle retires. Expand starts a new token/window. Height is
 view-only, bounded to 72–300 px and available window space; resizing commits no
 project/history edit. Outside release completes it; Escape, focus/context loss or
-window resize restores the previous height. The shared detail viewport yields
-space to the timeline at small window sizes; real detail controls remain reachable
-through vertical scrolling. No project-format or persistence field is added.
+window resize restores the previous height. At constrained heights with
+populated details, the expanded panel uses a 22px
+header containing a live miniature plot of every layer. The preferred graph
+height returns when space permits; this is separate from manual collapse, which
+stops capture. Full detail controls retain their ordinary unclipped layout when
+they fit. Otherwise a bounded vertical viewport keeps at least one 44px track row
+usable; empty detail space yields to at least 60px of timeline. No selected layer
+is omitted in compact mode. No project-format or persistence field is added.
 
 ## Verification and native acceptance
 

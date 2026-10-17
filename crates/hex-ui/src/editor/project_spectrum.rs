@@ -54,8 +54,18 @@ impl EditorView {
         // main track44, mixer26 and detail tabs22. Routing owns its own height.
         228.0 + super::return_tracks::section_height(returns)
     }
+    fn project_spectrum_compact(&self, window: &Window) -> bool {
+        self.project_spectrum.expanded
+            && self.project_spectrum.detail_height.is_some_and(|detail| {
+                f32::from(window.viewport_size().height)
+                    - self.project_spectrum_chrome()
+                    - detail
+                    - 60.0
+                    < 72.0
+            })
+    }
     fn project_spectrum_height(&self, window: &Window) -> f32 {
-        if !self.project_spectrum.expanded {
+        if !self.project_spectrum.expanded || self.project_spectrum_compact(window) {
             return 22.0;
         }
         let viewport = f32::from(window.viewport_size().height);
@@ -71,11 +81,18 @@ impl EditorView {
     /// Empty space yields to the timeline; real controls remain scrollable.
     pub(super) fn project_spectrum_detail_height(&self, window: &Window, preferred: f32) -> f32 {
         let viewport = f32::from(window.viewport_size().height);
+        let workspace = if self.project_spectrum.detail_height.is_some()
+            && self.project_spectrum_height(window) == 22.0
+        {
+            44.0
+        } else {
+            60.0
+        };
         preferred.min(
             (viewport
                 - self.project_spectrum_chrome()
                 - self.project_spectrum_height(window)
-                - 60.0)
+                - workspace)
                 .max(48.0),
         )
     }
@@ -320,7 +337,8 @@ impl EditorView {
         } else {
             "unavailable".into()
         };
-        let header = div()
+        let compact = self.project_spectrum_compact(window);
+        let mut header = div()
             .h(px(22.0))
             .flex_shrink_0()
             .flex()
@@ -357,6 +375,19 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(summary)),
             );
+        if compact {
+            let plot = layered_spectrum_plot(
+                self.project_spectrum_layers(std::time::Instant::now()),
+                style,
+            )
+            .unwrap_or_else(div);
+            header = header.child(
+                div().flex_1().min_w_0().h(px(18.0)).child(
+                    plot.id("project-spectrum-plot")
+                        .debug_selector(|| "project-spectrum-plot".into()),
+                ),
+            );
+        }
         let mut panel = div()
             .id("project-spectrum")
             .debug_selector(|| "project-spectrum".into())
@@ -369,7 +400,7 @@ impl EditorView {
             .border_b_1()
             .border_color(rgb(style.border))
             .child(header);
-        if expanded {
+        if expanded && !compact {
             let layers = self.project_spectrum_layers(std::time::Instant::now());
             let plot = layered_spectrum_plot(layers, style).unwrap_or_else(div);
             panel = panel

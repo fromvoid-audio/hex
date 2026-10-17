@@ -139,7 +139,7 @@ impl EditorView {
         }
         self.project_spectrum.detail_height = detail.as_ref().map(|_| {
             if self.device_panel_active {
-                213.0
+                super::device_panel::DEVICE_PANEL_HEIGHT
             } else {
                 self.clip_detail_body_height
             }
@@ -337,20 +337,24 @@ impl EditorView {
         if open {
             if let Some(detail) = detail {
                 let preferred = if self.device_panel_active {
-                    213.0
+                    super::device_panel::DEVICE_PANEL_HEIGHT
                 } else {
                     self.clip_detail_body_height
                 };
                 let height = self.project_spectrum_detail_height(window, preferred);
-                panel = panel.child(
-                    div()
-                        .id("clip-detail-viewport")
-                        .debug_selector(|| "clip-detail-viewport".into())
-                        .h(px(height))
-                        .flex_shrink_0()
-                        .overflow_y_scroll()
-                        .child(detail),
-                );
+                if height < preferred {
+                    panel = panel.child(
+                        div()
+                            .id("clip-detail-viewport")
+                            .debug_selector(|| "clip-detail-viewport".into())
+                            .h(px(height))
+                            .flex_shrink_0()
+                            .overflow_y_scroll()
+                            .child(detail),
+                    );
+                } else {
+                    panel = panel.child(detail);
+                }
             } else {
                 panel = panel.child(
                     div()

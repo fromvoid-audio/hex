@@ -283,7 +283,50 @@ fn project_spectrum_keeps_workspace_with_populated_details_and_returns(cx: &mut 
         "real device details remain in a scroll viewport"
     );
     assert!(
-        content.size.height >= px(60.0),
+        content.size.height >= px(44.0),
         "timeline survives populated detail and routing chrome: {content:?}"
     );
+}
+
+#[gpui::test]
+fn project_spectrum_compact_live_header_restores_height_and_keeps_device_details(
+    cx: &mut TestAppContext,
+) {
+    let (project, _, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(cx, |view, cx| {
+        view.clip_view_open = true;
+        view.device_panel_active = true;
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("project-spectrum").unwrap().size.height,
+        px(22.0)
+    );
+    assert!(
+        visual.debug_bounds("project-spectrum-plot").is_some(),
+        "compact expanded mode retains live master and every selected layer"
+    );
+    assert!(
+        visual.debug_bounds("clip-detail-viewport").is_none(),
+        "full device controls fit without clipping"
+    );
+    assert!(
+        visual
+            .debug_bounds("arrangement-content")
+            .unwrap()
+            .size
+            .height
+            >= px(44.0)
+    );
+    visual.simulate_resize(size(px(1500.0), px(800.0)));
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("project-spectrum").unwrap().size.height,
+        px(120.0)
+    );
+    editor.read_with(cx, |view, _| assert!(view.project_spectrum.expanded));
 }
