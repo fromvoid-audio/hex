@@ -124,7 +124,8 @@ def configured_app(root: Path) -> Path:
 
 def open_installed(app: Path, expected_source: str | None = None) -> Path:
     try:
-        receipt = delivery.verify(app)
+        with ci.terminal_progress("verifying installed hex"):
+            receipt = delivery.verify(app)
         source = receipt.get("source")
         if receipt.get("profile") != "release":
             raise ValueError("installed app is not an optimized release build")
@@ -176,7 +177,8 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         raise LaunchError("./launch builds and opens the native desktop app on macOS only")
     require_clean_main(root)
     initial_head = checked(["git", "rev-parse", "HEAD"], cwd=root)
-    source = fetch_and_fast_forward(root)
+    with ci.terminal_progress("fetching latest main"):
+        source = fetch_and_fast_forward(root)
     if source != initial_head:
         # Re-import helpers and run the entrypoint from the newly fetched source.
         os.execv(sys.executable, [sys.executable, str(root / "launch"), *(argv or [])])

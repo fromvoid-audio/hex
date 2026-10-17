@@ -131,8 +131,7 @@ mod tests {
     }
     #[test]
     fn fixed_factory_declares_actual_eight_boxes_and_rejects_wrong_rate_without_queue_admission() {
-        let (mut capture, mut reader, mut reaper) =
-            spawn_native_spectrum_worker(stamp(48000)).unwrap();
+        let (mut capture, reader, mut reaper) = spawn_native_spectrum_worker(stamp(48000)).unwrap();
         let receipt = capture.native_receipt().unwrap();
         assert_eq!(reader.native_identity(), Some(receipt.identity));
         assert_eq!(reaper.native_identity(), Some(receipt.identity));
@@ -179,7 +178,10 @@ mod tests {
         submit();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if let Some(pair) = reader.try_latest_pair() {
+            // This checks constructor/worker delivery, not UI freshness. A
+            // loaded test host may observe the actual result after 100 ms;
+            // the reader's independent capture-age regression owns expiry.
+            if let Ok(pair) = reader.results.try_recv() {
                 assert_eq!(pair.output.stamp.sample_rate_hz, 48000);
                 assert!(pair.input.is_some());
                 break;

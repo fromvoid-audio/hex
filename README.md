@@ -68,6 +68,10 @@ provenance and a finite smoke checklist remain under `artifacts/launch/` and
 `artifacts/local-ci/`; native
 interaction and listening results remain user checks.
 
+Interactive terminals show a small stage spinner while fetching, building,
+checking or verifying the installed app. Redirected logs stay plain; compiler
+and test diagnostics retain their existing log files and failure messages.
+
 ```sh
 ./launch          # fetch latest main, build/install and open; no tests
 ./launch --test   # also run full exact-source local CI before building
