@@ -1,3 +1,17 @@
+## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
+
+Prepared imports and Session assets retain original-rate decoded PCM beside
+unchanged project-rate clip derivatives through single/batch/Session/Open and
+Undo/Redo paths. The same resident-frame ceiling charges unique buffer capacity;
+identity aliases count once, excess Vec capacity counts, and source+derivative
+refusal preserves canonical state/Redo. An identity-alias reload failure at zero
+remaining frames was reproduced and repaired. All113 Session tests pass. The real mixed-rate service fixture now proves
+derivative-only budget refusal and exact source+derivative Save/Open under its
+actual declared workload; targeted worker case passes. Failed full evidence is
+retained, including the second mixed-rate clip fixture reservation repair.
+The entire Session package passes182 tests; final exact-source CI remains pending. This is control-side bank accounting, not
+resource-root/handle/callback lease admission; full W10/sampler remain open.
+
 ## sampler voice lifetime preparation — pulse2761 / PR369, 17 october 2026
 
 The borrowed kernel now reports a checked exclusive end age: Trigger follows
@@ -56,6 +70,55 @@ Existing node and automation-point gestures retain their paths. Targeted rendere
 regressions and source checks are recorded with PR342; full exact-source CI,
 optimized delivery and native interaction/listening remain separate evidence.
 See [eq editing contract](docs/eq.md).
+
+## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+
+Actual whole-entry pre/post taps share one bounded packet, rolling-window
+position, cadence, reader and reaper. Both phases require independent exact
+coverage and final caller validation; legacy output APIs remain supported.
+The explicit spectrum control enables capture; input defaults visible and
+hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
+Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
+storage/allocation regressions. Portable tests and earlier integrated full runs
+pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
+coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
+See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
+
+## eq panel geometry — #2731 / PR344, 17 october 2026
+
+Sized the toolbar/footer for full shared controls, kept fixed control widths,
+added the reusable wide frequency micro dial and compact boolean button, and
+moved remove alongside selected-node controls. Automation telemetry now lives
+in its own field/page row. A rendered regression fails before and passes after
+at 880/1500-pixel windows in response and automation modes, checking containment,
+nonoverlap, action/readout bounds and usable graph height. Full exact-source CI
+and optimized native visual/input acceptance remain required.
+See [layout contract](docs/eq.md#panel-layout).
+
+## focused eq Backspace — #2737 / PR348, 17 october 2026
+
+Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
+bindings. The owner reuses canonical stable-node removal and refuses automation
+point IDs, previews, pending/stale work and old project generations. Empty graph
+focus consumes the key; numeric/text siblings keep their own editing. A rendered
+regression fails before/passes after for removal with atomic automation cleanup,
+empty focus, Undo/Redo and current-format save/reopen identity state. All eight
+rendered EQ regressions and strict UI feature Clippy pass, including
+pending/numeric/automation-point isolation and held-pointer cancellation with
+real editor keybindings. Graph-scoped Escape preserves existing cancellation
+before ancestor editor actions. Full exact-source CI and optimized native input
+acceptance remain required.
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4545,51 +4608,12 @@ this changed integration. Exact integrated checks remain with PR355. Persistent
 sample access, real WAV preview and identical-binary relaunch acceptance still
 require the coordinator's serial Mac phase and one launcher-owned delivery.
 
-## aligned eq input/output capture — #2730 / PR343, 17 october 2026
+## browser audition lifecycle — pulse2766 / PR374, 17 october 2026
 
-Actual whole-entry pre/post taps share one bounded packet, rolling-window
-position, cadence, reader and reaper. Both phases require independent exact
-coverage and final caller validation; legacy output APIs remain supported.
-The explicit spectrum control enables capture; input defaults visible and
-hiding it retains output. Added stereo, level-difference, gap, phase-coverage,
-Track/Return, streamed loop, compensated rollback, keyboard-monitor and native
-storage/allocation regressions. Portable tests and earlier integrated full runs
-pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
-coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
-See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
-
-## eq analyzer readability — #2736 / PR347, 17 october 2026
-
-Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
-nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
-to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
-use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
-context reset; stale capture cannot be refreshed by decay. Both EQ panels share
-a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
-strict Clippy pass; UI/full exact-source validation and coordinator-arranged
-native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
-
-## eq panel geometry — #2731 / PR344, 17 october 2026
-
-Sized the toolbar/footer for full shared controls, kept fixed control widths,
-added the reusable wide frequency micro dial and compact boolean button, and
-moved remove alongside selected-node controls. Automation telemetry now lives
-in its own field/page row. A rendered regression fails before and passes after
-at 880/1500-pixel windows in response and automation modes, checking containment,
-nonoverlap, action/readout bounds and usable graph height. Full exact-source CI
-and optimized native visual/input acceptance remain required.
-See [layout contract](docs/eq.md#panel-layout).
-
-## focused eq Backspace — #2737 / PR348, 17 october 2026
-
-Opted sparse EQ into a shared graph-scoped Backspace action, before editor delete
-bindings. The owner reuses canonical stable-node removal and refuses automation
-point IDs, previews, pending/stale work and old project generations. Empty graph
-focus consumes the key; numeric/text siblings keep their own editing. A rendered
-regression fails before/passes after for removal with atomic automation cleanup,
-empty focus, Undo/Redo and current-format save/reopen identity state. All eight
-rendered EQ regressions and strict UI feature Clippy pass, including
-pending/numeric/automation-point isolation and held-pointer cancellation with
-real editor keybindings. Graph-scoped Escape preserves existing cancellation
-before ancestor editor actions. Full exact-source CI and optimized native input
-acceptance remain required.
+Callback-derived request generations distinguish preparing, playing and finite
+completion, including retirement pressure. Cancel silences pending/queued/active
+PCM independently of project transport; stale decode cannot restart it. Faults
+and shutdown report unavailable. Two fixed atomic acknowledgements add no
+callback allocation, locks or final PCM disposal. Browser layout and transport
+integration remain canonical Pulse2664 / PR280. Source does not establish that
+the reported endless audition is a backend loop; native listening remains open.
