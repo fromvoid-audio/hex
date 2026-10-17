@@ -139,6 +139,7 @@ fn fractional_reference_frequencies_roundtrip_without_changing_the_tuning() {
         261.625_565_300_598_6,
         466.163_761_518_089_9,
         440.000_000_000_000_06,
+        440.000_000_011_720_83,
         123.456_789_101_112_13,
     ] {
         let mut scale = Scale::default();

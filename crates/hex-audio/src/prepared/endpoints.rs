@@ -209,6 +209,11 @@ impl Client {
             e.sample_preview.cancel();
         }
     }
+    pub fn preview_snapshot(&self) -> Option<crate::sample_preview::Snapshot> {
+        self.endpoints
+            .owner_ref()
+            .map(|e| e.sample_preview.snapshot())
+    }
     /// Resident compatibility only; the Verified constructor seals preview before
     /// this client becomes visible and can never place owning PCM here.
     pub fn reclaim_preview(&mut self) {
