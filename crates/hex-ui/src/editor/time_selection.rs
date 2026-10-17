@@ -587,6 +587,12 @@ impl EditorView {
             return;
         }
         let Some(range) = self.normalized_time_selection() else {
+            if !cut {
+                let clips = self.selected_clip_ids();
+                if !clips.is_empty() {
+                    self.enqueue(Request::CopyClips(clips));
+                }
+            }
             return;
         };
         self.enqueue(if cut {

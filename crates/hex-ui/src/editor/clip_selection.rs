@@ -144,6 +144,10 @@ impl EditorView {
         if !self.set_selected_clip(track, clip, window, cx) {
             return;
         }
+        // A deliberate whole-clip header click supersedes an unrelated time
+        // rectangle; body gestures retain their separate range-copy contract.
+        self.time_selection = None;
+        self.time_selection_project_scope = false;
         let mut next_focus = None;
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
