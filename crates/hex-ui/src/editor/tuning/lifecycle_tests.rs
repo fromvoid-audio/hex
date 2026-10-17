@@ -401,6 +401,9 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
                 view.device_gesture.has_pending_terminal(),
                 "library barrier must reserve the latest local device terminal"
             );
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "after library".into()
+            })));
         });
         settle(&editor, cx);
         editor.read_with(cx, |view, _| {
@@ -422,7 +425,7 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
                     view.tuning
                         .error
                         .as_deref()
-                        .is_some_and(|message| message.contains("stale"))
+                        .is_some_and(|message| message.contains("changed project revision"))
                 );
                 assert!(!path.exists());
             } else {

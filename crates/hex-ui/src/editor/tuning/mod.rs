@@ -93,6 +93,7 @@ pub(super) struct TuningState {
     pub(super) slot: usize,
     pub(super) name: Option<Entity<super::browser_input::BrowserSearch>>,
     pub library_pending: Option<u64>,
+    library_terminal: Option<library::DeviceTerminalContext>,
     pub library_next: u64,
     deferred_library: Option<(
         hex_session::tuning_gesture::TuningLibraryOperation,
@@ -151,6 +152,7 @@ impl TuningState {
             slot: 1,
             name: None,
             library_pending: None,
+            library_terminal: None,
             library_next: 0,
             deferred_library: None,
             deferred_dialog: None,
@@ -340,6 +342,7 @@ impl EditorView {
             self.tuning.drag = None;
             self.tuning.name = None;
             self.tuning.library_pending = None;
+            self.tuning.library_terminal = None;
             self.tuning.deferred_library = None;
             self.tuning.deferred_dialog = None;
             self.tuning.generation = self.project_generation;
@@ -433,7 +436,7 @@ impl EditorView {
             );
         }
         self.bind_tuning_accessibility(cx);
-        if self.tuning.client.snapshot().is_none() {
+        if self.tuning.client.snapshot().is_none() && self.device_gesture.snapshot().is_none() {
             if let Some((operation, owner)) = self.tuning.deferred_library.take() {
                 self.request_tuning_library(operation, owner);
             }
@@ -510,6 +513,14 @@ impl EditorView {
             }
             self.export_window = None;
         }
+        if effects.tuning_library_refused {
+            self.tuning.library_pending = None;
+            self.tuning.library_terminal = None;
+        }
+        self.refuse_deferred_tuning_writes();
+    }
+
+    pub(in crate::editor) fn refuse_deferred_tuning_writes(&mut self) {
         use hex_session::tuning_gesture::TuningLibraryOperation as Operation;
         if matches!(
             self.tuning.deferred_library.as_ref(),

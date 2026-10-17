@@ -37,13 +37,32 @@ pub(super) fn retire_deferred(
 pub(super) struct FailedBarrierEffects {
     pub(super) save_refused: bool,
     pub(super) export_refused: bool,
+    pub(super) tuning_library_refused: bool,
+}
+
+pub(super) fn retire_failed_tuning_library_barriers(deferred: &mut VecDeque<Request>) -> bool {
+    let before = deferred.len();
+    deferred.retain(|request| {
+        !matches!(
+            request,
+            Request::TuningLibrary {
+                operation: hex_session::tuning_gesture::TuningLibraryOperation::Save { .. }
+                    | hex_session::tuning_gesture::TuningLibraryOperation::Export { .. },
+                ..
+            }
+        )
+    });
+    deferred.len() != before
 }
 
 pub(super) fn retire_failed_finalize_barriers(
     deferred: &mut VecDeque<Request>,
 ) -> FailedBarrierEffects {
     let mut kept = VecDeque::with_capacity(deferred.len());
-    let mut effects = FailedBarrierEffects::default();
+    let mut effects = FailedBarrierEffects {
+        tuning_library_refused: retire_failed_tuning_library_barriers(deferred),
+        ..FailedBarrierEffects::default()
+    };
     while let Some(request) = deferred.pop_front() {
         match request {
             Request::SaveNew(_) | Request::SaveCurrent => effects.save_refused = true,
@@ -152,12 +171,16 @@ impl EditorView {
             Err(SubmitError::Busy(_)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
+                self.retire_tuning_library_device_terminal();
+                self.refuse_deferred_tuning_writes();
                 self.error = Some("an export is already pending".into());
                 true
             }
             Err(SubmitError::Closed(_)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
+                self.retire_tuning_library_device_terminal();
+                self.refuse_deferred_tuning_writes();
                 self.error = Some("project worker stopped".into());
                 true
             }
@@ -174,8 +197,13 @@ impl EditorView {
             return false;
         }
         if terminal {
+            self.bind_tuning_library_device_terminal(ack.key, ack.accepted);
             if !ack.accepted {
+                self.refuse_deferred_tuning_writes();
                 let effects = retire_failed_finalize_barriers(&mut self.device_gesture_barriers);
+                if effects.tuning_library_refused {
+                    self.tuning.library_pending = None;
+                }
                 if effects.save_refused {
                     self.saving_project = false;
                 }
@@ -359,6 +387,15 @@ mod tests {
         let control = hex_session::service::ExportControl::default();
         let mut deferred = VecDeque::from([
             Request::SaveCurrent,
+            Request::TuningLibrary {
+                project_generation: 1,
+                revision: 2,
+                operation_id: 3,
+                operation: hex_session::tuning_gesture::TuningLibraryOperation::Export {
+                    path: "deferred.freqs".into(),
+                    name: "deferred".into(),
+                },
+            },
             Request::Edit(hex_project::Command::AddTrack {
                 name: "later edit".into(),
             }),
@@ -380,6 +417,7 @@ mod tests {
             FailedBarrierEffects {
                 save_refused: true,
                 export_refused: true,
+                tuning_library_refused: true,
             }
         );
         assert!(control.is_cancelled());

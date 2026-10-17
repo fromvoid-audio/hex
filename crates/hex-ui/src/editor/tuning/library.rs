@@ -20,7 +20,57 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", BrowserEnd, Some("hex_tuning_name")),
     ]);
 }
+pub(super) struct DeviceTerminalContext {
+    operation_id: u64,
+    key: hex_session::device_gesture::GestureKey,
+    refresh: bool,
+}
 impl EditorView {
+    pub(in crate::editor) fn bind_tuning_library_device_terminal(
+        &mut self,
+        key: hex_session::device_gesture::GestureKey,
+        accepted: bool,
+    ) {
+        if !self
+            .tuning
+            .library_terminal
+            .as_ref()
+            .is_some_and(|context| context.key == key)
+        {
+            return;
+        }
+        let context = self.tuning.library_terminal.take().unwrap();
+        if !accepted || !context.refresh || key.generation != self.project_generation {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        for request in &mut self.device_gesture_barriers {
+            if let Request::TuningLibrary {
+                project_generation,
+                revision,
+                operation_id,
+                ..
+            } = request
+            {
+                if *operation_id == context.operation_id && *project_generation == key.generation {
+                    // Rebind exactly this queued current-context action, in place.
+                    // Previously opened dialogs retain their original context.
+                    *revision = state.revision;
+                    break;
+                }
+            }
+        }
+    }
+    pub(in crate::editor) fn retire_tuning_library_device_terminal(&mut self) {
+        if let Some(context) = self.tuning.library_terminal.take() {
+            if self.tuning.library_pending == Some(context.operation_id) {
+                self.tuning.library_pending = None;
+            }
+        }
+    }
+
     pub(super) fn request_tuning_library_list(&mut self) {
         self.request_tuning_library(Operation::List, None);
     }
@@ -50,6 +100,14 @@ impl EditorView {
             return;
         };
         let (generation, revision) = owner.unwrap_or((self.project_generation, state.revision));
+        let device_terminal =
+            self.device_gesture
+                .snapshot()
+                .map(|snapshot| DeviceTerminalContext {
+                    operation_id: id,
+                    key: snapshot.key,
+                    refresh: owner.is_none(),
+                });
         if self.enqueue(Request::TuningLibrary {
             project_generation: generation,
             revision,
@@ -58,6 +116,7 @@ impl EditorView {
         }) {
             self.tuning.library_next = id;
             self.tuning.library_pending = Some(id);
+            self.tuning.library_terminal = device_terminal;
             self.tuning.error = None;
         } else {
             self.tuning.error = Some("project worker is busy · retry the library action".into());
@@ -137,6 +196,26 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn tuning_file_dialog(&mut self, save: bool, cx: &mut Context<Self>) {
+        if self.device_gesture.snapshot().is_some() {
+            if self.pending_requests.len() + self.device_gesture_barriers.len()
+                >= super::super::UI_REQUEST_CAPACITY
+            {
+                self.tuning.error =
+                    Some("device edit queue full · retry the library action".into());
+                return;
+            }
+            if !self.device_gesture.has_pending_terminal() {
+                if let Err(error) = self.device_gesture.finish_current() {
+                    self.tuning.error = Some(error.into());
+                    return;
+                }
+            }
+            if self.tuning.client.snapshot().is_some() {
+                let _ = self.tuning.client.cancel();
+            }
+            self.tuning.deferred_dialog = Some(save);
+            return;
+        }
         if self.tuning.client.snapshot().is_some() {
             let _ = self.tuning.client.cancel();
             self.tuning.deferred_dialog = Some(save);

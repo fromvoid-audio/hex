@@ -1956,6 +1956,15 @@ impl EditorView {
             self.device_gesture.snapshot().map(|snapshot| snapshot.key),
         ) && self.device_gesture.snapshot().is_some()
         {
+            self.refuse_deferred_tuning_writes();
+            if super::device_gesture::retire_failed_tuning_library_barriers(
+                &mut self.device_gesture_barriers,
+            ) {
+                self.tuning.library_pending = None;
+            }
+            if let Some(snapshot) = self.device_gesture.snapshot() {
+                self.bind_tuning_library_device_terminal(snapshot.key, false);
+            }
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,
