@@ -1311,6 +1311,30 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         assert!(calls.iter().all(|(identity, _, _)| {
             identity.owner == hex_lattice::ProcessorChainOwner::Track(1) && identity.device_id == 7
         }));
+        let mut paired = make_playback(looping);
+        let mut paired_output = [[0.0; 2]; 512];
+        let mut paired_calls = Vec::new();
+        paired
+            .render_with_node_signal_observer(
+                &mut paired_output,
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    assert_eq!(identity.owner, hex_lattice::ProcessorChainOwner::Track(1));
+                    assert_eq!(identity.device_id, 7);
+                    paired_calls.push((phase, offset, frames.len()));
+                }),
+            )
+            .unwrap();
+        assert_eq!(paired_output, ordinary_output);
+        let expected_pairs: Vec<_> = expected_chunks
+            .iter()
+            .flat_map(|&(offset, count)| {
+                [
+                    (crate::NodeSignalPhase::Input, offset, count),
+                    (crate::NodeSignalPhase::Output, offset, count),
+                ]
+            })
+            .collect();
+        assert_eq!(paired_calls, expected_pairs);
     }
 }
 
@@ -1368,6 +1392,30 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
                 }),
             )
             .unwrap();
+        let mut paired =
+            Playback::try_from_prepared_with_session(revision(&project, Arc::clone(&table)))
+                .unwrap();
+        paired.apply(PlaybackCommand::Play);
+        let mut paired_output = [[0.0; 2]; 256];
+        let mut signals = Vec::new();
+        paired
+            .render_with_node_signal_observer(
+                &mut paired_output,
+                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                    if identity == return_identity {
+                        signals.push((phase, offset, frames.to_vec()));
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(paired_output, output);
+        assert_eq!(signals.len(), 2);
+        assert_eq!(signals[0].0, crate::NodeSignalPhase::Input);
+        assert_eq!(signals[1].0, crate::NodeSignalPhase::Output);
+        assert_eq!(signals[0].1, signals[1].1);
+        if bypassed {
+            assert_eq!(signals[0].2, signals[1].2);
+        }
         calls
     };
 

@@ -8,24 +8,31 @@ responsiveness, and measured performance.
 
 ## Active alpha compatibility policy
 
-Hex is active alpha software. Until the user selects a satisfactory feature set
-for release, breaking source, model and project-format changes are allowed.
-Do not spend effort maintaining backward compatibility or adding migrations,
-historical project conversions or compatibility readers solely for earlier alpha
-versions. This includes incompatible unpublished branch formats. This policy
-supersedes older backward-compatibility and migration requirements in this file,
-repository documents and existing task descriptions for future Hex changes.
-Select the release compatibility policy when the user chooses the release scope;
-do not infer a compatibility freeze from an alpha version or schema number.
+Hex is active alpha software. Feature completeness takes priority. Backward
+compatibility and migration support, including database/schema migrations, are
+explicitly out of scope until the user commits to release readiness and selects
+the release compatibility policy. Breaking API, source, model, schema, project-format
+and data changes are allowed during this phase. Fresh or recreated alpha databases
+are allowed when needed; legacy database conversion is not a prerequisite for
+feature work.
+
+Do not spend effort adding or maintaining historical-alpha migrations, project
+conversions, old readers, compatibility re-exports or old-client support. During
+future scoped feature/API/schema work, do not retain compatibility-only code solely
+to honor obsolete alpha formats or database layouts. This includes incompatible
+unpublished branch formats. This policy supersedes contradictory normative legacy
+schema, backward-compatibility and migration requirements in this file, repository
+documents and existing task descriptions. Historical evidence remains factual.
+Do not infer a compatibility freeze from an alpha version or schema number.
 
 Active features must coexist in one coherent current format. Preserve strict
 current-format validation, complete save/reopen round trips, explicit errors for
-unsupported formats, runtime and real-time safety, and Undo/Redo integrity.
-Never automatically delete, rewrite or convert existing user files to accommodate
-a breaking change. This policy does not authorize removing all existing migration
-code or unrelated cleanup. Historical implementation and verification evidence
-remain factual records, not new compatibility obligations. PR, validation and
-delivery requirements remain in force.
+unsupported formats, transaction/recovery correctness, runtime and real-time safety,
+and Undo/Redo integrity. Never silently delete or rewrite user projects, original
+media or other user files to accommodate a breaking change. Intentional alpha
+database recreation must be explicit; this policy does not itself initiate any
+reset, deletion or conversion. It does not request a blanket migration-code cleanup
+or unrelated source changes. PR, validation and delivery requirements remain in force.
 
 Frame design prototypes under `design/frame/` may use JSON, JavaScript and HTML
 for design tooling only. They must not become the shipped application runtime.

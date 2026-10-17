@@ -22,7 +22,18 @@ categories (at least one remains visible) and cycling six icons for visual revie
 Those settings are session-only. Existing folder places still persist through
 hex-preferences; their add/folder-picker/status behavior remains available.
 Sample selection shows a real waveform from the existing bounded background
-preview cache, with loading/error/unsupported states and an audition control.
+preview cache. Below the tag strip, a single 22 px row contains automatic
+audition (the `a` toggle, initially on), manual Play/Stop, and a clipped miniature
+waveform. Stereo channel extrema share one neutral envelope without cancelling
+opposite-phase peaks. Loading/errors remain bounded single-line placeholders.
+Clicking or moving Up/Down to a new sample auditions it when automatic audition
+is on; manual Play and Right remain independent. Repeating navigation at a list
+boundary cannot retrigger the same selection. Search/category/source resets stop
+obsolete requests. The controls preserve result focus and never start project
+transport. Stop invalidates decode and queued/active preview PCM; actual callback
+acknowledgements drive playing/finished state, with repaint only on transitions.
+There is no preview loop control or automatic replay. Native audio/visual
+acceptance is separate from headless layout and deterministic PCM tests.
 No fabricated waveform or sample tags are used. File import, project opening,
 device/sample dragging and current search semantics retain their existing paths.
 

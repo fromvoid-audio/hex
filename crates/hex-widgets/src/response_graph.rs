@@ -55,6 +55,8 @@ pub struct ResponseGraphModel {
     pub secondary: Vec<[f32; 2]>,
     /// Optional non-editable analyzer trace, painted behind the device response.
     pub analyzer: Option<Vec<[f32; 2]>>,
+    /// Optional aligned input spectrum, independently hidden by its owner.
+    pub input_analyzer: Option<Vec<[f32; 2]>>,
     pub nodes: Vec<ResponseGraphNode>,
 }
 
@@ -64,6 +66,9 @@ impl ResponseGraphModel {
             || self.primary.len() > MAX_CURVE_POINTS
             || self.secondary.len() != self.primary.len()
             || self.analyzer.as_ref().is_some_and(|curve| {
+                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+            })
+            || self.input_analyzer.as_ref().is_some_and(|curve| {
                 curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
             })
             || self.nodes.len() > MAX_NODES
@@ -93,12 +98,20 @@ fn valid_curve(points: &[[f32; 2]]) -> bool {
     }) && points.windows(2).all(|pair| pair[0][0] <= pair[1][0])
 }
 
+/// Product-resolved spectrum colors, separate from response and control colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResponseGraphAnalyzerStyle {
+    pub input: u32,
+    pub output: u32,
+}
+
 /// Compact DSP-independent graph. The owner maps normalized graph points to
 /// domain values and sends the emitted drag phases through its normal edit API.
 pub struct ResponseGraph {
     id: SharedString,
     model: ResponseGraphModel,
     style: ControlStyle,
+    analyzer_style: Option<ResponseGraphAnalyzerStyle>,
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
@@ -132,12 +145,14 @@ impl ResponseGraph {
             primary: vec![[0.0, 0.5], [1.0, 0.5]],
             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
             analyzer: None,
+            input_analyzer: None,
             nodes: Vec::new(),
         };
         Self {
             id: id.into(),
             model,
             style,
+            analyzer_style: None,
             bounds: None,
             drag: None,
             press: None,
@@ -186,11 +201,28 @@ impl ResponseGraph {
         if self.model.primary != model.primary
             || self.model.secondary != model.secondary
             || self.model.analyzer != model.analyzer
+            || self.model.input_analyzer != model.input_analyzer
             || self.model.nodes != model.nodes
             || self.style != style
         {
             self.model = model;
             self.style = style;
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    /// Inject semantic analyzer colors without changing response appearance.
+    pub fn set_analyzer_style(
+        &mut self,
+        style: ResponseGraphAnalyzerStyle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if style.input > 0xffffff || style.output > 0xffffff {
+            return Err("invalid analyzer style");
+        }
+        if self.analyzer_style != Some(style) {
+            self.analyzer_style = Some(style);
             cx.notify();
         }
         Ok(())
@@ -621,6 +653,11 @@ impl gpui::Render for ResponseGraph {
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
+        let input_analyzer = self.model.input_analyzer.clone();
+        let analyzer_style = self.analyzer_style.unwrap_or(ResponseGraphAnalyzerStyle {
+            input: self.style.muted,
+            output: self.style.muted,
+        });
         let nodes = self.model.nodes.clone();
         let style = self.style;
         let bounds_entity = cx.entity();
@@ -652,6 +689,8 @@ impl gpui::Render for ResponseGraph {
                             &primary,
                             &secondary,
                             analyzer.as_deref(),
+                            input_analyzer.as_deref(),
+                            analyzer_style,
                             &nodes,
                             style,
                             window,
@@ -672,11 +711,14 @@ impl gpui::Render for ResponseGraph {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_graph(
     bounds: Bounds<Pixels>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
     analyzer: Option<&[[f32; 2]]>,
+    input_analyzer: Option<&[[f32; 2]]>,
+    analyzer_style: ResponseGraphAnalyzerStyle,
     nodes: &[ResponseGraphNode],
     style: ControlStyle,
     window: &mut Window,
@@ -702,14 +744,25 @@ fn paint_graph(
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
     }
+    if let Some(input) = input_analyzer {
+        paint_curve(
+            origin,
+            width,
+            height,
+            input,
+            px(0.7),
+            analyzer_style.input,
+            window,
+        );
+    }
     if let Some(analyzer) = analyzer {
         paint_curve(
             origin,
             width,
             height,
             analyzer,
-            px(0.8),
-            style.muted,
+            px(0.9),
+            analyzer_style.output,
             window,
         );
     }
@@ -866,6 +919,7 @@ mod tests {
             primary: vec![[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]],
             secondary: vec![[0.0, 0.1], [0.5, 0.5], [1.0, 0.1]],
             analyzer: None,
+            input_analyzer: None,
             nodes: vec![ResponseGraphNode {
                 id: 3,
                 position: [0.5, 0.5],
@@ -883,6 +937,11 @@ mod tests {
         assert!(with_analyzer.validate().is_ok());
         with_analyzer.analyzer.as_mut().unwrap()[1][1] = f32::NAN;
         assert!(with_analyzer.validate().is_err());
+        let mut with_input = model();
+        with_input.input_analyzer = Some(vec![[0.0, 0.3], [1.0, 0.7]]);
+        assert!(with_input.validate().is_ok());
+        with_input.input_analyzer.as_mut().unwrap()[0][1] = f32::INFINITY;
+        assert!(with_input.validate().is_err());
         let mut invalid = model();
         invalid.nodes[0].position[0] = f32::NAN;
         assert!(invalid.validate().is_err());
