@@ -4354,3 +4354,14 @@ target ownership after the Python suite, guards and formatting passed. No comple
 macOS CI, signing, installation or native acceptance is established. Mac execution
 remains paused until the user explicitly resumes it; PR355 owns signing and sample
 permissions, and the eventual combined app uses one exact verified source.
+
+Cloud continuation for Pulse2751 / PR361 verified the published Hex runtime and
+integrated main `070cacc3` without changing the separate tooltip PR362 scope.
+A rendered regression reproduces the missing stationary Command refresh before
+the repair; the production modifier event now recomputes at the current pointer,
+while mouse-up still uses its own current modifiers. Both lower edges, Command
+press/release and one-step Undo/Redo pass in the rendered fixture. Focused checks
+pass: 19 model fade/trim/domain, 8 engine fade/PCM, 2 storage audio-edit, 4 saved
+CLI export and 8 fade UI tests. Exact final full-run evidence belongs to PR361;
+native physical input/listening and optimized coordinated Mac delivery remain
+pending with the coordinator's serial follow-up workflow.

@@ -441,6 +441,7 @@ impl Render for EditorView {
                     if view.refresh_audio_event_modifiers(event.modifiers.platform) {
                         cx.notify();
                     }
+                    view.update_fade_gesture(window.mouse_position(), event.modifiers.platform, cx);
                     view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
                     view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
                 });

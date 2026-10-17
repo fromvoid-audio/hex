@@ -1299,7 +1299,10 @@ impl EditorView {
                 // The immutable prepared peaks cover the retained root. Cropping
                 // changes its visible offset, never its processing/source origin.
                 let preview = self.fade_trim_preview(clip.id()).and_then(|clip| {
-                    let (_, _, offset, _) = clip.audio_edit()?.projected_domain(state.project.tempo_map()).ok()?;
+                    let (_, _, offset, _) = clip
+                        .audio_edit()?
+                        .projected_domain(state.project.tempo_map())
+                        .ok()?;
                     let mut preview = prepared.clone();
                     preview.offset = offset;
                     preview.length = clip.duration();

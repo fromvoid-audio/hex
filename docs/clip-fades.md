@@ -118,9 +118,10 @@ Native user checklist (pending; source tests do not establish native acceptance)
 1. Hold/release `f` over default audio clips; drag both top handles; release `f`.
    Edited curves and their handles should remain visible on unselected clips.
 2. Move both lower handles inward/outward with snapping on/off and Command held
-   or released at mouse-up. Verify the clip and waveform boundary follows the
-   lower handle, the upper sample stays fixed within constraints, and the opposite
-   edge stays fixed. Repeat on a neutral clip revealed with `f`.
+   or released while stationary and at mouse-up. Verify the clip and waveform
+   boundary follows the lower handle, the upper sample stays fixed within
+   constraints, and the opposite edge stays fixed. Repeat on a neutral clip
+   revealed with `f`.
 3. Drag outside the source bounds, cancel with Escape, and switch focus/windows
    while held. Verify clamping, no cancelled edit or stuck mode, and one Undo/Redo
    per completed edge-and-fade edit.
@@ -149,7 +150,8 @@ policy. This is a trim, with no source stretch or audio-callback change.
 Pointer motion uses bounded clip metadata and cached peaks, draws the actual
 resized clip/header/waveform crop and fade, and queues no project work. Lower
 handles share Arrangement adaptive/off snapping and the Command inversion,
-recomputed on release. Cancellation and freshness checks remain in force.
+recomputed immediately on modifier-only changes at the current pointer position
+and again on release. Cancellation and freshness checks remain in force.
 Automated coverage includes canonical source/loop limits, musical warped/event
 root preservation, preview/command equality, one-step history, strict saved
 roundtrip, saved export PCM, playback seek/block partitions and rendered gestures.

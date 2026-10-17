@@ -441,3 +441,76 @@ fn held_f_neutral_lower_handle_resizes_without_authoring_a_ramp(cx: &mut TestApp
     canonical.execute(command).unwrap();
     assert_eq!(canonical.project().clip(clip).unwrap(), &preview);
 }
+
+#[gpui::test]
+fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_current_modifiers(
+    cx: &mut TestAppContext,
+) {
+    for kind in [Handle::InBottom, Handle::OutBottom] {
+        let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+        let mut canonical = hex_project::Editor::new(project, 8).unwrap();
+        canonical
+            .execute(Command::SetClipFadeEnvelope {
+                clip,
+                fade: ClipFade::new(96_000, 0, 40_000, 40_000).unwrap(),
+            })
+            .unwrap();
+        let original = canonical.project().clone();
+        let (handle, editor) =
+            super::super::clip_drag_ui_test::editor_window(cx, original.clone(), Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        editor.update(&mut visual, |view, _| {
+            view.snap_grid = super::super::musical_time::SnapGrid::Quarter;
+        });
+        visual.run_until_parked();
+        let selector: &'static str =
+            Box::leak(format!("{}-{}", kind.name(), clip.value()).into_boxed_str());
+        let target = visual.debug_bounds(selector).unwrap().center();
+        let direction = if kind == Handle::InBottom { 1.0 } else { -1.0 };
+        visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+        let dx = editor.read_with(&visual, |view, _| {
+            let drag = view.active_fade_drag.as_ref().unwrap();
+            18_000.0 * drag.lane.width / drag.viewport.length as f32
+        });
+        let moved = point(target.x + px(dx * direction), target.y);
+        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let snapped = editor.read_with(&visual, |view, _| {
+            view.fade_trim_preview(clip).unwrap().clone()
+        });
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_modifiers_change(command);
+        visual.run_until_parked();
+        let free = editor.read_with(&visual, |view, _| {
+            assert!(view.last_enqueued_edit.is_none());
+            view.fade_trim_preview(clip).unwrap().clone()
+        });
+        assert_ne!(
+            free, snapped,
+            "{kind:?}: stationary Command press refreshes preview"
+        );
+        visual.simulate_modifiers_change(Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.fade_trim_preview(clip), Some(&snapped));
+            assert!(view.last_enqueued_edit.is_none());
+            assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+        });
+        // Release may carry a newer modifier than the last modifier event.
+        visual.simulate_mouse_up(moved, MouseButton::Left, command);
+        let edit = editor.read_with(&visual, |view, _| {
+            assert!(view.active_fade_drag.is_none());
+            view.last_enqueued_edit.clone().unwrap()
+        });
+        assert!(matches!(edit, Command::TrimClipFadeEdge { .. }));
+        canonical.execute(edit).unwrap();
+        assert_eq!(canonical.project().clip(clip), Some(&free));
+        assert!(canonical.undo());
+        assert_eq!(canonical.project(), &original);
+        assert!(canonical.redo());
+        assert_eq!(canonical.project().clip(clip), Some(&free));
+    }
+}
