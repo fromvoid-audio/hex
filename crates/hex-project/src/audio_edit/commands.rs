@@ -127,12 +127,29 @@ pub(crate) fn apply(
         Command::SetAudioClipPitch { clip, .. }
         | Command::SetAudioClipMusical { clip, .. }
         | Command::SetAudioClipWarp { clip, .. }
+        | Command::SetAudioClipSampleBpm { clip, .. }
+        | Command::StretchAudioClipEdge { clip, .. }
         | Command::SetAudioClipSourceGain { clip, .. } => *clip,
         _ => return Err(Invalid("unsupported audio editing command")),
     };
     let mut clip = project.clip(id).cloned().ok_or(Invalid(
         "pitch, warp and source envelopes currently require an arrangement audio clip",
     ))?;
+    if let Command::StretchAudioClipEdge { edge, frame, .. } = command {
+        let frames = project
+            .asset(clip.asset)
+            .ok_or(Invalid("audio media missing"))?
+            .playback_frames();
+        let stretched = super::stretch::preview_audio_clip_stretch(
+            &clip,
+            edge,
+            frame,
+            project.tempo_map(),
+            frames,
+        )?;
+        *project.clip_mut(id)? = stretched;
+        return Ok(crate::Created::None);
+    }
     if clip.edit.is_none()
         && matches!(
             &command,
@@ -176,6 +193,38 @@ pub(crate) fn apply(
             } else {
                 Arc::make_mut(&mut edit.domain).warp_enabled = false;
             }
+        }
+        Command::SetAudioClipSampleBpm { tempo, .. } => {
+            if !edit.domain.warp_enabled {
+                return Err(Invalid("enable warp before editing sample bpm"));
+            }
+            let previous = edit.domain.sample_bpm;
+            let (numerator, denominator) = if let Some(previous) = previous {
+                (
+                    u64::from(tempo.micro_bpm()),
+                    u64::from(previous.micro_bpm()),
+                )
+            } else {
+                let source = TempoMap::constant(project.sample_rate(), tempo)?;
+                let desired = source.frame_to_beat(edit.domain.source_length)?.raw();
+                let current = edit
+                    .domain
+                    .warp
+                    .as_ref()
+                    .and_then(|w| w.markers.last())
+                    .ok_or(Invalid("warp markers missing"))?
+                    .beat
+                    .raw();
+                (desired, current)
+            };
+            super::stretch::retime(
+                edit,
+                numerator,
+                denominator,
+                clip.start,
+                project.tempo_map(),
+            )?;
+            Arc::make_mut(&mut edit.domain).sample_bpm = Some(tempo);
         }
         Command::SetAudioClipSourceGain { points, .. } => {
             Arc::make_mut(&mut edit.domain).source_gain = points
@@ -233,6 +282,7 @@ pub(crate) fn reset_region(
     let mut edit = AudioClipEdit::capture(&clip);
     let domain = Arc::make_mut(&mut edit.domain);
     domain.pitch_cents = old.domain.pitch_cents;
+    domain.sample_bpm = old.domain.sample_bpm;
     domain.source_gain = old.domain.source_gain.clone();
     domain.warp = old.domain.warp.clone();
     domain.warp_enabled = old.domain.warp_enabled;

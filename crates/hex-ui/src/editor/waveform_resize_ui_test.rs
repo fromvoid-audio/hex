@@ -114,7 +114,20 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
 
 #[gpui::test]
 fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut TestAppContext) {
+    resize_waveforms(cx, false);
+}
+
+#[gpui::test]
+fn shift_stretch_keeps_live_sample_varied_waveforms_visible(cx: &mut TestAppContext) {
+    resize_waveforms(cx, true);
+}
+
+fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
     cx.update(crate::editor::bind_editor_keys);
+    let modifiers = Modifiers {
+        shift: stretch,
+        ..Modifiers::default()
+    };
     let mut failures = Vec::new();
     for (rate, frames, pattern) in [(48_000, 96_000, 0), (44_100, 88_200, 1)] {
         for (processing, looping) in [
@@ -282,18 +295,18 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                 );
                 let down = visual.debug_bounds(selector).unwrap().center();
                 let direction = if edge == TrimEdge::Left { 1.0 } else { -1.0 };
-                visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+                visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
                 visual.simulate_mouse_move(
                     point(down.x + px(12.0 * direction), down.y),
                     MouseButton::Left,
-                    Modifiers::default(),
+                    modifiers,
                 );
                 visual.run_until_parked();
                 for distance in [18.0, 24.0, 20.0] {
                     visual.simulate_mouse_move(
                         point(down.x + px(distance * direction), down.y),
                         MouseButton::Left,
-                        Modifiers::default(),
+                        modifiers,
                     );
                     visual.run_until_parked();
                     assert!(visual.debug_bounds("trim-live-preview").is_some());
@@ -309,7 +322,7 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                         assert_eq!(rendered.len(), 1, "only the actual preview waveform is painted");
                         let preview = drag.preview.borrow();
                         let preview = &preview.as_ref().unwrap().clip;
-                        let expected_mapping = preview.audio_edit().map(|edit| {
+                        let expected_mapping = preview.audio_edit().filter(|_| !stretch).map(|edit| {
                             let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
                             (preview.start(), offset)
                         });
@@ -327,7 +340,7 @@ fn trim_keeps_sample_varied_waveforms_visible_with_warp_on_and_off(cx: &mut Test
                 visual.simulate_mouse_up(
                     point(down.x + px(20.0 * direction), down.y),
                     MouseButton::Left,
-                    Modifiers::default(),
+                    modifiers,
                 );
                 visual.run_until_parked();
                 editor.update(&mut visual, |view, cx| {

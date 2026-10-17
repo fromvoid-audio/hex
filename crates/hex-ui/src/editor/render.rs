@@ -396,7 +396,7 @@ impl Render for EditorView {
                 "hex_controller_input"
             } else if self.context_menu.is_some() {
                 "hex_context_menu"
-            } else if self.gain_numeric_editing(cx) {
+            } else if self.gain_numeric_editing(cx) || self.sample_bpm_editing(cx) {
                 "hex_gain_numeric_editor"
             } else {
                 self.browser_key_context(window, cx)
@@ -415,6 +415,7 @@ impl Render for EditorView {
                     && let Some(drag) = view.active_trim_drag.clone()
                 {
                     drag.snap_modifier.set(event.modifiers.platform);
+                    drag.stretch_modifier.set(event.modifiers.shift);
                     drag.last_pointer_x.set(Some(f32::from(event.position.x)));
                     view.update_trim_preview(&drag, f32::from(event.position.x), cx);
                 }
@@ -444,7 +445,11 @@ impl Render for EditorView {
                         cx.notify();
                     }
                     view.update_fade_gesture(window.mouse_position(), event.modifiers.platform, cx);
-                    view.refresh_trim_snap_modifier(event.modifiers.platform, cx);
+                    view.refresh_trim_snap_modifier(
+                        event.modifiers.platform,
+                        event.modifiers.shift,
+                        cx,
+                    );
                     view.refresh_midi_trim_snap_modifier(event.modifiers.platform, cx);
                 });
                 window.refresh();
@@ -461,10 +466,7 @@ impl Render for EditorView {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
-                    if let Some(drag) = view.active_trim_drag.take() {
-                        drag.preview.borrow_mut().take();
-                        cx.notify();
-                    }
+                    view.cancel_trim_gesture(cx);
                     if let Some(drag) = view.active_midi_trim_drag.take() {
                         drag.preview.borrow_mut().take();
                         cx.notify();
@@ -474,7 +476,8 @@ impl Render for EditorView {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| {
-                    if view.cancel_active_native_device_drag() {
+                    if view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag() {
+                        cx.stop_active_drag(window);
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
@@ -496,7 +499,9 @@ impl Render for EditorView {
                 }
             }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && view.cancel_active_native_device_drag() {
+                if event.keystroke.key == "escape"
+                    && (view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag())
+                {
                     cx.stop_active_drag(window);
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                     cx.stop_propagation();
@@ -536,7 +541,8 @@ impl Render for EditorView {
                 view.browser_activate(window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::BrowserEscape, window, cx| {
-                if view.cancel_track_resize(cx) {
+                if view.cancel_trim_gesture(cx) | view.cancel_track_resize(cx) {
+                    cx.stop_active_drag(window);
                     cx.stop_propagation();
                     return;
                 }
@@ -584,7 +590,8 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-                if view.cancel_track_resize(cx) {
+                if view.cancel_trim_gesture(cx) | view.cancel_track_resize(cx) {
+                    cx.stop_active_drag(window);
                     cx.stop_propagation();
                     return;
                 }

@@ -439,6 +439,19 @@ on the approved optimized candidate, click first then Shift-click fifth, reverse
 and shrink the range, toggle/add with Command, click another row, then confirm
 header dragging and body time-selection still work. No app replacement or Mac
 execution is part of these source checks.
+## track creation shortcut — #2767 / PR375, 17 october 2026
+
+Command-T in editor focus invokes the same canonical `AddTrack` action as the
+existing new-track control. It retains the existing track naming, routing
+and model/history behavior. Browser search, clip-name editing and active numeric
+text drafts keep ownership of their keys; the shortcut requires editor focus
+outside text editing. Rendered key-dispatch tests cover these focus boundaries
+and route the dispatched command through one canonical Undo/Redo. Existing
+project/storage tests retain canonical track persistence coverage. Native
+acceptance remains: focus the Arrangement, press Command-T, verify one new track,
+Undo/Redo, save/reopen; repeat the key while typing in search/name/numeric fields
+and confirm no track is added. Coordinator schedules this with the combined
+optimized app; no running app replacement is implied by source checks.
 
 ## arrangement track sizing
 
