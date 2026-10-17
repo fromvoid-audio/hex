@@ -8,11 +8,21 @@ protected.
 
 ## source and APIs available now
 
-Main `e610b2ea130410640990546935c0416642aad0f8` contains W10/PR297's bounded
+Main `94646b35aec34deb8d663548a006fd03f63d9dfa` contains W10/PR297's bounded
 host-owned device slot references, catalog/snapshot/history validation and
 explicit processing refusal for nonempty bindings. It contains W05/PR290 and
 W06/PR291 as well. It has no resident instrument PCM lease or callback borrowing
 contract and does not admit sampler.
+
+PR370 now retains original-rate decoded PCM independently of clip derivatives.
+The exact control APIs available on that main are
+`hex_session::Session::source_audio(asset) -> Option<&hex_engine::Audio>`,
+`Audio::sample_rate()`, `Audio::frames()`, `Audio::shares_pcm_with()` and
+`Audio::pcm_capacity_frames()`. `Session::resident_frames()` charges unique PCM
+buffer capacity across source/derivative aliases. `Audio` is the current decoded
+stereo-frame abstraction; these control borrows and bank totals are not typed
+callback resource leases or graph coexistence accounting. Cloud4 still owns that
+next preparation/process boundary under the contract below.
 
 Canonical tuning runtime PR351 at
 `ffb42158c6cdb5509871d8fbaa84321614ac8d59` exposes
