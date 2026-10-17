@@ -124,8 +124,36 @@ production stack usage or establish physical deadlines.
 A broader default-stack engine diagnostic passes the repaired fixture, then
 aborts in the separate harmonic fixture
 `routed_session_owner_imports_held_and_releasing_notes_through_first_paint_and_undo`.
-That failure remains explicit; this repair supplies no whole-engine/full-CI pass
-claim and does not silently rewrite unrelated fixtures. Original negative logs,
+That original diagnostic is retained as negative evidence; the focused follow-up
+below resolves the same fixture-residency cause without changing production. Original negative logs,
 source/binary hashes and the supported production8MiB seek/export reservations
 remain preserved. Coordinator ownership and exact combined qualification must
 resolve outstanding blockers before delivery.
+
+
+### Routed harmonic fixture, same construction cause
+
+The routed Session harmonic import/first-paint/Undo fixture also keeps seven
+actual `SessionPlayback` owners inline. On the unchanged harmonic source blob
+`b0f3b9da7ace265ac5208c0e96c0c2b9c107689f`, its default-stack debug version
+aborts while release passes. Its debug function frame reserves1636376bytes
+before calling the unchanged shared constructors. The two other largest observed
+fixture frames pass on default stacks, so static frame size alone was not used
+to declare additional defects or rewrite their tests.
+
+A helper local to this one test now constructs each identical runtime in a Box.
+All seven owners still coexist, and every source project, routing/launch, loop,
+held/releasing note proof, first-paint comparison, refused StopTrack, subsequent
+PCM comparison and Undo assertion remains. No shared fixture helper, tuning,
+resource, production constructor, callback, admission or lifetime contract changes.
+The caller frame is now51448bytes; the test-local constructor helper reserves
+226504bytes. No stack-size wrapper or environment override is used.
+
+With both fixture corrections, broad default-stack engine library coverage passes
+527tests with zero failures and seven existing ignored profiles. Both original
+cases also pass in release mode on default test stacks. These scoped results are
+separate from repository full-CI qualification and do not establish production
+peak stack use or native hardware deadlines. Preserve the failed pre-fix default
+receipts and the documented normal cloud `RUST_MIN_STACK=16777216` configuration
+as distinct evidence. Final integration with the independently tracked spectrum
+factory repair requires its own exact-source checks and coordinated Mac cohort.
