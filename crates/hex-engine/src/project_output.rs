@@ -1,19 +1,19 @@
 //! Prepared inline identity table for bounded live project observation.
-use crate::Project;
+use crate::Track;
 
 /// Immutable, inline owner index prepared before callback publication. The
 /// callback merges a sorted selection with this table in at most256 comparisons.
 /// No callback sorting, project scan, allocation or independent heap ownership.
-pub(super) struct ProjectTrackIds {
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectTrackIds {
     ids: [u64; hex_project::MAX_TRACKS],
     count: usize,
     valid: bool,
 }
 impl ProjectTrackIds {
-    pub(super) fn prepare(project: &Project) -> Self {
+    pub(crate) fn prepare(tracks: &[Track]) -> Self {
         Self::from_ids(
-            project
-                .tracks()
+            tracks
                 .iter()
                 .filter_map(|t| t.canonical_track_id().map(|id| id.value())),
         )
@@ -36,7 +36,7 @@ impl ProjectTrackIds {
         table.valid = table.ids[..table.count].windows(2).all(|p| p[0] < p[1]);
         table
     }
-    pub(super) fn contains(&self, tracks: &[u64], mut compared: impl FnMut()) -> bool {
+    pub(crate) fn contains(&self, tracks: &[u64], mut compared: impl FnMut()) -> bool {
         if !self.valid || tracks.len() > self.count {
             return false;
         }

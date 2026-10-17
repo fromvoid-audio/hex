@@ -17,7 +17,6 @@ impl Playback {
         let Self {
             metronome,
             project,
-            project_track_ids: _,
             prepared_revision,
             session_runtime,
             linear_runtime,

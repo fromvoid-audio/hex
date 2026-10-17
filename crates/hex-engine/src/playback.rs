@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 mod candidate_storage;
 mod metronome;
-mod project_output;
 use metronome::Metronome;
-use project_output::ProjectTrackIds;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
@@ -296,7 +294,6 @@ impl PlaybackHandoffError {
 pub struct Playback {
     metronome: Option<Box<Metronome>>,
     project: Arc<Project>,
-    project_track_ids: ProjectTrackIds,
     prepared_revision: Option<Arc<PreparedRevision>>,
     session_runtime: Option<Box<SessionPlayback>>,
     linear_runtime: Option<Box<RendererRuntime>>,
@@ -459,7 +456,6 @@ impl Playback {
         let Self {
             metronome,
             project: _,
-            project_track_ids: _,
             prepared_revision,
             session_runtime,
             linear_runtime,
@@ -490,7 +486,6 @@ impl Playback {
         let metronome = None;
         Self {
             metronome,
-            project_track_ids: ProjectTrackIds::prepare(&project),
             project,
             prepared_revision: None,
             session_runtime: None,
@@ -568,7 +563,6 @@ impl Playback {
         let playing = runtime.playing();
         Self {
             metronome,
-            project_track_ids: ProjectTrackIds::prepare(&project),
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime: Some(Box::new(runtime)),
@@ -608,7 +602,6 @@ impl Playback {
             .then(|| Box::new(RendererRuntime::new(&project)));
         Self {
             metronome,
-            project_track_ids: ProjectTrackIds::prepare(&project),
             project,
             prepared_revision: Some(prepared_revision),
             session_runtime,
@@ -1385,7 +1378,7 @@ impl Playback {
     /// Bounded current canonical identity check, intended once per selection or
     /// active revision change rather than once per captured sample.
     pub fn project_output_supported(&self, tracks: &[u64]) -> bool {
-        self.session_runtime.is_some() && self.project_track_ids.contains(tracks, || {})
+        self.session_runtime.is_some() && self.project.project_track_ids.contains(tracks, || {})
     }
 
     fn render_pages_fallback<P: MediaPages + ?Sized>(

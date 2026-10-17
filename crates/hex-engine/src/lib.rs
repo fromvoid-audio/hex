@@ -1819,6 +1819,7 @@ pub struct PreparedAudioClipView {
 
 #[derive(Debug, Clone)]
 pub struct Project {
+    project_track_ids: project_output::ProjectTrackIds,
     audio_clip_views: Vec<PreparedAudioClipView>,
     sample_rate: u32,
     tracks: Vec<Track>,
@@ -1912,6 +1913,7 @@ impl Project {
             ));
         }
         Ok(Self {
+            project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
             audio_clip_views: Vec::new(),
             audible_end_frame: tracks
                 .iter()
@@ -3079,6 +3081,7 @@ mod shared_analytic;
 pub mod compile;
 
 pub mod playback;
+mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
 };

@@ -49,9 +49,10 @@ allocation, lock, logging, final owner destruction or FFT.
 
 Selection mailbox reads load only the published ID prefix (zero ID atomics for
 Master-only or cleared selections), with one bounded seqlock attempt. The immutable
-Playback owner table is sorted during control-side construction and stored inline,
-charged through Playback's actual size. Callback validation merges sorted selected
-IDs with that table in at most 256 owner comparisons, with no allocation or sorting.
+compiled-project owner table is sorted during control-side construction and stored
+inline in the existing immutable root, charged through that root's actual size.
+Playback borrows its existing project owner; publication errors stay small.
+Callback validation merges sorted selected IDs with that table in at most 256 owner comparisons, with no allocation or sorting.
 Malformed, unsorted, duplicate or missing IDs refuse the whole batch.
 
 UI render data uses validated immutable shared layer storage. Steady repaints clone
