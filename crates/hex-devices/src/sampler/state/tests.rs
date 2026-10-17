@@ -2,6 +2,102 @@ use super::*;
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
 
 #[test]
+fn empty_device_is_unbound_and_first_load_has_real_bounds_without_invented_media() {
+    let empty = DeviceState::Empty.to_native().unwrap();
+    assert!(empty.asset_references().is_empty());
+    assert_eq!(
+        DeviceState::from_native(&empty).unwrap(),
+        DeviceState::Empty
+    );
+    assert!(SamplerState::from_native(&empty).is_err());
+    assert!(replacement_state_on_control(&empty, 0).is_err());
+    assert!(replacement_state_on_control(&empty, MAX_SAMPLE_FRAMES + 1).is_err());
+    let loaded = replacement_state_on_control(&empty, 7).unwrap();
+    assert_eq!(
+        SamplerState::from_native(&loaded).unwrap(),
+        SamplerState::for_source_frames(7).unwrap()
+    );
+    assert!(loaded.asset_references().is_empty()); // canonical host binds actual new asset later
+    let false_empty = empty
+        .clone()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(SOURCE_SLOT).unwrap(),
+            asset: DeviceAssetKey::new(9).unwrap(),
+        }])
+        .unwrap();
+    assert!(DeviceState::from_native(&false_empty).is_err());
+    assert!(replacement_state_on_control(&false_empty, 7).is_err());
+    assert!(
+        DeviceState::from_native(
+            &NativeDeviceState::new(TYPE_ID, STATE_VERSION + 1, vec![]).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn replacement_preserves_sound_and_host_controls_but_resets_old_source_coordinates() {
+    for mode in [
+        AuthoredMode::Classic {
+            loop_region: Some(Region { start: 4, end: 11 }),
+        },
+        AuthoredMode::OneShot {
+            gate: GateMode::Gate,
+        },
+        AuthoredMode::Slice {
+            starts: vec![2, 4, 11],
+            base_note: 48,
+            gate: GateMode::Trigger,
+        },
+    ] {
+        let mut original = SamplerState::for_source_frames(16).unwrap();
+        original.region.start = 2;
+        original.mode = mode;
+        original.reverse = true;
+        original.root_note = 57;
+        original.transpose_semitones = 3.5;
+        original.detune_cents = -25.0;
+        original.gain = 0.375;
+        original.pan = -0.5;
+        original.velocity_amount = 0.25;
+        original.envelope.attack_seconds = 0.125;
+        original.envelope.release_seconds = 0.5;
+        original.voices = 8;
+        let current = original
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(SOURCE_SLOT).unwrap(),
+                asset: DeviceAssetKey::new(9).unwrap(),
+            }])
+            .unwrap()
+            .with_input_gain_millidb(-1500)
+            .unwrap()
+            .with_output_gain_millidb(2250)
+            .unwrap();
+        let replacement = replacement_state_on_control(&current, 3).unwrap();
+        let loaded = SamplerState::from_native(&replacement).unwrap();
+        let expected_mode = match original.mode {
+            AuthoredMode::Classic { .. } => AuthoredMode::Classic { loop_region: None },
+            AuthoredMode::OneShot { gate } => AuthoredMode::OneShot { gate },
+            AuthoredMode::Slice {
+                base_note, gate, ..
+            } => AuthoredMode::Slice {
+                starts: vec![0],
+                base_note,
+                gate,
+            },
+        };
+        original.region = Region { start: 0, end: 3 };
+        original.mode = expected_mode;
+        assert_eq!(loaded, original);
+        assert_eq!(replacement.input_gain_millidb(), -1500);
+        assert_eq!(replacement.output_gain_millidb(), 2250);
+        assert!(replacement.shares_asset_reference_storage_with(&current));
+    }
+}
+
+#[test]
 fn current_modes_roundtrip_and_patch_preserves_actual_host_metadata() {
     for mode in [
         AuthoredMode::Classic { loop_region: None },

@@ -1,0 +1,171 @@
+//! Actual original decoder custody and canonical Sampler assignment staging.
+//! No model/media publication, registry permission or callback preparation.
+use crate::{
+    DecodedOriginal, OriginalAudio, ResidentResourcePlanReservation, Session, SessionError,
+};
+use hex_engine::{
+    AudioRootStorageLedger, AudioStorageError, AudioStorageRole, OwnedAudioSource,
+    native_device_resources::{DeviceResourceBank, ResourcePreparationError},
+};
+use hex_lattice_contract::NativeDeviceState;
+use hex_project::{AssetId, Command, DeviceId, Project};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+/// One worker-owned decoded original and bounded current assignment metadata.
+/// It is not Clone and exposes no owning PCM/Arc. The completed graph must
+/// inventory this still-live temporary before committing media/model/audio.
+pub struct PreparedDeviceSample {
+    device: DeviceId,
+    expected_state: NativeDeviceState,
+    assignment: hex_engine::SamplerSampleAssignment,
+    path: PathBuf,
+    source: OriginalAudio,
+    source_frames: u64,
+}
+impl PreparedDeviceSample {
+    pub fn decode_on_worker(
+        device: DeviceId,
+        current: &NativeDeviceState,
+        path: impl AsRef<Path>,
+        limits: hex_media::Limits,
+        cancel: &AtomicBool,
+    ) -> Result<Self, SessionError> {
+        let decoded = DecodedOriginal::decode_file(path, limits, cancel)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(hex_media::ImportError::Cancelled.into());
+        }
+        Self::from_decoded_on_control(device, current, decoded)
+    }
+    pub fn from_native_on_control(
+        device: DeviceId,
+        current: &NativeDeviceState,
+        path: PathBuf,
+        source: OwnedAudioSource,
+    ) -> Result<Self, SessionError> {
+        Self::from_decoded_on_control(device, current, DecodedOriginal::from_native(path, source)?)
+    }
+    fn from_decoded_on_control(
+        device: DeviceId,
+        current: &NativeDeviceState,
+        decoded: DecodedOriginal,
+    ) -> Result<Self, SessionError> {
+        let assignment =
+            hex_engine::sampler_replacement_state_on_control(current, decoded.frames())?;
+        let source_frames = u64::try_from(decoded.frames()).map_err(|_| {
+            SessionError::Invalid("device source frame count exceeds project range")
+        })?;
+        let (path, source) = decoded.into_device_parts_on_control();
+        Ok(Self {
+            device,
+            expected_state: current.clone(),
+            assignment,
+            path,
+            source,
+            source_frames,
+        })
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn source_sample_rate(&self) -> u32 {
+        self.source.sample_rate()
+    }
+    pub fn source_frames(&self) -> u64 {
+        self.source_frames
+    }
+
+    /// Metadata only. A host must execute this through prepared canonical
+    /// editing with actual media/graph admission, not commit it by itself.
+    pub fn assignment_command_on_control(&self) -> Command {
+        Command::ImportDeviceAsset {
+            device: self.device,
+            expected_state: self.expected_state.clone(),
+            state: self.assignment.state.clone(),
+            slot: self.assignment.slot,
+            path: self.path.clone(),
+            source_sample_rate: self.source.sample_rate(),
+            source_frames: self.source_frames,
+        }
+    }
+    pub fn validate_target_on_control(&self, project: &Project) -> Result<(), SessionError> {
+        if project
+            .device(self.device)
+            .is_none_or(|device| device.state() != &self.expected_state)
+            || !project.tracks().iter().any(|track| {
+                track
+                    .instrument()
+                    .is_some_and(|device| device.id() == self.device)
+            })
+        {
+            return Err(SessionError::Invalid(
+                "sample loading canceled · target instrument changed",
+            ));
+        }
+        Ok(())
+    }
+    /// PCM fields only; outer staging/path/state metadata and complete graph
+    /// custody/peak/publication/retirement are separate mandatory obligations.
+    pub fn visit_original_pcm_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        match &self.source {
+            OriginalAudio::Stereo(audio) => ledger.borrow_native_audio_on_control(audio, role),
+            OriginalAudio::Mono(source) => ledger.borrow_native_source_on_control(source, role),
+        }
+    }
+    /// Prepare in the SAME bank/catalog family using the actual candidate
+    /// Asset binding. Neither the candidate nor media is published here.
+    pub fn prepare_resource_bank_for_candidate_on_control(
+        &self,
+        session: &Session,
+        candidate: &Project,
+        assets: &[AssetId],
+        reservation: ResidentResourcePlanReservation,
+        cancel: &AtomicBool,
+    ) -> Result<DeviceResourceBank, ResourcePreparationError> {
+        self.validate_target_on_control(session.project())
+            .map_err(|_| ResourcePreparationError::InvalidSource)?;
+        if candidate.sample_rate() != session.project().sample_rate() {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        let state = candidate
+            .device(self.device)
+            .ok_or(ResourcePreparationError::InvalidSource)?
+            .state();
+        let expected = &self.assignment.state;
+        if state.type_id() != expected.type_id()
+            || state.state_version() != expected.state_version()
+            || state.payload() != expected.payload()
+            || state.input_gain_millidb() != expected.input_gain_millidb()
+            || state.output_gain_millidb() != expected.output_gain_millidb()
+            || state.asset_references().len() != 1
+        {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        let reference = &state.asset_references()[0];
+        if reference.slot != self.assignment.slot {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        let asset = candidate
+            .assets()
+            .find(|asset| asset.id().value() == reference.asset.value())
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        if asset.path() != self.path {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        session.prepare_resident_resource_bank_with_pending_on_control(
+            assets,
+            Some((asset, &self.source)),
+            reservation,
+            cancel,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;

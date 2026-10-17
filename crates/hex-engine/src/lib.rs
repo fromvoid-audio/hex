@@ -267,6 +267,32 @@ pub fn default_native_device_state(
     default_native_device_state_for_class(NativeDeviceClass::Effect, type_id)
 }
 
+/// Control-side Sampler payload preparation for a newly decoded original.
+/// This grants no source custody, registry processing or graph admission.
+pub struct SamplerSampleAssignment {
+    pub state: hex_lattice_contract::NativeDeviceState,
+    pub slot: hex_lattice_contract::DeviceAssetSlot,
+}
+
+/// Current unbound Sampler metadata, not a registered/selectable device.
+pub fn empty_sampler_state_on_control() -> Result<hex_lattice_contract::NativeDeviceState, Invalid>
+{
+    hex_devices::sampler::state::DeviceState::Empty
+        .to_native()
+        .map_err(|_| Invalid("empty sampler state is invalid"))
+}
+
+pub fn sampler_replacement_state_on_control(
+    current: &hex_lattice_contract::NativeDeviceState,
+    source_frames: usize,
+) -> Result<SamplerSampleAssignment, Invalid> {
+    let state = hex_devices::sampler::state::replacement_state_on_control(current, source_frames)
+        .map_err(|_| Invalid("sampler source replacement state is invalid"))?;
+    let slot = hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
+        .map_err(|_| Invalid("sampler source slot is invalid"))?;
+    Ok(SamplerSampleAssignment { state, slot })
+}
+
 /// Construct a metadata-only default from exactly one native class registry.
 pub fn default_native_device_state_for_class(
     class: NativeDeviceClass,

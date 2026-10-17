@@ -8,6 +8,70 @@ pub const STATE_VERSION: u32 = 1;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 96;
 
+/// Current device envelope. Empty is a real unbound instrument state, with no
+/// invented source length/peaks or resource reference. Loaded settings keep the
+/// existing strict source-region codec; neither state registers the device.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeviceState {
+    Empty,
+    Sample(SamplerState),
+}
+impl DeviceState {
+    pub fn from_native(state: &NativeDeviceState) -> Result<Self, Error> {
+        if state.type_id() != TYPE_ID {
+            return Err(Error::WrongDeviceType);
+        }
+        if state.state_version() != STATE_VERSION {
+            return Err(Error::UnsupportedStateVersion);
+        }
+        if state.payload().is_empty() {
+            return if state.asset_references().is_empty() {
+                Ok(Self::Empty)
+            } else {
+                Err(Error::MalformedState)
+            };
+        }
+        SamplerState::from_native(state).map(Self::Sample)
+    }
+    pub fn to_native(&self) -> Result<NativeDeviceState, Error> {
+        match self {
+            Self::Empty => NativeDeviceState::new(TYPE_ID, STATE_VERSION, Vec::new()),
+            Self::Sample(state) => state.to_native(),
+        }
+    }
+}
+
+/// Prepare replacement settings while retaining musical controls. Old source
+/// coordinates cannot transfer to a different file: use its whole region,
+/// disable the old loop, and reset Slice to one initial marker. One-Shot gate
+/// and slice key/gate choice survive. Binding the new asset is a separate
+/// canonical host edit; existing host metadata remains attached until then.
+pub fn replacement_state_on_control(
+    current: &NativeDeviceState,
+    frames: usize,
+) -> Result<NativeDeviceState, Error> {
+    let whole = SamplerState::for_source_frames(frames)?;
+    let state = match DeviceState::from_native(current)? {
+        DeviceState::Empty => whole,
+        DeviceState::Sample(mut state) => {
+            state.region = whole.region;
+            state.mode = match state.mode {
+                AuthoredMode::Classic { .. } => AuthoredMode::Classic { loop_region: None },
+                AuthoredMode::OneShot { gate } => AuthoredMode::OneShot { gate },
+                AuthoredMode::Slice {
+                    base_note, gate, ..
+                } => AuthoredMode::Slice {
+                    starts: vec![0],
+                    base_note,
+                    gate,
+                },
+            };
+            state
+        }
+    };
+    state.to_native()?.with_host_metadata_from(current)
+}
+
 /// Prepare the actual authored configuration against a retained host inventory.
 /// This returns scalar storage only; it is not a native root admission API.
 pub fn prepare_runtime_on_control(

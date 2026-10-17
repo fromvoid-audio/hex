@@ -59,6 +59,11 @@ impl DecodedOriginal {
     pub fn frames(&self) -> usize {
         self.source.frames()
     }
+    /// Move actual decoder custody into a worker-side device preparation.
+    /// No raw Audio/Arc ingress, source clone or project-rate conversion.
+    pub(crate) fn into_device_parts_on_control(self) -> (PathBuf, OriginalAudio) {
+        (self.path, self.source)
+    }
     pub(crate) fn project_audio(
         &self,
         rate: u32,
