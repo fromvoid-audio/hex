@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+hex-tuning = { path = "../hex-tuning" }
 fs2 = "=0.4.3"
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
