@@ -148,9 +148,9 @@ impl EditorView {
         };
         self.suppress_cursor_click = true;
         if !self.clip_paint_is_current(gesture)
-            || !self
+            || self
                 .visible_lane_at(x, y)
-                .is_some_and(|(track, _)| track == gesture.track)
+                .is_none_or(|(track, _)| track != gesture.track)
         {
             return true;
         }
