@@ -87,7 +87,7 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
     });
 }
 
-fn audio_detail_fixture(
+pub(super) fn audio_detail_fixture(
     cx: &mut TestAppContext,
 ) -> (
     gpui::AnyWindowHandle,
@@ -147,7 +147,11 @@ fn audio_detail_fixture(
 fn selected_arrangement_audio_shows_left_controls_ruler_and_stereo_waveform(
     cx: &mut TestAppContext,
 ) {
-    let (handle, _, _, _) = audio_detail_fixture(cx);
+    let (handle, editor, _, _) = audio_detail_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.audio_event_editor.source_view = true;
+        cx.notify();
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let controls = visual
@@ -231,10 +235,10 @@ fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
     });
     assert!(visual.debug_bounds("device-panel").is_some());
 
-    let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
+    let clip_selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
     let clip_bounds = visual
         .debug_bounds(clip_selector)
-        .expect("arrangement clip");
+        .expect("arrangement clip header");
     let clip_point = point(clip_bounds.center().x, clip_bounds.center().y);
     visual.simulate_mouse_down(clip_point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(clip_point, MouseButton::Left, Modifiers::default());
@@ -247,7 +251,7 @@ fn explicit_clip_and_track_focus_switch_detail_without_changing_pane_visibility(
         assert!(view.clip_view_open, "clip focus keeps the pane open");
         assert_eq!(view.selected_clip, Some(clip));
     });
-    assert!(visual.debug_bounds("arrangement-audio-waveform").is_some());
+    assert!(visual.debug_bounds("audio-events-waveform").is_some());
 
     let toggle = visual
         .debug_bounds("clip-view-toggle")

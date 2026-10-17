@@ -54,6 +54,7 @@ pub enum SessionCellContentSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAudioClipSnapshot {
+    pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
     pub asset: u64,
@@ -63,6 +64,7 @@ pub struct SessionAudioClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
+    pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
     pub source: MidiSourceSnapshot,
@@ -89,6 +91,7 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub color: crate::ElementColor,
     pub gain_envelope: Vec<crate::GainPoint>,
     pub gain_touch_spans: Vec<crate::GainTouchSpan>,
     pub gain_touch_epoch: u64,
@@ -164,6 +167,7 @@ impl TrackContentSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
     pub name: String,
+    pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub start_raw: u64,
     pub length_raw: u64,
@@ -188,6 +192,7 @@ pub struct MidiNoteSnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipSnapshot {
     pub name: String,
+    pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub asset: u64,
     pub start: u64,
@@ -253,6 +258,7 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    color: track.color,
                     gain_envelope: track.gain_lane.base.clone(),
                     gain_touch_spans: track.gain_lane.spans.clone(),
                     gain_touch_epoch: track.gain_lane.recording_epoch,
@@ -284,6 +290,7 @@ impl Project {
                             .iter()
                             .map(|clip| ClipSnapshot {
                                 name: clip.name.clone(),
+                                flavor: clip.flavor,
                                 id: clip.id.0,
                                 asset: clip.asset.0,
                                 start: clip.start,
@@ -303,6 +310,7 @@ impl Project {
                             .iter()
                             .map(|clip| MidiClipSnapshot {
                                 name: clip.name.clone(),
+                                flavor: clip.flavor,
                                 id: clip.id.0,
                                 start_raw: clip.start.raw(),
                                 length_raw: clip.length.raw(),
@@ -377,6 +385,7 @@ impl Project {
                             crate::SessionCellContent::Stop => SessionCellContentSnapshot::Stop,
                             crate::SessionCellContent::Midi(clip) => {
                                 SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                    flavor: clip.flavor,
                                     id: clip.id.value(),
                                     name: clip.name.clone(),
                                     source: MidiSourceSnapshot {
@@ -403,6 +412,7 @@ impl Project {
                             }
                             crate::SessionCellContent::Audio(clip) => {
                                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                                    flavor: clip.flavor,
                                     id: clip.id().value(),
                                     name: clip.name().to_owned(),
                                     asset: clip.asset().value(),
@@ -616,6 +626,7 @@ impl Project {
                 }
                 compiled_audio.push(Clip {
                     name: clip.name.clone(),
+                    flavor: clip.flavor,
                     id: ClipId(clip.id),
                     asset: AssetId(clip.asset),
                     start: clip.start,
@@ -677,6 +688,7 @@ impl Project {
                 }
                 compiled_midi.push(MidiClip {
                     name: clip.name.clone(),
+                    flavor: clip.flavor,
                     id: ClipId(clip.id),
                     start,
                     length,
@@ -717,6 +729,7 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                color: track.color,
                 gain_lane: crate::GainLane::new(
                     track.gain_envelope,
                     track.gain_touch_spans,
@@ -813,6 +826,7 @@ impl Project {
                         });
                     }
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
+                        flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,
                         source: std::sync::Arc::new(crate::MidiSource {
@@ -846,6 +860,7 @@ impl Project {
                         return Err(Invalid("clip limit reached"));
                     }
                     crate::SessionCellContent::Audio(crate::SessionAudioClip {
+                        flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,
                         asset: AssetId(clip.asset),

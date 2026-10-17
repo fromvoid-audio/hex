@@ -1225,6 +1225,7 @@ pub fn div() -> Div {
         interactivity: Interactivity::new(),
         children: SmallVec::default(),
         prepaint_listener: None,
+        accessibility: None,
         image_cache: None,
     }
 }
@@ -1234,10 +1235,25 @@ pub struct Div {
     interactivity: Interactivity,
     children: SmallVec<[StackSafe<AnyElement>; 2]>,
     prepaint_listener: Option<Box<dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static>>,
+    accessibility: Option<(
+        crate::AccessibilityDescriptor,
+        crate::accessibility::AccessibilityCallback,
+    )>,
     image_cache: Option<Box<dyn ImageCacheProvider>>,
 }
 
 impl Div {
+    /// Expose this actual laid-out control through the native semantic boundary.
+    /// IDs must identify the owner lifetime, not an index or reusable label.
+    pub fn accessibility(
+        mut self,
+        descriptor: crate::AccessibilityDescriptor,
+        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        self.accessibility = Some((descriptor, std::rc::Rc::new(action)));
+        self
+    }
+
     /// Add a listener to be called when the children of this `Div` are prepainted.
     /// This allows you to store the [`Bounds`] of the children for later use.
     pub fn on_children_prepainted(
@@ -1410,6 +1426,18 @@ impl Element for Div {
                     return hitbox;
                 }
 
+                if let Some((descriptor, callback)) = &self.accessibility {
+                    let bounds = bounds.intersect(&window.content_mask().bounds);
+                    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                        window.next_frame.accessibility.insert(
+                            crate::AccessibilityNode {
+                                descriptor: descriptor.clone(),
+                                bounds,
+                            },
+                            callback.clone(),
+                        );
+                    }
+                }
                 window.with_element_offset(scroll_offset, |window| {
                     for child in &mut self.children {
                         child.prepaint(window, cx);
@@ -2902,6 +2930,18 @@ impl GroupHitboxes {
 /// A wrapper around an element that can store state, produced after assigning an ElementId.
 pub struct Stateful<E> {
     pub(crate) element: E,
+}
+
+impl Stateful<Div> {
+    /// Attach native semantics to this stateful control without changing its layout.
+    pub fn accessibility(
+        mut self,
+        descriptor: crate::AccessibilityDescriptor,
+        action: impl Fn(&crate::AccessibilityRequest, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        self.element = self.element.accessibility(descriptor, action);
+        self
+    }
 }
 
 impl<E> Styled for Stateful<E>

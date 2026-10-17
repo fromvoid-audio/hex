@@ -1,5 +1,7 @@
 //! Canonical, control-side audio/MIDI arrangement and transactional editing.
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+mod audio_events;
+pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
 mod clip_name;
 pub use audio_edit::{
@@ -8,7 +10,9 @@ pub use audio_edit::{
     SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
     audio_projection_frame, default_audio_warp,
 };
+mod appearance;
 mod clip_conversion;
+pub use appearance::{ClipFlavor, ElementColor};
 mod clip_copy;
 mod clip_fragment;
 mod conversion;
@@ -318,6 +322,7 @@ impl ClipGain {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
     pub(crate) name: String,
+    pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) asset: AssetId,
     pub(crate) start: u64,
@@ -333,6 +338,9 @@ pub struct Clip {
 impl Clip {
     pub fn name(&self) -> &str {
         &self.name
+    }
+    pub fn flavor(&self) -> crate::ClipFlavor {
+        self.flavor
     }
     pub fn id(&self) -> ClipId {
         self.id
@@ -410,6 +418,7 @@ impl Clip {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    pub(crate) color: crate::ElementColor,
     pub(crate) gain_lane: GainLane,
     pub(crate) id: TrackId,
     pub(crate) name: String,
@@ -426,6 +435,9 @@ pub struct Track {
     pub(crate) sends: Vec<SendLevel>,
 }
 impl Track {
+    pub fn color(&self) -> ElementColor {
+        self.color
+    }
     pub fn gain_lane(&self) -> &GainLane {
         &self.gain_lane
     }

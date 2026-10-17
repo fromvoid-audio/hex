@@ -186,7 +186,10 @@ fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
     }
     let mut legacy = value.clone();
     legacy["version"] = 25.into();
+    legacy.as_object_mut().unwrap().remove("track_colors");
+    legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("clip_names");
+    legacy.as_object_mut().unwrap().remove("audio_event_state");
     let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert_eq!(migrated.clip_name(audio), Some("clip"));
     assert_eq!(migrated.snapshot(), editor.project().snapshot());

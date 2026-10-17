@@ -26,7 +26,7 @@ impl EditorView {
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
         self.device_panel_active = false;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -38,7 +38,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = None;
         self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
     }
@@ -58,7 +58,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = Some(return_track);
         self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -93,7 +93,11 @@ impl EditorView {
         }
     }
 
-    pub(super) fn clip_detail_view(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn clip_detail_view(
+        &mut self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.selected_clip
@@ -110,7 +114,10 @@ impl EditorView {
             });
         let detail = if open {
             if self.device_panel_active {
-                Some(super::device_panel::view(self, cx).map(|element| div().child(element)))
+                Some(
+                    super::device_panel::view(self, Some(window), cx)
+                        .map(|element| div().child(element)),
+                )
             } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {
@@ -186,9 +193,12 @@ impl EditorView {
                     }
                     view.clip_view_open = !view.clip_view_open;
                     if !view.clip_view_open {
+                        view.audio_event_editor.gesture = None;
                         view.cancel_midi_note_gesture();
                         cancel_eq8_audition(view);
-                        if view.midi_focus.is_focused(window) {
+                        if view.midi_focus.is_focused(window)
+                            || view.audio_event_focus.is_focused(window)
+                        {
                             view.focus.focus(window);
                         }
                     }

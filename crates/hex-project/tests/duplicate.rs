@@ -159,6 +159,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
     let clips = (3..3 + MAX_CLIPS as u64)
         .map(|id| ClipSnapshot {
             name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             edit: None,
             gain: hex_project::ClipGain::UNITY,
             id,
@@ -188,6 +189,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             conversion_version: 0,
         }],
         tracks: vec![TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,

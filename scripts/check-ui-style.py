@@ -36,6 +36,8 @@ widgets = (
     # Algorithm diagrams have no text; global controls normalize captions.
     'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
+    # Output meter labels are routed through theme::text in the component.
+    'crate::output_meter::render(',
     # Generic device layout components accept already-themed child elements.
     'hex_widgets::device_display(', 'hex_widgets::device_body(',
     'hex_widgets::device_section(', 'hex_widgets::device_layout(',
@@ -99,6 +101,10 @@ widgets = (
     'gain_meters::render(', 'super::gain_meters::render(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
+    # Audio-event editor components keep their text at the themed boundary.
+    'super::audio_event_editor::view(', 'waveform::button(',
+    'waveform::waveform_source_segment_gain_view_cached(', 'waveform::waveform_view_cached(',
+    'toolbar)', 'body)',
     'binding.entity.clone())', 'super::super::gain_recording::controls(',
 )
 for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
