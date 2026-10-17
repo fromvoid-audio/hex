@@ -222,3 +222,18 @@ alongside bitwise whole/window comparisons, including identity signed zero.
 This is worker preparation, never pointer-motion or callback DSP preparation.
 Identity-rate stereo source plans must keep using the closed owning alias rather
 than allocating a redundant project-rate PCM buffer.
+
+Waveform preparation now has a bounded cancellable `summarize_original` path
+whose backing is an actual closed `OriginalSourceLease`. Mono/stereo peak
+construction and deep-zoom queries read that retained PCM; wide cached-query
+math and public query signatures stay the same. The legacy Audio summary uses
+the same binning implementation. Immutable summaries are shared with Arc;
+Waveform itself no longer has an infallible owning Clone. Control can borrow
+`Waveform::original_source` for the real union inventory without cloning a handle.
+
+Codec-oracle tests drop the source snapshot and caller bank, then check native
+waveform deep-zoom extrema directly against independent PCM. Work/metadata/cancel
+refusals preserve caller custody. Whole-workspace all-target type checking covers
+the API change. This is PCM backing/summary work only; cloud6 renderer geometry
+and sampling-grid files are untouched. Source ownership was checked against its
+completed UI handoff before editing. Session source publication remains pending.

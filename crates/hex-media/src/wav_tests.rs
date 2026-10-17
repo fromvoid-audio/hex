@@ -388,6 +388,87 @@ fn assert_native_source(bytes: &[u8], expected: &[[f32; 2]], channels: usize) {
             .is_err()
     );
     assert_eq!(refused, [[0.0; 2]; 1]);
+    let quote = std::mem::size_of::<OriginalSourceLease>();
+    assert!(matches!(
+        crate::waveform::summarize_original(
+            &snapshot,
+            2,
+            expected.len(),
+            quote - 1,
+            &AtomicBool::new(false)
+        ),
+        Err(crate::DeviceSourceImportError::Resource(
+            hex_engine::native_device_resources::ResourcePreparationError::MetadataCapacity
+        ))
+    ));
+    assert!(matches!(
+        crate::waveform::summarize_original(
+            &snapshot,
+            2,
+            expected.len() - 1,
+            quote,
+            &AtomicBool::new(false)
+        ),
+        Err(crate::DeviceSourceImportError::Media(
+            ImportError::LimitExceeded("waveform source scan frames")
+        ))
+    ));
+    assert!(matches!(
+        crate::waveform::summarize_original(
+            &snapshot,
+            2,
+            expected.len(),
+            quote,
+            &AtomicBool::new(true)
+        ),
+        Err(crate::DeviceSourceImportError::Media(
+            ImportError::Cancelled
+        ))
+    ));
+    let waveform = crate::waveform::summarize_original(
+        &snapshot,
+        2,
+        expected.len(),
+        quote,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(waveform.shares_original_with(&snapshot));
+    assert!(
+        waveform
+            .original_source()
+            .unwrap()
+            .shares_source_with(&snapshot)
+    );
+    assert!(!waveform.shares_audio_with(&normalized_reference));
+    assert_eq!(
+        waveform.bins,
+        crate::waveform::summarize(&normalized_reference, 2)
+            .unwrap()
+            .bins
+    );
+    drop(snapshot); // Only the finished summary retains this native source now.
+    for start in (0..expected.len()).step_by(13) {
+        let end = (start + 63).min(expected.len());
+        let actual = waveform.peaks_for_frames(start, end).unwrap();
+        for channel in 0..2 {
+            let minimum = expected[start..end]
+                .iter()
+                .map(|frame| frame[channel])
+                .fold(f32::INFINITY, f32::min);
+            let maximum = expected[start..end]
+                .iter()
+                .map(|frame| frame[channel])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                actual[channel],
+                crate::waveform::Peak {
+                    min: minimum,
+                    max: maximum
+                }
+            );
+        }
+    }
 }
 
 #[test]

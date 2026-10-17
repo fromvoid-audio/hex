@@ -23,6 +23,14 @@ pub struct DeviceSourceDecodeLimits {
 pub enum DeviceSourceImportError {
     Media(ImportError),
     Storage(AudioStorageError),
+    Resource(hex_engine::native_device_resources::ResourcePreparationError),
+}
+impl From<hex_engine::native_device_resources::ResourcePreparationError>
+    for DeviceSourceImportError
+{
+    fn from(error: hex_engine::native_device_resources::ResourcePreparationError) -> Self {
+        Self::Resource(error)
+    }
 }
 impl From<ImportError> for DeviceSourceImportError {
     fn from(error: ImportError) -> Self {
@@ -34,6 +42,7 @@ impl fmt::Display for DeviceSourceImportError {
         match self {
             Self::Media(error) => error.fmt(f),
             Self::Storage(error) => write!(f, "native source custody refused: {error:?}"),
+            Self::Resource(error) => write!(f, "native source preparation refused: {error:?}"),
         }
     }
 }
@@ -41,7 +50,7 @@ impl std::error::Error for DeviceSourceImportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Media(error) => Some(error),
-            Self::Storage(_) => None,
+            Self::Storage(_) | Self::Resource(_) => None,
         }
     }
 }

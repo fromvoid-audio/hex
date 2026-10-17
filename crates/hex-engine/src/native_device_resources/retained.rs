@@ -43,6 +43,13 @@ pub struct OriginalSourceLease {
     source: usize,
     handle: u64,
 }
+impl std::fmt::Debug for OriginalSourceLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OriginalSourceLease")
+            .field("source", &self.source_facts())
+            .finish_non_exhaustive()
+    }
+}
 impl DeviceResourceBank {
     pub fn borrow_original_source_on_control(
         &self,
