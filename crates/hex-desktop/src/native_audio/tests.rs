@@ -122,12 +122,19 @@ struct Harness {
     audio: Option<EditorAudio>,
     context: Option<AudioSourceContext>,
     observation: Arc<Mutex<Observation>>,
+    wait: Duration,
 }
 impl Harness {
     fn new() -> Self {
         Self::with_rate(48000)
     }
     fn with_rate(default_rate: u32) -> Self {
+        Self::with_settings(default_rate, Duration::from_secs(10))
+    }
+    fn with_wait(wait: Duration) -> Self {
+        Self::with_settings(48000, wait)
+    }
+    fn with_settings(default_rate: u32, wait: Duration) -> Self {
         let backend = Arc::new(Mutex::new(None));
         let factory_backend = Arc::clone(&backend);
         // One queue row deliberately permits publication-event saturation.
@@ -165,10 +172,11 @@ impl Harness {
             audio: None,
             context: None,
             observation,
+            wait,
         }
     }
     fn next(&mut self) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + self.wait;
         loop {
             if let Ok(event) = self.service.as_ref().unwrap().try_event() {
                 let context = event
@@ -203,7 +211,7 @@ impl Harness {
         event
     }
     fn open(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + self.wait;
         loop {
             match self.events.try_recv() {
                 Ok(EditorAudioEvent::Opened {
@@ -244,7 +252,7 @@ impl Harness {
         output
     }
     fn applied(&self, context: AudioSourceContext) -> hex_audio::prepared::AppliedAudioSource {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + self.wait;
         loop {
             self.render();
             if let Some(actual) = self
@@ -900,4 +908,110 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
         }
         previous = Some(token); // next accepted cell has a new actual incarnation
     }
+}
+
+/// Explicit ~1 GB generated workload smoke. Not part of ordinary CI and not a
+/// physical-device, sustained real-time or listening result.
+#[test]
+#[ignore = "requires create-new generated workload and HEX_STREAMING_WORKLOAD_PROJECT"]
+fn generated_100_track_project_uses_actual_verified_service_and_callback() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let path = PathBuf::from(
+        std::env::var_os("HEX_STREAMING_WORKLOAD_PROJECT").expect("fixture project path"),
+    );
+    let mut h = Harness::with_wait(Duration::from_secs(120));
+    h.next();
+    h.open();
+    let started = Instant::now();
+    let event = h.run(Request::OpenWithAudioMode {
+        source: hex_session::service::ProjectSource::Saved(path),
+        relinks: Default::default(),
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    assert_eq!(event.state.project.tracks().len(), 100);
+    assert_eq!(event.state.project.assets().count(), 100);
+    assert_eq!(event.state.project.session_cells().len(), 200);
+    assert!(event.playback.is_none());
+    let snapshot = event.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(snapshot.required_sources().count(), 100);
+    assert!(
+        snapshot
+            .required_sources()
+            .all(|(_, source)| matches!(source, AudioSourceBinding::VerifiedFile(_)))
+    );
+    let rate = event.state.project.sample_rate();
+    h.open();
+    eprintln!(
+        "canonical100-source load complete after {:?}; verifying native domain",
+        started.elapsed()
+    );
+    let context = h.context.unwrap();
+    let deadline = Instant::now() + h.wait;
+    let actual = loop {
+        h.render();
+        if let Some(actual) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_audio_source()
+            && actual.context == context
+        {
+            break actual;
+        }
+        for event in h.events.try_iter() {
+            if let EditorAudioEvent::Publication {
+                context: observed,
+                state: EditorPublicationState::Refused(error) | EditorPublicationState::Fault(error),
+                ..
+            } = event
+                && observed == context
+            {
+                panic!("full workload preparation refused: {error}");
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "full workload actual install missing"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + h.wait;
+    let mut signal = false;
+    loop {
+        let output = h.render();
+        signal |= output.iter().flatten().any(|sample| sample.abs() > 0.0001);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert!(!status.render_fault.load(Acquire));
+        let frames = status.position.load(Acquire);
+        if frames >= u64::from(rate) * 2 {
+            assert!(signal, "actual decoded workload remained silent");
+            eprintln!(
+                "headless workload: sources=100 rate={rate} applied={} frames={frames} elapsed={:?}; physical timing/listening NOT measured",
+                actual.audio_revision,
+                started.elapsed()
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "100-source worker made no bounded progress; frame={frames}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    h.render();
 }
