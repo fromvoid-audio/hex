@@ -212,3 +212,13 @@ effect/mutable callback allocation probe also traverses this real source-plan
 alias path, retires old control custody, and retains its exact PCM sums with zero
 total/net allocations or frees. This is source-plan custody evidence, not a
 complete all-host/native publication permit.
+
+The v1 resampler also accepts an actual retained original view through
+`ResamplePlan::render_original_window`. Stereo and mono specialize the same
+indexed kernel; mono is read in place with no full stereo source copy. Window
+limits, exact source rate/extent, malformed values and error-output clearing
+remain checked. Existing golden kernels and independent codec PCM oracles run
+alongside bitwise whole/window comparisons, including identity signed zero.
+This is worker preparation, never pointer-motion or callback DSP preparation.
+Identity-rate stereo source plans must keep using the closed owning alias rather
+than allocating a redundant project-rate PCM buffer.

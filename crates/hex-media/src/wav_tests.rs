@@ -316,6 +316,78 @@ fn assert_native_source(bytes: &[u8], expected: &[[f32; 2]], channels: usize) {
         assert_eq!(stereo.as_ptr() as usize, pointer);
         assert_eq!(stereo, expected);
     }
+    // Same v1 DSP and indexed global phase, now reading the actual retained
+    // original directly (including Mono) without a full stereo source copy.
+    let normalized_reference = hex_engine::Audio::new(rate, expected.to_vec()).unwrap();
+    for target in [rate, if rate == 44_100 { 48_000 } else { 44_100 }] {
+        let max_output = expected.len() * 24;
+        let reference = crate::resample(
+            &normalized_reference,
+            target,
+            crate::ResampleLimits {
+                max_source_frames: expected.len(),
+                max_output_frames: max_output,
+            },
+        )
+        .unwrap();
+        let plan = crate::ResamplePlan::new(
+            rate,
+            target,
+            expected.len() as u64,
+            expected.len() as u64,
+            max_output as u64,
+            17,
+        )
+        .unwrap();
+        let mut actual = vec![[9.0; 2]; reference.frames().len()];
+        for (index, window) in actual.chunks_mut(17).enumerate() {
+            plan.render_original_window(snapshot.view().unwrap(), (index * 17) as u64, window)
+                .unwrap();
+        }
+        for (actual, reference) in actual
+            .iter()
+            .flatten()
+            .zip(reference.frames().iter().flatten())
+        {
+            assert_eq!(actual.to_bits(), reference.to_bits());
+        }
+        let mut refused = [[9.0; 2]; 18];
+        assert!(
+            plan.render_original_window(snapshot.view().unwrap(), 0, &mut refused)
+                .is_err()
+        );
+        assert_eq!(refused, [[0.0; 2]; 18]);
+    }
+    let mut refused = [[9.0; 2]; 1];
+    let wrong_rate = if rate == 44_100 { 48_000 } else { 44_100 };
+    let plan = crate::ResamplePlan::new(
+        wrong_rate,
+        wrong_rate,
+        expected.len() as u64,
+        expected.len() as u64,
+        expected.len() as u64,
+        1,
+    )
+    .unwrap();
+    assert!(
+        plan.render_original_window(snapshot.view().unwrap(), 0, &mut refused)
+            .is_err()
+    );
+    assert_eq!(refused, [[0.0; 2]; 1]);
+    let plan = crate::ResamplePlan::new(
+        rate,
+        rate,
+        expected.len() as u64 + 1,
+        expected.len() as u64 + 1,
+        expected.len() as u64 + 1,
+        1,
+    )
+    .unwrap();
+    assert!(
+        plan.render_original_window(snapshot.view().unwrap(), 0, &mut refused)
+            .is_err()
+    );
+    assert_eq!(refused, [[0.0; 2]; 1]);
 }
 
 #[test]
@@ -370,6 +442,10 @@ fn native_decode_preserves_layout_and_enforces_exact_buffer_work_and_cancel_boun
     ));
     let stereo = wave(&format(1, 2, 16), &[0, 32, 0, 160, 0, 192, 0, 64], None);
     assert_native_source(&stereo, &[[0.25, -0.75], [-0.5, 0.5]], 2);
+    let floats = [-0.0_f32, 0.25, -0.5, 0.75];
+    let data: Vec<_> = floats.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let float_mono = wave(&format(3, 1, 32), &data, None);
+    assert_native_source(&float_mono, &floats.map(|v| [v; 2]), 1);
     let bad = wave(&format(3, 1, 32), &f32::NAN.to_le_bytes(), None);
     assert!(matches!(
         decode_device_source(&bad, native_limits(&bad, 1), &AtomicBool::new(false)),
