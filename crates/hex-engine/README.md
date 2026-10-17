@@ -18,8 +18,12 @@ enters the engine. See [controller input](../../docs/controller-input.md).
 
 ## Dependencies
 
-hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
-library; no UI/device-stream dependencies.
+hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, pinned sha2
+and the Rust standard library; no UI/device-stream dependencies. sha2 is used
+only during bounded, cancellable control preparation to identify the actual
+retained original PCM bank. File verification remains in media; hashing is
+never performed by callback resource queries or DSP. A digest is not a lease
+or an ownership/admission proof.
 
 ## Does not own
 

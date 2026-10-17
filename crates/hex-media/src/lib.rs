@@ -8,6 +8,7 @@ use std::{
 };
 
 mod adpcm;
+mod device_source;
 mod resample;
 mod resample_kernel;
 mod stream;
@@ -28,6 +29,7 @@ mod resample_plan_tests;
 
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
+pub use device_source::{DeviceSourceDecodeLimits, DeviceSourceImportError, decode_device_source};
 pub use resample::{ResampleLimits, ResamplePlan, resample};
 pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
 pub use stream::{WavFrameReader, WavReaderLimits};

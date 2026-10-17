@@ -147,3 +147,29 @@ supported types. Existing source/claim/cancellation/retirement tests are retaine
 The Session refusal fixture's pre-existing caller alias was removed when building
 its new mono bank; its original failed assertion is retained as fixture evidence.
 This does not expand the audio-only native publication support matrix.
+
+## native media decode before sharing
+
+`hex_media::decode_device_source` decodes immutable bounded WAV bytes directly
+into the existing native source constructors, before any shared raw `Audio`
+escapes. Original mono uses one mono buffer; stereo uses one stereo buffer.
+PCM/float/companded conversion and IMA/Microsoft ADPCM kernels are reused.
+Compressed decoding needs only one explicitly charged stereo block scratch,
+including when a fact chunk trims the retained mono output. There is no second
+full decoded PCM allocation, source cache or ownership manager.
+
+Caller limits independently cover encoded bytes, retained frames, RIFF headers,
+decoded work including ADPCM padding, and actual output/scratch buffer capacity.
+Cancellation is checked per header, every256 fixed frames and around each
+compressed block; final constructor validation is bounded by the retained frame
+limit. Failure discards only unpublished worker custody. Host ledger/header,
+coexistence, source-generation publication and retirement admission remain
+required; this component is not yet wired into Session's shared media bank.
+
+The existing independent FFmpeg codec oracles also check native source custody
+and true mono/stereo layout. Exact buffer/work refusal, malformed float input,
+fact-trimmed scratch charges and deterministic cancellation boundaries are tested.
+The architecture check caught that the earlier engine-side source hash dependency
+was absent from its declared boundary. The policy and owning README now explicitly
+allow pinned sha2 for bounded control-side hashes of actual retained PCM only;
+file verification stays in media and callback resource queries never hash.

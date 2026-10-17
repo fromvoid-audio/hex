@@ -157,6 +157,7 @@ fn oracle(bytes: &[u8], pcm: &[u8], channels: usize, seekable: bool) {
             [left, right]
         })
         .collect();
+    assert_native_source(bytes, &expected, channels);
     if seekable {
         assert_readers(bytes, &expected);
     } else {
@@ -176,6 +177,206 @@ fn oracle(bytes: &[u8], pcm: &[u8], channels: usize, seekable: bool) {
         decode_wav(bytes, Limits::new(bytes.len(), expected.len() - 1)),
         Err(ImportError::LimitExceeded("decoded frames"))
     ));
+}
+
+fn native_limits(bytes: &[u8], frames: usize) -> crate::DeviceSourceDecodeLimits {
+    crate::DeviceSourceDecodeLimits {
+        media: Limits::new(bytes.len(), frames),
+        max_chunk_headers: 64,
+        max_decode_work_frames: 1024 * 1024,
+        max_working_buffer_bytes: 64 * 1024 * 1024,
+    }
+}
+
+/// Native custody must contain the independent codec PCM, with the actual
+/// source channel layout, not a second stereo-normalized mono allocation.
+fn assert_native_source(bytes: &[u8], expected: &[[f32; 2]], channels: usize) {
+    use hex_engine::{AudioStorageReservation, OwnedAudioInputs};
+    use std::sync::atomic::AtomicBool;
+    let result = crate::decode_device_source(
+        bytes,
+        native_limits(bytes, expected.len()),
+        &AtomicBool::new(false),
+    );
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        assert!(matches!(
+            result,
+            Err(crate::DeviceSourceImportError::Storage(
+                hex_engine::AudioStorageError::UnsupportedConstructor
+            ))
+        ));
+        eprintln!("native source constructor unsupported; no native custody proof");
+        return;
+    }
+    eprintln!(
+        "native source constructor supported: {channels} channels, {} frames",
+        expected.len()
+    );
+    let source = result.expect("native source constructor");
+    assert_eq!(source.frames(), expected.len() as u64);
+    let rate = source.sample_rate();
+    let mut editor = hex_project::Editor::new(hex_project::Project::new(rate).unwrap(), 8).unwrap();
+    let hex_project::Created::Asset(asset) = editor
+        .execute(hex_project::Command::AddAsset {
+            path: "native-oracle.wav".into(),
+            sample_rate: rate,
+            frames: expected.len() as u64,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let bank = OwnedAudioInputs::try_new(
+        vec![(asset, source)],
+        AudioStorageReservation {
+            allocation_items: 8,
+            handle_obligations: 8,
+            max_prepared_data_bytes: 64 * 1024 * 1024,
+            max_construction_data_bytes: 64 * 1024 * 1024,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap();
+    let token = bank.source_token(asset).unwrap();
+    let view = bank.source_view(&token).unwrap();
+    assert_eq!(view.sample_rate(), rate);
+    if channels == 1 {
+        assert!(view.resident_frames().is_none());
+        let mono = view
+            .resident_mono_samples()
+            .expect("actual mono allocation");
+        assert_eq!(mono.len(), expected.len());
+        for (sample, reference) in mono.iter().zip(expected) {
+            assert_eq!(*sample, reference[0]);
+        }
+    } else {
+        assert!(view.resident_mono_samples().is_none());
+        assert_eq!(view.resident_frames().unwrap(), expected);
+    }
+}
+
+#[test]
+fn native_decode_preserves_layout_and_enforces_exact_buffer_work_and_cancel_bounds() {
+    use crate::{DeviceSourceImportError::Media, decode_device_source};
+    use std::sync::atomic::AtomicBool;
+    let bytes = wave(&format(1, 1, 8), &[0, 128, 255], None);
+    let expected = [[-1.0; 2], [0.0; 2], [127.0 / 128.0; 2]];
+    assert_native_source(&bytes, &expected, 1);
+    let mut limits = native_limits(&bytes, 3);
+    // Encoded input plus one actual mono Vec; no full stereo temporary.
+    limits.max_working_buffer_bytes = bytes.len() + 3 * 4;
+    let exact = decode_device_source(&bytes, limits, &AtomicBool::new(false));
+    if hex_engine::audio_storage_constructor_layout_supported() {
+        assert!(exact.is_ok());
+    }
+    limits.max_working_buffer_bytes -= 1;
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded(
+            "native decode working buffers"
+        )))
+    ));
+    limits = native_limits(&bytes, 2);
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded("decoded frames")))
+    ));
+    limits = native_limits(&bytes, 3);
+    limits.max_decode_work_frames = 2;
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded(
+            "native decoded work frames"
+        )))
+    ));
+    limits = native_limits(&bytes, 3);
+    limits.max_chunk_headers = 1;
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded("chunk headers")))
+    ));
+    limits = native_limits(&bytes, 3);
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(true)),
+        Err(Media(ImportError::Cancelled))
+    ));
+    limits.media.max_file_bytes -= 1;
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded("input bytes")))
+    ));
+    let stereo = wave(&format(1, 2, 16), &[0, 32, 0, 160, 0, 192, 0, 64], None);
+    assert_native_source(&stereo, &[[0.25, -0.75], [-0.5, 0.5]], 2);
+    let bad = wave(&format(3, 1, 32), &f32::NAN.to_le_bytes(), None);
+    assert!(matches!(
+        decode_device_source(&bad, native_limits(&bad, 1), &AtomicBool::new(false)),
+        Err(Media(ImportError::Invalid("float samples must be finite")))
+    ));
+}
+
+#[test]
+fn native_decode_checks_cancellation_between_headers_and_before_compressed_blocks() {
+    let bytes = wave(&format(1, 1, 8), &[128], None);
+    let mut visits = 0;
+    let result = crate::wav::scan_checked(
+        &mut std::io::Cursor::new(&bytes),
+        bytes.len() as u64,
+        8,
+        || {
+            visits += 1;
+            if visits == 3 {
+                Err(ImportError::Cancelled)
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(result, Err(ImportError::Cancelled)));
+    assert_eq!(visits, 3);
+    let bytes = wave(&adpcm_format(17, 1, 8, 9), &[0; 8], None);
+    let layout =
+        crate::wav::scan(&mut std::io::Cursor::new(&bytes), bytes.len() as u64, 8).unwrap();
+    let mut emitted = 0;
+    let result =
+        crate::adpcm::decode_into(&[0; 8], layout.format, 9, &mut [[0.0; 2]; 9], |frames| {
+            emitted += frames.len();
+            Err(ImportError::Cancelled)
+        });
+    assert!(matches!(result, Err(ImportError::Cancelled)));
+    assert_eq!(emitted, 0);
+}
+
+#[test]
+fn native_decode_charges_compressed_work_and_scratch_despite_fact_trim() {
+    use crate::{DeviceSourceImportError::Media, decode_device_source};
+    use std::sync::atomic::AtomicBool;
+    // One9-frame IMA block; fact retains only its initial predictor.
+    let bytes = wave(&adpcm_format(17, 1, 8, 9), &[0; 8], Some(1));
+    let mut limits = native_limits(&bytes, 1);
+    limits.max_decode_work_frames = 8;
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded(
+            "native decoded work frames"
+        )))
+    ));
+    limits.max_decode_work_frames = 9;
+    // Retain one mono sample and the bounded9-frame stereo codec scratch.
+    limits.max_working_buffer_bytes = bytes.len() + 4 + 9 * 8;
+    let result = decode_device_source(&bytes, limits, &AtomicBool::new(false));
+    if hex_engine::audio_storage_constructor_layout_supported() {
+        assert!(result.is_ok());
+    }
+    limits.max_working_buffer_bytes -= 1;
+    assert!(matches!(
+        decode_device_source(&bytes, limits, &AtomicBool::new(false)),
+        Err(Media(ImportError::LimitExceeded(
+            "native decode working buffers"
+        )))
+    ));
+    assert_native_source(&bytes, &[[0.0; 2]], 1);
 }
 
 #[test]

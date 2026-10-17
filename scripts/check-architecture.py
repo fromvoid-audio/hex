@@ -49,8 +49,9 @@ DEV_ALLOWED = {
 BOUNDARIES = {'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
-              # Source and controlled scanner identities never enter DSP.
-              'sha2': {'hex-media', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Source/scanner identities and bounded control-side hashes of
+              # the engine's actual retained PCM bank; never callback DSP.
+              'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
               # Safe publication and standalone child ownership only.
