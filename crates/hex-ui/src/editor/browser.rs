@@ -55,7 +55,7 @@ struct PreviewRequest {
     slot: PreviewSlot,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct PreviewSlot {
     metadata: Rc<RefCell<Option<Rc<AudioPreview>>>>,
     error: Rc<RefCell<Option<String>>>,
@@ -177,6 +177,9 @@ pub(super) struct BrowserState {
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
+    preview_selected: Option<PreviewKey>,
+    #[cfg(test)]
+    preview_preparations: usize,
     preview_in_flight: Option<PreviewRequest>,
     preview_pending: Option<PreviewRequest>,
     device_catalog: Option<
@@ -246,6 +249,9 @@ impl BrowserState {
             playback_in_flight: false,
             playback_pending: None,
             preview_cache: HashMap::new(),
+            preview_selected: None,
+            #[cfg(test)]
+            preview_preparations: 0,
             preview_in_flight: None,
             preview_pending: None,
             device_catalog: None,
@@ -733,29 +739,32 @@ impl EditorView {
         if let Some(metadata) = self.browser.preview_cache.get(&key) {
             return metadata.clone();
         }
-        if self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY {
-            let protected = self
-                .browser
-                .preview_in_flight
-                .iter()
-                .chain(self.browser.preview_pending.iter())
-                .map(|request| &request.key);
-            if let Some(evicted) = self
-                .browser
-                .preview_cache
-                .keys()
-                .find(|candidate| !protected.clone().any(|key| key == *candidate))
-                .cloned()
-            {
-                self.browser.preview_cache.remove(&evicted);
-            }
-        }
-        let slot = PreviewSlot {
-            metadata: Rc::new(RefCell::new(None)),
-            error: Rc::new(RefCell::new(None)),
-        };
+        self.evict_browser_preview_slot();
+        let slot = PreviewSlot::default();
         self.browser.preview_cache.insert(key, slot.clone());
         slot
+    }
+
+    fn evict_browser_preview_slot(&mut self) {
+        if self.browser.preview_cache.len() < PREVIEW_CACHE_CAPACITY {
+            return;
+        }
+        let protected = self
+            .browser
+            .preview_in_flight
+            .iter()
+            .chain(self.browser.preview_pending.iter())
+            .map(|request| &request.key)
+            .chain(self.browser.preview_selected.iter());
+        if let Some(evicted) = self
+            .browser
+            .preview_cache
+            .keys()
+            .find(|candidate| !protected.clone().any(|key| key == *candidate))
+            .cloned()
+        {
+            self.browser.preview_cache.remove(&evicted);
+        }
     }
 
     fn request_browser_audio_preview(
@@ -765,7 +774,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Rc<RefCell<Option<Rc<AudioPreview>>>> {
         let slot = self.browser_preview_cell(path.clone(), sample_rate);
-        if slot.metadata.borrow().is_some() {
+        if slot.metadata.borrow().is_some() || slot.error.borrow().is_some() {
             return slot.metadata;
         }
         self.queue_browser_audio_preview(PreviewKey { path, sample_rate }, slot.clone(), cx);
@@ -785,24 +794,8 @@ impl EditorView {
             metadata: drag.metadata.clone(),
             error: drag.metadata_error.clone(),
         };
-        if !self.browser.preview_cache.contains_key(&key)
-            && self.browser.preview_cache.len() >= PREVIEW_CACHE_CAPACITY
-        {
-            let protected = self
-                .browser
-                .preview_in_flight
-                .iter()
-                .chain(self.browser.preview_pending.iter())
-                .map(|request| &request.key);
-            if let Some(evicted) = self
-                .browser
-                .preview_cache
-                .keys()
-                .find(|candidate| !protected.clone().any(|item| item == *candidate))
-                .cloned()
-            {
-                self.browser.preview_cache.remove(&evicted);
-            }
+        if !self.browser.preview_cache.contains_key(&key) {
+            self.evict_browser_preview_slot();
         }
         self.browser.preview_cache.insert(key.clone(), slot.clone());
         *slot.metadata.borrow_mut() = None;
@@ -853,6 +846,10 @@ impl EditorView {
     }
 
     fn start_browser_audio_preview(&mut self, request: PreviewRequest, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.browser.preview_preparations += 1;
+        }
         self.browser.preview_in_flight = Some(request.clone());
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
@@ -1807,7 +1804,17 @@ impl EditorView {
                     browser_generation,
                     snap_grid,
                 )| {
-                    let slot = self.browser_preview_cell(path.clone(), sample_rate);
+                    // Rendering a row must not fill/evict the metadata cache.
+                    // Hover/drag admission owns preparation, not composition.
+                    let slot = self
+                        .browser
+                        .preview_cache
+                        .get(&PreviewKey {
+                            path: path.clone(),
+                            sample_rate,
+                        })
+                        .cloned()
+                        .unwrap_or_default();
                     let viewport = self.visible_viewport(timeline_frames);
                     drag::BrowserAudioDrag {
                         project_generation,

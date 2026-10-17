@@ -1,3 +1,15 @@
+## track header width and row height — pulse2714 / PR330
+
+User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
+cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
+shares one bounded view value across timeline consumers; individual regular
+bottom edges resize aligned header/lane rows with captured displacement and
+cancel semantics. Main width works with no tracks. View-only sizing preserves
+project/audio/Undo state; variable rows retain logical scrolling and reset on a
+new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
+Required exact final source checks and remaining native acceptance are tracked in
+Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+
 ## original-rate resident PCM — pulse2762 / PR370, 17 october 2026
 
 Prepared imports and Session assets retain original-rate decoded PCM beside
@@ -94,6 +106,17 @@ storage/allocation regressions. Portable tests and earlier integrated full runs
 pass; final-source CI is rerun when published foundations change. Native acceptance remains open under the
 coordinator-controlled serial Mac schedule. Source/check evidence belongs to PR343.
 See [signal and custody contract](docs/eq.md#live-input-and-output-spectra).
+
+## eq analyzer readability — #2736 / PR347, 17 october 2026
+
+Sub-bin logarithmic bands interpolate existing stereo power instead of repeating
+nearest FFT bins; the 58.6 Hz fixture improves from six repeated non-floor steps
+to zero. The 4096-frame Hann window/calibration remains. Worker display envelopes
+use immediate attack and 48 dB/s decay, with shared pair time and complete gap/
+context reset; stale capture cannot be refreshed by decay. Both EQ panels share
+a fixed −96..0 dBFS scale. All 199 audio allocation-feature tests and scoped
+strict Clippy pass; UI/full exact-source validation and coordinator-arranged
+native review remain pending. See [numeric contracts and limits](docs/spectrum-analysis.md#readability-refinement--pulse2736).
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026
 
@@ -4607,14 +4630,12 @@ actual Client-to-callback silence and list-boundary retrigger prevention. Native
 layout/listening and broader historical scrub/playhead wishlist remain open;
 Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
 
-## track header width and row height — pulse2714 / PR330
 
-User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
-cloud6 checkpoint49eedce9 and its history are retained. Track-header width now
-shares one bounded view value across timeline consumers; individual regular
-bottom edges resize aligned header/lane rows with captured displacement and
-cancel semantics. Main width works with no tracks. View-only sizing preserves
-project/audio/Undo state; variable rows retain logical scrolling and reset on a
-new project generation. Five rendered gesture/bounds/control/scroll regressions cover the new behavior.
-Required exact final source checks and remaining native acceptance are tracked in
-Pulse2714; no app delivery is claimed. See docs/ui-design.md for derived layout bounds.
+## browser waveform cache stability — pulse2778 / PR384
+
+Visible row composition no longer mutates the16-entry metadata cache. Selected
+waveform, in-flight and pending keys stay protected; failed hover previews do not
+retry automatically. Reproduced selected-cache loss before repair; real pointer
+hover/selection regression checks no repeated preparation/audition, stable metadata,
+unchanged project state and surrounding lane geometry/style. Native flicker
+acceptance remains coordinator-serial on the next combined launcher delivery.

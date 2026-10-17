@@ -3070,3 +3070,101 @@ fn browser_result_reset_cancels_preparing_and_playing_audition(cx: &mut TestAppC
         }
     });
 }
+
+#[gpui::test]
+fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, track, directory, path) = browser_drag_fixture(cx);
+    for i in 0..40 {
+        std::fs::write(
+            directory.0.join(format!("sample-{i:02}.wav")),
+            mono_pcm_wav(32),
+        )
+        .unwrap();
+    }
+    let metadata = Rc::new(hex_session::service::prepare_audio_preview(&path, 48_000).unwrap());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.apply_sample_catalog(
+            hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
+            cx,
+        );
+        view.browser.results_focused = true;
+        view.browser.selected_index = 0;
+        let slot = view.browser_preview_cell(path.clone(), 48_000);
+        *slot.metadata.borrow_mut() = Some(metadata.clone());
+        // Uniform-list rendering may compose more rows than cache capacity.
+        let entries = view.browser_visible_entries(cx);
+        let cached_before = view.browser.preview_cache.len();
+        for (index, entry) in entries.iter().cloned().enumerate() {
+            let _ = view.browser_row(index, entry, cx);
+        }
+        assert_eq!(
+            view.browser.preview_cache.len(),
+            cached_before,
+            "rendering visible rows cannot mutate the preparation cache"
+        );
+        let cached = view.browser_preview_cell(path.clone(), 48_000);
+        assert!(
+            cached
+                .metadata
+                .borrow()
+                .as_ref()
+                .is_some_and(|value| Rc::ptr_eq(value, &metadata)),
+            "rendering other rows must not evict/reprepare the selected waveform"
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let lane = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
+    let bounds = visual.debug_bounds(lane).unwrap();
+    let color = visual.rendered_background(lane);
+    let canonical = editor.read_with(&visual, |view, _| view.state.clone().unwrap());
+    for index in 0..3 {
+        let row = visual
+            .debug_bounds(Box::leak(format!("browser-entry-{index}").into_boxed_str()))
+            .unwrap();
+        visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("browser-audition-waveform").unwrap();
+        let slot = editor.read_with(&visual, |view, cx| {
+            let selected = view.browser_visible_entries(cx)[index].path.clone();
+            view.browser.preview_cache[&super::PreviewKey {
+                path: selected,
+                sample_rate: 48_000,
+            }]
+                .clone()
+        });
+        let preparations = editor.read_with(&visual, |view, _| view.browser.preview_preparations);
+        for _ in 0..4 {
+            visual.simulate_mouse_move(waveform.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(slot.metadata.borrow().is_some());
+                assert_eq!(
+                    view.browser.preview_preparations, preparations,
+                    "hover cannot reprepare"
+                );
+                let key = view.browser.preview_selected.as_ref().unwrap();
+                assert!(Rc::ptr_eq(
+                    &view.browser.preview_cache[key].metadata,
+                    &slot.metadata
+                ));
+                assert!(view.browser.preview_in_flight.is_none());
+                assert!(view.browser.preview_pending.is_none());
+                assert_eq!(view.browser.playback_generation, 0, "hover cannot audition");
+                assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
+                assert!(view.pending_audio_commands.is_empty());
+            });
+            assert_eq!(visual.debug_bounds(lane).unwrap(), bounds);
+            assert_eq!(visual.rendered_background(lane), color);
+            assert_eq!(
+                visual.debug_bounds("browser-audition-waveform").unwrap(),
+                waveform
+            );
+        }
+    }
+}
