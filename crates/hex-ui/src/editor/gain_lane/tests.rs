@@ -304,15 +304,15 @@ mod native {
         visual.run_until_parked();
         let focus = visual.update(|window, cx| window.focused(cx).unwrap());
         for key in ["cmd-t", "cmd-r"] {
-        visual.simulate_keystrokes(key);
-        visual.update(|window, _| assert!(focus.is_focused(window)));
-        entity.update(&mut visual, |view, cx| {
-            assert!(view.gain_numeric_editing(cx));
-            assert!(!view.track_name.is_editing());
-            assert!(view.clip_name_edit.is_none());
-            assert!(view.last_enqueued_edit.is_none());
-            assert_eq!(view.worker_requests_pending, 0);
-        });
+            visual.simulate_keystrokes(key);
+            visual.update(|window, _| assert!(focus.is_focused(window)));
+            entity.update(&mut visual, |view, cx| {
+                assert!(view.gain_numeric_editing(cx));
+                assert!(!view.track_name.is_editing());
+                assert!(view.clip_name_edit.is_none());
+                assert!(view.last_enqueued_edit.is_none());
+                assert_eq!(view.worker_requests_pending, 0);
+            });
         }
     }
 
