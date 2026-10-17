@@ -2574,6 +2574,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-stream",
+ "hex-tuning",
  "rtrb",
 ]
 
@@ -2653,6 +2654,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
  "rustix 1.1.5",
 ]
 

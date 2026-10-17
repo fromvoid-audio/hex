@@ -2271,9 +2271,10 @@ fn run_worker(
             }
             computer_keyboard_playback = Some(playback);
         } else if project_replaced || canonical_changed || revision != revision_before_request {
-            if let Some((_, _, _, input)) = keyboard_activation.take() {
-                input.cancel();
-            }
+            // Invalidate control-side inheritance immediately, but let the
+            // actual audio publication cancel the audible lease. A candidate
+            // can wait or be refused without silencing the installed graph.
+            keyboard_activation = None;
             keyboard_tuning_hint = None;
         }
         if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {

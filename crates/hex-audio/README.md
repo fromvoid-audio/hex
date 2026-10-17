@@ -160,7 +160,7 @@ disposal; CPAL for CoreAudio output; rtrb for SPSC commands. This narrow product
 stream edge supplies one sealed exact-domain endpoint to the opted-in constructor
 renderer under its real readiness transaction. Legacy callers remain unchanged.
 Tests use
-hex-project as a dev-dependency to build canonical prepared revisions for the
+hex-project and hex-tuning as dev-dependencies to build canonical prepared revisions for the
 callback boundary. The non-default `allocation-probe` feature also activates
 hex-engine's hidden `instrument-test-support` preparation seam and uses
 hex-lattice as a dev-dependency. This injects a fixed-storage mutable proof

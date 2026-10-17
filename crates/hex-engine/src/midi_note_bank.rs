@@ -658,8 +658,9 @@ mod tests {
         let per_revision = max_bank_bytes
             .checked_add(max_indices * std::mem::size_of::<u16>())
             .unwrap();
-        assert_eq!(per_revision, 47_091_712);
-        assert_eq!(per_revision.checked_mul(2).unwrap(), 94_183_424);
+        // One static continuation authority pointer adds eight bytes per entry.
+        assert_eq!(per_revision, 48_140_288);
+        assert_eq!(per_revision.checked_mul(2).unwrap(), 96_280_576);
     }
 
     #[test]

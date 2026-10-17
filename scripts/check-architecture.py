@@ -43,8 +43,8 @@ DEV_ALLOWED = {
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
     'hex-desktop': {'hex-project'},
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media'},
-    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice'},
+    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning'},
+    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},

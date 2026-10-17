@@ -182,3 +182,48 @@ fn ordinary_project_edits_and_fresh_opens_cannot_inherit_tuning_family() {
         .is_err()
     );
 }
+
+#[test]
+#[ignore = "release handoff timing; run explicitly with --release --ignored --nocapture"]
+fn profile_keyboard_tuning_handoff_copy_cost() {
+    let (p0, track) = super::tests::fixture();
+    let p1 = tuned(&p0, 333.0);
+    let r0 = revision(&p0);
+    let r1 = next_revision(&p1, &p0, &r0);
+    for retune in [false, true] {
+        let input = Arc::new(ComputerKeyboardInput::default());
+        for key in 0..COMPUTER_KEY_COUNT {
+            input
+                .set_key(key, Some((48 + key as u8, 100, key as u64 + 1)))
+                .unwrap();
+        }
+        let mut actual = start(&p0, Arc::clone(&r0), track, &input);
+        actual.render(&mut [[0.0; 2]; 777]).unwrap();
+        let mut times = Vec::with_capacity(128);
+        for index in 0..128 {
+            let (project, revision) = if retune && index % 2 == 0 {
+                (&p1, &r1)
+            } else {
+                (&p0, &r0)
+            };
+            let mut candidate = target(project, Arc::clone(revision), track, &input, &actual);
+            let started = std::time::Instant::now();
+            candidate.try_inherit_runtime_from(&mut actual).unwrap();
+            times.push(started.elapsed().as_nanos());
+            std::hint::black_box(&candidate);
+            actual = candidate; // retired donor destruction stays outside timing
+            actual.render(&mut [[0.0; 2]; 137]).unwrap();
+        }
+        times.sort_unstable();
+        eprintln!(
+            "keyboard handoff retune={retune} voices={} rate=48000 block=137 samples=128 p50/p95/p99/max_ns={}/{}/{}/{} runtime_bytes={} voice_override_pair_bytes={}",
+            COMPUTER_KEY_COUNT,
+            times[64],
+            times[121],
+            times[126],
+            times[127],
+            std::mem::size_of::<ComputerKeyboardRuntime>(),
+            2 * VOICES * std::mem::size_of::<Option<PreparedAnalyticNote>>()
+        );
+    }
+}

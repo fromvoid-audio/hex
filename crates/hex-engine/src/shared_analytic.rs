@@ -646,8 +646,9 @@ mod tests {
         let table_header = std::mem::size_of::<SharedAnalyticContextTable>();
         assert_eq!(owner_handles, 2_048);
         assert_eq!(id_index_entries, 4_096);
-        assert_eq!(table_header, 80);
-        assert_eq!(owner_handles + id_index_entries + table_header, 6_224);
+        // One table and scalar cache identity per revision, never per clip.
+        assert_eq!(table_header, 80 + 1024 + 8);
+        assert_eq!(owner_handles + id_index_entries + table_header, 7_256);
     }
 
     #[test]

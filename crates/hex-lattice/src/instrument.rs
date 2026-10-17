@@ -83,34 +83,30 @@ pub trait PreparedSharedAnalyticContext: Send + Sync {
     ) -> StereoFrame;
 }
 
-/// Type-erased immutable analytic note data. The safe function pointer is
-/// prepared on the control side and receives authored age and gate duration;
-/// `sample` borrows this value to avoid copying its bounded payload per frame;
-/// it performs no allocation or state mutation.
+/// Provider callback for bounded, read-only continuation from actual source
+/// coefficients to target coefficients at the supplied occurrence age.
+pub type ContinueAnalyticPayload =
+    fn(
+        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+        u64,
+    ) -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError>;
+
 /// Static provider authority for per-occurrence pitch continuation. The provider
 /// validates every nonpitch coefficient and preserves authored phase/envelope law.
 /// Static descriptor identity, rather than function-address equality, binds formats.
 /// The callback must be bounded, allocation-free and free of interior mutation.
 pub struct AnalyticNoteContinuation {
-    continue_payload: fn(
-        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
-        &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
-        u64,
-    ) -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError>,
+    continue_payload: ContinueAnalyticPayload,
 }
 impl AnalyticNoteContinuation {
-    pub const fn new(
-        continue_payload: fn(
-            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
-            &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
-            u64,
-        )
-            -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError>,
-    ) -> Self {
+    pub const fn new(continue_payload: ContinueAnalyticPayload) -> Self {
         Self { continue_payload }
     }
 }
 
+/// Type-erased immutable note data, sampled by authored age and gate duration
+/// without allocation or state mutation. The callback borrows the fixed payload.
 #[derive(Clone, Copy)]
 pub struct PreparedAnalyticNote {
     payload: [u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
@@ -722,26 +718,56 @@ mod tests {
     }
     #[test]
     fn legacy_provider_accepts_exact_neutral_and_refuses_custom_table() {
-        let provider=TestToneDefinition {id:"test.instrument.neutral",sampler:constant_left,payload:[0;ANALYTIC_NOTE_PAYLOAD_WORDS]};
-        let definitions:[&dyn NativeInstrumentDefinition;1]=[&provider];
-        let registry=NativeInstrumentRegistry::new(&definitions).unwrap();
-        let state=registry.default_state(provider.type_id()).unwrap();
-        assert!(registry.prepare_instrument_with_tuning(&state,48000,&crate::TuningTable::default()).is_ok());
-        let custom=crate::TuningTable::new([333.0;128]).unwrap();
-        assert!(matches!(registry.prepare_instrument_with_tuning(&state,48000,&custom),Err(DeviceContractError::UnsupportedProcessingClass)));
+        let provider = TestToneDefinition {
+            id: "test.instrument.neutral",
+            sampler: constant_left,
+            payload: [0; ANALYTIC_NOTE_PAYLOAD_WORDS],
+        };
+        let definitions: [&dyn NativeInstrumentDefinition; 1] = [&provider];
+        let registry = NativeInstrumentRegistry::new(&definitions).unwrap();
+        let state = registry.default_state(provider.type_id()).unwrap();
+        assert!(
+            registry
+                .prepare_instrument_with_tuning(&state, 48000, &crate::TuningTable::default())
+                .is_ok()
+        );
+        let custom = crate::TuningTable::new([333.0; 128]).unwrap();
+        assert!(matches!(
+            registry.prepare_instrument_with_tuning(&state, 48000, &custom),
+            Err(DeviceContractError::UnsupportedProcessingClass)
+        ));
     }
     #[test]
     fn inline_continuation_requires_same_static_authority_and_exact_release_law() {
-        fn carry(source:&[u64;ANALYTIC_NOTE_PAYLOAD_WORDS],_:&[u64;ANALYTIC_NOTE_PAYLOAD_WORDS],_:u64)->Result<[u64;ANALYTIC_NOTE_PAYLOAD_WORDS],DeviceContractError>{Ok(*source)}
-        static A:AnalyticNoteContinuation=AnalyticNoteContinuation::new(carry);
-        static B:AnalyticNoteContinuation=AnalyticNoteContinuation::new(carry);
-        let a=PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],8,constant_left).with_continuation(&A);
-        let b=PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],8,constant_left).with_continuation(&B);
-        assert!(a.continue_from(&a,777).is_ok());
-        assert!(a.continue_from(&b,777).is_err(),"same callback does not grant foreign provider authority");
-        assert!(PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],9,constant_left).with_continuation(&A).continue_from(&a,777).is_err());
-        assert!(PreparedAnalyticNote::new([0;ANALYTIC_NOTE_PAYLOAD_WORDS],8,constant_left).continue_from(&a,777).is_err());
-        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(),352);
+        fn carry(
+            source: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            _: &[u64; ANALYTIC_NOTE_PAYLOAD_WORDS],
+            _: u64,
+        ) -> Result<[u64; ANALYTIC_NOTE_PAYLOAD_WORDS], DeviceContractError> {
+            Ok(*source)
+        }
+        static A: AnalyticNoteContinuation = AnalyticNoteContinuation::new(carry);
+        static B: AnalyticNoteContinuation = AnalyticNoteContinuation::new(carry);
+        let a = PreparedAnalyticNote::new([0; ANALYTIC_NOTE_PAYLOAD_WORDS], 8, constant_left)
+            .with_continuation(&A);
+        let b = PreparedAnalyticNote::new([0; ANALYTIC_NOTE_PAYLOAD_WORDS], 8, constant_left)
+            .with_continuation(&B);
+        assert!(a.continue_from(&a, 777).is_ok());
+        assert!(
+            a.continue_from(&b, 777).is_err(),
+            "same callback does not grant foreign provider authority"
+        );
+        assert!(
+            PreparedAnalyticNote::new([0; ANALYTIC_NOTE_PAYLOAD_WORDS], 9, constant_left)
+                .with_continuation(&A)
+                .continue_from(&a, 777)
+                .is_err()
+        );
+        assert!(
+            PreparedAnalyticNote::new([0; ANALYTIC_NOTE_PAYLOAD_WORDS], 8, constant_left)
+                .continue_from(&a, 777)
+                .is_err()
+        );
+        assert_eq!(std::mem::size_of::<PreparedAnalyticNote>(), 352);
     }
-
 }

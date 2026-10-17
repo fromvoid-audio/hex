@@ -113,6 +113,10 @@ These define transport ownership, not Hex native musical behavior.
 
 ## validation and delivery
 
+The runtime continuation contract, scoped memory changes and evidence boundaries
+are in [native runtime](project-tuning-runtime.md). The complete feature inventory
+above remains authoritative; a passing runtime test is not editor/MTS completion.
+
 #2739 covers model/math/history/persistence only. Native editor, audio, MTS and
 optimized user-test delivery remain required goal work. No user-facing tuning
 completion, listening pass, compatible-client pass, physical deadline or plugin
