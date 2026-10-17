@@ -69,7 +69,9 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    bounds and protected root. One whole gesture is one Undo/Redo step.
 3. Set root degree/key/Hz, non-octave period and ratio/Shift snapping; exercise
    equal divisions, just major and selected-note snap. Check pitch-space point
-   selection, Reach/dice changes and lattice/pair/whole-scale statistics.
+   selection, Reach/dice changes and lattice/pair/whole-scale statistics. Click
+   dice repeatedly with unchanged scale/Reach: choices must change while the
+   project stays untouched until a point is selected.
 4. Save/load/rename/duplicate among eight local slots using disposable names.
    Use an empty/disposable slot; never overwrite an occupied user preset to
    manufacture acceptance. If none is available, leave that write check pending.
@@ -95,7 +97,11 @@ computer-use session. Record pass/fail and a reproducer for each failed item:
    high note, then retune it into the supported
    range without releasing the physical key: it should become audible while
    already sounding voices keep their phase/envelope. Check held/recent reference
-   and Arrangement/Session gate highlights.
+   and Arrangement/Session gate highlights. Hold all 17 mapped input keys: the
+   excess note must refuse visibly without stealing an already held owner;
+   release/repress after capacity is available to recover. Verify bypassed or
+   missing instruments show no gates, and an instrumentless Session MIDI source
+   routed to instrument destinations highlights its actual routed notes.
 6. In sine, FM4 and Operator scratch projects, compare neutral and enabled custom
    tuning in Arrangement, Session and keyboard monitoring. Include root offsets,
    7/19-degree non-octave scales, rapid edits/Undo and held/released voices.
