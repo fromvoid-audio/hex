@@ -249,6 +249,14 @@ pub const MAX_PROCESSOR_RUNTIME_BYTES: usize = 65_536;
 /// The actual paired runtime storage doubles this bound (2 MiB).
 pub const MAX_PROCESSOR_BANK_RUNTIME_BYTES: usize = 1_048_576;
 
+/// Borrowed signal boundary around an entire native effect entry.
+/// Input precedes host input trim; Output follows effect, routing and output trim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeSignalPhase {
+    Input,
+    Output,
+}
+
 /// Typed owner identity for a prepared effect chain. Numeric IDs share the
 /// canonical project allocator, while this tag keeps track and return owners
 /// distinct during runtime history handoff.
@@ -1107,6 +1115,102 @@ impl NativeRuntimeChain {
             .ok_or(DeviceContractError::InvalidDescriptor)?;
         Self::process_entries_observed(entries, frames, frame_offset, clock, observer);
         Ok(())
+    }
+
+    /// Observe synchronous input/output borrows around each complete entry.
+    /// Samples must not be retained, allocated from, or used for blocking work.
+    pub fn process_block_tapped(
+        &mut self,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) {
+        Self::process_entries_tapped(&mut self.entries, frames, frame_offset, None, observer);
+    }
+
+    /// Process a prepared range with input/output taps and no content clock.
+    pub fn process_range_tapped(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        self.process_range_tapped_with_clock(range, frames, frame_offset, None, observer)
+    }
+
+    /// Clock-aware paired taps. Input is before host trim, Output after the
+    /// entire entry. Both phases have the same identity, offset and frame count.
+    pub fn process_range_tapped_with_clock(
+        &mut self,
+        range: std::ops::Range<usize>,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) -> Result<(), DeviceContractError> {
+        let entries = self
+            .entries
+            .get_mut(range)
+            .ok_or(DeviceContractError::InvalidDescriptor)?;
+        Self::process_entries_tapped(entries, frames, frame_offset, clock, observer);
+        Ok(())
+    }
+
+    fn process_entries_tapped(
+        entries: &mut [RuntimeEntry],
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        observer: &mut impl FnMut(
+            ProcessorChainOwner,
+            u64,
+            DeviceTypeId,
+            NodeSignalPhase,
+            usize,
+            &[StereoFrame],
+        ),
+    ) {
+        for entry in entries {
+            observer(
+                entry.owner,
+                entry.device_id,
+                entry.device_type,
+                NodeSignalPhase::Input,
+                frame_offset,
+                frames,
+            );
+            Self::process_entry(entry, frames, clock);
+            observer(
+                entry.owner,
+                entry.device_id,
+                entry.device_type,
+                NodeSignalPhase::Output,
+                frame_offset,
+                frames,
+            );
+        }
     }
 
     fn process_entries(
