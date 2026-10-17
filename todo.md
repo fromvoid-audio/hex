@@ -4864,3 +4864,17 @@ target track failed before repair, and verifies no import/canonical mutation wit
 auto on/off while retaining manual Right/search focus and explicit Enter import.
 Existing deliberate drag/drop coverage remains required. Other file/device
 handlers unchanged. Native double-click behavior remains coordinator-serial.
+
+### 17 october 2026 — pulse2783: original resource scope checkpoint
+
+DraftPR389 adds control-verified normalized original-stereo source facts and
+nonowning per-device slot scopes over actual native input storage. Exact
+source/bank/custodian tokens remain distinct from content digests. Explicit
+metadata/work/cancellation budgets refuse transactionally; no owner is cloned.
+Three real constructor tests passed (supported-controls completed), including
+independent SHA256 PCM oracle, reused slot and foreign-bank/scope refusal,
+exact metadata/work limits and unchanged bank accounting. Strict engine
+all-target Clippy passed. Full host root retention, unique coexistence accounting,
+mono ownership, host wiring and retirement remain OPEN; no referenced processing
+or usable sampler is admitted. PR296 is merged historical kernel evidence; full
+sampler2679 remains open and first. No native execution or compatibility work.
