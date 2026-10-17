@@ -395,7 +395,14 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.simulate_keystrokes("cmd-f down");
-    editor.read_with(visual, |view, _| assert!(view.browser.results_focused));
+    let generation = editor.read_with(visual, |view, _| {
+        assert!(view.browser.results_focused);
+        assert_eq!(
+            view.browser.playback_generation, 1,
+            "Down auto-auditions the sample"
+        );
+        view.browser.playback_generation
+    });
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     visual.update(|window, cx| {
@@ -407,7 +414,10 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("right");
     visual.simulate_input("loop");
     editor.read_with(visual, |view, cx| {
-        assert_eq!(view.browser.playback_generation, 0);
+        assert_eq!(
+            view.browser.playback_generation, generation,
+            "Right in the search field must only move the caret"
+        );
         assert_eq!(view.browser.search.read(cx).content, "loop");
     });
 }
@@ -2437,6 +2447,8 @@ fn browser_click_and_right_request_preview_without_import_search_arrows_keep_car
     });
     std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(visual, |view, cx| {
+        // This section verifies manual Right-arrow independently of auto selection.
+        view.browser.auto_audition = false;
         view.browser.search.update(cx, |input, cx| input.clear(cx));
         view.refresh_sample_catalog(cx);
         cx.notify();
@@ -2815,5 +2827,246 @@ fn all_search_unions_samples_folder_and_devices_and_preserves_identity_on_refres
                 .count(),
             1
         );
+    });
+}
+
+#[gpui::test]
+fn browser_audition_strip_is_one_bounded_row(cx: &mut TestAppContext) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    for width in [220.0, 300.0, 480.0] {
+        editor.update(&mut visual, |view, cx| {
+            view.browser.width = width;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let preview = visual
+            .debug_bounds("browser-selection-preview")
+            .expect("preview");
+        assert!(
+            preview.size.height <= px(50.0),
+            "compact preview was {preview:?}"
+        );
+        let row = visual
+            .debug_bounds("browser-audition-row")
+            .expect("horizontal audition row");
+        let auto = visual
+            .debug_bounds("browser-audition-auto")
+            .expect("auto toggle");
+        let transport = visual
+            .debug_bounds("browser-audition-transport")
+            .expect("play/stop");
+        let waveform = visual
+            .debug_bounds("browser-audition-waveform")
+            .expect("tiny waveform");
+        assert_eq!(row.size.height, px(22.0));
+        assert!(row.top() >= preview.top() && row.bottom() <= preview.bottom());
+        assert!(auto.right() <= transport.left() && transport.right() <= waveform.left());
+        assert!(auto.left() >= row.left() && waveform.right() <= row.right());
+        for control in [auto, transport, waveform] {
+            assert!(control.top() >= row.top() && control.bottom() <= row.bottom());
+        }
+    }
+}
+
+#[gpui::test]
+fn browser_audition_toggle_keeps_manual_play_and_result_focus(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let auto = visual.debug_bounds("browser-audition-auto").unwrap();
+    visual.simulate_mouse_down(auto.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(auto.center(), MouseButton::Left, Modifiers::default());
+    let row = visual.debug_bounds("browser-entry-0").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.browser.auto_audition);
+        assert_eq!(view.browser.playback_generation, 0);
+        assert!(view.browser.results_focused);
+    });
+    let transport = visual.debug_bounds("browser-audition-transport").unwrap();
+    visual.simulate_mouse_down(transport.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(transport.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 1);
+        assert!(view.browser.results_focused);
+        assert_eq!(
+            view.browser.playback_phase,
+            hex_audio::sample_preview::Phase::Unavailable
+        );
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("sample preview"))
+        );
+        assert_eq!(view.status.as_str(), "sample preview unavailable");
+        assert!(view.pending_audio_commands.is_empty());
+    });
+    // The control must retain browser key focus so Right remains manual audition.
+    visual.simulate_keystrokes("right");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 2)
+    });
+    visual.simulate_mouse_down(auto.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(auto.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert!(view.browser.auto_audition);
+        assert_eq!(view.browser.playback_generation, 3);
+        assert!(view.pending_requests.is_empty());
+    });
+}
+
+#[gpui::test]
+fn browser_audition_row_observes_pcm_completion_and_stop_without_project_transport(
+    cx: &mut TestAppContext,
+) {
+    use hex_audio::sample_preview::Phase;
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut control, mut callback) = hex_audio::prepared::channel(48_000).unwrap();
+    let generation = control.sample_preview.request().unwrap();
+    control
+        .sample_preview
+        .publish(
+            generation,
+            hex_engine::Audio::new(48_000, vec![[0.25, -0.25]; 3]).unwrap(),
+        )
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 2]).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.accept_browser_sample_phase(control.sample_preview.snapshot().phase));
+        assert_eq!(view.browser.playback_phase, Phase::Playing);
+        assert_eq!(view.status.as_str(), "sample preview playing");
+        cx.notify();
+    });
+    visual.run_until_parked();
+    callback.render(&mut [[0.0; 2]; 2]).unwrap();
+    assert_eq!(control.sample_preview.snapshot().phase, Phase::Finished);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.accept_browser_sample_phase(control.sample_preview.snapshot().phase));
+        assert_eq!(view.status.as_str(), "sample preview finished");
+        assert!(
+            !view.accept_browser_sample_phase(Phase::Finished),
+            "no idle timer repaint"
+        );
+        cx.notify();
+    });
+    // A later audition has its own real callback start observation.
+    let next = control.sample_preview.request().unwrap();
+    control
+        .sample_preview
+        .publish(
+            next,
+            hex_engine::Audio::new(48_000, vec![[0.2; 2]; 8]).unwrap(),
+        )
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut [[0.0; 2]; 2]).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.accept_browser_sample_phase(control.sample_preview.snapshot().phase));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let stop = visual.debug_bounds("browser-audition-transport").unwrap();
+    visual.simulate_mouse_down(stop.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(stop.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.playback_phase, Phase::Idle);
+        assert_eq!(view.status.as_str(), "sample preview stopped");
+        assert_eq!(view.browser.playback_generation, 1);
+        assert!(view.browser.playback_output.is_none());
+        assert!(view.browser.playback_pending.is_none());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+    editor.update(&mut visual, |view, cx| {
+        assert!(
+            !view.poll_browser_sample_playback(),
+            "Stop removes the observed output token"
+        );
+        assert!(view.accept_browser_sample_phase(Phase::Unavailable));
+        assert!(
+            view.error
+                .as_ref()
+                .is_some_and(|error| error.contains("sample preview"))
+        );
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn browser_auto_navigation_auditions_new_selection_but_not_boundary_repeats(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.refresh_sample_catalog(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.browser.results_focused = false;
+        view.browser.selected_index = 0;
+        view.move_browser_selection(true, cx);
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.playback_generation, 1)
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.move_browser_selection(true, cx)
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 1);
+        assert_eq!(view.browser.playback_generation, 2);
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.move_browser_selection(true, cx)
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.browser.playback_generation, 2,
+            "holding Down at the last row cannot replay it"
+        )
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.move_browser_selection(false, cx);
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.browser.selected_index, 0);
+        assert_eq!(view.browser.playback_generation, 2);
+    });
+}
+
+#[gpui::test]
+fn browser_result_reset_cancels_preparing_and_playing_audition(cx: &mut TestAppContext) {
+    let (handle, editor, _, _, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        for phase in [
+            hex_audio::sample_preview::Phase::Preparing,
+            hex_audio::sample_preview::Phase::Playing,
+        ] {
+            view.browser.playback_phase = phase;
+            view.browser.playback_output = Some((1, 1));
+            view.browser.playback_path = Some("obsolete.wav".into());
+            let before = view.browser.playback_generation;
+            view.reset_browser_results();
+            assert_eq!(view.browser.playback_generation, before + 1);
+            assert!(view.browser.playback_output.is_none());
+            assert!(view.browser.playback_pending.is_none());
+            assert!(view.browser.playback_path.is_none());
+            assert_eq!(
+                view.browser.playback_phase,
+                hex_audio::sample_preview::Phase::Idle
+            );
+        }
     });
 }

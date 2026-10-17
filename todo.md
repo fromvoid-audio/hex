@@ -4569,6 +4569,20 @@ callback allocation, locks or final PCM disposal. Browser layout and transport
 integration remain canonical Pulse2664 / PR280. Source does not establish that
 the reported endless audition is a backend loop; native listening remains open.
 
+## compact browser audition — pulse2664 / PR280, 17 october 2026
+
+Replace the overflowing bottom preview column with one 22 px auto/Play-Stop/mini
+waveform row below the existing tags. Default-on automatic audition covers changed
+mouse/Up/Down selection; manual Play/Right remains independent. Real callback
+state distinguishes preparation, audible PCM, completion and unavailable output.
+Stop and selection resets invalidate stale requests without touching project
+transport. Cached neutral combined-channel extrema preserve out-of-phase peaks;
+no per-paint decoding or callback allocation is introduced. Headless regressions
+cover width bounds, focus, toggle/manual semantics, completion, cancellation,
+actual Client-to-callback silence and list-boundary retrigger prevention. Native
+layout/listening and broader historical scrub/playhead wishlist remain open;
+Pulse2745 persistent-access/unchanged-binary relaunch acceptance is separate.
+
 ## track header width and row height — pulse2714 / PR330
 
 User prioritized launcher cloud1 takeover after spinner acceptance. Canonical
