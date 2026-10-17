@@ -419,6 +419,11 @@ impl Audio {
     pub fn frames(&self) -> &[Frame] {
         &self.frames
     }
+    /// Control-side capacity of the retained PCM buffer, in stereo frames.
+    /// This excludes owner/graph metadata and is not a resource-admission proof.
+    pub fn pcm_capacity_frames(&self) -> usize {
+        self.frames.values.capacity()
+    }
     /// True when two audio handles retain the same immutable PCM allocation.
     /// Exact retained PCM identity for control-side cache/summary reuse.
     pub fn shares_pcm_with(&self, other: &Self) -> bool {

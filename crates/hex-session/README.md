@@ -90,8 +90,11 @@ import is committed; they never run on the audio callback.
 
 Undo/redo stores project metadata only. Decoded audio and summaries remain in
 the session bank so a restored reference can compile without reloading media.
-The caller-provided resident-frame ceiling and the canonical asset-count limit
-bound this retained bank. Exceeding either limit rejects an import rather than
+Original-rate decoded PCM remains alongside project-rate clip derivatives.
+Identity-rate imports and aliases share their existing PCM owner. The unchanged
+caller-provided resident-frame ceiling counts unique retained PCM buffer capacity,
+including originals and derivatives; waveform accounting remains separate. The
+canonical asset-count limit also bounds this retained bank. Exceeding either limit rejects an import rather than
 silently discarding cached media.
 
 The service has 32 request slots and two event slots. GPUI submits/polls without
