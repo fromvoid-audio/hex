@@ -115,7 +115,7 @@ layout CI) measured the actual capture/worker with all selected layers enabled:
 
 The known project payload was 26319848 bytes at every selection size because the
 pool/window capacity is fixed. This historical profile predates the added
-8-byte worker pending-return slot; current known project payload is26319856 bytes.
+8-byte worker pending-return slot; the pre-stack-repair project payload was26319856 bytes.
 Two warmups preceded five measured trials; each trial captured sixteen 256-frame packets and analyzed one complete aligned window.
 Timings include observed scheduling outliers, without attributing their cause.
 They exclude the driver, graph DSP and native paint/input. The 32-track 30 Hz and
@@ -132,3 +132,44 @@ project/output replacement, silence/rates, minimum-window scrolling, outside
 resize/Escape, collapse lifecycle, and EQ responsiveness with 256 selected tracks.
 Only the coordinator schedules a serial Mac follow-up; the launcher owns the one
 combined signed application delivery and safe save/quit/replacement procedure.
+
+## Native factory stack regression (Pulse #2786 / PR #392)
+
+The first Mac qualification of combined source `327ebe98` aborted in the native
+spectrum factory on the ordinary test-thread stack, before the actual callback
+fixture rendered audio. The same fixture reproduces SIGABRT on Linux when
+`RUST_MIN_STACK` is unset. Earlier cloud runs inherited a 16MiB environment
+setting; their green receipts do not override the native failure.
+
+The fixed maximum publication frames and worker envelopes now use heap storage
+constructed through fallible Vec reservation, without an inline large array
+passed to `Box::new`. Factory returns, pending analysis, the retained reader and
+UI publication values carry small owners. The publication still contains exactly
+257 frame slots, with every selected track retained. Allocation and reclamation
+remain on worker/control/UI paths; callback capture and its fixed packet pool do
+not change. Reader publication cloning copies a bounded heap payload on the
+control side; plot geometry still reuses its existing shared cache on repaint.
+
+The project declaration now explicitly includes both the one queued publication
+and the retained reader's frame allocation, plus the pending worker payload and
+heap envelopes. Previously the retained frames were included inline in the
+separately charged client object. The 64-bit project declaration is **26419596
+bytes**; its increase is principally this transfer of accounting, not an extra
+layer or queue slot. The client reader shrinks correspondingly. Opaque allocator
+metadata remains excluded, and the existing 32MiB refusal boundary is unchanged.
+
+The existing actual callback fixture now checks a complete 4096-frame native
+worker-to-reader publication, unchanged PCM, finite Master/track results and
+cached-result invalidation in addition to final callback context validation.
+The maximum-selection regression still checks all 257 independent layers,
+per-turn fairness and exact storage-limit refusal. Cloud checks explicitly unset
+`RUST_MIN_STACK`; they retain the original red log and subsequent green logs.
+
+A coordinator-owned Mac follow-up must first run the exact failing fixture on
+ordinary debug test threads with no stack override, then the full local runner
+on the corrected pinned source. Separately run the release version of the
+callback fixture and the existing maximum-selection allocation/profile fixture;
+retain actual source/tree/digest, binary identity, hardware, logs and all unrun
+statuses. Debug success alone does not establish optimized production stack
+safety, driver deadlines, GPU behavior or listening acceptance. No installed app
+replacement or launch is required for these finite source checks.
