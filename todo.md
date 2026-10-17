@@ -5,8 +5,15 @@ state. Auto Pan and dynamic EQ declare their real normalization/access/stepping/
 smoothing and existing capability boundaries. Cached host views and the standalone
 schema2 report consume them; unknown/deleted IDs and read-only edits refuse.
 Focused numeric, identity, legacy shelf, registry and view tests accompany it.
-See [contract](docs/native-parameter-semantics.md). Full final-source CI remains
-required. Generic sample-offset automation/modulation and full W05/W20 acceptance
+See [contract](docs/native-parameter-semantics.md). The first integrated full run
+failed a harmonic-editor worker wait. Batch preflight now avoids redundant
+descriptor scans while each private candidate still rechecks membership, domain
+and access. Both new regressions fail before/pass after; focused contract15,
+registry2, unchanged harmonic UI case and strict affected Clippy pass. A release
+64-parameter profile measured median11.089ms before/4.004ms after; see
+[provenance](research/observations/parameter-semantics-2674/README.md) for limits.
+Fresh full final-source CI remains required. Generic sample-offset
+automation/modulation and full W05/W20 acceptance
 remain open; no DSP, codec or EQ envelope evaluator changes.
 
 ## owned effect transactions — #2673 / PR289, 17 october 2026

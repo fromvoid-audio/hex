@@ -21,6 +21,14 @@ metadata patch also checks access; declaring providers must enforce it in their
 own direct patch overrides. The conformance harness tests that refusal. No current
 production provider in this slice introduces a read-only parameter.
 
+`validate_parameter_snapshot_for_write` enumerates and validates the complete
+current descriptor set once, then validates every requested value and access
+declaration before any private patch. `validate_parameter_write` checks fresh
+candidate membership, domain and access before each sequential private patch;
+an earlier patch may change those properties. Registries also preflight custom
+atomic overrides. Providers remain responsible for their direct override
+contracts. No descriptor cache survives an authored-state change.
+
 Normalization is explicit linear, positive logarithmic, discrete or unspecified.
 Canonical units are not duplicated in semantics. In particular amplitude displayed
 in dB does not imply a logarithmic normalized law at zero. Public conversion
@@ -87,6 +95,17 @@ Commands and exact candidate/full local-CI evidence are recorded with PR290 and
 Pulse. The generated report is parsed as JSON and checked for the populated EQ
 and explicit capability fields. Metadata changes do not establish native UI,
 listening, reference laws or physical deadlines.
+
+The first full run at `75f6d2cf` failed the harmonic editor's existing five-second
+worker-action wait. The captured failure is not evidence of a geometry error or
+machine-load cause. Descriptor enumeration counts exposed redundant per-entry
+whole-set validation; focused tests now bound batch preflight enumeration and
+refuse candidate domain/membership/access changes before private mutation.
+The unchanged harmonic test passes with the repair, while whole-case timings
+remain variable. The independent release profile measures only control-side
+64-parameter preparation: median 11.089 ms before and 4.004 ms after on this Mac.
+See [measurement provenance](../research/observations/parameter-semantics-2674/README.md).
+Fresh full final-source local CI is still required; focused passes do not replace it.
 
 Shared sample-offset scheduling, cross-source precedence, generic automation and
 modulation runtime, dynamic rack/sample-zone addressing, and downstream W20
