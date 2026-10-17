@@ -188,7 +188,11 @@ pub(super) fn open_source_with_mode(
         )
         .map_err(|error| error.to_string().to_lowercase())?;
         remaining_frames = remaining_frames
-            .checked_sub(asset.playback_frames())
+            .checked_sub(
+                prepared
+                    .retained_pcm_frames()
+                    .map_err(|error| error.to_string())?,
+            )
             .ok_or_else(|| "project media exceeds resident audio frame limit".to_owned())?;
         prepared_assets.push((asset.id(), prepared));
     }

@@ -20,6 +20,7 @@ use std::{
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
+mod resident_pcm;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
@@ -87,6 +88,7 @@ pub struct PreparedImport {
     source_sample_rate: u32,
     source_frames: u64,
     conversion_version: u32,
+    source_audio: Audio,
     audio: Audio,
     waveform: Waveform,
 }
@@ -127,6 +129,7 @@ impl PreparedImport {
             } else {
                 hex_project::SINC_CONVERSION_V1
             },
+            source_audio: decoded.into_audio(),
             audio,
             waveform,
         })
@@ -138,6 +141,7 @@ impl PreparedImport {
 }
 
 struct ResidentAsset {
+    source_audio: Audio,
     audio: Audio,
     waveform: Arc<Waveform>,
     frames: u64,
@@ -205,7 +209,7 @@ impl Session {
         max_resident_frames: u64,
         decoded_assets: Vec<(AssetId, DecodedAudio)>,
     ) -> Result<Self, SessionError> {
-        let mut prepared_assets = Vec::new();
+        let mut prepared_assets: Vec<(AssetId, PreparedImport)> = Vec::new();
         prepared_assets
             .try_reserve_exact(decoded_assets.len())
             .map_err(|_| SessionError::Allocation)?;
@@ -221,18 +225,36 @@ impl Session {
                     "source media differs from project metadata",
                 ));
             }
+            // Identity conversion only clones this exact PCM owner. An alias
+            // needs no new buffer reservation even when remaining capacity is zero.
+            let shared_identity = decoded.sample_rate() == project.sample_rate()
+                && prepared_assets.iter().any(|(_, p)| {
+                    decoded.audio().shares_pcm_with(&p.source_audio)
+                        || decoded.audio().shares_pcm_with(&p.audio)
+                });
+            let output_limit = if shared_identity {
+                decoded.frames()
+            } else {
+                usize::try_from(remaining).map_err(|_| {
+                    SessionError::Invalid("resident frame limit exceeds addressable range")
+                })?
+            };
             let prepared = PreparedImport::at_rate(
                 decoded,
                 project.sample_rate(),
                 ResampleLimits {
                     max_source_frames: 8_000_000,
-                    max_output_frames: usize::try_from(remaining).map_err(|_| {
-                        SessionError::Invalid("resident frame limit exceeds addressable range")
-                    })?,
+                    max_output_frames: output_limit,
                 },
             )?;
             remaining = remaining
-                .checked_sub(metadata.playback_frames())
+                .checked_sub(
+                    prepared.additional_pcm_frames(
+                        prepared_assets
+                            .iter()
+                            .flat_map(|(_, p)| [&p.source_audio, &p.audio]),
+                    )?,
+                )
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             prepared_assets.push((id, prepared));
         }
@@ -277,7 +299,7 @@ impl Session {
                 "prepared media does not match project assets",
             ));
         }
-        let mut media = HashMap::new();
+        let mut media: HashMap<AssetId, ResidentAsset> = HashMap::new();
         media
             .try_reserve(asset_count)
             .map_err(|_| SessionError::Allocation)?;
@@ -293,6 +315,9 @@ impl Session {
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
             if prepared.audio.sample_rate() != editor.project().sample_rate()
                 || frames != metadata.playback_frames()
+                || prepared.source_audio.sample_rate() != prepared.source_sample_rate
+                || u64::try_from(prepared.source_audio.frames().len()).ok()
+                    != Some(prepared.source_frames)
                 || prepared.source_sample_rate != metadata.source_sample_rate()
                 || prepared.source_frames != metadata.source_frames()
                 || prepared.conversion_version != metadata.conversion_version()
@@ -302,7 +327,9 @@ impl Session {
                 ));
             }
             resident_frames = resident_frames
-                .checked_add(frames)
+                .checked_add(prepared.additional_pcm_frames(
+                    media.values().flat_map(|m| [&m.source_audio, &m.audio]),
+                )?)
                 .filter(|total| *total <= max_resident_frames)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             let audio = prepared.audio;
@@ -321,6 +348,7 @@ impl Session {
                 .insert(
                     asset_id,
                     ResidentAsset {
+                        source_audio: prepared.source_audio,
                         audio,
                         waveform: Arc::new(waveform),
                         frames,
@@ -406,6 +434,7 @@ impl Session {
         Arc::clone(&self.sine_table)
     }
 
+    /// Unique retained PCM buffer capacity, including original-rate sources.
     pub const fn resident_frames(&self) -> u64 {
         self.resident_frames
     }
@@ -437,6 +466,7 @@ impl Session {
         &mut self,
         id: AssetId,
         audio: Audio,
+        source_audio: Audio,
         waveform: Waveform,
         frames: u64,
         accounting: ResidentImportAccounting,
@@ -444,6 +474,7 @@ impl Session {
         self.media.insert(
             id,
             ResidentAsset {
+                source_audio,
                 audio,
                 waveform: Arc::new(waveform),
                 frames,
@@ -865,7 +896,13 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(frames)
+            .checked_add(
+                prepared.additional_pcm_frames(
+                    self.media
+                        .values()
+                        .flat_map(|m| [&m.source_audio, &m.audio]),
+                )?,
+            )
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         if self.media.try_reserve(1).is_err() {
@@ -926,6 +963,7 @@ impl Session {
             },
         )?;
         let resident = ResidentAsset {
+            source_audio: prepared.source_audio,
             audio: staged_audio,
             waveform: Arc::new(prepared.waveform),
             frames,
@@ -982,7 +1020,13 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(frames)
+            .checked_add(
+                prepared.additional_pcm_frames(
+                    self.media
+                        .values()
+                        .flat_map(|m| [&m.source_audio, &m.audio]),
+                )?,
+            )
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
@@ -1052,6 +1096,7 @@ impl Session {
         self.media.insert(
             asset_id,
             ResidentAsset {
+                source_audio: prepared.source_audio,
                 audio: staged_audio,
                 waveform: Arc::new(prepared.waveform),
                 frames,
@@ -1085,7 +1130,13 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(frames)
+            .checked_add(
+                prepared.additional_pcm_frames(
+                    self.media
+                        .values()
+                        .flat_map(|m| [&m.source_audio, &m.audio]),
+                )?,
+            )
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
@@ -1146,6 +1197,7 @@ impl Session {
         self.commit_resident_import(
             asset_id,
             staged_audio,
+            prepared.source_audio,
             prepared.waveform,
             frames,
             ResidentImportAccounting {
@@ -1272,6 +1324,13 @@ impl Session {
 
     pub fn audio(&self, asset: AssetId) -> Option<&Audio> {
         self.media.get(&asset).map(|resident| &resident.audio)
+    }
+
+    /// Original decoded source, borrowed on control; not a callback resource lease.
+    pub fn source_audio(&self, asset: AssetId) -> Option<&Audio> {
+        self.media
+            .get(&asset)
+            .map(|resident| &resident.source_audio)
     }
 
     pub fn waveform(&self, asset: AssetId) -> Option<Arc<Waveform>> {
