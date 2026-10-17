@@ -4320,3 +4320,13 @@ checks remain, with one setup instruction for missing/unsupported apps; startup
 activates an existing process without forcing quit or changing user state.
 Targeted mode/error/configuration regressions and final source/build/actual-start
 evidence are recorded with PR321/Pulse2705. Cache fix PR320 remains separate.
+
+## latest-main launch by default — pulse2749 / PR359, 17 october 2026
+
+The default `./launch` now fetches `origin/main`, fast-forwards only a clean,
+non-divergent local `main`, runs full local CI, builds and installs the optimized
+stable app, and opens the verified candidate. `--test` remains an alias; `--open`
+provides installed-only startup. Build mode refuses before CI when either the
+installed app or a raw `hex-desktop` process is active, asking for a normal save
+and quit without terminating processes. Exact source CI, merge and combined
+delivery evidence remain with the canonical PR workflow.
