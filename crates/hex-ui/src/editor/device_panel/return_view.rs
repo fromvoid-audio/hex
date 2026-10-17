@@ -72,7 +72,10 @@ pub(super) fn render(
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
-                && target.identity.device_type.as_str() == Ok("hex.eq8")
+                && matches!(
+                    target.identity.device_type.as_str(),
+                    Ok("hex.eq8" | "hex.eq")
+                )
         })
     {
         let _ = audio.control.spectrum_clear();
@@ -84,7 +87,10 @@ pub(super) fn render(
         && !devices.iter().any(|device| {
             device.id().value() == target.identity.device_id
                 && device.state().type_id() == target.identity.device_type
-                && target.identity.device_type.as_str() == Ok("hex.eq8")
+                && matches!(
+                    target.identity.device_type.as_str(),
+                    Ok("hex.eq8" | "hex.eq")
+                )
         })
     {
         let _ = audio.control.audition_cancel();
@@ -304,6 +310,20 @@ pub(super) fn render_return_effect(
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
                 super::auto_pan_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.eq") {
+                let sample_rate = view
+                    .state
+                    .as_ref()
+                    .map_or(48000, |state| state.project.sample_rate());
+                super::eq_panel::render_body(
+                    view,
+                    cx,
+                    id,
+                    hex_engine::ProcessorChainOwner::Return(return_id.value()),
+                    device.state(),
+                    device_view,
+                    sample_rate,
+                )
             } else if device_view.type_id.as_str() == Ok("hex.eq8") {
                 super::eq8_panel::render_body(
                     view,
@@ -384,7 +404,7 @@ pub(super) fn render_return_effect(
     );
     let frame_width = match device.state().type_id().as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
-        Ok("hex.eq8") => super::eq8_panel::FRAME_WIDTH,
+        Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,
         Ok("hex.compressor") => super::compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => super::gate_panel::FRAME_WIDTH,

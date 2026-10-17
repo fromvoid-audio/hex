@@ -18,6 +18,8 @@ const TAG_GROUPS: [(&str, &[&str]); 6] = [
 ];
 
 pub(super) struct BrowserLayout {
+    sidebar_width: f32,
+    pub(super) sidebar_drag: Option<(f32, f32)>,
     tags_visible: bool,
     editor_visible: bool,
     settings_visible: bool,
@@ -29,6 +31,8 @@ pub(super) struct BrowserLayout {
 impl Default for BrowserLayout {
     fn default() -> Self {
         Self {
+            sidebar_width: 124.0,
+            sidebar_drag: None,
             tags_visible: true,
             editor_visible: false,
             settings_visible: false,
@@ -50,6 +54,38 @@ impl BrowserLayout {
     }
 }
 
+impl BrowserLayout {
+    pub(super) fn editor_width(&self, base_width: f32) -> f32 {
+        if self.editor_visible {
+            (base_width * 0.3).clamp(90.0, 190.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub(super) fn base_width_for_total(&self, total_width: f32) -> f32 {
+        if self.editor_visible {
+            total_width - (total_width * 0.3 / 1.3).clamp(90.0, 190.0)
+        } else {
+            total_width
+        }
+    }
+
+    fn sidebar_width(&self, base_width: f32) -> f32 {
+        let width = self
+            .sidebar_width
+            .clamp(36.0, (base_width - 124.0).max(36.0));
+        if width < 64.0 { 36.0 } else { width }
+    }
+}
+
+fn browser_label_tooltip(label: impl AsRef<str>, cx: &mut App) -> gpui::AnyView {
+    cx.new(|_| super::super::transport::MiniTooltip {
+        description: theme::text(label),
+    })
+    .into()
+}
+
 fn browser_caption(value: impl AsRef<str>) -> Div {
     div().text_xs().child(theme::text(value))
 }
@@ -62,6 +98,7 @@ fn browser_divider() -> Div {
 
 fn browser_heading(value: &str) -> Div {
     browser_caption(value)
+        .overflow_hidden()
         .px_2()
         .py_1()
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -140,10 +177,11 @@ impl EditorView {
         width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let compact = width < 380.0;
+        let width = self.browser.layout.sidebar_width(width);
+        let compact = width < 64.0;
         let mut sidebar = div()
             .id("browser-sidebar")
-            .w(px(if compact { 36.0 } else { 124.0 }))
+            .w(px(width))
             .flex_shrink_0()
             .min_h_0()
             .overflow_y_scroll()
@@ -152,7 +190,7 @@ impl EditorView {
             .border_r_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .debug_selector(|| "browser-sidebar".to_owned())
-            .child(browser_heading(if compact { "co." } else { "collections" }));
+            .children((!compact).then(|| browser_heading("collections")));
         for (index, name) in ["favorites", "inspiration", "recent finds"]
             .into_iter()
             .enumerate()
@@ -164,6 +202,10 @@ impl EditorView {
             ][index];
             sidebar = sidebar.child(
                 div()
+                    .id(("browser-collection", index))
+                    .tooltip(move |_, cx| {
+                        browser_label_tooltip(format!("{name} · collections pending"), cx)
+                    })
                     .h(px(22.0))
                     .px_2()
                     .flex()
@@ -171,13 +213,15 @@ impl EditorView {
                     .gap_1()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(browser_caption("■").text_color(rgb(theme::color(color))))
-                    .children((!compact).then(|| browser_caption(name))),
+                    .children(
+                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
+                    ),
             );
         }
         if !compact {
             sidebar = sidebar.child(browser_heading("collections pending"));
         }
-        sidebar = sidebar.child(browser_heading(if compact { "lib." } else { "library" }));
+        sidebar = sidebar.children((!compact).then(|| browser_heading("library")));
         for (index, (section, name)) in SECTIONS.into_iter().enumerate() {
             if !self.browser.layout.visible[index] {
                 continue;
@@ -187,6 +231,8 @@ impl EditorView {
                 div()
                     .id(("browser-section", index))
                     .debug_selector(move || format!("browser-section-{name}"))
+                    .tooltip(move |_, cx| browser_label_tooltip(name, cx))
+                    .overflow_hidden()
                     .h(px(25.0))
                     .px_2()
                     .flex()
@@ -213,19 +259,26 @@ impl EditorView {
                         }),
                     )
                     .child(browser_caption(ICONS[self.browser.layout.icons[index]]))
-                    .children((!compact).then(|| browser_caption(name))),
+                    .children(
+                        (!compact).then(|| browser_caption(name).overflow_hidden().text_ellipsis()),
+                    ),
             );
         }
         sidebar = sidebar.child(self.browser_icon(
             "⚙",
             "configure sections · session only",
-            |view, _, cx| {
-                view.browser.layout.settings_visible = !view.browser.layout.settings_visible;
+            move |view, _, cx| {
+                view.browser.layout.settings_visible =
+                    compact || !view.browser.layout.settings_visible;
+                if view.browser.layout.settings_visible {
+                    view.browser.layout.sidebar_width =
+                        view.browser.layout.sidebar_width.max(124.0);
+                }
                 cx.notify();
             },
             cx,
         ));
-        if self.browser.layout.settings_visible {
+        if self.browser.layout.settings_visible && !compact {
             sidebar = sidebar.child(browser_heading("sections · session"));
             for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
                 let visible = self.browser.layout.visible[index];
@@ -282,7 +335,7 @@ impl EditorView {
                 );
             }
         }
-        sidebar = sidebar.child(browser_heading(if compact { "pl." } else { "places" }));
+        sidebar = sidebar.children((!compact).then(|| browser_heading("places")));
         for (index, place) in self.browser.places.iter().take(PLACE_CAPACITY).enumerate() {
             let path = place.clone();
             let name = if *place == self.browser.music {
@@ -295,9 +348,11 @@ impl EditorView {
                     .and_then(|name| name.to_str())
                     .unwrap_or("folder")
             };
+            let tooltip = name.to_owned();
             sidebar = sidebar.child(
                 div()
                     .id(("browser-place", index))
+                    .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
                     .h(px(23.0))
                     .px_2()
                     .flex()
@@ -334,9 +389,78 @@ impl EditorView {
             ));
         }
         if let Some(status) = &self.browser.places_status {
-            sidebar = sidebar.child(browser_heading(status));
+            let tooltip = status.clone();
+            sidebar = sidebar.child(
+                browser_heading(if compact { "!" } else { status })
+                    .id("browser-places-status")
+                    .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx)),
+            );
         }
         sidebar
+    }
+
+    pub(super) fn browser_sidebar_resize(
+        &self,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let entity = cx.entity();
+        let sidebar_width = self.browser.layout.sidebar_width(width);
+        div()
+            .id("browser-sidebar-resize")
+            .debug_selector(|| "browser-sidebar-resize".to_owned())
+            .w(px(4.0))
+            .h_full()
+            .flex_shrink_0()
+            .cursor_col_resize()
+            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        let down_entity = entity.clone();
+                        window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                            if phase.bubble()
+                                && event.button == MouseButton::Left
+                                && bounds.contains(&event.position)
+                            {
+                                down_entity.update(cx, |view, _| {
+                                    view.browser.layout.sidebar_drag =
+                                        Some((f32::from(event.position.x), sidebar_width));
+                                });
+                            }
+                        });
+                        let move_entity = entity.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if !phase.bubble() {
+                                return;
+                            }
+                            move_entity.update(cx, |view, cx| {
+                                if !event.dragging() {
+                                    view.browser.layout.sidebar_drag = None;
+                                } else if let Some((start, initial)) =
+                                    view.browser.layout.sidebar_drag
+                                {
+                                    view.browser.layout.sidebar_width =
+                                        (initial + f32::from(event.position.x) - start)
+                                            .clamp(36.0, (width - 124.0).max(36.0));
+                                    cx.notify();
+                                }
+                            });
+                        });
+                        let up_entity = entity.clone();
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                            if phase.bubble() && event.button == MouseButton::Left {
+                                up_entity.update(cx, |view, _| {
+                                    view.browser.layout.sidebar_drag = None;
+                                });
+                            }
+                        });
+                    },
+                )
+                .size_full(),
+            )
     }
 
     pub(super) fn browser_tag_selector(&self, cx: &mut Context<Self>) -> Div {
@@ -393,7 +517,7 @@ impl EditorView {
         }
         let mut editor = div()
             .id("browser-tag-editor")
-            .w(px((width * 0.3).clamp(90.0, 190.0)))
+            .w(px(self.browser.layout.editor_width(width)))
             .flex_shrink_0()
             .min_h_0()
             .flex()

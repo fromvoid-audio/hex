@@ -1,3 +1,26 @@
+## browser outward tag editor and resizable picker — 17 october 2026
+
+The tag editor adds a right column without consuming results/preview width.
+The picker has its own drag divider, an icons-only mode and lowercase hover
+labels for collections, sections and places. Width/settings remain session-only.
+See [browser layout](docs/browser-layout.md) for the finite native checklist.
+Automated validation results are recorded with this change; native macOS
+resize/tooltip acceptance remains pending. No macOS bundle is produced on Linux.
+
+## held-clip intersection accent — #2696 / PR314, 17 october 2026
+
+Arrangement landing previews tint only occupied audio/MIDI intersections with the
+editable secondary theme accent. Gaps and exact touches stay clear; moves exclude
+the original clip, copies include it, and overlapping victims share uniform tint.
+Browser samples use the same landing path. Viewport bounds and drag cleanup follow
+the existing preview lifetime; project edits and overwrite behavior are unchanged.
+
+The two rendered pointer/modifier regressions pass; the span boundary/merge check
+passes. Architecture, GPUI/dependency/style/layout guards, formatting and affected
+strict Clippy pass at the source milestone. Final full local-CI evidence belongs
+to [PR314](https://github.com/PORTALSURFER/hex/pull/314); native macOS visual/input
+acceptance is pending. See [the finite checklist](docs/clip-drag.md).
+
 ## clip selection and inline names — #2660 / PR276, 17 october 2026
 
 Arrangement audio/MIDI clips expose compact names; select a clip or Session cell
@@ -11,10 +34,13 @@ separate and unverified. No optimized macOS build is produced on this Linux host
 
 ## arrangement clip painting — 17 october 2026
 
-Double-click empty track space, hold the second press, drag right, then release
-creates an empty MIDI clip through the existing undoable placement command.
+Double-click empty track space, hold the second press, drag left or right, then
+release creates an empty MIDI clip through the existing undoable placement command.
 Snapped/free preview and cancellation are source implemented. Four focused rendered
-UI tests and the source/format guards pass; native user acceptance is pending. See [clip painting](docs/clip-paint.md)
+UI tests now cover both directions, crossing the anchor, preview bounds and
+undo/redo; they pass after reproducing the prior leftward limitation. The user
+confirmed rightward painting works. Native leftward/reversal acceptance remains
+pending. See [clip painting](docs/clip-paint.md)
 for scope and the finite native checklist.
 
 ## batch-import failure source casing — pulse2649 / PR265, 17 october 2026
@@ -55,6 +81,19 @@ Focused dynamic-fixture and exact-boundary tests accompany this prerequisite.
 The parent EQ redesign, per-node automation, full final-source local CI and any
 native/user-test delivery remain separate work; this entry does not claim them.
 
+## streaming transport and native acceptance ledger — pulse2546 / PR241, 17 october 2026
+
+- One connected VerifiedStreaming adapter control exercises actual mixed-rate
+  worker PCM, direct seek, unchanged applied source/domain, Pause and priority
+  Stop with a full command queue; real callback entries retain allocation probes.
+- [Native validation ledger](docs/streaming-native-validation.md) maps all eight
+  original24 criteria plus the finite edit/Undo/save/reopen/catalog/transport/fault/
+  shutdown matrix to owning source tests and separate unperformed native cases.
+  No provider/cap/production behavior changes or manual merge gate are introduced.
+- Exact final local CI and stable optimized delivery are recorded externally.
+  Physical deadlines, listening, GUI interaction and backend faults remain
+  unverified; source merge and installation do not complete original24 acceptance.
+
 ## native streaming100-track preparation — pulse2545 / PR240, 17 october 2026
 
 - Create-new canonical workload generator writes100 independent120s original
@@ -68,6 +107,37 @@ native/user-test delivery remain separate work; this entry does not claim them.
 - See docs/streaming-100-track-workload.md for generation, hashes, explicit smoke
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
+
+## Sampler / Simpler request — #2679 / PR296, 17 october 2026
+
+The requested device is named sampler and targets Ableton Simpler, including
+Classic, One-Shot and Slice. The standalone original borrowed-PCM kernel now
+supports pitched/rate-converted stereo regions, forward/reverse loops, manual
+slice selection, gate/trigger and linear ADSR. Eight focused fixtures pass;
+all296 device unit tests and affected integration tests pass, as does strict
+device Clippy. The standalone release profile is recorded in
+[the contract](docs/sampler.md); it establishes no host deadlines or Live match.
+
+The device is not registered or available in the app. Generic device-asset
+leases/admission/persistence, loading, the native panel, filter/LFO/warp and
+the full reference inventory/acceptance remain unfinished. Do not raise analytic
+payload budgets or store PCM in opaque state to simulate this integration.
+Pulse2679 retains the complete user request; PR296 is its first focused kernel
+prerequisite. Linux cannot run the installed macOS Live reference or provide
+native macOS listening/visual evidence. Full local CI and final PR evidence
+are recorded on the ticket; targeted checks do not authorize merge.
+
+## Global browser search — #2659 / PR275, 17 october 2026
+
+Command-F opens the browser in `all`, focuses search and selects the previous
+query. Cached name filtering combines current-folder supported files and native
+devices; category filters, dragging and sample preview remain available. Search is
+bounded/nonrecursive, matching the current library contract; no all-place index
+or Live parity claim. See docs/browser-places.md for the native user checklist.
+Focused browser tests pass, including global focus/query replacement,
+category filtering and existing drag/preview coverage. Source guards pass.
+Full runner results are recorded in the PR and Pulse; native acceptance remains
+pending.
 
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
@@ -3899,6 +3969,37 @@ see docs/browser-layout.md for scope and native review checklist. Full functiona
 follow-ups are Pulse #2664/#2665/#2666/#2667/#2669/#2672, retaining #2659 for
 Command-F. Tag assignment/filtering, collections and history remain pending.
 
+## 17 October 2026 — sparse eq (Pulse #2654 / PR #270)
+
+- New-insert `eq` supports 64 stable-ID nodes, direct graph creation/drag,
+  shape/Q/12–48 db/oct controls and EQ-owned beat-curve automation. Existing EQ8
+  panels and codec remain supported, with an explicit five-bank lossless upgrade.
+- Atomic source-state/allocator reservation and preset node high-water marks
+  preserve targeting through delete/undo/new additions. EQ automation travels in
+  strict bounded opaque state; no general automation storage schema was added.
+- Focused codec/DSP/legacy PCM, canonical reservation, rendered gesture/automation/
+  upgrade and real renderer clock tests passed during implementation; exact final
+  full local CI and optimized/native delivery are coordinator-owned and pending
+  until their candidate evidence is recorded. See docs/eq.md for limitations and
+  the finite native checklist. Headless evidence is not native/listening acceptance.
+
+
+EQ #2654 final integration evidence: feature source `238bcb858426cc0caa192463d4395578be7030f2`
+includes merged metadata #2657/PR273 and current main. Targeted device, rendered
+UI, engine arrangement/loop/seek/export, identity reservation, legacy-layout and
+actual callback allocation checks pass. The release profile above is recorded
+in `docs/performance.md`; full exact-candidate local CI and stable optimized
+installation remain coordinator work. Native user checklist: `docs/eq.md`.
+
+Final EQ UI review also reproduced and repaired automation-point selection
+retargeting after deletion and insertion before the selected point. A canonical
+opaque-state key clears index-based selection after any authored edit or
+undo/redo while preserving local drag previews. The rendered two-point fixture
+now checks neighbor preservation and selection/history behavior; finite page
+navigation and Q32.32 endpoint checks cover extreme page values. Targeted
+rendered tests and the page-boundary regression pass; final full CI remains
+required on the committed integration candidate.
+
 ## 17 october 2026 — track header hover
 
 Added theme-aware hover backgrounds to Arrangement regular/main headers, Session
@@ -3910,14 +4011,36 @@ then leave and confirm the original background returns. Pulse #2663 tracks the r
 The connected GitHub app provides repository access. The user explicitly requested
 merge after the missing Rust/native validation was disclosed.
 
-## Global browser search — #2659 / PR275, 17 october 2026
+Full EQ CI caught an early-failure regression in the new compensated arrangement
+beat stamp. The ordinary path already treats unrepresentable beats as unavailable;
+the compensated stamp now preserves that optional clock contract without losing
+exact frame identity. The original late-failure rollback regression is retained
+unchanged, with an added origin-clock unavailable-beat assertion. Final CI must
+be rerun on this repair; the earlier failed report is not merge evidence.
 
-Command-F opens the browser in `all`, focuses search and selects the previous
-query. Cached name filtering combines current-folder supported files and native
-devices; category tabs, dragging and sample preview remain available. Search is
-bounded/nonrecursive, matching the current library contract; no all-place index
-or Live parity claim. See docs/browser-places.md for the native user checklist.
-Focused browser tests pass, including global focus/query replacement,
-category filtering and existing drag/preview coverage. Source guards pass.
-Full runner results are recorded in the PR and Pulse; native acceptance remains
-pending.
+The final rendered EQ workflow regression also reproduces and repairs removing
+the last node while its automation editor is open. Canonical-state changes now
+persist valid node selection and leave automation mode when that target is gone,
+while pending node creation retains optimistic selection until publication.
+Delete/recreate, undo-creation/recreate, fresh IDs, removed lanes and visible
+new-node controls pass in the rendered fixture, alongside strict UI Clippy and
+page-boundary checks. The prior full run was interrupted for this repair; only
+the next unchanged full candidate may supply merge evidence.
+
+## adaptive arranger grid — 17 october 2026
+
+- Arranger snapping uses one adaptive size with shared painting/snap spacing;
+  the toolbar toggles adaptive/off instead of cycling fixed sizes.
+- Future context-menu size selection: Pulse #2694, Hex 0.1.
+- Native zoom/snap/toggle acceptance remains pending; automated evidence is
+  recorded with the focused PR.
+
+## 17 october 2026 — pulse2698 / PR316: fetch, verify and launch desktop
+
+- Root `./launch` requires a clean main checkout, fetches and fast-forwards only
+  to `origin/main`, records the current main commit's associated PR revision,
+  runs full local CI, installs the optimized app through the supported stable
+  path, verifies its source receipt, and opens that exact app.
+- Orchestration regressions cover dirty/non-main/ahead-or-divergent checkouts,
+  fetch/CI/package failures, and successful operation order. Native UI and
+  listening acceptance remain user checks after launch.
