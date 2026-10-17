@@ -316,6 +316,24 @@ impl Voice<'_> {
         u64::try_from(length.div_ceil(u128::from(self.step))).ok()
     }
 
+    /// Exclusive onset-relative lifetime bound for this voice and gate duration.
+    /// Trigger ignores note-off; gated playback ends at the earlier of source
+    /// exhaustion and envelope release. Loops require a representable gate plus
+    /// release. This is not a silence detector or authority to retain resources;
+    /// the host must separately check onset addition, cancellation and leases.
+    pub fn end_age_frames(&self, gate_frames: u64) -> Result<u64, Invalid> {
+        let natural = self.natural_frames();
+        if self.gate == GateMode::Trigger {
+            return natural.ok_or(Invalid("trigger sample needs a finite natural end"));
+        }
+        match (natural, gate_frames.checked_add(self.release_frames())) {
+            (Some(source), Some(release)) => Ok(source.min(release)),
+            (Some(source), None) => Ok(source),
+            (None, Some(release)) => Ok(release),
+            (None, None) => Err(Invalid("sample gate and release end age overflow")),
+        }
+    }
+
     pub fn sample(&self, age_frames: u64, gate_frames: u64) -> StereoFrame {
         let envelope = match self.gate {
             GateMode::Gate => self.envelope.sample(age_frames, gate_frames),
@@ -382,5 +400,7 @@ impl Voice<'_> {
     }
 }
 
+#[cfg(test)]
+mod lifetime_tests;
 #[cfg(test)]
 mod tests;

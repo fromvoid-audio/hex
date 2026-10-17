@@ -174,6 +174,14 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
         editor
             .execute(Command::SetClipFadeEnvelope { clip, fade })
             .unwrap();
+        for (edge, frame) in [
+            (hex_project::TrimEdge::Left, 4000),
+            (hex_project::TrimEdge::Right, 44_000),
+        ] {
+            editor
+                .execute(Command::TrimClipFadeEdge { clip, edge, frame })
+                .unwrap();
+        }
         editor
             .execute(Command::SplitClip {
                 clip,
