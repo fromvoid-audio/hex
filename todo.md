@@ -37,6 +37,25 @@ native/user-test delivery remain separate work; this entry does not claim them.
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
 
+## Sampler / Simpler request — #2679 / PR296, 17 october 2026
+
+The requested device is named sampler and targets Ableton Simpler, including
+Classic, One-Shot and Slice. The standalone original borrowed-PCM kernel now
+supports pitched/rate-converted stereo regions, forward/reverse loops, manual
+slice selection, gate/trigger and linear ADSR. Eight focused fixtures pass;
+all296 device unit tests and affected integration tests pass, as does strict
+device Clippy. The standalone release profile is recorded in
+[the contract](docs/sampler.md); it establishes no host deadlines or Live match.
+
+The device is not registered or available in the app. Generic device-asset
+leases/admission/persistence, loading, the native panel, filter/LFO/warp and
+the full reference inventory/acceptance remain unfinished. Do not raise analytic
+payload budgets or store PCM in opaque state to simulate this integration.
+Pulse2679 retains the complete user request; PR296 is its first focused kernel
+prerequisite. Linux cannot run the installed macOS Live reference or provide
+native macOS listening/visual evidence. Full local CI and final PR evidence
+are recorded on the ticket; targeted checks do not authorize merge.
+
 ## Vector global panel and level-driven FM — #2653 / PR269, 17 october 2026
 
 The eleven canonical algorithm diagrams replace the raw matrix UI; new serial
