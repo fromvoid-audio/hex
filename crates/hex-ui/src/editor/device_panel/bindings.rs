@@ -1,0 +1,717 @@
+//! Persistent host bindings shared by specialized and descriptor-driven panels.
+//! Session gestures, canonical edits and app lifecycle remain with their owners.
+use super::*;
+
+pub(super) type NumericBeginHook =
+    Box<dyn Fn(&mut EditorView, &mut Context<EditorView>, ParameterKey)>;
+pub(super) struct BindingPolicy {
+    pub(super) tab_navigation: bool,
+    pub(super) toggle_appearance: DiscreteControlAppearance,
+    pub(super) choice_order: Option<Vec<u32>>,
+    pub(super) numeric_begin: Option<NumericBeginHook>,
+}
+
+pub(super) type BindingPolicyFactory = fn(
+    &EditorView,
+    ParameterKey,
+    DeviceControlIdentity,
+    ParameterDescriptor,
+    ControlPresentation,
+    ControlText,
+) -> BindingPolicy;
+#[derive(Clone, Copy)]
+pub(super) struct BindingPresentation {
+    pub(super) kind: ControlPresentation,
+    pub(super) text: ControlText,
+    pub(super) policy: BindingPolicyFactory,
+    pub(super) compact_toggle_width: f32,
+}
+
+pub(super) enum ParameterControl {
+    Float {
+        entity: Entity<NumericControl>,
+        _subscription: Subscription,
+        class: NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        descriptor: ParameterDescriptor,
+        tab_navigation: bool,
+    },
+    Bool {
+        entity: Entity<Toggle>,
+        _subscription: Subscription,
+        class: NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        descriptor: ParameterDescriptor,
+        tab_navigation: bool,
+    },
+    Choice {
+        entity: Entity<Selector>,
+        _subscription: Subscription,
+        class: NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        descriptor: ParameterDescriptor,
+        tab_navigation: bool,
+        values: Vec<u32>,
+    },
+}
+
+pub(super) fn parameter_control_matches_identity(
+    control: &ParameterControl,
+    identity: DeviceControlIdentity,
+) -> bool {
+    match control {
+        ParameterControl::Float { class, type_id, .. }
+        | ParameterControl::Bool { class, type_id, .. }
+        | ParameterControl::Choice { class, type_id, .. } => {
+            *class == identity.class && *type_id == identity.type_id
+        }
+    }
+}
+
+fn parameter_style(presentation: ControlPresentation) -> ControlStyle {
+    theme::device_style(if presentation == ControlPresentation::InlineValue {
+        theme::DeviceStyleRole::Readout
+    } else {
+        theme::DeviceStyleRole::Control
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ControlPresentation {
+    Standard,
+    CompactDial,
+    MiniDial,
+    MicroDial,
+    InlineValue,
+    DeviceMeters,
+    CompactButton,
+    CompactSelector,
+    CompactWideSelector,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct ControlText {
+    pub(super) label: Option<&'static str>,
+    pub(super) codec: Option<numeric_display::NumericDisplayCodec>,
+}
+
+pub(crate) fn effective_parameter_value(
+    view: &mut EditorView,
+    key: ParameterKey,
+    canonical_value: ParameterValue,
+) -> ParameterValue {
+    let gesture_value = view
+        .device_gesture
+        .snapshot()
+        .and_then(|snapshot| match snapshot.target {
+            GestureTarget::DeviceParameterSnapshot { device }
+                if device == key.device && snapshot.key.generation == view.project_generation =>
+            {
+                snapshot.parameters.and_then(|parameters| {
+                    parameters
+                        .entries()
+                        .iter()
+                        .find(|(id, _)| *id == key.parameter)
+                        .map(|(_, value)| *value)
+                })
+            }
+            GestureTarget::DeviceParameter { device, parameter }
+                if device == key.device && parameter == key.parameter =>
+            {
+                Some(snapshot.value)
+            }
+            GestureTarget::DeviceParameterPair { device, first, .. }
+                if device == key.device && first == key.parameter =>
+            {
+                Some(snapshot.value)
+            }
+            GestureTarget::DeviceParameterPair { device, second, .. }
+                if device == key.device && second == key.parameter =>
+            {
+                snapshot.secondary_value
+            }
+            _ => None,
+        });
+    let pending_value = view.device_panel.pending_values.get(&key).copied();
+    if pending_value.is_some()
+        && view.worker_requests_pending == 0
+        && view.pending_requests.is_empty()
+        && view.device_gesture_barriers.is_empty()
+        && view.device_gesture.snapshot().is_none()
+    {
+        view.device_panel.pending_values.remove(&key);
+    }
+    gesture_value.unwrap_or_else(|| {
+        view.device_panel
+            .pending_values
+            .get(&key)
+            .copied()
+            .unwrap_or(canonical_value)
+    })
+}
+
+pub(super) fn render_parameter(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameter: &NativeDeviceParameterView,
+    rendering: BindingPresentation,
+) -> Div {
+    let configuration = rendering;
+    let BindingPresentation {
+        kind: presentation,
+        text: _,
+        policy: _,
+        compact_toggle_width,
+    } = rendering;
+
+    let style = parameter_style(presentation);
+    let key = ParameterKey {
+        device,
+        parameter: parameter.descriptor.id,
+    };
+    let descriptor = parameter.descriptor;
+    let value = effective_parameter_value(view, key, parameter.value);
+    let enabled = parameter.enabled;
+    let compatible = matches!(
+        (descriptor.kind, value),
+        (ParameterKind::Float { .. }, ParameterValue::Float(_))
+            | (ParameterKind::Bool, ParameterValue::Bool(_))
+            | (ParameterKind::Choice { .. }, ParameterValue::Choice(_))
+    );
+    if !compatible {
+        if let Some(mut control) = view.device_panel.controls.remove(&key) {
+            cancel_control(view, cx, key, &mut control);
+        }
+        return unsupported_parameter(descriptor.label);
+    }
+    let matching = match view.device_panel.controls.get(&key) {
+        Some(ParameterControl::Float {
+            class: old_class,
+            type_id: old_type,
+            descriptor: old_descriptor,
+            ..
+        }) => {
+            *old_class == identity.class
+                && *old_type == identity.type_id
+                && *old_descriptor == descriptor
+                && matches!(descriptor.kind, ParameterKind::Float { .. })
+        }
+        Some(ParameterControl::Bool {
+            class: old_class,
+            type_id: old_type,
+            descriptor: old_descriptor,
+            ..
+        }) => {
+            *old_class == identity.class
+                && *old_type == identity.type_id
+                && *old_descriptor == descriptor
+                && matches!(descriptor.kind, ParameterKind::Bool)
+        }
+        Some(ParameterControl::Choice {
+            class: old_class,
+            type_id: old_type,
+            descriptor: old_descriptor,
+            ..
+        }) => {
+            *old_class == identity.class
+                && *old_type == identity.type_id
+                && *old_descriptor == descriptor
+                && matches!(descriptor.kind, ParameterKind::Choice { .. })
+        }
+        None => false,
+    };
+    if !matching {
+        if let Some(mut old) = view.device_panel.controls.remove(&key) {
+            cancel_control(view, cx, key, &mut old);
+        }
+        if create_parameter_control(view, cx, key, identity, parameter, configuration).is_none() {
+            return unsupported_parameter(descriptor.label);
+        }
+    }
+    let tab_navigation = match view.device_panel.controls.get(&key) {
+        Some(
+            ParameterControl::Float { tab_navigation, .. }
+            | ParameterControl::Bool { tab_navigation, .. }
+            | ParameterControl::Choice { tab_navigation, .. },
+        ) => *tab_navigation,
+        None => false,
+    };
+    // Semantic queries describe acknowledged canonical values, not effective painted drafts.
+    let revision = view.state.as_ref().map_or(0, |state| state.revision);
+    let generation = view.project_generation;
+    let owner = cx.entity().downgrade();
+    let pending = view.edit_pending()
+        || view.device_gesture.snapshot().is_some()
+        || !view.device_gesture_barriers.is_empty()
+        || view.device_panel.pending_values.contains_key(&key);
+    let guard: std::rc::Rc<dyn Fn(&gpui::App) -> bool> = std::rc::Rc::new(move |app| {
+        owner
+            .read_with(app, |view, _| {
+                view.project_generation == generation
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == revision)
+                    && !view.edit_pending()
+                    && view.device_gesture.snapshot().is_none()
+                    && view.device_gesture_barriers.is_empty()
+                    && !view.device_panel.pending_values.contains_key(&key)
+                    && view.device_panel.controls.contains_key(&key)
+            })
+            .unwrap_or(false)
+    });
+    match view.device_panel.controls.get(&key) {
+        Some(ParameterControl::Float { entity, .. }) => {
+            if let ParameterValue::Float(value) = value {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Float(canonical) = parameter.value {
+                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
+                            control.set_accessibility_binding(
+                                gpui::AccessibilityBinding {
+                                    name: theme::text(descriptor.label),
+                                    revision,
+                                    value,
+                                    pending,
+                                    guard: guard.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }
+                    control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(tab_navigation, cx);
+                    let _ = control.set_external_value(f64::from(value), cx);
+                });
+            } else {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Float(canonical) = parameter.value {
+                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
+                            control.set_accessibility_binding(
+                                gpui::AccessibilityBinding {
+                                    name: theme::text(descriptor.label),
+                                    revision,
+                                    value,
+                                    pending,
+                                    guard: guard.clone(),
+                                },
+                                cx,
+                            );
+                        }
+                    }
+                    control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(tab_navigation, cx);
+                });
+            }
+            let (width, height) = match presentation {
+                ControlPresentation::CompactDial => (64.0, 52.0),
+                ControlPresentation::MiniDial | ControlPresentation::MicroDial => (
+                    hex_widgets::MICRO_DIAL_WIDTH,
+                    hex_widgets::MICRO_DIAL_HEIGHT,
+                ),
+                ControlPresentation::InlineValue => (46.0, 14.0),
+                ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
+                _ => (136.0, 26.0),
+            };
+            div().w(px(width)).h(px(height)).child(entity.clone())
+        }
+        Some(ParameterControl::Bool { entity, .. }) => {
+            if let ParameterValue::Bool(value) = value {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Bool(canonical) = parameter.value {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Toggle(canonical),
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
+                    control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(tab_navigation, cx);
+                    control.set_checked(value, cx);
+                });
+            } else {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    if let ParameterValue::Bool(canonical) = parameter.value {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Toggle(canonical),
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
+                    control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(tab_navigation, cx);
+                });
+            }
+            let (width, height) = if presentation == ControlPresentation::CompactButton {
+                (compact_toggle_width, 14.0)
+            } else {
+                (136.0, 22.0)
+            };
+            div().w(px(width)).h(px(height)).child(entity.clone())
+        }
+        Some(ParameterControl::Choice { entity, values, .. }) => {
+            if let ParameterValue::Choice(value) = value {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    if let (ParameterValue::Choice(canonical), ParameterKind::Choice { labels }) =
+                        (parameter.value, descriptor.kind)
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Choice {
+                                    selected: canonical as usize,
+                                    options: labels.iter().map(theme::text).collect(),
+                                },
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
+                    control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(tab_navigation, cx);
+                    if let Some(index) = values.iter().position(|candidate| *candidate == value) {
+                        let _ = control.set_selected(index, cx);
+                    }
+                });
+            } else {
+                entity.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                    if let (ParameterValue::Choice(canonical), ParameterKind::Choice { labels }) =
+                        (parameter.value, descriptor.kind)
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value: gpui::AccessibilityValue::Choice {
+                                    selected: canonical as usize,
+                                    options: labels.iter().map(theme::text).collect(),
+                                },
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
+                    }
+                    control.set_enabled(enabled, cx);
+                    control.set_tab_navigation(tab_navigation, cx);
+                });
+            }
+            let (width, height) = match presentation {
+                ControlPresentation::CompactSelector => (64.0, 14.0),
+                ControlPresentation::CompactWideSelector => (120.0, 14.0),
+                _ => (136.0, 22.0),
+            };
+            div().w(px(width)).h(px(height)).child(entity.clone())
+        }
+        None => unsupported_parameter(descriptor.label),
+    }
+}
+
+fn create_parameter_control(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    key: ParameterKey,
+    identity: DeviceControlIdentity,
+    parameter: &NativeDeviceParameterView,
+    rendering: BindingPresentation,
+) -> Option<()> {
+    let BindingPresentation {
+        kind: presentation,
+        text: display,
+        policy,
+        ..
+    } = rendering;
+
+    let descriptor = parameter.descriptor;
+    let value = parameter.value;
+    let BindingPolicy {
+        tab_navigation,
+        toggle_appearance,
+        choice_order,
+        numeric_begin,
+    } = policy(view, key, identity, descriptor, presentation, display);
+    let style = parameter_style(presentation);
+    let ControlText {
+        label: display_label,
+        codec: display_codec,
+    } = display;
+    let id = format!(
+        "device-{}-parameter-{}",
+        key.device.value(),
+        key.parameter.value()
+    );
+    match (descriptor.kind, value) {
+        (ParameterKind::Float { min, max, unit }, ParameterValue::Float(value)) if min < max => {
+            let default = match descriptor.default {
+                ParameterValue::Float(default) => f64::from(default),
+                _ => return None,
+            };
+            let scale = match descriptor.presentation {
+                ParameterPresentation::LinearAmplitudeDecibels => {
+                    NumericScale::LinearAmplitudeDecibels
+                }
+                ParameterPresentation::Logarithmic => NumericScale::Logarithmic,
+                ParameterPresentation::Linear if min < 0.0 && max > 0.0 => NumericScale::Bipolar,
+                ParameterPresentation::Linear => NumericScale::Linear,
+            };
+            let mut spec = NumericSpec::new(
+                f64::from(min),
+                f64::from(max),
+                default,
+                scale,
+                2,
+                unit.map(|unit| std::sync::Arc::<str>::from(theme::text(unit).as_ref())),
+            )
+            .ok()?;
+            if let Some(codec) = display_codec {
+                spec = codec.apply(spec);
+            }
+            let kind = match presentation {
+                ControlPresentation::CompactDial
+                | ControlPresentation::MiniDial
+                | ControlPresentation::MicroDial => NumericControlKind::Knob,
+                ControlPresentation::DeviceMeters => NumericControlKind::VerticalSlider,
+                _ => NumericControlKind::HorizontalSlider,
+            };
+            let appearance = match presentation {
+                ControlPresentation::CompactDial => NumericControlAppearance::CompactDial,
+                ControlPresentation::MiniDial => NumericControlAppearance::MiniDial,
+                ControlPresentation::MicroDial => NumericControlAppearance::MicroDial,
+                ControlPresentation::InlineValue => NumericControlAppearance::InlineValue,
+                ControlPresentation::DeviceMeters => NumericControlAppearance::DeviceMeters,
+                _ => NumericControlAppearance::Standard,
+            };
+            let config = NumericControlConfig::new(
+                id,
+                theme::text(display_label.unwrap_or(descriptor.label)),
+                kind,
+                spec,
+                f64::from(value),
+                style,
+            )
+            .ok()?
+            .with_appearance(appearance)
+            .with_dial_layout(
+                if display_codec == Some(numeric_display::NumericDisplayCodec::Balance) {
+                    DialLayout::Pan
+                } else {
+                    DialLayout::ReadoutGap
+                },
+            );
+            let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
+            let target = GestureTarget::DeviceParameter {
+                device: key.device,
+                parameter: key.parameter,
+            };
+            let subscription =
+                cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
+                    if event.phase == NumericEventPhase::Begin
+                        && let Some(hook) = numeric_begin.as_ref()
+                    {
+                        hook(view, cx, key);
+                    }
+                    let value = ParameterValue::Float(event.value as f32);
+                    if let Err(error) = dispatch_numeric_gesture(view, target, event.phase, value)
+                        && event.phase != NumericEventPhase::Cancel
+                    {
+                        view.error = Some(error.to_owned().into());
+                    }
+                    cx.notify();
+                });
+            view.device_panel.controls.insert(
+                key,
+                ParameterControl::Float {
+                    entity,
+                    _subscription: subscription,
+                    class: identity.class,
+                    type_id: identity.type_id,
+                    descriptor,
+                    tab_navigation,
+                },
+            );
+            Some(())
+        }
+        (ParameterKind::Bool, ParameterValue::Bool(value)) => {
+            let appearance = toggle_appearance;
+            let config = ToggleConfig::new(
+                id,
+                theme::text(display_label.unwrap_or(descriptor.label)),
+                value,
+                style,
+            )
+            .ok()?
+            .with_appearance(appearance);
+            let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
+            let target = key;
+            let subscription = cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
+                // A discrete control may hide a numeric field (for example,
+                // switching Operator tuning to fixed frequency). Do not let
+                // that transition strand an invalid draft offscreen.
+                if !finalize_controls(view, cx) {
+                    let previous = view
+                        .device_panel
+                        .pending_values
+                        .get(&target)
+                        .copied()
+                        .or_else(|| {
+                            view.device_panel
+                                .views
+                                .get(&target.device)
+                                .and_then(|(_, _, device_view)| device_view.as_ref().ok())
+                                .and_then(|device_view| {
+                                    device_view.parameters.iter().find(|parameter| {
+                                        parameter.descriptor.id == target.parameter
+                                    })
+                                })
+                                .map(|parameter| parameter.value)
+                        })
+                        .unwrap_or(ParameterValue::Bool(!event.checked));
+                    if let (
+                        ParameterValue::Bool(previous),
+                        Some(ParameterControl::Bool { entity, .. }),
+                    ) = (previous, view.device_panel.controls.get(&target))
+                    {
+                        let entity = entity.clone();
+                        entity.update(cx, |control, cx| control.set_checked(previous, cx));
+                    }
+                    return;
+                }
+                let value = ParameterValue::Bool(event.checked);
+                view.device_panel.pending_values.insert(target, value);
+                if !view.enqueue_device_barrier(Request::SetDeviceParameter {
+                    device: target.device,
+                    parameter: target.parameter,
+                    value,
+                }) {
+                    view.device_panel.pending_values.remove(&target);
+                }
+                cx.notify();
+            });
+            view.device_panel.controls.insert(
+                key,
+                ParameterControl::Bool {
+                    entity,
+                    _subscription: subscription,
+                    class: identity.class,
+                    type_id: identity.type_id,
+                    descriptor,
+                    tab_navigation,
+                },
+            );
+            Some(())
+        }
+        (ParameterKind::Choice { labels }, ParameterValue::Choice(value)) => {
+            let values = choice_order.unwrap_or_else(|| (0..labels.len() as u32).collect());
+            if values.len() != labels.len()
+                || values.iter().enumerate().any(|(index, value)| {
+                    *value as usize >= labels.len() || values[..index].contains(value)
+                })
+            {
+                return None;
+            }
+
+            let selected = values.iter().position(|candidate| *candidate == value)?;
+            let choices = values
+                .iter()
+                .map(|index| theme::text(labels[*index as usize]));
+            let appearance = if matches!(
+                presentation,
+                ControlPresentation::CompactSelector | ControlPresentation::CompactWideSelector
+            ) {
+                DiscreteControlAppearance::CompactSelector
+            } else {
+                DiscreteControlAppearance::Standard
+            };
+            let config = SelectorConfig::new(id, choices, selected, style)
+                .ok()?
+                .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
+                .with_appearance(appearance);
+            let entity = cx.new(|control_cx| Selector::from_config(control_cx, config));
+            let target = key;
+            let event_values = values.clone();
+            let subscription =
+                cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
+                    let Some(&value) = event_values.get(event.index) else {
+                        return;
+                    };
+                    if !finalize_controls(view, cx) {
+                        return;
+                    }
+                    let value = ParameterValue::Choice(value);
+                    view.device_panel.pending_values.insert(target, value);
+                    if !view.enqueue_device_barrier(Request::SetDeviceParameter {
+                        device: target.device,
+                        parameter: target.parameter,
+                        value,
+                    }) {
+                        view.device_panel.pending_values.remove(&target);
+                    }
+                    cx.notify();
+                });
+            view.device_panel.controls.insert(
+                key,
+                ParameterControl::Choice {
+                    entity,
+                    _subscription: subscription,
+                    class: identity.class,
+                    type_id: identity.type_id,
+                    descriptor,
+                    tab_navigation,
+                    values,
+                },
+            );
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn cancel_control(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    key: ParameterKey,
+    control: &mut ParameterControl,
+) {
+    if let ParameterControl::Float { entity, .. } = control {
+        entity.update(cx, |control, cx| control.cancel(cx));
+        if view.device_gesture.snapshot().is_some_and(|snapshot| {
+            snapshot.target
+                == (GestureTarget::DeviceParameter {
+                    device: key.device,
+                    parameter: key.parameter,
+                })
+        }) {
+            let _ = view.cancel_device_gesture();
+        }
+    }
+}
+
+fn unsupported_parameter(label: &str) -> Div {
+    div()
+        .w(px(136.0))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .text_xs()
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(format!("{label} · unsupported")))
+}
