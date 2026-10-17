@@ -69,3 +69,9 @@ The large timing variation is not evidence of an extraction speedup or physical
 callback safety. These runs establish reproducible PCM and no observed median
 regression in this fixture. Native device deadlines, broader density, reference
 laws and listening remain separate W20 acceptance work.
+
+Current-main integration recheck at `c4fcbdf70e8cffe7cf8ea836c5ac1d70c2858e7c`
+also retains all five admitted PCM digests and the existing refusal;
+[raw integrated profile](../research/observations/native-dsp-2671/integrated.txt).
+This includes the W02 generic-bound repair and main `71db0d48`; no processing
+change was needed in the extraction.
