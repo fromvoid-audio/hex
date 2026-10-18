@@ -437,14 +437,20 @@ fn project_directory_invalid_preferences_still_open_default_and_preserve_bytes(
 
 #[cfg(unix)]
 #[gpui::test]
-fn project_directory_native_non_utf8_folder_is_not_lowercased_or_lossily_converted(
+fn project_directory_existing_native_folder_preserves_case_and_bytes(
     cx: &mut TestAppContext,
 ) {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let owned = Directory::new();
-    let folder = owned
-        .0
-        .join(std::ffi::OsString::from_vec(b"RawCase-\xff".to_vec()));
+    // The native macOS filesystem rejects invalid UTF-8 filenames (EILSEQ).
+    // Exercise a real supported directory here; the codec and NSURL tests
+    // independently preserve non-UTF-8 path bytes without creating that name.
+    let name = if cfg!(target_os = "macos") {
+        std::ffi::OsString::from("RawCase-Café")
+    } else {
+        std::ffi::OsString::from_vec(b"RawCase-\xff".to_vec())
+    };
+    let folder = owned.0.join(name);
     std::fs::create_dir(&folder).unwrap();
     hex_preferences::save_project_directory(&owned.preferences(), &folder).unwrap();
     let (mut visual, editor) = owned.window(cx);
