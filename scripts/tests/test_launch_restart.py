@@ -213,6 +213,10 @@ class OwnershipTests(ReleaseFixture):
 
 class PreflightTests(ReleaseFixture):
     def prepare_fixture(self):
+        # This repository already exists under our exclusively owned temporary
+        # directory. macOS may spell that directory through /var -> /private/var.
+        # Derive the fixture app from its real root; production paths stay strict.
+        self.f.repo = self.f.repo.resolve()
         tool=self.f.bin/'git'
         tool.write_text(tool.read_text().replace('deadbeef',self.source))
         self.app=self.f.repo/'artifacts/hex.app'
@@ -272,6 +276,18 @@ class PreflightTests(ReleaseFixture):
         with self.assertRaisesRegex(restart.RestartError,'legacy'):self.prepare()
         self.assertEqual(journal.read_bytes(),b'old');self.factory.assert_not_called()
         self.assertEqual(self.owner.read_bytes(),raw)
+
+    def test_alias_application_path_still_refuses_without_process_or_state_mutation(self):
+        self.prepare_fixture();self.app.parent.mkdir(parents=True)
+        sentinel=self.app.parent/'song.hex';sentinel.write_bytes(b'preserve user file')
+        alias=self.f.repo/'fixture-app-alias';alias.symlink_to(self.app.parent,target_is_directory=True)
+        self.app=alias/'hex.app';raw=self.owner.read_bytes()
+        with self.assertRaisesRegex(delivery.DeliveryError,'refusing symlink'):
+            self.prepare()
+        self.factory.assert_not_called()
+        self.assertEqual(self.owner.read_bytes(),raw)
+        self.assertEqual(sentinel.read_bytes(),b'preserve user file')
+        self.assertTrue(alias.is_symlink())
 
     def test_interrupt_preserves_install_workspace_pending_owner_and_releases_locks(self):
         self.prepare_fixture();workspace=delivery.install_workspace(self.app);workspace.mkdir(parents=True)
