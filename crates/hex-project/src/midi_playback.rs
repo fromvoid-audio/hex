@@ -13,6 +13,7 @@ use crate::{BeatTime, Invalid};
 pub struct MidiSourcePlayback {
     source_length: BeatTime,
     source_start: BeatTime,
+    initial_end: BeatTime,
     loop_range: Option<(BeatTime, BeatTime)>,
     arrangement_duration: BeatTime,
 }
@@ -23,6 +24,26 @@ impl MidiSourcePlayback {
         source_start: BeatTime,
         loop_range: Option<(BeatTime, BeatTime)>,
         arrangement_duration: BeatTime,
+    ) -> Result<Self, Invalid> {
+        Self::new_with_initial_end(
+            source_length,
+            source_start,
+            loop_range,
+            arrangement_duration,
+            loop_range.map_or(source_length, |(_, end)| end),
+        )
+    }
+
+    /// Retain the full authored source for validation while limiting the first
+    /// audible pass. With no loop this permits a captured cycle to play once
+    /// then become silent, without deleting notes outside that cycle.
+    /// Repeating mappings require the initial end to equal their loop end.
+    pub fn new_with_initial_end(
+        source_length: BeatTime,
+        source_start: BeatTime,
+        loop_range: Option<(BeatTime, BeatTime)>,
+        arrangement_duration: BeatTime,
+        initial_end: BeatTime,
     ) -> Result<Self, Invalid> {
         if source_length == BeatTime::ZERO || arrangement_duration == BeatTime::ZERO {
             return Err(Invalid(
@@ -39,9 +60,20 @@ impl MidiSourcePlayback {
         } else if source_start >= source_length {
             return Err(Invalid("midi source start must be inside its source"));
         }
+        if initial_end > source_length || source_start >= initial_end {
+            return Err(Invalid(
+                "midi initial playback end must follow its start inside the source",
+            ));
+        }
+        if loop_range.is_some_and(|(_, end)| end != initial_end) {
+            return Err(Invalid(
+                "midi repeating initial end must equal its loop end",
+            ));
+        }
         Ok(Self {
             source_length,
             source_start,
+            initial_end,
             loop_range,
             arrangement_duration,
         })
@@ -58,6 +90,10 @@ impl MidiSourcePlayback {
 
     pub fn source_start(self) -> BeatTime {
         self.source_start
+    }
+
+    pub fn initial_end(self) -> BeatTime {
+        self.initial_end
     }
 
     pub fn loop_range(self) -> Option<(BeatTime, BeatTime)> {
@@ -127,13 +163,13 @@ impl MidiSourcePlayback {
                 }
             }
         } else if note_start.raw() >= self.source_start.raw()
-            && note_start.raw() < self.source_length.raw()
+            && note_start.raw() < self.initial_end.raw()
         {
             let timeline_start = note_start.raw() - self.source_start.raw();
             if timeline_start < timeline_limit {
                 let gate = note_duration
                     .raw()
-                    .min(self.source_length.raw() - note_start.raw())
+                    .min(self.initial_end.raw() - note_start.raw())
                     .min(timeline_limit - timeline_start);
                 if gate > 0 {
                     initial = Some(MidiNoteOccurrence {
@@ -287,26 +323,98 @@ mod tests {
     fn bounded_once_keeps_authored_notes_but_stops_onsets_and_gates_at_selected_end() {
         // A captured 2..6 cycle was switched off. The retained 0..12 source
         // includes hidden notes; the selected remaining cycle must end at 6.
-        let bounded = MidiSourcePlayback::new(beat(12), beat(2), None, beat(20)).unwrap();
+        let bounded =
+            MidiSourcePlayback::new_with_initial_end(beat(12), beat(2), None, beat(20), beat(6))
+                .unwrap();
         assert_eq!(bounded.source_length(), beat(12));
-        assert_eq!(tuples(bounded.note_occurrences(beat(4), beat(5)).unwrap()), vec![(0, 2, 2)]);
-        assert_eq!(bounded.note_occurrences(beat(6), beat(1)).unwrap().count(), 0);
-        assert_eq!(bounded.note_occurrences(beat(10), beat(2)).unwrap().count(), 0);
+        assert_eq!(
+            tuples(bounded.note_occurrences(beat(4), beat(5)).unwrap()),
+            vec![(0, 2, 2)]
+        );
+        assert_eq!(
+            bounded.note_occurrences(beat(6), beat(1)).unwrap().count(),
+            0
+        );
+        assert_eq!(
+            bounded.note_occurrences(beat(10), beat(2)).unwrap().count(),
+            0
+        );
         // Full authored bounds still validate the retained note, never the
         // smaller audible window; true source overflow must still refuse.
         assert!(bounded.note_occurrences(beat(11), beat(2)).is_err());
         let ordinary = MidiSourcePlayback::new(beat(12), beat(2), None, beat(20)).unwrap();
-        assert_eq!(tuples(ordinary.note_occurrences(beat(10), beat(2)).unwrap()), vec![(0, 8, 2)]);
+        assert_eq!(
+            tuples(ordinary.note_occurrences(beat(10), beat(2)).unwrap()),
+            vec![(0, 8, 2)]
+        );
     }
 
     #[test]
     fn bounded_once_tail_and_finite_outer_end_do_not_create_repeats_or_chase() {
-        let bounded = MidiSourcePlayback::new(beat(12), beat(5), None, beat(20)).unwrap();
-        assert_eq!(tuples(bounded.note_occurrences(beat(5), beat(6)).unwrap()), vec![(0, 0, 1)]);
-        assert_eq!(bounded.note_occurrences(beat(4), beat(6)).unwrap().count(), 0);
-        assert_eq!(bounded.note_occurrences(beat(7), beat(1)).unwrap().count(), 0);
-        let shorter = MidiSourcePlayback::new(beat(12), beat(2), None, beat(1)).unwrap();
-        assert_eq!(tuples(shorter.note_occurrences(beat(2), beat(8)).unwrap()), vec![(0, 0, 1)]);
+        let bounded =
+            MidiSourcePlayback::new_with_initial_end(beat(12), beat(5), None, beat(20), beat(6))
+                .unwrap();
+        assert_eq!(
+            tuples(bounded.note_occurrences(beat(5), beat(6)).unwrap()),
+            vec![(0, 0, 1)]
+        );
+        assert_eq!(
+            bounded.note_occurrences(beat(4), beat(6)).unwrap().count(),
+            0
+        );
+        assert_eq!(
+            bounded.note_occurrences(beat(7), beat(1)).unwrap().count(),
+            0
+        );
+        let shorter =
+            MidiSourcePlayback::new_with_initial_end(beat(12), beat(2), None, beat(1), beat(6))
+                .unwrap();
+        assert_eq!(
+            tuples(shorter.note_occurrences(beat(2), beat(8)).unwrap()),
+            vec![(0, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn bounded_once_refuses_invalid_bounds_and_preserves_repeating_constructor_contract() {
+        for (start, end) in [(2, 0), (2, 2), (2, 1), (2, 13), (12, 12)] {
+            assert!(
+                MidiSourcePlayback::new_with_initial_end(
+                    beat(12),
+                    beat(start),
+                    None,
+                    beat(20),
+                    beat(end)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            MidiSourcePlayback::new_with_initial_end(beat(12), beat(2), None, beat(0), beat(6))
+                .is_err()
+        );
+        let region = Some((beat(2), beat(6)));
+        assert!(
+            MidiSourcePlayback::new_with_initial_end(beat(12), beat(2), region, beat(20), beat(5))
+                .is_err()
+        );
+        let explicit =
+            MidiSourcePlayback::new_with_initial_end(beat(12), beat(2), region, beat(20), beat(6))
+                .unwrap();
+        let ordinary = MidiSourcePlayback::new(beat(12), beat(2), region, beat(20)).unwrap();
+        assert_eq!(explicit, ordinary);
+        assert_eq!(explicit.initial_end(), beat(6));
+        assert_eq!(
+            tuples(explicit.note_occurrences(beat(5), beat(5)).unwrap()),
+            vec![(0, 3, 1), (1, 7, 1), (2, 11, 1), (3, 15, 1), (4, 19, 1)]
+        );
+        assert_eq!(
+            explicit
+                .note_occurrences(beat(10), beat(2))
+                .unwrap()
+                .count(),
+            0
+        );
     }
 
     struct Segment {
