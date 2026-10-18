@@ -1,0 +1,5 @@
+Evidence only; never build or merge this ref.
+Canonical310 fc0d57f092e4e8c1a8b59d7812d657e13be04903/treebc8e3bd26c5f2f6837a7a7c70295f68407af87a9. Own returned3file marker-origin quota repair over83138, preserving earlier phase/dense-budget/offscreen fixes. No333/browser/trim source repair or qualification claim.
+Archive464726B SHA2560efed81834d30d7158b7bda9d6e0a6b34cbf1eae80fdafc19244ed64d7d1beaf;74safe members/73hashed payloads/7original summaries+ALLlogs and RAW83138/b614 historical archives.
+Finalexactfocused9 PASS/27resolver+9menu0ignored/guards+strictUIClippy. Original20261018T175752Z-ded11c86/101.523s/clean unchanged stale=false; summarySHA6dcca857f4e53567c8764d1596772ec0cdd2f17bce4e74a3f18a3434433aa2fa. Red100lines/100longsections retained; no priorhead relabel. New boundary/pan/all-density paint/snap/directional/bypass tests preserved.
+Dedicated merger owns actual333 integration/full final candidate20/merge. Root soleMac/optimized physical/UI acceptance remains OPEN. No native report bytes or app/OSaudio/backend/permission/MTS operations.
