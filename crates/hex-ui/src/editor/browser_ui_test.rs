@@ -121,6 +121,9 @@ fn browser_drag_fixture_with_tracks(
                 view.browser.scans.generation = view.browser.scans.generation.saturating_add(1);
                 view.browser.places = vec![directory.0.clone()];
                 view.browser.directory = directory.0.clone();
+                // This fixture installs a validated snapshot, replacing startup work.
+                view.browser.loading = false;
+                view.browser.error = None;
                 view.browser.listing = Some(DirectoryListing {
                     directory: directory.0.clone(),
                     entries: vec![LibraryEntry {
