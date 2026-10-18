@@ -55,6 +55,8 @@ mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
 mod loop_region;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod loop_selection_ui_test;
 mod menus;
 mod midi;
 mod midi_canvas;
