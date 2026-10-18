@@ -74,6 +74,8 @@ mode, status and hashes in the immutable handoff. Early fixture failures are
 preserved: wrong authored degree-array capacity, a decay below descriptor minimum,
 fresh snapshot identity wrongly used as a continuation, frame-vs-beat loop input,
 and a raw mutable seek whose refusal was hidden by the convenience `apply` API.
+An initial allocation-target invocation omitted its feature and matched zero tests;
+that receipt is not allocation evidence. The feature-enabled command below is required.
 The loop crossing diagnostic also remains historical; no product guard, admission
 policy or assertion was removed to conceal an unsupported route.
 
@@ -83,9 +85,9 @@ Focused commands (positive matches required):
 cargo test -p hex-engine --test native_tuning_coverage --locked -- --nocapture
 cargo test -p hex-export --test native_tuning_coverage --locked -- --nocapture
 cargo test -p hex-devices --lib --locked project_tuning_tests -- --nocapture
-cargo test -p hex-engine --lib --locked computer_keyboard::tuning_tests -- --nocapture
+cargo test -p hex-engine --lib --locked computer_keyboard::tuning_tests -- --nocapture --skip profile_keyboard_tuning_handoff_copy_cost
 cargo test -p hex-session --lib --locked service::tuning_tests -- --nocapture
-cargo test -p hex-audio --test callback_allocations --locked project_tuning -- --nocapture
+cargo test -p hex-audio --features allocation-probe --test callback_allocations --locked project_tuning -- --nocapture
 cargo test -p hex-storage --test tuning --locked fractional_reference_frequencies_roundtrip -- --nocapture
 cargo clippy -p hex-engine -p hex-export --all-targets --locked -- -D warnings
 ```
