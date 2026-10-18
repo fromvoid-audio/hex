@@ -1853,3 +1853,7 @@ mod tests {
         assert!(editor.project().track(source).unwrap().clips().is_empty());
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "group_drag_ui_test.rs"]
+mod group_drag_ui_test;
