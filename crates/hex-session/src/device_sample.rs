@@ -289,6 +289,14 @@ impl PreparedDeviceSample {
         if asset.path() != self.path {
             return Err(ResourcePreparationError::InvalidSource);
         }
+        crate::resource_plan::validate_candidate_assets(
+            candidate,
+            assets,
+            reservation
+                .max_preparation_metadata_bytes
+                .min(reservation.max_construction_peak_bytes),
+            cancel,
+        )?;
         sources.prepare(assets, Some((asset, &self.source)), reservation, cancel)
     }
 }

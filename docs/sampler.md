@@ -844,3 +844,14 @@ An enabled-cutoff Mono/Stereo128-query allocation probe checks independent PCM
 and zero total/net allocation/free. This is a DSP/state component; registration,
 functional panel, remaining modulation/Warp and the full musical workflow stay
 open alongside actual resource admission and native listening acceptance.
+
+Pending sample preparation checks every actual candidate instrument/effect and
+Return effect binding, including muted and bypassed owners, before preparing a
+resource bank. A checked scalar reference-count quote precedes the temporary
+AssetId backing allocation; actual capacity is checked, then sorted/deduplicated
+without a second collection. Repeated references are construction scratch, not
+additional unique assets. Missing candidate inputs refuse preparation; explicitly
+retained extra inputs remain allowed. This scratch is destroyed before the bank
+producer starts. This local validation does not establish worker/request freshness,
+the aggregate old/new construction reservation, installed-bank waveform custody
+or atomic model/history/media/audio publication. Registration remains closed.

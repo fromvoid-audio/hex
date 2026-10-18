@@ -9,6 +9,8 @@ use hex_project::{AssetId, ClipId, SortedEntries};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) mod producer;
+mod required_assets;
+pub(crate) use required_assets::validate_candidate_assets;
 #[cfg(test)]
 mod tests;
 
