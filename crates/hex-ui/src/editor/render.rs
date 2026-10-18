@@ -503,7 +503,8 @@ impl Render for EditorView {
                     view.computer_keyboard_down(event, window, cx);
                 }
             }))
-            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+            .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                super::device_panel::selection_key_up(view, event, window, cx);
                 if view.tuning_audition_up(&event.keystroke.key) {
                     cx.stop_propagation();
                     cx.notify();

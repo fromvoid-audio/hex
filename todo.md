@@ -1,3 +1,22 @@
+## selected-device removal focus repair — pulse2796 / PR402
+
+Returned review reproduced a blurred window after real card Backspace and worker
+reconciliation. Accepted removal now focuses a persistent neutral chain container;
+real Cmd-Z/Shift-Cmd-Z and Space remain routed, while held Backspace cannot target
+a restored card. Track and empty Return-chain fixtures use actual keyboard Undo.
+Nested numeric/browser/EQ focus and refusal coverage remain in the nine bounded
+rendered fixtures. Native physical input and final integrated CI remain separate.
+
+## selected-device Backspace — pulse2796 / PR402, 18 october2026
+
+Added exact focused-card removal through existing canonical commands and gesture
+barriers. Nine bounded rendered Service regressions pass for Track instrument/
+effect and Return removal, Undo/Redo, valid/invalid text drafts, numeric/browser/
+EQ focus, pending/stale/no selection and held repeat with a selected clip.
+No model, audio, DSP, shared widget or constructor changes. Final integrated
+full local CI/review belongs to the dedicated merger; native input acceptance
+and app delivery remain separate. Original focus-failure logs are preserved.
+
 ## header volume automation indication — returned pulse2715 / PR331
 
 Restored explicit `auto` readout for authored gain envelopes and recorded touch
