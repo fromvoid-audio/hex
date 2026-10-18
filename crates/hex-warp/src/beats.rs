@@ -2,6 +2,7 @@
 //! Forward: physical guards and logical envelopes have separate schedules.
 mod analysis;
 mod envelope;
+mod groups;
 mod onsets;
 mod plan;
 mod stop;
@@ -63,6 +64,11 @@ pub(super) fn render(
         return Ok(pcm);
     }
     let bank = Bandlimited::new(pitch, work)?;
+    if matches!(schedule, plan::Schedule::Chosen(_)) {
+        let mut pcm = groups::render(request, &anchors, &schedule, &bank, pitch, work)?;
+        envelope::apply(&schedule, &mut pcm, decay, work)?;
+        return Ok(pcm);
+    }
     if matches!(
         request.mode,
         Mode::Beats {

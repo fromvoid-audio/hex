@@ -18,14 +18,7 @@ pub(super) enum Schedule<'a> {
     Chosen(Vec<Boundary>),
 }
 pub(super) fn scratch(request: &Request<'_>) -> usize {
-    if matches!(
-        request.mode,
-        Mode::Beats {
-            tail: Tail::Forward,
-            decay: 100,
-            ..
-        }
-    ) || request.attacks.is_empty()
+    if request.attacks.is_empty()
         && matches!(
             request.mode,
             Mode::Beats {
@@ -46,16 +39,12 @@ impl<'a> Schedule<'a> {
         work: &mut Work<'_>,
     ) -> Result<Self, Error> {
         let Mode::Beats {
-            division_frames,
-            tail,
-            decay,
+            division_frames, ..
         } = request.mode
         else {
             return Err(Error::Invalid("logical preserve mode mismatch"));
         };
-        if tail == Tail::Forward && decay == 100
-            || request.attacks.is_empty() && division_frames.is_none()
-        {
+        if request.attacks.is_empty() && division_frames.is_none() {
             return Ok(Self::Physical(physical));
         }
         let mut points = Vec::new();
@@ -102,7 +91,8 @@ impl<'a> Schedule<'a> {
                 let source = cycle * region + i128::from(at);
                 if let Some(output) = request.map.output_for_source(source * Q32)
                     && output < request.output_frames as u64
-                    && output > points.last().unwrap().output as u64
+                    && output >= points.last().unwrap().output as u64
+                    && source as f64 > points.last().unwrap().source
                 {
                     if points.len() == MAX_MAP_SEGMENTS {
                         return Err(Error::Invalid(

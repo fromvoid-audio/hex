@@ -1,17 +1,27 @@
 //! One native traversal per logical segment, then exact intentional silence.
 use super::*;
+pub(super) struct Baseline {
+    pub(super) fitted: [f64; 2],
+    pub(super) endpoint: [f64; 2],
+}
 /// One-sided endpoint estimate, never sampling the arriving attack. A locally
 /// predictable background uses its endpoint; incoherent noise uses its local
 /// mean so a random last sample does not become a new decaying low-frequency
 /// pulse. The predictability decision and time window are shared by stereo.
-fn restart_baseline(
+pub(super) fn restart_baseline(
     input: Input<'_>,
     bank: &Bandlimited,
     start: i128,
     end: i128,
     pitch: f64,
     work: &mut Work<'_>,
-) -> Result<[f64; 2], Error> {
+) -> Result<Baseline, Error> {
+    if end <= start {
+        return Ok(Baseline {
+            fitted: [0.0; 2],
+            endpoint: [0.0; 2],
+        });
+    }
     let available = (((end - start) as f64 / pitch).floor() as usize).max(1);
     let count = ((input.sample_rate / 2_000).max(2) as usize).min(available);
     work.check(count as u64 * 64)?;
@@ -22,6 +32,7 @@ fn restart_baseline(
     let mut denominator = 0.0;
     let mut minimum = [f64::INFINITY; 2];
     let mut maximum = [f64::NEG_INFINITY; 2];
+    let mut endpoint = [0.0; 2];
     for i in 0..count {
         let t = i as f64 - center;
         let sample = bank.sample_segment(
@@ -30,6 +41,7 @@ fn restart_baseline(
             start,
             end - 1,
         );
+        endpoint = sample;
         denominator += t * t;
         for c in 0..2 {
             sum[c] += sample[c];
@@ -48,14 +60,22 @@ fn restart_baseline(
         0.0
     };
     let predictable = variance - fitted <= variance * 0.05 + 1e-16;
-    Ok(std::array::from_fn(|c| {
+    let fitted = std::array::from_fn(|c| {
         let mean = sum[c] / count as f64;
         if predictable && denominator > 0.0 {
             (mean + slope[c] / denominator * center).clamp(minimum[c], maximum[c])
         } else {
             mean
         }
-    }))
+    });
+    Ok(Baseline {
+        fitted,
+        endpoint: if predictable {
+            endpoint
+        } else {
+            sum.map(|s| s / count as f64)
+        },
+    })
 }
 
 struct Bounds<'a> {
@@ -129,6 +149,7 @@ pub(super) fn render(
                 pitch,
                 work,
             )?
+            .fitted
         } else {
             [0.0; 2]
         };

@@ -1,8 +1,18 @@
 //! Distinct physical attacks and exact-map protected neighborhoods.
 use super::*;
-fn push(anchors: &mut Vec<Anchor>, source: f64, output: usize, attack: bool) -> Result<(), Error> {
+fn push(
+    anchors: &mut Vec<Anchor>,
+    source: f64,
+    output: usize,
+    attack: bool,
+    source_only: bool,
+) -> Result<(), Error> {
     if let Some(last) = anchors.last_mut() {
-        if last.output == output {
+        if source_only && (last.source - source).abs() < 1e-9 {
+            last.attack |= attack;
+            return Ok(());
+        }
+        if !source_only && last.output == output {
             if (last.source - source).abs() > 1e-9 && attack && last.attack {
                 return Err(Error::Invalid(
                     "distinct attacks project onto the same output sample",
@@ -34,6 +44,14 @@ pub(super) fn prepare(
     work: &mut Work<'_>,
 ) -> Result<Vec<Anchor>, Error> {
     let rate = request.input.sample_rate;
+    let source_only = !request.attacks.is_empty()
+        || matches!(
+            request.mode,
+            Mode::Beats {
+                division_frames: Some(_),
+                ..
+            }
+        );
     let separation = u64::from((rate / 1000).max(1));
     let mut starts = Vec::new();
     starts
@@ -95,7 +113,13 @@ pub(super) fn prepare(
     anchors
         .try_reserve_exact(capacity)
         .map_err(|_| Error::Allocation)?;
-    push(&mut anchors, first as f64 / Q32 as f64, 0, false)?;
+    push(
+        &mut anchors,
+        first as f64 / Q32 as f64,
+        0,
+        false,
+        source_only,
+    )?;
     for cycle in first_cycle..=last_cycle {
         work.check(starts.len() as u64)?;
         if cycle > 0 && !request.input.looping {
@@ -107,7 +131,13 @@ pub(super) fn prepare(
                 && output < (request.output_frames as u64)
             {
                 let attack = *at != 0 || output != 0 && boundary_attack;
-                push(&mut anchors, source as f64, output as usize, attack)?;
+                push(
+                    &mut anchors,
+                    source as f64,
+                    output as usize,
+                    attack,
+                    source_only,
+                )?;
             }
         }
     }
@@ -116,7 +146,14 @@ pub(super) fn prepare(
         end as f64 / Q32 as f64,
         request.output_frames,
         false,
+        source_only,
     )?;
+    // Chosen groups schedule the audible first pass. Here all physical source
+    // barriers survive, even if a global map would collide or omit their
+    // audible times. Their global output projections are not timing authority.
+    if source_only {
+        return Ok(anchors);
+    }
     work.check(anchors.len() as u64 * 8)?;
     for i in 0..anchors.len() - 1 {
         if i > 0 && !anchors[i].attack {

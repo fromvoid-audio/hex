@@ -213,16 +213,19 @@ fn beats_tail_modes_keep_fractional_attack_times_and_stereo_schedule() {
             };
             let pcm = prepare(&source);
             assert_eq!(pcm[0], source[0]);
+            // All modes use the same bounded arriving-background treatment:
+            // preserve the authored onset CHANGE, rather than insisting on a
+            // raw absolute sample across an arbitrary compressed phase jump.
+            for c in 0..2 {
+                let original_edge = source[240][c] - source[239][c];
+                let actual_edge = pcm[attack][c] - pcm[attack - 1][c];
+                assert!(
+                    (actual_edge - original_edge).abs() < 0.005,
+                    "selected attack difference {tail:?}/{frames}/{c}"
+                );
+            }
             if tail == Tail::Off && attack > 240 {
-                // The approved Off restart law preserves the attack change,
-                // while its preceding silence remains exact (no pre-roll).
-                for c in 0..2 {
-                    let original_edge = source[240][c] - source[239][c];
-                    assert!((pcm[attack][c] - original_edge).abs() < 0.005);
-                }
                 assert!(pcm[240..attack].iter().all(|frame| *frame == [0.0; 2]));
-            } else {
-                assert_eq!(pcm[attack], source[240]);
             }
             assert!(
                 pcm.iter()

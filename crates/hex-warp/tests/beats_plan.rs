@@ -34,7 +34,7 @@ fn prepared(
     .unwrap()
 }
 #[test]
-fn forward_unity_envelope_grid_points_do_not_create_attacks_or_dips() {
+fn forward_chosen_grids_keep_native_first_pass_and_do_not_manufacture_boundary_edges() {
     let source: Vec<_> = (0..8_000)
         .map(|i| {
             let x = (std::f64::consts::TAU * 73.0 * i as f64 / 16_000.0 + 0.4).sin() as f32 * 0.5;
@@ -52,21 +52,40 @@ fn forward_unity_envelope_grid_points_do_not_create_attacks_or_dips() {
         output,
     )
     .unwrap();
-    let actual = prepared(&source, &map, output, None, &[], 0).frames;
-    assert_eq!(
-        prepared(&source, &map, output, Some(200), &[], 0).frames,
-        actual
-    );
-    assert_eq!(
-        prepared(&source, &map, output, None, &[0, 401, 1003, 2307, 7101], 0).frames,
-        actual
-    );
-    for at in [802, 2006, 4614, 14202] {
-        let step = (actual[at][0] - actual[at - 1][0]).abs();
-        assert!(
-            step < 0.03,
-            "scheduling boundary manufactured an edge at {at}: {step}"
-        );
+    for (division, chosen) in [
+        (Some(200), &[][..]),
+        (None, &[0, 401, 1003, 2307, 7101][..]),
+    ] {
+        let actual = prepared(&source, &map, output, division, chosen, 0).frames;
+        let points: Vec<usize> = if division.is_some() {
+            (0..8000).step_by(200).chain([8000]).collect()
+        } else {
+            chosen.iter().map(|x| *x as usize).chain([8000]).collect()
+        };
+        assert!(actual.iter().all(|x|x.iter().all(|v|v.is_finite()) && (x[1]+x[0]*0.7+0.13).abs()<1e-6));
+        for pair in points.windows(2) {
+            let start = map.output_for_source((pair[0] as i128) << 32).unwrap() as usize;
+            let end = map.output_for_source((pair[1] as i128) << 32).unwrap() as usize;
+            let native = (pair[1] - pair[0]).min(end - start);
+            // Compare the actual native pass outside its declared five-ms
+            // arriving seam and two-ms continuation overlap. Join quality is
+            // still measured at the boundary itself below and in followup.
+            for age in 80..native.saturating_sub(32) {
+                for channel in 0..2 {
+                    assert!(
+                        (actual[start + age][channel] - source[pair[0] + age][channel]).abs()
+                            < 1e-6
+                    );
+                }
+            }
+            if start > 0 {
+                let step = (actual[start][0] - actual[start - 1][0]).abs();
+                assert!(
+                    step < 0.03,
+                    "scheduling boundary manufactured an edge at {start}: {step}"
+                );
+            }
+        }
     }
 }
 #[test]
@@ -99,7 +118,7 @@ fn piecewise_map_keeps_close_attacks_at_exact_inverse_positions_and_fractional_p
         12_000,
     )
     .unwrap();
-    let pcm = prepared(&source, &map, 12_000, Some(500), &[], 0);
+    let pcm = prepared(&source, &map, 12_000, None, &[], 0);
     let expected: Vec<_> = [0, 2_000, 2_032, 4_001, 6_777]
         .iter()
         .map(|at| map.output_for_source(i128::from(*at) << 32).unwrap() as usize)

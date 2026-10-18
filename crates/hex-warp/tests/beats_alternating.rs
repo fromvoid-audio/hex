@@ -67,10 +67,55 @@ fn alternating_preserves_dc_stereo_and_continuous_tone_energy_across_turns_and_g
                 "alternating hz={hz} division={division:?} residual={residual} rms={rms} peakstep={peak_step} source={natural_step}"
             );
             assert!((0.30..0.40).contains(&rms));
-            assert!(
-                residual < 0.025,
-                "reversal damaged tone pitch/continuity {hz}/{division:?}: {residual}"
-            );
+            if let Some(division) = division {
+                // Chosen-group native phases deliberately differ between
+                // groups: one global free-phase sinusoid is not its timing
+                // law. The sinusoidal recurrence is invariant to phase AND
+                // traversal direction; measure every tail sample including
+                // joins rather than excluding neighborhoods around them.
+                let mut energy = 0.0;
+                let mut neighbors = 0.0;
+                for group in 0..4 {
+                    let start = group * division as usize * 4 + division as usize;
+                    let end = (group + 1) * division as usize * 4;
+                    for i in start..end.min(pcm.frames.len() - 1) {
+                        let x = f64::from(pcm.frames[i][0]);
+                        energy += x * x;
+                        neighbors +=
+                            x * (f64::from(pcm.frames[i - 1][0]) + f64::from(pcm.frames[i + 1][0]));
+                    }
+                }
+                let observed = (neighbors / (2.0 * energy)).clamp(-1.0, 1.0).acos() * 16000.0
+                    / std::f64::consts::TAU;
+                eprintln!(
+                    "grouped reflected tail phase-invariant frequency expected={hz} actual={observed}"
+                );
+                assert!(
+                    (observed - hz).abs() < hz * 0.02 + 0.1,
+                    "reflected tail pitch {hz}: {observed}"
+                );
+                let window = (64000.0 / hz).round() as usize;
+                let powers: Vec<f64> = pcm
+                    .frames
+                    .windows(window)
+                    .step_by((window / 4).max(1))
+                    .map(|w| {
+                        (w.iter().map(|x| f64::from(x[0]).powi(2)).sum::<f64>() / w.len() as f64)
+                            .sqrt()
+                    })
+                    .collect();
+                let minimum = powers.iter().copied().fold(f64::INFINITY, f64::min);
+                let maximum = powers.iter().copied().fold(0.0, f64::max);
+                assert!(
+                    maximum / minimum < 1.15,
+                    "grouped tail pumps {hz}: {minimum}..{maximum}"
+                );
+            } else {
+                assert!(
+                    residual < 0.025,
+                    "reversal damaged tone pitch/continuity {hz}/{division:?}: {residual}"
+                );
+            }
             assert!(peak_step <= natural_step * 1.5 + 0.005);
             assert!(pcm.frames.iter().all(|s| (s[1] + s[0] * 0.7).abs() < 1e-6));
             assert_eq!(

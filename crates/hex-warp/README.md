@@ -21,14 +21,24 @@ retirement, cache lifetime, device I/O, or foreign algorithms/binaries.
 
 ## Beats redesign checkpoint (Pulse 2847)
 
-The WSOLA path covers Forward and Alternating with all envelope settings, for Transients and fixed Preserve grids.
-Detected attack neighborhoods remain at the exact inverse-map positions; the
-intervening bed uses one stereo-linked similarity search and normalized overlap
-ring. Candidate scoring uses inexpensive samples; only selected grains use the
+All three tail controls share physical analysis and one logical envelope law.
+For Transients, detected attacks retain exact inverse-map positions. For fixed
+Preserve, only chosen boundaries use that inverse: every group first traverses
+its original source at independent pitch rate, and internal unselected attacks
+stay native-relative. A compressed next group takes priority; late material is
+omitted rather than accelerated or retriggered. Zero-duration groups retain that
+priority. Omitted physical events still exclude source/filter reads.
+
+After a first pass, Forward/Alternating use one stereo-linked similarity search
+and normalized overlap ring. Safe physical bounds can span a logical grid; a
+logical boundary does not clamp the reconstruction filter. Only eligible body
+may repeat or reflect. Native passes and short arriving/background joins share
+one timing law across tail modes. Stop then emits exact intentional silence.
+Candidate scoring uses inexpensive samples; only selected grains use the
 bandlimited reconstruction. Coherent overlaps preserve DC and low-confidence
 noise uses bounded shared energy compensation. The combined plan, filter bank,
-search allowance and ring are quoted before allocation under the existing caps.
-Algorithm version8 invalidates older prepared PCM.
+search allowance and ring are quoted before allocation under existing caps.
+Algorithm version10 invalidates earlier prepared PCM.
 
 Physical analysis combines a fast energy-rise path with streaming four-band
 spectral increase and stereo complex-phase prediction. A spectral novelty peak
@@ -40,7 +50,9 @@ Fixed-grid points are scheduling boundaries, not physical attacks or filter
 clamps. Lower envelope settings apply the authored exponential gain once after
 normalization, across each logical Preserve interval. Physical attacks inside a
 fixed interval do not reset that envelope; overlap grains never restart it.
-Unity time/pitch copies the original waveform before any authored decay. At Forward100, no grid-triggered envelope or traversal reset is needed.
+Unity time/pitch copies the original waveform before any authored decay. Fixed
+Preserve grouping remains meaningful at Forward100; it is not bypassed merely
+because the envelope is unity.
 The authored grid-density limits still validate before analysis or output birth.
 
 Alternating traverses the available body forward first, then reflects only the
@@ -55,10 +67,9 @@ origins retain phase. With no safe body, a bounded endpoint splice cannot sample
 the upcoming protected attack. One/two-sample material is never turned into an
 indefinitely held or repeated attack by an empty-interval clamp.
 
-This remains a partial checkpoint. Adaptive grain sizing, the complete short-edge
-and variable-rate matrix, Stop integration and the full
-musical/listening matrix remain open. Other control combinations still use the
-prior Beats path. Tones and Texture retain their own algorithms.
+This remains a partial checkpoint. Further adaptive-grain, extreme/variable-rate
+and complete musical/performance/listening coverage remain open. Tones and
+Texture retain their own algorithms.
 There is no commercial-reference or listening acceptance claim.
 
 `beats_wsola` checks phase-independent pitch/RMS, linked stereo, DC/noise energy,
@@ -69,3 +80,12 @@ playback at1.5x/2x. The create-new `beats_diagnosis` example accepts an optional
 `transients` argument; without it the original fixed-division evidence recipe
 is unchanged. Synthetic WAVs are fixed-gain listening candidates, not reference
 recordings. Original red and intermediate experiment evidence remains separate.
+
+The bounded recording adapter accepts explicitly decoded stereo f32 evidence,
+without adopting original media or inventing its BPM. Licensed originals and
+before/after WAVs live only in separate evidence transport. Recorded rendering
+completion and objective measurements do not establish listening acceptance.
+The candidate upper bound preserves strict score/tie ordering; its private
+exhaustive oracle compares the complete selected Match bitwise, including
+floating thresholds, clamping and NaN cases. Work/cancellation polling can differ;
+exact selected PCM does not imply every old near-limit input still completes.

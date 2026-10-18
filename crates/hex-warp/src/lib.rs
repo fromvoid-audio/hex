@@ -12,7 +12,7 @@ pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
 pub const MAX_WORK_UNITS: u64 = 1_000_000_000;
-pub const ALGORITHM_VERSION: u32 = 9;
+pub const ALGORITHM_VERSION: u32 = 10;
 const Q32: i128 = 1_i128 << 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +426,17 @@ struct Accumulator {
     cursor: usize,
 }
 impl Accumulator {
+    // Read-only already-finalized context for a continuation's overlap search.
+    // It borrows the same output storage; it neither rewrites past audio nor
+    // allocates another history/PCM buffer.
+    fn reference(&self, frame: i128) -> Option<[f64; 2]> {
+        let frame = usize::try_from(frame).ok()?;
+        if frame < self.cursor {
+            self.output.get(frame).map(|x| x.map(f64::from))
+        } else {
+            self.preview(frame as i128)
+        }
+    }
     fn previous(&self) -> [f64; 2] {
         self.cursor
             .checked_sub(1)

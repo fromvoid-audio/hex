@@ -33,6 +33,27 @@ const _: () = assert!(
     std::mem::size_of::<Search<'static, 'static>>() * 2 + std::mem::size_of::<Match>() * 3 <= 4096
 );
 impl Search<'_, '_> {
+    fn scan<const PRUNED: bool>(
+        &self,
+        lo: f64,
+        hi: f64,
+        step: f64,
+        nominal: f64,
+        mut selected: Match,
+        work: &mut Work<'_>,
+    ) -> Result<Match, Error> {
+        let mut candidate = lo;
+        while candidate <= hi {
+            if !PRUNED || self.can_improve(candidate, nominal, selected.score, work)? {
+                let next = self.score(candidate, nominal, work)?;
+                if next.score > selected.score {
+                    selected = next;
+                }
+            }
+            candidate += step;
+        }
+        Ok(selected)
+    }
     fn can_improve(
         &self,
         position: f64,
@@ -126,6 +147,40 @@ pub(super) fn bed(
     pitch: f64,
     schedule: &Schedule<'_>,
 ) -> Result<(), Error> {
+    planned_bed(
+        request,
+        bank,
+        work,
+        acc,
+        Body {
+            span,
+            continuation: None,
+        },
+        pitch,
+        schedule,
+    )
+}
+#[derive(Clone, Copy)]
+pub(super) struct Continuation {
+    pub(super) source: f64,
+    pub(super) target: f64,
+    pub(super) native_end: usize,
+    pub(super) fade: usize,
+}
+pub(super) struct Body {
+    pub(super) span: Span,
+    pub(super) continuation: Option<Continuation>,
+}
+pub(super) fn planned_bed(
+    request: &Request<'_>,
+    bank: &Bandlimited,
+    work: &mut Work<'_>,
+    acc: &mut Accumulator,
+    body: Body,
+    pitch: f64,
+    schedule: &Schedule<'_>,
+) -> Result<(), Error> {
+    let Body { span, continuation } = body;
     let Span {
         start,
         end,
@@ -163,6 +218,9 @@ pub(super) fn bed(
             + (source_start - first_map) * (1.0 - fraction)
             + (source_end - last_map) * fraction
             - hop as f64 * pitch;
+        if let Some(c) = continuation {
+            nominal = c.source + (c.target - c.source) * fraction - hop as f64 * pitch;
+        }
         let mut step = pitch;
         if matches!(
             request.mode,
@@ -170,20 +228,36 @@ pub(super) fn bed(
                 tail: Tail::Alternating,
                 ..
             }
-        ) && let Some((position, direction)) = schedule.reflected(span, center, pitch)
-        {
+        ) && let Some((position, direction)) = if let Some(c) = continuation {
+            let upper = c.target.min(source_end) - 1.0;
+            let width = upper - source_start;
+            if width >= 2.0 && center >= c.native_end as i128 {
+                let phase =
+                    ((center - c.native_end as i128 + 1) as f64 * pitch).rem_euclid(width * 2.0);
+                Some(if phase < width {
+                    (upper - phase, -1.0)
+                } else {
+                    (source_start + phase - width, 1.0)
+                })
+            } else {
+                None
+            }
+        } else {
+            schedule.reflected(span, center, pitch)
+        } {
             step = pitch * direction;
             nominal = position - hop as f64 * step;
         }
         let mut forced = false;
-        if out <= start as i128 {
+        if continuation.is_none() && out <= start as i128 {
             step = pitch;
             nominal = source_start + (out - start as i128) as f64 * pitch;
             forced = true;
         }
         if locked_end && out >= end as i128 - grain as i128 {
             step = pitch;
-            nominal = source_end - (end as i128 - out) as f64 * pitch;
+            nominal =
+                continuation.map_or(source_end, |c| c.target) - (end as i128 - out) as f64 * pitch;
             forced = true;
         }
         let (minimum, maximum) = if step > 0.0 {
@@ -213,7 +287,12 @@ pub(super) fn bed(
         let mut previous_square = 0.0;
         let mut count = 0.0;
         for (i, value) in previous.iter_mut().enumerate().take(points) {
-            *value = acc.preview(out + (i * hop / points) as i128);
+            let at = out + (i * hop / points) as i128;
+            *value = if continuation.is_some() {
+                acc.reference(at)
+            } else {
+                acc.preview(at)
+            };
             if let Some(x) = value {
                 count += 1.0;
                 for c in 0..2 {
@@ -235,34 +314,28 @@ pub(super) fn bed(
             count,
         };
         let mut selected = search.score(nominal, nominal, work)?;
-        if !forced && acc.preview(out + hop as i128 / 2).is_some() {
+        let reference = if continuation.is_some() {
+            acc.reference(out + hop as i128 / 2)
+        } else {
+            acc.preview(out + hop as i128 / 2)
+        };
+        if !forced && reference.is_some() {
             let step = f64::from((request.input.sample_rate / 8_000).max(1));
             // At a physical endpoint keep the bounded search WIDTH by moving
             // it inward; halving it can remove the only phase-coherent bass
             // candidate and manufacture end-of-region modulation.
             let lo = (nominal - range).clamp(minimum, (maximum - 2.0 * range).max(minimum));
             let hi = (lo + 2.0 * range).min(maximum);
-            let mut candidate = lo;
-            while candidate <= hi {
-                if search.can_improve(candidate, nominal, selected.score, work)? {
-                    let next = search.score(candidate, nominal, work)?;
-                    if next.score > selected.score {
-                        selected = next;
-                    }
-                }
-                candidate += step;
-            }
+            selected = search.scan::<true>(lo, hi, step, nominal, selected, work)?;
             let best = selected.position;
-            let mut candidate = (best - step).max(lo);
-            while candidate <= (best + step).min(hi) {
-                if search.can_improve(candidate, nominal, selected.score, work)? {
-                    let next = search.score(candidate, nominal, work)?;
-                    if next.score > selected.score {
-                        selected = next;
-                    }
-                }
-                candidate += 0.125;
-            }
+            selected = search.scan::<true>(
+                (best - step).max(lo),
+                (best + step).min(hi),
+                0.125,
+                nominal,
+                selected,
+                work,
+            )?;
             if selected.correlation < 0.5 {
                 // With no useful alignment evidence, unpitched stochastic
                 // material needs no fractional reconstruction. A nearest
@@ -285,7 +358,11 @@ pub(super) fn bed(
             if at < start as i128 || at >= end as i128 {
                 continue;
             }
-            let weight = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / grain as f64).cos();
+            let mut weight = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / grain as f64).cos();
+            if let Some(c) = continuation {
+                let x = ((at - start as i128) as f64 / c.fade.max(1) as f64).clamp(0.0, 1.0);
+                weight *= x * x * (3.0 - 2.0 * x);
+            }
             let sample = bank.sample_segment(
                 request.input,
                 selected.position + i as f64 * step,
@@ -348,4 +425,197 @@ fn short_splice(
         acc.add((span.start + age) as i128, sample, 1.0)?;
     }
     acc.finish_until(span.end)
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    fn bits(m: Match) -> [u64; 7] {
+        [
+            m.position.to_bits(),
+            m.score.to_bits(),
+            m.correlation.to_bits(),
+            m.previous_mean[0].to_bits(),
+            m.previous_mean[1].to_bits(),
+            m.next_mean[0].to_bits(),
+            m.next_mean[1].to_bits(),
+        ]
+    }
+    #[test]
+    fn exhaustive_and_pruned_search_select_identical_complete_matches() {
+        let mut comparisons = 0;
+        let mut overshoot_cases = 0;
+        let mut nan_score_cases = 0;
+        for pattern in 0..5 {
+            let source: Vec<Frame> = (0..512)
+                .map(|i| match pattern {
+                    0 => [0.4, -0.2],
+                    1 => {
+                        if i % 2 == 0 {
+                            [0.25, -0.5]
+                        } else {
+                            [-0.25, 0.5]
+                        }
+                    }
+                    2 => [
+                        (i as f32 * 0.13).sin() * 1e-12,
+                        (i as f32 * 0.17).cos() * 1e-13,
+                    ],
+                    3 => [(i as f32 * 0.13).sin() * 0.4, (i as f32 * 0.31).cos() * 0.2],
+                    _ => [0.0, (i as f32 * 0.07).sin() * 0.3],
+                })
+                .collect();
+            let map = TimeMap::new(
+                vec![MapSegment {
+                    output_start: 0,
+                    output_end: 512,
+                    source_start_q32: 0,
+                    source_end_q32: 512_i128 << 32,
+                }],
+                512,
+            )
+            .unwrap();
+            let request = Request {
+                input: Input {
+                    frames: &source,
+                    sample_rate: 16000,
+                    region_start: 0,
+                    region_length: 512,
+                    phase: 0,
+                    looping: false,
+                    envelope: &[],
+                },
+                attacks: &[],
+                map: &map,
+                output_frames: 512,
+                pitch_cents: 0,
+                mode: Mode::Beats {
+                    division_frames: None,
+                    tail: Tail::Forward,
+                    decay: 100,
+                },
+            };
+            for direction in [-1.0, 1.0] {
+                let nominal = 192.0;
+                let previous = std::array::from_fn(|i| {
+                    Some(source[(nominal + i as f64 * direction) as usize].map(f64::from))
+                });
+                let mut sum = [0.0; 2];
+                let mut square = 0.0;
+                for x in previous.iter().flatten() {
+                    for c in 0..2 {
+                        sum[c] += x[c];
+                        square += x[c] * x[c];
+                    }
+                }
+                for statistics in 0..6 {
+                    let mut search = Search {
+                        request: &request,
+                        step: direction,
+                        overlap: 64,
+                        range: 32.0,
+                        lower: 0,
+                        upper: 511,
+                        previous,
+                        previous_sum: sum,
+                        previous_square: square,
+                        count: 64.0,
+                    };
+                    if statistics == 1 && square > 0.0 {
+                        search.previous_square = f64::from_bits(square.to_bits() - 4);
+                    }
+                    if statistics == 2 {
+                        search.previous_square = f64::NAN;
+                    }
+                    if statistics == 3 {
+                        search.previous_sum[0] = f64::from_bits(0x7ff8000000000042);
+                    }
+                    if statistics == 4 {
+                        search.previous[0].as_mut().unwrap()[0] = f64::NAN;
+                    }
+                    if statistics == 5 {
+                        search.previous = [None; 64];
+                        search.previous[32] = Some([0.25, -0.2]);
+                        search.previous_sum = [0.25, -0.2];
+                        search.previous_square = 0.25_f64.powi(2) + 0.2_f64.powi(2);
+                        search.count = 1.0;
+                    }
+                    // The production search predicate's midpoint is present:
+                    // this oracle intentionally excludes the count==0 branch.
+                    assert!(search.count > 0.0 && search.previous[32].is_some());
+                    let mut cancel = || false;
+                    let mut work = Work {
+                        cancel: &mut cancel,
+                        used: 0,
+                        scratch: 0,
+                        base_scratch: 0,
+                    };
+                    let initial = search.score(nominal, nominal, &mut work).unwrap();
+                    if pattern == 1 && statistics == 4 {
+                        assert!(initial.score.is_nan());
+                        nan_score_cases += 1;
+                    }
+                    if pattern == 1 && statistics == 1 {
+                        let raw = square / (search.previous_square * square).sqrt();
+                        assert!(raw > 1.0, "the fixture must exercise pre-clamp overshoot");
+                        assert_eq!(initial.correlation, 1.0);
+                        overshoot_cases += 1;
+                    }
+                    let score = initial.score;
+                    let adjacent = if score > 0.0 {
+                        f64::from_bits(score.to_bits() + 1)
+                    } else {
+                        f64::from_bits(1)
+                    };
+                    let below = if score > 0.0 {
+                        f64::from_bits(score.to_bits() - 1)
+                    } else {
+                        -f64::from_bits(1)
+                    };
+                    for incumbent in [score, adjacent, below, f64::NAN] {
+                        let mut initial = initial;
+                        initial.score = incumbent;
+                        initial.previous_mean[0] = f64::from_bits(0x7ff8000000000017);
+                        work.used = 0;
+                        let exhaustive = search
+                            .scan::<false>(160.0, 224.0, 4.0, nominal, initial, &mut work)
+                            .unwrap();
+                        work.used = 0;
+                        let pruned = search
+                            .scan::<true>(160.0, 224.0, 4.0, nominal, initial, &mut work)
+                            .unwrap();
+                        assert_eq!(
+                            bits(exhaustive),
+                            bits(pruned),
+                            "coarse {pattern}/{direction}/{statistics}"
+                        );
+                        // Same strict winner means exactly the same local
+                        // fractional sequence, including ties/adjacent scores.
+                        let lo = (exhaustive.position - 4.0).max(160.0);
+                        let hi = (exhaustive.position + 4.0).min(224.0);
+                        work.used = 0;
+                        let exhaustive = search
+                            .scan::<false>(lo, hi, 0.125, nominal, exhaustive, &mut work)
+                            .unwrap();
+                        work.used = 0;
+                        let pruned = search
+                            .scan::<true>(lo, hi, 0.125, nominal, pruned, &mut work)
+                            .unwrap();
+                        assert_eq!(
+                            bits(exhaustive),
+                            bits(pruned),
+                            "fine {pattern}/{direction}/{statistics}"
+                        );
+                        comparisons += 2;
+                    }
+                }
+            }
+        }
+        assert_eq!(overshoot_cases, 2);
+        assert_eq!(nan_score_cases, 2);
+        assert_eq!(comparisons, 480);
+        println!(
+            "exhaustive/pruned complete-Match bit identity: {comparisons} coarse/fine comparisons, positive overlap; overshoot/zero/ties/adjacent/NaNs/stereo directions"
+        );
+    }
 }
