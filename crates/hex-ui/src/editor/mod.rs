@@ -325,6 +325,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     theme::load_fonts(cx)?;
     bind_editor_keys(cx);
     menus::install(cx, &[]);
+    dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
             cx.quit();

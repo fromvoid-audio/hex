@@ -1,3 +1,13 @@
+## project File actions after focus loss — pulse2815 / PR421
+
+Actual rendered window dispatch reproduced both New and Open being silently lost
+without focused editor elements. Four install-once File-action fallbacks now target
+only the active window's actual editor, preserving existing focused handlers and
+canonical confirmation/worker paths. Eight bounded rendered tests pass, including
+actual New/saved Open and failed-open history preservation. Native picker display
+and cancellation remain explicitly unverified; no app actions or backend changes.
+See docs/project-file-actions.md; final integration/full CI belongs to the merger.
+
 ## prepared-batch final routing validation — pulse2790 / PR396, 18 october2026
 
 Public regressions reproduced two invalid commits before repair: adding a send

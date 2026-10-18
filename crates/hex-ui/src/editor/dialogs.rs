@@ -16,6 +16,53 @@ impl ImportPromptTarget {
     }
 }
 
+struct ProjectActionsInstalled;
+impl gpui::Global for ProjectActionsInstalled {}
+
+/// Focused editor handlers run first. These four File menu fallbacks resolve the
+/// active window at dispatch time, including when its element focus was lost.
+pub(super) fn install_project_actions(cx: &mut gpui::App) {
+    if cx.has_global::<ProjectActionsInstalled>() {
+        return;
+    }
+    cx.set_global(ProjectActionsInstalled);
+    fn register<A: gpui::Action>(
+        cx: &mut gpui::App,
+        handler: fn(&mut EditorView, &mut Context<EditorView>),
+    ) {
+        cx.on_action(move |_: &A, cx| {
+            let Some(window) = cx.active_window() else {
+                cx.propagate();
+                return;
+            };
+            // The dispatching window is currently borrowed by GPUI. Resolve its
+            // root once that dispatch completes, keeping this exact window ID.
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(Some(view)) = window.root::<EditorView>() {
+                        view.update(cx, |view, cx| handler(view, cx));
+                    }
+                });
+            });
+            cx.stop_propagation();
+        });
+    }
+    register::<super::NewProject>(cx, |view, cx| {
+        view.new_project(hex_session::DocumentAudioMode::Resident);
+        cx.notify();
+    });
+    register::<super::NewStreamingProject>(cx, |view, cx| {
+        view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+        cx.notify();
+    });
+    register::<super::OpenProject>(cx, |view, cx| {
+        view.open_dialog(hex_session::DocumentAudioMode::Resident, cx);
+    });
+    register::<super::OpenStreamingProject>(cx, |view, cx| {
+        view.open_dialog(hex_session::DocumentAudioMode::VerifiedStreaming, cx);
+    });
+}
+
 impl EditorView {
     pub(super) fn open_dialog(
         &mut self,
@@ -312,3 +359,6 @@ mod tests {
         assert_eq!(pending.start, 128);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod ui_tests;
