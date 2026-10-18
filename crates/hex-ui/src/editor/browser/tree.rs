@@ -518,7 +518,11 @@ impl EditorView {
         cx.notify();
     }
 
-    pub(super) fn browser_collapse_folder(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::editor) fn browser_collapse_folder(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let entries = self.browser_visible_entries(cx);
         let Some(entry) = entries.get(self.browser.selected_index) else {
             return;

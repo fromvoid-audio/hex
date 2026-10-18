@@ -1982,7 +1982,7 @@ impl EditorView {
         let click_path = path.clone();
         let click_kind = entry.kind;
         let mut row = div()
-            .id(tree::row_id(&path))
+            .id(gpui::SharedString::from(tree::row_id(&path)))
             .debug_selector(|| format!("browser-entry-{index}"))
             .w_full()
             .min_w_0()

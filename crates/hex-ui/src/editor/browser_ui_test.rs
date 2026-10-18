@@ -394,7 +394,9 @@ fn command_f_escape_empty_query_restores_text_mode(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
-    visual.simulate_keystrokes("cmd-f down");
+    visual.simulate_keystrokes("cmd-f down right");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("down");
     let generation = editor.read_with(visual, |view, _| {
         assert!(view.browser.results_focused);
         assert_eq!(
@@ -532,6 +534,11 @@ fn command_f_category_switch_scrolls_first_result_into_view(cx: &mut TestAppCont
     let samples = visual.debug_bounds("browser-section-samples").unwrap();
     visual.simulate_mouse_down(samples.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(samples.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let root = visual.debug_bounds("browser-disclosure-0").unwrap();
+    visual.simulate_mouse_down(root.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(root.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
     editor.update(visual, |view, cx| {
         view.browser
             .scroll
@@ -2512,6 +2519,8 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
     let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
     let folder = directory.0.join("folder");
     std::fs::create_dir(&folder).unwrap();
+    let child = folder.join("project.hex");
+    std::fs::write(&child, []).unwrap();
     let visual = &mut VisualTestContext::from_window(handle, cx);
     editor.update(visual, |view, cx| {
         view.browser.section = BrowserSection::Projects;
@@ -2526,8 +2535,11 @@ fn browser_right_opens_selected_folder_without_sample_or_project_commands(cx: &m
     visual.simulate_mouse_down(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("right");
-    editor.read_with(visual, |view, _| {
-        assert_eq!(view.browser.directory, folder);
+    visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.directory, directory.0);
+        assert_eq!(view.browser.tree.icon(&folder), "▾");
+        assert_eq!(view.browser_visible_entries(cx)[1].path, child);
         assert_eq!(view.browser.playback_generation, 0);
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
@@ -3043,7 +3055,7 @@ fn browser_auto_navigation_auditions_new_selection_but_not_boundary_repeats(
     let mut visual = VisualTestContext::from_window(handle, cx);
     std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
     editor.update(&mut visual, |view, cx| {
-        view.refresh_sample_catalog(cx);
+        view.refresh_browser_tree(cx);
         cx.notify();
     });
     visual.run_until_parked();
@@ -3123,6 +3135,8 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.browser.auto_audition = false;
+        view.browser.listing = Some(hex_library::scan_directory(&directory.0).unwrap());
+        view.browser.samples.invalidate_listing();
         view.apply_sample_catalog(
             hex_library::catalog::scan_samples(std::slice::from_ref(&directory.0)).catalog,
             cx,
