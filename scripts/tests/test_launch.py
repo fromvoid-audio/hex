@@ -364,5 +364,13 @@ class LaunchTests(unittest.TestCase):
         runner.assert_not_called()
 
 
+class ForceRestartFlagTests(unittest.TestCase):
+    def test_force_restart_is_forwarded_and_can_opt_in_to_tests(self):
+        for arguments in (["--force-restart"], ["--force-restart", "--test"]):
+            with self.subTest(arguments=arguments), patch.object(launch, "run_launch") as run:
+                self.assertEqual(launch.main(list(arguments)), 0)
+                run.assert_called_once_with(argv=list(arguments))
+
+
 if __name__ == "__main__":
     unittest.main()

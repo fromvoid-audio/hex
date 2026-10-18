@@ -46,13 +46,17 @@ def sha(path: Path) -> str:
 
 
 @contextmanager
-def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False):
+def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
+                       expected_owner_sha256: str | None = None):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
     This helper never installs, activates or launches an application.
     """
-    with runner.guarded_release(adopt=adopt) as ownership:
+    recovery = {"adopt": adopt}
+    if expected_owner_sha256 is not None:
+        recovery["expected_owner_sha256"] = expected_owner_sha256
+    with runner.guarded_release(**recovery) as ownership:
         argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
         log_path = runner.output_dir / "optimized-build.log"
         with log_path.open("w") as log, \
@@ -440,7 +444,8 @@ def build(args) -> dict:
         runner.output_dir.mkdir(parents=True)
         if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
             raise DeliveryError(str(runner.summary))
-        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False)) as (binary, release_ownership):
+        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
+                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None)) as (binary, release_ownership):
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
@@ -511,7 +516,11 @@ def main() -> int:
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+    parser.add_argument("--expected-release-owner-sha256",
+                        help="require this exact previously inspected owner under the release mutation lock")
     args = parser.parse_args()
+    if args.expected_release_owner_sha256 and not args.adopt_release_target:
+        parser.error("--expected-release-owner-sha256 requires --adopt-release-target")
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
@@ -522,7 +531,7 @@ def main() -> int:
     except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
             KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
         print(f"test installation incomplete: {error}; temporary publication files preserved for retry. "
-              "save and quit hex before retrying; no process was terminated", file=sys.stderr)
+              "inspect the reported process/ownership refusal before retrying; no process was terminated", file=sys.stderr)
         return 1
 
 
