@@ -219,10 +219,17 @@ pub(super) struct BrowserState {
 }
 
 impl BrowserState {
-    pub fn new(cx: &mut Context<EditorView>, preferences_path: PathBuf) -> Self {
+    pub fn new(
+        cx: &mut Context<EditorView>,
+        preferences_path: PathBuf,
+        #[cfg(all(test, feature = "ui-test-support"))] test_home: Option<PathBuf>,
+    ) -> Self {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
+        // Explicit fixture defaults precede discovery, catalog roots and fallback.
+        #[cfg(all(test, feature = "ui-test-support"))]
+        let home = test_home.unwrap_or(home);
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
         let mut previous_query = String::new();
