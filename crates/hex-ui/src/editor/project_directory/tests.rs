@@ -1,7 +1,7 @@
 use super::*;
-use crate::editor::{OpenProject, SaveAsProject, SaveProject};
+use crate::editor::OpenProject;
 use gpui::{AppContext, TestAppContext, VisualTestContext};
-use hex_session::service::{Request, Service};
+use hex_session::service::Service;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct Directory(PathBuf);
