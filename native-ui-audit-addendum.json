@@ -1,0 +1,18 @@
+{
+  "kind": "native-eligibility-correction-evidence-only",
+  "source": "82adfad380cbf29eca9fa64c7ef68dd33c239fe5",
+  "original_evidence": "9426cb54a6837a9920a36c1258cd6eca1306898f",
+  "pulse_note": 24134,
+  "native_ui_status": "WITHDRAWN_PENDING_PRIVATE_BOUNDED_FIXTURE_PATCH",
+  "withdrawn_selectors": [
+    "editor::track_gain::tests (4)",
+    "header_volume_begin_obeys (1)"
+  ],
+  "cause": "EditorView::new directly or through clip_drag_ui_test::editor_window starts ambient browser/preferences discovery. Offline audio does not bound it. Exact82 lacks merged363 test constructor. Cloud original reports unchanged; no native UI acceptance claimed.",
+  "separate_selectors": [
+    "hex-session --test track_gain_gesture (7)",
+    "hex-widgets compact_slider_fits_header_slot (1)",
+    "hex-audio allocation-probe --test track_gain_allocations (3 debug / 3 release)"
+  ],
+  "proposed_repair": "Private test-only delta on actual merged363+331 integration; use existing new_for_test_with_browser_directory and retained disposable paths before worker startup. No constructor/mod changes, HOME changes, guard/report edits or native dispatch."
+}
