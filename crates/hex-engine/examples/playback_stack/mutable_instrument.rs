@@ -67,8 +67,12 @@ impl NativeInstrumentDefinition for ProbeInstrumentDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
+        if !context.tuning.is_neutral() {
+            return Err(hex_lattice_contract::DeviceContractError::UnsupportedProcessingClass);
+        }
         if sample_rate != RATE || state.type_id() != MUTABLE_TYPE || state.state_version() != 1 {
             return Err(DeviceContractError::MalformedState);
         }
@@ -145,6 +149,7 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
         if events.len() > 256 || frame_count > 256 {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
@@ -208,7 +213,12 @@ impl MutableInstrumentRuntime for ProbeRuntime {
         Ok(())
     }
 
-    fn process_block(&mut self, events: &[NativeInstrumentEvent], frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         let mut event_index = 0;
         for (frame_index, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.get(event_index).copied() {

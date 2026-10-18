@@ -38,7 +38,11 @@ impl PreparedNativeProcessor for FiniteHold {
     }
 }
 impl NativeProcessorRuntime for HoldRuntime {
-    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [[f32; 2]],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             if *frame != [0.0; 2] {
                 self.held = *frame;

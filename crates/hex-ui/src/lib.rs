@@ -1,4 +1,6 @@
 //! GPUI UI service; device output is supplied by the desktop composition root.
+mod mts;
+pub use mts::install_mts_publisher;
 mod app;
 mod build_info;
 mod context_menu;

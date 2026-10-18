@@ -81,10 +81,10 @@ fn concrete_complete_bindings_measure_storage_overflow_instead_of_force_fit() {
     assert_eq!(size_of::<Handle>(), 24);
     assert_eq!(size_of::<PoolLayout>(), 104);
     assert_eq!(pool_bytes(), 2_853_688);
-    assert_eq!(context_bytes(), 2612);
+    assert_eq!(context_bytes(), 2628);
     let charge = size_of::<Slot>() + context_bytes();
     let recipes = 2 * 1024 * 1024 / charge;
-    assert_eq!(recipes, 411);
+    assert_eq!(recipes, 409);
     assert!(recipes * charge <= 2 * 1024 * 1024);
     assert!((recipes + 1) * charge > 2 * 1024 * 1024);
     assert_eq!(size_of::<OriginalPair>(), 8112);
@@ -134,7 +134,9 @@ fn legacy_builtin_endpoint_is_exact_and_retains_512_cap_not_64_truncation() {
         }
         for age in 1..1024 {
             let actual = root.builtin_endpoint(bank, &note, age, u64::MAX).unwrap();
-            let expected = root.context.sample(&note, age, u64::MAX);
+            let expected =
+                root.context
+                    .sample(&note, age, u64::MAX, &hex_lattice::EMPTY_DEVICE_RESOURCES);
             assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
             witnessed_nonzero |= actual[0] != 0.0;
             if choice != 0 {
@@ -308,7 +310,11 @@ fn seventeen_twentyfive_and_sixtyfour_notes_keep_occurrence_gate_time_and_detach
             assert_eq!(note.recipe.generation, 1);
             let age = 160 - note.onset;
             let gate = note.gate.unwrap_or(u64::MAX);
-            assert!(root.context.sample(&note.note, age, gate)[0].is_finite());
+            assert!(
+                root.context
+                    .sample(&note.note, age, gate, &hex_lattice::EMPTY_DEVICE_RESOURCES)[0]
+                    .is_finite()
+            );
         }
         assert_ne!(notes[0].enable, detached[0].enable);
     }

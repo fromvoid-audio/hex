@@ -123,7 +123,7 @@ fn ordered_tracks_pcm_paths_and_whole_batch_undo_redo_without_files() {
             .collect::<Vec<_>>(),
         vec![ids[0].0, ids[1].0, anchor]
     );
-    assert_eq!(s.resident_frames(), 32);
+    assert_eq!(s.resident_frames(), 42);
     for (i, (_, asset, clip)) in ids.iter().enumerate() {
         let metadata = s.project().assets().find(|a| a.id() == *asset).unwrap();
         assert_eq!(
@@ -149,7 +149,7 @@ fn ordered_tracks_pcm_paths_and_whole_batch_undo_redo_without_files() {
     let after = s.project().clone();
     assert!(s.undo());
     assert_eq!(s.project().tracks().len(), before.tracks().len());
-    assert_eq!(s.resident_frames(), 32);
+    assert_eq!(s.resident_frames(), 42);
     assert!(s.redo());
     assert_eq!(s.project(), &after);
 }

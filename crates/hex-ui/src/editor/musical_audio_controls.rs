@@ -4,6 +4,7 @@ use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::{BeatTime, BeatsPreserve, BeatsTail, ClipId, WarpMode};
 mod actions;
+pub(crate) mod sample_bpm;
 use actions::{Action, command, mode_name, modes};
 #[cfg(test)]
 use hex_project::Command;
@@ -13,6 +14,74 @@ struct Capture {
     clip: ClipId,
     revision: u64,
     generation: u64,
+}
+/// Selected-clip stretch controls stay above the scrollable source fields.
+pub(super) fn warp_header(
+    view: &mut EditorView,
+    clip_id: ClipId,
+    cx: &mut Context<EditorView>,
+) -> Div {
+    let mut controls = div().flex().flex_col().gap(px(2.0)).flex_shrink_0();
+    let Some(state) = view.state.as_ref() else {
+        return controls;
+    };
+    let Some(clip) = state.project.clip(clip_id) else {
+        return controls;
+    };
+    let capture = Capture {
+        clip: clip_id,
+        revision: state.revision,
+        generation: view.project_generation,
+    };
+    let domain = clip.audio_edit().map(|edit| edit.domain.as_ref());
+    let active = domain.is_some_and(|domain| domain.warp_enabled);
+    let mode = domain
+        .and_then(|domain| domain.warp.as_ref())
+        .map_or(modes()[0], |warp| warp.mode);
+    controls = controls.child(
+        button(
+            capture,
+            if active { "warp · on" } else { "warp · off" },
+            Action::Warp,
+            view.edit_pending(),
+            cx,
+        )
+        .debug_selector(|| "audio-clip-warp-toggle".into()),
+    );
+    controls = controls.child(sample_bpm::field(view, clip_id, cx));
+    if active {
+        controls = controls.child(musical_control_label(&format!(
+            "algorithm · {}",
+            mode_name(mode)
+        )));
+        // Direct choices expose only algorithms backed by the existing worker.
+        for (row_index, choices) in modes().chunks(2).enumerate() {
+            let mut row = div().flex().gap(px(2.0));
+            for (column, choice) in choices.iter().enumerate() {
+                let index = (row_index * 2 + column) as u8;
+                let selected = std::mem::discriminant(choice) == std::mem::discriminant(&mode);
+                row = row.child(
+                    button(
+                        capture,
+                        mode_name(*choice),
+                        Action::SelectMode(index),
+                        view.edit_pending(),
+                        cx,
+                    )
+                    .flex_1()
+                    .border_1()
+                    .border_color(rgb(theme::color(if selected {
+                        theme::PaletteRole::Text
+                    } else {
+                        theme::PaletteRole::Border
+                    })))
+                    .debug_selector(move || format!("audio-clip-warp-mode-{index}")),
+                );
+            }
+            controls = controls.child(row);
+        }
+    }
+    controls
 }
 pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorView>) -> Div {
     let mut controls = div().flex().flex_col().gap(px(2.0));
@@ -54,22 +123,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
         view.edit_pending(),
         cx,
     ));
-    controls = controls.child(button(
-        capture,
-        if active { "warp · on" } else { "warp · off" },
-        Action::Warp,
-        view.edit_pending(),
-        cx,
-    ));
     if active {
-        controls = controls.child(musical_control_row(
-            capture,
-            mode_name(mode).into(),
-            Action::Mode(-1),
-            Action::Mode(1),
-            view.edit_pending(),
-            cx,
-        ));
         match mode {
             WarpMode::RePitch => {
                 controls =
@@ -379,6 +433,7 @@ fn button(
 }
 fn action_key(action: Action) -> String {
     match action {
+        Action::SelectMode(index) => format!("mode-{index}"),
         Action::MarkerFrame(i, d) => format!("marker-frame-{i}-{d}"),
         Action::MarkerBeat(i, d) => format!("marker-beat-{i}-{d}"),
         Action::MarkerRemove(i) => format!("marker-remove-{i}"),
@@ -396,12 +451,6 @@ fn action_key(action: Action) -> String {
                     },
                 Action::Anchor => 2,
                 Action::Warp => 3,
-                Action::Mode(v) =>
-                    if v < 0 {
-                        4
-                    } else {
-                        5
-                    },
                 Action::Grain(v) =>
                     if v < 0 {
                         6
@@ -449,109 +498,6 @@ fn action_key(action: Action) -> String {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn point_pages_clamp_to_current_clip_and_modes_dispatch_real_typed_commands() {
-        assert_eq!(clamped_page(127, 2), 0);
-        assert_eq!(clamped_page(127, 0), 0);
-        assert_eq!(clamped_page(127, 9), 1);
-        let mut editor =
-            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 32).unwrap();
-        let hex_project::Created::Imported { clip, .. } = editor
-            .execute(Command::ImportAudioTrack {
-                name: "audio".into(),
-                path: "audio.wav".into(),
-                sample_rate: 48_000,
-                frames: 48_000,
-            })
-            .unwrap()
-        else {
-            panic!("import")
-        };
-        editor
-            .execute(command(editor.project(), clip, Action::Warp).unwrap())
-            .unwrap();
-        for expected in modes() {
-            assert_eq!(
-                std::mem::discriminant(
-                    &editor
-                        .project()
-                        .clip(clip)
-                        .unwrap()
-                        .audio_edit()
-                        .unwrap()
-                        .domain
-                        .warp
-                        .as_ref()
-                        .unwrap()
-                        .mode
-                ),
-                std::mem::discriminant(&expected)
-            );
-            editor
-                .execute(command(editor.project(), clip, Action::Mode(1)).unwrap())
-                .unwrap();
-        }
-        editor
-            .execute(command(editor.project(), clip, Action::MarkerAdd).unwrap())
-            .unwrap();
-        assert_eq!(
-            editor
-                .project()
-                .clip(clip)
-                .unwrap()
-                .audio_edit()
-                .unwrap()
-                .domain
-                .warp
-                .as_ref()
-                .unwrap()
-                .markers
-                .len(),
-            3
-        );
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeAdd).unwrap())
-            .unwrap();
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeGain(0, -1)).unwrap())
-            .unwrap();
-        assert!(
-            editor
-                .project()
-                .clip(clip)
-                .unwrap()
-                .audio_edit()
-                .unwrap()
-                .domain
-                .source_gain[0]
-                .gain_q16
-                < 65_536
-        );
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeRemove(1)).unwrap())
-            .unwrap();
-        let retained = editor
-            .project()
-            .clip(clip)
-            .unwrap()
-            .audio_edit()
-            .unwrap()
-            .domain
-            .source_gain[0];
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeAdd).unwrap())
-            .unwrap();
-        let points = &editor
-            .project()
-            .clip(clip)
-            .unwrap()
-            .audio_edit()
-            .unwrap()
-            .domain
-            .source_gain;
-        assert_eq!(points.len(), 2);
-        assert!(points.contains(&retained));
-    }
-}
+mod tests;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod ui_tests;

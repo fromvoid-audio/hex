@@ -43,6 +43,14 @@ impl Default for ComputerKeyboard {
 }
 
 impl ComputerKeyboard {
+    pub(super) fn accepts_key(&self, key: &str) -> bool {
+        self.enabled && (NOTE_KEYS.contains(&key) || matches!(key, "z" | "x" | "c" | "v"))
+    }
+    pub(super) fn desired_notes(&self) -> [Option<(u8, u8, u64)>; 17] {
+        std::array::from_fn(|slot| {
+            self.held[slot].map(|note| (note.pitch, note.velocity, self.tokens[slot]))
+        })
+    }
     /// Disable and lifecycle cancellation forget physical ownership together.
     pub fn release_all(&mut self) {
         self.held.fill(None);
@@ -242,6 +250,7 @@ impl super::EditorView {
     ) -> bool {
         !modifiers.modified()
             && !self.theme_settings.open
+            && !self.tuning.open
             && self.context_menu.is_none()
             && !self.opening_project
             && !self.close_prompt_open
