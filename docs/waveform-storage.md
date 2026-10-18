@@ -20,11 +20,23 @@ visit cannot suppress unvisited nested storage. Equal-content independent owners
 remain separate. Unknown PCM remains Unknown even inside a qualified outer body.
 
 Resident imports, batch imports, transformed-clip roots and browser previews
-construct fresh paired owners. Session/ViewState exports and retained waveform
-geometry caches clone that same paired handle. Cache comparisons use allocation
-equality only for reuse; geometry/mapping and accepted-root requirements remain
-the same. Container entries account for the larger inline owner facade through
-their actual element sizes. None of these operations copies PCM.
+construct fresh paired owners. Session/ViewState exports retain that same
+paired handle. The existing geometry LRU now retains only ready paths and a
+nonowning immutable `SharedMetadataCacheIdentity`, not a waveform/PCM handle.
+Fresh paired construction assigns a checked monotonically increasing version;
+clones preserve it. Versions never wrap or reuse an address, and exhaustion
+disables caching. Identity equality permits cache reuse only, never provenance,
+resource admission, physical storage deduplication or source lifetime. The inline
+version is charged by the enclosing facade/container's actual size. Geometry,
+mapping, sampling, drag behavior and cache budgets remain unchanged. None of
+these operations copies PCM.
+
+This removes one exported owning-field family only. Paint closures, canonical
+and preview snapshot capabilities, pending events and retained readers still need
+the sealed snapshot-export boundary and independently bounded control retirement
+specified by primary decision Pulse2783/21809. A raw `Arc<ViewState>` capture is
+not sufficient. Native endpoint/device-lease retirement must not wait for GUI
+readers or occupy its lifecycle lane until they release.
 
 The boundary has targeted accounting, raw-ingress/mutable-escape privacy,
 unknown-child and control-replacement tests. A compiled test is not an executed

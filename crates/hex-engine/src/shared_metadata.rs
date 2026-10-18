@@ -2,6 +2,32 @@
 //! Only the fresh sized outer allocation is qualified. Payload children must
 //! be visited by their owning module; this is never whole-graph admission.
 use crate::owned_shared::OwnedShared;
+use std::{
+    num::NonZeroU64,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+/// Nonowning immutable cache version. Equality permits geometry reuse only;
+/// this retains no allocation and proves no storage provenance or lifetime.
+/// Values cannot be fabricated, adopted from an address, or reused after wrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// ```compile_fail
+/// let _ = hex_engine::SharedMetadataCacheIdentity(1);
+/// ```
+pub struct SharedMetadataCacheIdentity(NonZeroU64);
+
+fn next_cache_identity(counter: &AtomicU64) -> Option<SharedMetadataCacheIdentity> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+        .and_then(NonZeroU64::new)
+        .map(SharedMetadataCacheIdentity)
+}
 
 /// Immutable control-side metadata. Clone/move preserve the receipt beside the
 /// actual owner. Allocation and potentially final drops belong on control.
@@ -22,6 +48,7 @@ use crate::owned_shared::OwnedShared;
 #[derive(Debug)]
 pub struct SharedMetadata<T> {
     owner: OwnedShared<T>,
+    cache_identity: Option<SharedMetadataCacheIdentity>,
 }
 impl<T> SharedMetadata<T> {
     /// Consume the fresh owned value once through the existing sized shared
@@ -30,7 +57,14 @@ impl<T> SharedMetadata<T> {
     pub fn new_on_control(value: T) -> Self {
         Self {
             owner: OwnedShared::new_owned(value),
+            cache_identity: next_cache_identity(&NEXT_CACHE_IDENTITY),
         }
+    }
+    /// A stable version shared only by clones of this exact immutable owner.
+    /// Exhaustion disables cache reuse; it never wraps or invents provenance.
+    /// The enclosing wrapper's actual size includes this inline scalar.
+    pub fn cache_identity(&self) -> Option<SharedMetadataCacheIdentity> {
+        self.cache_identity
     }
     /// Allocation equality for cache reuse only; never source provenance.
     pub fn shares_owner_with(&self, other: &Self) -> bool {
@@ -49,6 +83,7 @@ impl<T> Clone for SharedMetadata<T> {
     fn clone(&self) -> Self {
         Self {
             owner: self.owner.clone_on_control(),
+            cache_identity: self.cache_identity,
         }
     }
 }
@@ -110,6 +145,53 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
 mod tests {
     use super::*;
     use crate::{AudioRootStorageLedger, AudioStorageError, AudioStorageLedgerReservation};
+    #[test]
+    fn cache_versions_are_nonowning_unique_and_never_wrap() {
+        let owner = SharedMetadata::new_on_control([3_u8; 8]);
+        let version = owner.cache_identity().unwrap();
+        let alias = owner.clone();
+        assert_eq!(alias.cache_identity(), Some(version));
+        let equal = SharedMetadata::new_on_control([3_u8; 8]);
+        assert_ne!(equal.cache_identity(), Some(version));
+        let count = std::sync::Arc::strong_count(owner.owner.arc());
+        for _ in 0..128 {
+            assert_eq!(owner.cache_identity(), Some(version));
+        }
+        assert_eq!(std::sync::Arc::strong_count(owner.owner.arc()), count);
+        drop(alias);
+        drop(owner);
+        // An old nonowning cache key cannot match any later allocation, even
+        // if an allocator subsequently reuses the same address.
+        assert_ne!(
+            SharedMetadata::new_on_control([3_u8; 8]).cache_identity(),
+            Some(version)
+        );
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(
+            next_cache_identity(&counter),
+            Some(SharedMetadataCacheIdentity(
+                NonZeroU64::new(u64::MAX - 1).unwrap()
+            ))
+        );
+        assert_eq!(next_cache_identity(&counter), None);
+        assert_eq!(next_cache_identity(&counter), None);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn a_retained_cache_version_does_not_retain_the_payload() {
+        DROPS.with(|drops| drops.set(0));
+        let version = {
+            let owner = SharedMetadata::new_on_control(Leaf);
+            owner.cache_identity().unwrap()
+        };
+        DROPS.with(|drops| assert_eq!(drops.get(), 1));
+        // Copying/retaining the cache key has no owner and cannot delay Drop.
+        let retained_key = version;
+        assert_eq!(retained_key, version);
+        DROPS.with(|drops| assert_eq!(drops.get(), 1));
+    }
+
     fn reservation() -> AudioStorageLedgerReservation {
         AudioStorageLedgerReservation {
             data_rows: 16,
@@ -166,6 +248,7 @@ mod tests {
     fn shared_metadata_private_untracked_owner_stays_unknown_even_when_unique() {
         let owner = SharedMetadata {
             owner: OwnedShared::untracked(std::sync::Arc::new([1_u64; 4])),
+            cache_identity: None,
         };
         let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation()).unwrap();
         assert_eq!(

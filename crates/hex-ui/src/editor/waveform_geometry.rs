@@ -16,8 +16,8 @@ use super::waveform::{
 const MAX_CACHED_WAVEFORM_ENTRIES: usize = 512;
 const MAX_CACHED_WAVEFORM_COLUMNS: usize = 65_536;
 
-/// UI-owned LRU of ready-to-paint waveform geometry. Entries retain their source
-/// Arc, so pointer identity cannot be reused while an entry is resident.
+/// UI-owned LRU of ready-to-paint geometry and nonowning immutable versions.
+/// No entry retains a waveform or PCM; checked versions are never reused.
 #[derive(Default)]
 pub(super) struct WaveformGeometryCache {
     entries: VecDeque<WaveformGeometryEntry>,
@@ -26,7 +26,7 @@ pub(super) struct WaveformGeometryCache {
 
 struct WaveformGeometryEntry {
     key: WaveformGeometryKey,
-    source: hex_session::SharedWaveform,
+    source: hex_engine::SharedMetadataCacheIdentity,
     geometry: Arc<WaveformGeometry>,
     columns: usize,
 }
@@ -86,7 +86,7 @@ pub(super) struct WaveformChannelGeometry {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) struct RenderedWaveformSample {
-    pub(super) source: hex_session::SharedWaveform,
+    pub(super) source: hex_engine::SharedMetadataCacheIdentity,
     pub(super) prepared: Option<(u64, u64)>,
     pub(super) spans: [f32; 2],
 }
@@ -97,10 +97,11 @@ impl WaveformGeometryCache {
         key: WaveformGeometryKey,
         source: &hex_session::SharedWaveform,
     ) -> Option<Arc<WaveformGeometry>> {
+        let source = source.cache_identity()?;
         let index = self
             .entries
             .iter()
-            .position(|entry| entry.key == key && entry.source.shares_owner_with(source))?;
+            .position(|entry| entry.key == key && entry.source == source)?;
         let entry = self.entries.remove(index)?;
         let geometry = Arc::clone(&entry.geometry);
         self.entries.push_back(entry);
@@ -110,10 +111,13 @@ impl WaveformGeometryCache {
     fn insert(
         &mut self,
         key: WaveformGeometryKey,
-        source: hex_session::SharedWaveform,
+        source: &hex_session::SharedWaveform,
         geometry: Arc<WaveformGeometry>,
         columns: usize,
     ) {
+        let Some(source) = source.cache_identity() else {
+            return;
+        };
         if columns == 0 || columns > MAX_CACHED_WAVEFORM_COLUMNS {
             return;
         }
@@ -158,7 +162,7 @@ impl WaveformGeometryCache {
         self.entries
             .iter()
             .map(|entry| RenderedWaveformSample {
-                source: entry.source.clone(),
+                source: entry.source,
                 prepared: match entry.key.mapping {
                     WaveformMappingKey::Prepared {
                         timeline_origin,
@@ -271,12 +275,7 @@ pub(super) fn cached_waveform_geometry(
         request.grid,
     )?);
     if let Ok(mut cache) = cache.try_borrow_mut() {
-        cache.insert(
-            key,
-            waveform.clone(),
-            Arc::clone(&geometry),
-            geometry.columns,
-        );
+        cache.insert(key, waveform, Arc::clone(&geometry), geometry.columns);
     }
     Some(geometry)
 }
@@ -798,7 +797,7 @@ mod tests {
         let cache_key = key(0, extent);
         let geometry = geometry(&source, 0, extent);
         let mut cache = WaveformGeometryCache::default();
-        cache.insert(cache_key.clone(), source.clone(), Arc::clone(&geometry), 32);
+        cache.insert(cache_key.clone(), &source, Arc::clone(&geometry), 32);
         assert!(Arc::ptr_eq(
             &cache.get(cache_key.clone(), &source).expect("cache hit"),
             &geometry,
@@ -807,8 +806,8 @@ mod tests {
             cache
                 .entries
                 .iter()
-                .any(|entry| entry.source.shares_owner_with(&source)),
-            "cache retains source identity"
+                .any(|entry| Some(entry.source) == source.cache_identity()),
+            "cache retains only a nonowning immutable source version"
         );
 
         let resized = Bounds::new(extent.origin, size(px(1201.0), extent.size.height));
@@ -829,6 +828,39 @@ mod tests {
         assert!(cache.get(key(1, extent), &source).is_none());
         let different_source = waveform();
         assert!(cache.get(cache_key, &different_source).is_none());
+    }
+
+    #[test]
+    fn geometry_cache_keeps_paths_without_retaining_or_reusing_a_retired_source() {
+        let extent = bounds();
+        let cache_key = key(0, extent);
+        let mut cache = WaveformGeometryCache::default();
+        let old_version = {
+            let old_source = waveform();
+            let version = old_source.cache_identity().unwrap();
+            cache.insert(
+                cache_key.clone(),
+                &old_source,
+                geometry(&old_source, 0, extent),
+                32,
+            );
+            version
+        };
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.entries[0].source, old_version);
+        // The cache entry contains no source owner. Retained geometry remains
+        // valid after the old source is gone, but cannot stand in for a new one.
+        let old_geometry = Arc::clone(&cache.entries[0].geometry);
+        let replacement = waveform();
+        assert_ne!(replacement.cache_identity(), Some(old_version));
+        assert!(cache.get(cache_key.clone(), &replacement).is_none());
+        let fresh = geometry(&replacement, 0, extent);
+        cache.insert(cache_key.clone(), &replacement, Arc::clone(&fresh), 32);
+        assert!(Arc::ptr_eq(
+            &cache.get(cache_key, &replacement).unwrap(),
+            &fresh
+        ));
+        assert!(!Arc::ptr_eq(&old_geometry, &fresh));
     }
 
     #[test]
@@ -874,12 +906,7 @@ mod tests {
         for index in 0..13_u64 {
             let origin = index * 96_000;
             let cache_key = key(origin, extent);
-            cache.insert(
-                cache_key,
-                source.clone(),
-                geometry(&source, origin, extent),
-                4_000,
-            );
+            cache.insert(cache_key, &source, geometry(&source, origin, extent), 4_000);
         }
         assert_eq!(cache.entries.len(), 13);
         assert_eq!(cache.columns, 52_000);
@@ -952,12 +979,7 @@ mod tests {
         let path_geometry = geometry(&source, 0, extent);
         let mut entry_bounded = WaveformGeometryCache::default();
         for index in 0..(MAX_CACHED_WAVEFORM_ENTRIES + 1) as u64 {
-            entry_bounded.insert(
-                key(index, extent),
-                source.clone(),
-                Arc::clone(&path_geometry),
-                1,
-            );
+            entry_bounded.insert(key(index, extent), &source, Arc::clone(&path_geometry), 1);
         }
         assert_eq!(entry_bounded.entries.len(), MAX_CACHED_WAVEFORM_ENTRIES);
         assert!(entry_bounded.get(key(0, extent), &source).is_none());
@@ -967,7 +989,7 @@ mod tests {
         for index in 0..17_u64 {
             column_bounded.insert(
                 key(index, extent),
-                source.clone(),
+                &source,
                 Arc::clone(&path_geometry),
                 MAX_WAVEFORM_COLUMNS_FOR_TEST,
             );

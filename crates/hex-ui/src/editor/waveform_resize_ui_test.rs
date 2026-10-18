@@ -334,7 +334,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                             let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
                             (preview.start(), offset)
                         });
-                        let root_matches = (rendered[0].source).shares_owner_with(expected_source);
+                        let root_matches = Some(rendered[0].source) == expected_source.cache_identity();
                         if !rendered[0].spans.iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping
                         {
@@ -369,7 +369,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         rendered[0].spans.iter().all(|span| *span > 1.0),
                         "waveform must remain visible after the drag ends"
                     );
-                    assert!((rendered[0].source).shares_owner_with(expected_source));
+                    assert!(Some(rendered[0].source) == expected_source.cache_identity());
                 });
             }
         }
