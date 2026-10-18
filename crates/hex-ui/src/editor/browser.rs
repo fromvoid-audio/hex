@@ -2064,16 +2064,17 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    // Even a stale painted row leaves query editing; availability
+                    // still gates every selection/audition/import action below.
+                    view.browser.results_focus.focus(window);
+                    window.prevent_default();
                     if view.browser_place_unavailable() {
+                        cx.notify();
                         cx.stop_propagation();
                         return;
                     }
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
-                    view.browser.results_focus.focus(window);
-                    // Keep the editor's focusable ancestor from replacing the
-                    // explicit browser focus during this mouse-down's bubble.
-                    window.prevent_default();
                     view.browser_selection_audition(
                         (click_kind == EntryKind::WaveAudio).then(|| click_path.clone()),
                         cx,
