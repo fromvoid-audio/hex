@@ -129,13 +129,17 @@ impl ScanCoordinator {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The one selected source across all picker groups during this session. `directory` is only
+/// the current bounded folder location, never another selected source.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) enum BrowserSection {
     All,
     #[default]
     Samples,
     Instruments,
     Projects,
+    Place(PathBuf),
+    Collection(usize),
 }
 
 enum BrowserItemKey {
@@ -515,6 +519,41 @@ impl EditorView {
                     error.to_string().to_lowercase()
                 ),
             });
+        }
+    }
+
+    fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
+        self.browser.scans.generation = self.browser.scans.generation.saturating_add(1);
+        self.browser.scans.pending = None;
+        self.browser.loading = false;
+        self.browser.error = None;
+        self.browser.section = source;
+        self.reset_browser_results();
+        match &self.browser.section {
+            BrowserSection::Place(path) => self.request_browser_scan(path.clone(), cx),
+            BrowserSection::All | BrowserSection::Projects => {
+                if self
+                    .browser
+                    .listing
+                    .as_ref()
+                    .is_none_or(|listing| listing.directory != self.browser.directory)
+                {
+                    self.request_browser_scan(self.browser.directory.clone(), cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn reconcile_browser_source(&mut self, cx: &mut Context<Self>) {
+        if matches!(&self.browser.section, BrowserSection::Place(path) if !self.browser.places.contains(path))
+        {
+            let mut catalog = self.browser.samples.catalog.clone();
+            catalog.retain_roots(&self.sample_roots());
+            self.browser.samples.replace(catalog);
+            self.select_browser_source(BrowserSection::Samples, cx);
+            self.refresh_sample_catalog(cx);
+            self.browser.places_status = Some("selected place removed · showing samples".into());
         }
     }
 
@@ -1125,7 +1164,8 @@ impl EditorView {
                     self.browser.loading = false;
                 }
                 Err(_)
-                    if request.directory == self.browser.music
+                    if !matches!(self.browser.section, BrowserSection::Place(_))
+                        && request.directory == self.browser.music
                         && self.browser.music != self.browser.home
                         && next.is_none() =>
                 {
@@ -1208,7 +1248,7 @@ impl EditorView {
             self.close_controller_input_menu(window, cx);
         }
         self.browser.open = true;
-        self.browser.section = BrowserSection::All;
+        self.select_browser_source(BrowserSection::All, cx);
         self.browser.layout.reveal_all();
         self.reset_browser_results();
         self.browser.search.update(cx, |input, cx| {
@@ -1355,21 +1395,20 @@ impl EditorView {
             .listing
             .as_ref()
             .filter(|listing| listing.directory == self.browser.directory);
-        match self.browser.section {
+        match &self.browser.section {
             BrowserSection::Samples => self.browser.samples.visible(&query),
+            BrowserSection::Place(_) if self.browser.error.is_some() => Arc::new(Vec::new()),
+            BrowserSection::Place(root) if !query.is_empty() => self
+                .browser
+                .samples
+                .visible_with_listing(&query, Some(root), listing),
+            BrowserSection::Place(_) => self.browser.samples.folder(&query, listing, false),
+            BrowserSection::Collection(_) => Arc::new(Vec::new()),
             BrowserSection::All => self
                 .browser
                 .samples
                 .visible_with_listing(&query, None, listing),
-            BrowserSection::Projects => Arc::new(
-                listing
-                    .into_iter()
-                    .flat_map(|listing| listing.entries.iter())
-                    .filter(|entry| entry.kind != EntryKind::WaveAudio)
-                    .filter(|entry| query.is_empty() || entry.name.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect(),
-            ),
+            BrowserSection::Projects => self.browser.samples.folder(&query, listing, true),
             BrowserSection::Instruments => Arc::new(Vec::new()),
         }
     }
@@ -1424,9 +1463,10 @@ impl EditorView {
             return rail;
         }
 
+        self.reconcile_browser_source(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
-        let section = self.browser.section;
+        let section = self.browser.section.clone();
         if matches!(section, BrowserSection::All | BrowserSection::Instruments)
             && self.browser.device_catalog.is_none()
         {
@@ -1492,7 +1532,10 @@ impl EditorView {
         if section == BrowserSection::Samples {
             panel = panel.child(self.sample_filters(cx));
         }
-        if matches!(section, BrowserSection::All | BrowserSection::Projects) {
+        if matches!(
+            section,
+            BrowserSection::All | BrowserSection::Projects | BrowserSection::Place(_)
+        ) {
             panel =
                 panel.child(
                     div()
@@ -1506,8 +1549,8 @@ impl EditorView {
                             "↑",
                             "parent folder",
                             |view, _, cx| {
-                                if let Some(parent) =
-                                    view.browser.directory.parent().map(PathBuf::from)
+                                if !matches!(&view.browser.section, BrowserSection::Place(root) if *root == view.browser.directory)
+                                    && let Some(parent) = view.browser.directory.parent().map(PathBuf::from)
                                 {
                                     view.request_browser_scan(parent, cx);
                                 }
@@ -1560,6 +1603,16 @@ impl EditorView {
             }
         }
         match section {
+            BrowserSection::Collection(_) => {
+                panel = panel.child(
+                    div()
+                        .flex_1()
+                        .px_2()
+                        .pt_2()
+                        .text_xs()
+                        .child(theme::text("collection assignments pending")),
+                );
+            }
             BrowserSection::Instruments => {
                 match self
                     .browser
@@ -2239,8 +2292,10 @@ impl EditorView {
                                 }
                             }
                             view.refresh_sample_catalog(cx);
-                            if view.browser.section != BrowserSection::Samples {
-                                view.request_browser_scan(path, cx);
+                            if view.browser.section != BrowserSection::Samples
+                                && view.browser.places.contains(&path)
+                            {
+                                view.select_browser_source(BrowserSection::Place(path), cx);
                             }
                         }
                     }
