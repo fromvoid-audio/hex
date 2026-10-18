@@ -475,5 +475,213 @@ runpy.run_path(entry,run_name='__main__')
                 notes.workspace_version(raw)
 
 
+    def test_explicit_followup_base_cannot_skip_or_overlap_covered_history(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        self.commit('retain first notes')
+        (self.root / 'feature.txt').write_text('middle change\n')
+        middle = self.commit('middle change')
+        (self.root / 'feature.txt').write_text('last change\n')
+        current = self.commit('last change')
+        before = (self.root / notes.DATASET).read_bytes()
+        calls = []
+        def model(*_):
+            calls.append(True)
+            return {'entries': [], 'reason': 'injected fixture'}
+        for base in (middle, self.base):
+            with self.subTest(base=base):
+                with self.assertRaisesRegex(notes.Refusal, 'continuation'):
+                    notes.prepare(self.root, base, source=current, model=model)
+                self.assertEqual(calls, [])
+                self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
+
+    def test_history_independently_refuses_a_gap_or_overlap(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        self.commit('first notes')
+        (self.root / 'feature.txt').write_text('middle\n')
+        middle = self.commit('middle')
+        (self.root / 'feature.txt').write_text('last\n')
+        current = self.commit('last')
+        dataset = notes.load_dataset(self.root / notes.DATASET)
+        previous = notes.validate_history(self.root, dataset)
+        for base in (middle, self.base):
+            packet = notes.input_packet(self.root, base, current)
+            batch = {'input': notes.packet_identity(packet, previous), 'input_sha256': notes.digest(notes.encode(packet)),
+                     'generated_at': '2026-10-18T20:00:00Z', 'generator': 'configured codex cli',
+                     'result': {'entries': [], 'reason': 'injected fixture'}}
+            with self.subTest(base=base), self.assertRaisesRegex(notes.Refusal, 'continuation'):
+                notes.validate_history(self.root, {'format': 1, 'batches': dataset['batches'] + [batch]})
+
+    def test_git_diff_is_capped_during_read_not_after_communicate(self):
+        from unittest.mock import patch
+        original = subprocess.Popen
+        class BoundedDiff(original):
+            def communicate(self, *args, **kwargs):
+                if 'diff' in self.args:
+                    raise AssertionError('unbounded diff communicate before input limit')
+                return super().communicate(*args, **kwargs)
+        (self.root / 'large.txt').write_text('large source line\n' * 5000)
+        current = self.commit('large diff fixture')
+        with patch.object(notes, 'MAX_INPUT', 2048), patch.object(notes.subprocess, 'Popen', BoundedDiff):
+            with self.assertRaisesRegex(notes.Refusal, 'limit|512 KiB'):
+                notes.input_packet(self.root, self.base, current)
+
+    def test_import_requires_integer_exit_and_attempts_not_boolean_aliases(self):
+        directory = self.root / 'packet'
+        notes.export_packet(directory, notes.input_packet(self.root, self.base, self.source))
+        result = self.root / 'result.json'
+        result.write_bytes(notes.encode(self.model(directory, 120)))
+        execution = self.root / 'execution.json'
+        for exit_code, attempts in ((False, 1), (0, True)):
+            execution.write_bytes(notes.encode({'exit_code': exit_code, 'timed_out': False, 'attempts': attempts,
+                'result_exists': True, 'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T20:00:00Z'}))
+            evidence = self.evidence(directory, result, execution)
+            with self.subTest(exit_code=exit_code, attempts=attempts), self.assertRaisesRegex(notes.Refusal, 'execution did not'):
+                notes.import_result(self.root, directory, result, execution, *evidence)
+            self.assertFalse((self.root / notes.DATASET).exists())
+
+    def test_successful_concurrent_publisher_cannot_be_overwritten_by_stale_model(self):
+        winner = []
+        def slow_model(directory, timeout):
+            # Exact production cutpoint: another invocation publishes while the
+            # first model is running, after both captured the same initial bytes.
+            notes.prepare(self.root, self.base, model=self.model)
+            winner.append((self.root / notes.DATASET).read_bytes())
+            result = self.model(directory, timeout)
+            result['entries'][0]['text'] = 'a stale second result must not replace successful notes.'
+            return result
+        with self.assertRaisesRegex(notes.Refusal, 'changed|retry'):
+            notes.prepare(self.root, self.base, model=slow_model)
+        self.assertEqual((self.root / notes.DATASET).read_bytes(), winner[0])
+        notes.validate_current(self.root)
+
+
+    def test_publication_lock_contention_preserves_successful_notes_and_source(self):
+        import fcntl
+        notes.prepare(self.root, self.base, model=self.model)
+        before = (self.root / notes.DATASET).read_bytes()
+        self.commit('retained notes')
+        (self.root / 'feature.txt').write_text('next feature\n')
+        current = self.commit('next feature')
+        identity = notes.digest(__import__('os').fsencode((self.root / notes.DATASET).resolve()))
+        lock_path = Path(self.git('rev-parse', '--git-path', f'hex-changelog-{identity}.lock'))
+        if not lock_path.is_absolute():
+            lock_path = self.root / lock_path
+        with lock_path.open('rb') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(notes.Refusal, 'publisher is active'):
+                notes.prepare(self.root, model=lambda *_: {'entries': [], 'reason': 'fixture only'})
+        self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), current)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+
+    def test_real_multiprocess_publishers_through_root_alias_preserve_first_success(self):
+        (self.root / 'feature.txt').write_text('a later independently requested batch\n')
+        later_source = self.commit('later range for competing publisher')
+        import sys
+        import time
+        with tempfile.TemporaryDirectory(prefix='hex-changelog-contenders-') as raw:
+            outside = Path(raw)
+            alias = outside / 'same-root'
+            alias.symlink_to(self.root, target_is_directory=True)
+            script = outside / 'worker.py'
+            script.write_text('''import importlib.util,sys,time
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('notes',sys.argv[1]);notes=importlib.util.module_from_spec(spec);spec.loader.exec_module(notes)
+root,base,source,gate,text=Path(sys.argv[2]),sys.argv[3],sys.argv[4],Path(sys.argv[5]),sys.argv[6]
+def model(*_):
+ gate.with_suffix('.ready').touch()
+ end=time.monotonic()+10
+ while not gate.exists():
+  if time.monotonic()>end: raise RuntimeError('fixture gate timeout')
+  time.sleep(.01)
+ return {'entries':[{'category':'fixes','text':text,'commits':[source]}],'reason':'injected subprocess fixture, no model call'}
+try: notes.prepare(root,base,source=source,model=model)
+except notes.Refusal as error: print(str(error));sys.exit(3)
+''')
+            workers = []
+            try:
+                for index, root in enumerate((self.root, alias)):
+                    gate = outside / f'gate{index}'
+                    process = subprocess.Popen([sys.executable, str(script), str(Path(notes.__file__).resolve()), str(root), self.base, (self.source, later_source)[index], str(gate), f'publisher {index} fixture.'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    workers.append((process, gate))
+                end = time.monotonic() + 10
+                while not all(gate.with_suffix('.ready').exists() for _, gate in workers):
+                    self.assertLess(time.monotonic(), end, 'both real processes must reach the same pre-publication cutpoint')
+                    time.sleep(.01)
+                workers[0][1].touch()
+                first, errors = workers[0][0].communicate(timeout=10)
+                self.assertEqual(workers[0][0].returncode, 0, errors)
+                retained = (self.root / notes.DATASET).read_bytes()
+                workers[1][1].touch()
+                last, errors = workers[1][0].communicate(timeout=10)
+                self.assertEqual(workers[1][0].returncode, 3, errors)
+                self.assertIn(b'changelog changed', last)
+                self.assertEqual((self.root / notes.DATASET).read_bytes(), retained)
+                self.assertIn(b'publisher 0 fixture.', retained)
+                self.assertEqual(len(notes.validate_current(self.root)['batches']), 1)
+                self.assertEqual(notes.load_dataset(self.root / notes.DATASET)['batches'][0]['input']['source'], self.source)
+            finally:
+                for process, _ in workers:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=10)
+
+    def test_git_pipe_overflow_failure_and_interrupt_reap_child_with_bounded_stderr(self):
+        import sys
+        from unittest.mock import patch
+        children = []
+        original = subprocess.Popen
+        def child(argv, **options):
+            behavior = argv[-1]
+            program = {'overflow': "import os;os.write(2,b'e'*200000);os.write(1,b'x'*200000)",
+                       'failure': "import os;os.write(2,b'e'*200000);raise SystemExit(7)",
+                       'interrupt': 'import time;time.sleep(10)'}[behavior]
+            process = original([sys.executable, '-c', program], **options)
+            children.append(process)
+            return process
+        with patch.object(notes.subprocess, 'Popen', child):
+            with self.assertRaisesRegex(notes.Refusal, 'limit'):
+                notes.git(self.root, 'overflow', max_bytes=1024)
+            self.assertIsNotNone(children[-1].poll())
+            with self.assertRaisesRegex(notes.Refusal, 'exit 7') as refusal:
+                notes.git(self.root, 'failure', max_bytes=1024)
+            self.assertLess(len(str(refusal.exception)), 8300)
+            self.assertEqual(children[-1].returncode, 7)
+            with patch.object(notes.selectors.DefaultSelector, 'select', side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    notes.git(self.root, 'interrupt', max_bytes=1024)
+            self.assertIsNotNone(children[-1].poll())
+            for process in children:
+                self.assertTrue(process.stdout.closed and process.stderr.closed)
+
+
+    def test_export_and_import_cannot_append_a_gap_despite_valid_result_evidence(self):
+        notes.prepare(self.root, self.base, model=self.model)
+        self.commit('first notes')
+        before = (self.root / notes.DATASET).read_bytes()
+        previous = ['clip selection stays consistent.']
+        (self.root / 'feature.txt').write_text('middle\n')
+        middle = self.commit('middle')
+        (self.root / 'feature.txt').write_text('last\n')
+        current = self.commit('last')
+        for index, base in enumerate((middle, self.base)):
+            directory = self.root / f'gap-packet-{index}'
+            self.assertEqual(notes.main(['export', '--root', str(self.root), '--base', base,
+                '--source', current, '--output', str(directory)]), 1)
+            self.assertFalse(directory.exists())
+            packet = notes.input_packet(self.root, base, current)
+            notes.export_packet(directory, packet, previous)
+            result = self.root / 'gap-result.json'
+            result.write_bytes(notes.encode({'entries': [], 'reason': 'injected empty classification'}))
+            execution = self.root / 'gap-execution.json'
+            execution.write_bytes(notes.encode({'exit_code': 0, 'timed_out': False, 'attempts': 1, 'result_exists': True,
+                'result_sha256': notes.digest(result.read_bytes()), 'completed_utc': '2026-10-18T20:00:00Z'}))
+            evidence = self.evidence(directory, result, execution)
+            with self.assertRaisesRegex(notes.Refusal, 'continuation'):
+                notes.import_result(self.root, directory, result, execution, *evidence)
+            self.assertEqual((self.root / notes.DATASET).read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()
