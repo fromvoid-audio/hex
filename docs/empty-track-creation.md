@@ -34,12 +34,16 @@ is retained. No production header, shell, keyboard binding or panel edit is need
 Current-format encode/decode tests preserve both empty and explicitly authored
 tracks, with no autoload during repeated reopen.
 
-Known integration boundary: an existing Engine MIDI instrument-render fixture
-still implicitly uses AddMidiTrack as Sine insertion. Its actual tail assertion
-fails (12000 instead of 14400 frames) when no instrument was authored. Source4
-owns Engine and must coordinate any fixture adaptation; this source owner has
-made no Engine edits. The source cannot be called ready while that known required
-failure is unresolved. Dedicated merger owns final prospective checks and merge.
+Known integration boundary: the original Engine MIDI rendering fixture assumed
+AddMidiTrack inserted Sine (12000 instead of 14400 tail frames). After Source4's
+no-overlap clearance, its authorized private setup explicitly authors Sine and
+the unchanged targeted tail/PCM test passes. The full 19-case midi_compile suite
+then passes 15 and exposes four more implicit-instrument fixtures (Nyquist,
+Arrangement/Session source windows and absent/bypassed transitions). Those lie
+outside the authorized setup hunk and remain pending bounded owner coordination;
+no assertions or Engine production code were changed. This draft is not ready
+while confirmed required failures remain. Dedicated merger owns final prospective
+checks and merge.
 
 Later coordinator-only native/user checklist: ordinary Command-T and menu tracks
 show empty device chains with working add/drop affordances; imported audio keeps

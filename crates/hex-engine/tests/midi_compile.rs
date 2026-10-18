@@ -20,8 +20,11 @@ fn beat(num: u64, den: u64) -> BeatTime {
 fn setup() -> (Editor, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
