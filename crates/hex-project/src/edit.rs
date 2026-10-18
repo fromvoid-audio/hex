@@ -609,6 +609,17 @@ pub enum Command {
         looping: bool,
         length: crate::BeatTime,
     },
+    /// Set one Arrangement MIDI source/outer region, carving same-track audio/MIDI
+    /// through the canonical overwrite helpers as one prepared history edit.
+    SetMidiClipSourceWithOverwrite {
+        clip: ClipId,
+        source_length: crate::BeatTime,
+        source_start: crate::BeatTime,
+        loop_start: crate::BeatTime,
+        loop_end: crate::BeatTime,
+        looping: bool,
+        length: crate::BeatTime,
+    },
     AddMidiNote {
         clip: ClipId,
         start: crate::BeatTime,
@@ -1390,6 +1401,7 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::SetMidiClipSource { .. }
+            | Command::SetMidiClipSourceWithOverwrite { .. }
             | Command::TrimMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
             | Command::AddMidiNote { .. }

@@ -108,7 +108,7 @@ fn fixture(source_start: u64, length: u64, looping: bool) -> (Editor, ClipId) {
     (editor, clip)
 }
 fn overwrite_command(clip: ClipId, next: SourceValues) -> Command {
-    Command::SetMidiClipSource {
+    Command::SetMidiClipSourceWithOverwrite {
         clip,
         source_length: beat(next.source_length),
         source_start: beat(next.source_start),

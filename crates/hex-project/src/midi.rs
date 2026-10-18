@@ -585,6 +585,49 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             clips.insert(clip_index + 1, right);
             Ok(Created::Clip(right_id))
         }
+        Command::SetMidiClipSourceWithOverwrite {
+            clip,
+            source_length,
+            source_start,
+            loop_start,
+            loop_end,
+            looping,
+            length,
+        } => {
+            let target = project
+                .midi_clip(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let start = target.start();
+            let end = BeatTime::from_raw(
+                start
+                    .raw()
+                    .checked_add(length.raw())
+                    .ok_or(Invalid("midi timeline end overflow"))?,
+            );
+            let track = project
+                .tracks()
+                .iter()
+                .find(|track| track.midi_clips().iter().any(|item| item.id() == clip))
+                .map(|track| track.id())
+                .ok_or(Invalid("midi clip track missing"))?;
+            // Validate and install the incoming source in the existing private command
+            // candidate before touching victims. No media/notes are flattened or moved.
+            apply(
+                project,
+                Command::SetMidiClipSource {
+                    clip,
+                    source_length,
+                    source_start,
+                    loop_start,
+                    loop_end,
+                    looping,
+                    length,
+                },
+            )?;
+            crate::edit::overwrite_audio_in_beats(project, track, start, end, clip)?;
+            overwrite_midi_interval(project, track, start, end, clip)?;
+            Ok(Created::None)
+        }
         Command::SetMidiClipSource {
             clip,
             source_length,
