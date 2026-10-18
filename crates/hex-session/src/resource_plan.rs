@@ -134,6 +134,8 @@ fn visit_waveform<'a>(
         ledger.borrow_native_audio_on_control(audio, role)
     } else if let Some(source) = waveform.original_source() {
         ledger.borrow_original_source_lease_on_control(source, role)
+    } else if let Some(source) = waveform.native_original_source() {
+        ledger.borrow_native_source_on_control(source, role)
     } else {
         Err(AudioStorageError::UnknownStorage)
     }

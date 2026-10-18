@@ -866,3 +866,22 @@ the installed bank remains rooted until explicit control cleanup, and omitted
 bank aliases prevent PCM closure in between. This is a local custody integration
 proof; worker request/incarnation binding, pending waveform placement, aggregate
 preconstruction reservation and final model/history/audio publication stay open.
+
+Native original waveform summaries can retain one existing qualified
+OwnedAudioSource alias directly. The installed resource bank stays inaccessible;
+no second bank, source lease getter, PCM copy or new provenance family is needed.
+Fixed worker constructors borrow actual native Mono/Stereo originals or native
+Audio. Raw/marked-derived/streamed inputs refuse through the existing source
+boundary. A fresh computed native buffer is physically constructor-qualified;
+actual file/sample assignment still belongs to Session's frozen candidate binding,
+not a PCM pointer or this summary constructor.
+
+The local metadata quote precedes alias/summary birth and includes the paired
+outer header/body, leaf capacity, fixed16 outer-level slots and every pyramid
+backing. Actual capacities validate that allowance. The actual source field joins
+the existing embedded-source visitor; repeated outer aliases cannot hide or count
+that field twice. WaveformRead exposes only scalar queries/cache identity. These
+constructors return one paired result for immediate pending placement; the caller
+must retain the destination, complete old/new/source/installed-bank coexistence
+and construction reservation, and failed/cancelled control retirement. This
+representation proof does not establish that complete production route.

@@ -23,6 +23,11 @@ use hex_engine::SharedMetadataCacheIdentity;
 ///     let _owner = read.original_source().unwrap().clone();
 /// }
 /// ```
+/// ```compile_fail
+/// fn native_owner(read: hex_media::waveform::WaveformRead<'_>) {
+///     let _source = read.native_original_source();
+/// }
+/// ```
 #[derive(Clone, Copy)]
 pub struct WaveformRead<'a> {
     waveform: &'a Waveform,

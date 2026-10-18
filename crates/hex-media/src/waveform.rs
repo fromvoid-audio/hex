@@ -1,9 +1,10 @@
 //! Control-side peak summaries. Compute once after import, cache for visible UI.
 use crate::{DeviceSourceImportError, ImportError};
-use hex_engine::Audio;
 use hex_engine::native_device_resources::OriginalSourceLease;
+use hex_engine::{Audio, OwnedAudioSource};
 
 pub const MAX_BINS: usize = 65_536;
+const PYRAMID_LEVEL_CAPACITY: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Peak {
     pub min: f32,
@@ -26,6 +27,11 @@ pub type SharedWaveform = hex_engine::SharedMetadata<Waveform>;
 
 mod read;
 pub use read::{WaveformRead, read_shared};
+mod native_original;
+pub use native_original::{
+    NativeOriginalWaveformLimits, native_original_metadata_bytes, summarize_native_audio_on_worker,
+    summarize_native_source_on_worker,
+};
 
 #[cfg(test)]
 mod shared_storage_tests;
@@ -56,13 +62,29 @@ pub fn borrow_shared_storage_on_control<'a>(
         Some(SampleBacking::Original(source)) => {
             ledger.borrow_embedded_original_source_lease_on_control(source)
         }
+        Some(SampleBacking::NativeOriginal(source)) => {
+            ledger.borrow_embedded_native_source_on_control(source)
+        }
     }
 }
 
-#[derive(Debug)]
 enum SampleBacking {
     Audio(Audio),
     Original(OriginalSourceLease),
+    NativeOriginal(OwnedAudioSource),
+}
+impl std::fmt::Debug for SampleBacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Audio(source) => f.debug_tuple("Audio").field(source).finish(),
+            Self::Original(source) => f.debug_tuple("Original").field(source).finish(),
+            Self::NativeOriginal(source) => f
+                .debug_struct("NativeOriginal")
+                .field("sample_rate", &source.sample_rate())
+                .field("frames", &source.frames())
+                .finish(),
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum BorrowedSamples<'a> {
@@ -88,7 +110,20 @@ impl SampleBacking {
         match self {
             Self::Audio(audio) => Some(BorrowedSamples::Stereo(audio.frames())),
             Self::Original(source) => borrow_original(source).ok(),
+            Self::NativeOriginal(source) => borrow_native(source).ok(),
         }
+    }
+}
+fn borrow_native(
+    source: &OwnedAudioSource,
+) -> Result<BorrowedSamples<'_>, DeviceSourceImportError> {
+    let view = source.view();
+    if let Some(mono) = view.resident_mono_samples() {
+        Ok(BorrowedSamples::Mono(mono))
+    } else if let Some(stereo) = view.resident_frames() {
+        Ok(BorrowedSamples::Stereo(stereo))
+    } else {
+        Err(ImportError::Invalid("waveform requires resident original PCM").into())
     }
 }
 fn borrow_original(
@@ -107,7 +142,17 @@ fn borrow_original(
 impl Waveform {
     /// Exact retained PCM identity, for control-side summary reuse across revisions.
     pub fn shares_audio_with(&self, audio: &Audio) -> bool {
-        matches!(&self.samples, Some(SampleBacking::Audio(samples)) if samples.shares_pcm_with(audio))
+        match &self.samples {
+            Some(SampleBacking::Audio(samples)) => samples.shares_pcm_with(audio),
+            Some(SampleBacking::NativeOriginal(samples)) => {
+                samples.sample_rate() == audio.sample_rate()
+                    && samples
+                        .view()
+                        .resident_frames()
+                        .is_some_and(|frames| std::ptr::eq(frames, audio.frames()))
+            }
+            _ => false,
+        }
     }
     pub fn shares_original_with(&self, source: &OriginalSourceLease) -> bool {
         matches!(&self.samples, Some(SampleBacking::Original(samples)) if samples.shares_source_with(source))
@@ -125,6 +170,14 @@ impl Waveform {
     pub fn audio_source(&self) -> Option<&Audio> {
         match &self.samples {
             Some(SampleBacking::Audio(audio)) => Some(audio),
+            _ => None,
+        }
+    }
+    /// Actual retained field for control-side inventory only. Scoped renderer
+    /// reads expose no source. This borrow grants no assignment/publication right.
+    pub fn native_original_source(&self) -> Option<&OwnedAudioSource> {
+        match &self.samples {
+            Some(SampleBacking::NativeOriginal(source)) => Some(source),
             _ => None,
         }
     }
@@ -147,7 +200,7 @@ impl Waveform {
         }
         let mut levels = Vec::new();
         levels
-            .try_reserve_exact(16)
+            .try_reserve_exact(PYRAMID_LEVEL_CAPACITY)
             .map_err(|_| ImportError::AllocationFailed)?;
         let mut previous = bins.as_slice();
         while previous.len() > 1 {
