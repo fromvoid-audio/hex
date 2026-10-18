@@ -75,6 +75,16 @@ metadata or property tests.
 
 ## remaining model and backend contracts
 
+The existing `ResizeAudioClipView` command now distinguishes plain `OuterEnd`
+from explicit `RepeatOuterEnd`. Plain outer edits retain Once mode and its full
+consumed cursor. The explicit corner intent activates Repeat and normalizes the
+cursor modulo the retained cycle while resizing in the same private candidate,
+overwrite transaction and history edit. No selected-cycle or processing-root
+metadata changes. A new capture still uses the current visible processed crop;
+existing placement retains its selected cycle. Canonical execution recomputes
+from the current clip. This pure model operation does not wire the audio handle,
+prepare repeated audio, prove resource admission or enable export.
+
 The model now has the root/Source4-approved optional Copy-only
 `AudioViewPlacement { mode, outer_length: AudioDomainClock, cycle_phase }` on
 `AudioClipEdit`. The selected `view_start..view_end` stays in the same retained
@@ -119,9 +129,9 @@ No empty-output Engine allocation or PCM acceptance is claimed from model tests.
 A first capture with no placement uses the CURRENT processed crop, even if the
 retained raw processing domain loops. It preserves that raw recipe and phase.
 An existing placement keeps its selected cycle. No source-to-Warp converter or
-PCM flattening is introduced. Runtime loop-handle activation for an existing
-Once placement still needs explicit atomic intent alongside outer resizing;
-plain `OuterEnd` deliberately changes only outer length.
+PCM flattening is introduced. Runtime audio loop-handle wiring still needs to
+submit the explicit `RepeatOuterEnd` intent; plain `OuterEnd` deliberately
+changes only outer length.
 
 The current-format audio DTO requires a placement field (including explicit
 null), rejects unknown fields, and retains Once/Repeat and both clock variants.

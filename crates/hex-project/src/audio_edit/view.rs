@@ -254,8 +254,17 @@ impl<'a> AudioViewProjection<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioViewResizeOperation {
-    OuterEnd { project_frame: u64 },
-    CycleEnd { project_frame: u64 },
+    /// Resize the outer span while preserving an existing Once/Repeat mode.
+    OuterEnd {
+        project_frame: u64,
+    },
+    /// Explicit corner gesture: enable Repeat and resize in one transaction.
+    RepeatOuterEnd {
+        project_frame: u64,
+    },
+    CycleEnd {
+        project_frame: u64,
+    },
 }
 
 /// Scalar preview only. Canonical commands must recompute the operation against
@@ -297,6 +306,7 @@ pub fn preview_view_resize(
     let start = musical_start.map_or(clip.start, BeatTime::raw);
     let project_frame = match operation {
         AudioViewResizeOperation::OuterEnd { project_frame }
+        | AudioViewResizeOperation::RepeatOuterEnd { project_frame }
         | AudioViewResizeOperation::CycleEnd { project_frame } => project_frame,
     };
     let position = if musical_start.is_some() {
@@ -315,12 +325,19 @@ pub fn preview_view_resize(
         cycle_phase: 0,
     });
     match operation {
-        AudioViewResizeOperation::OuterEnd { .. } => {
+        AudioViewResizeOperation::OuterEnd { .. }
+        | AudioViewResizeOperation::RepeatOuterEnd { .. } => {
             let length = u64::try_from(delta)
                 .ok()
                 .filter(|n| *n > 0)
                 .ok_or(Invalid("loop outer end must follow clip start"))?;
             placement.outer_length = length_clock(length);
+            if matches!(operation, AudioViewResizeOperation::RepeatOuterEnd { .. }) {
+                // A corner drag is explicit activation. Ordinary outer edits
+                // preserve a Once cursor, including an exhausted silent tail.
+                placement.mode = AudioViewMode::Repeat;
+                placement.cycle_phase %= view_end - view_start;
+            }
         }
         AudioViewResizeOperation::CycleEnd { .. } => {
             if old.is_none() {
@@ -454,7 +471,10 @@ pub(crate) fn resize_view(
     clip.audio_edit()
         .ok_or(Invalid("audio domain missing"))?
         .validate(&clip, project.tempo_map(), asset.playback_frames())?;
-    if matches!(operation, AudioViewResizeOperation::OuterEnd { .. }) {
+    if matches!(
+        operation,
+        AudioViewResizeOperation::OuterEnd { .. } | AudioViewResizeOperation::RepeatOuterEnd { .. }
+    ) {
         crate::edit::overwrite_audio_interval(
             project,
             track,

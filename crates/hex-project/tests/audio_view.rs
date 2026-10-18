@@ -940,3 +940,255 @@ fn canonical_operation_recomputes_current_crop_instead_of_accepting_old_preview_
     assert!(e.redo());
     assert_eq!(e.project().clip(id).unwrap().duration(), 960_000);
 }
+
+#[test]
+fn explicit_repeat_outer_activates_once_in_both_clocks_without_changing_retained_cycle() {
+    for musical in [false, true] {
+        for exhausted in [false, true] {
+            let (editor, id) = if musical {
+                beat_fixture()
+            } else {
+                frame_fixture(AudioViewMode::Once)
+            };
+            let mut snapshot = editor.project().snapshot();
+            let saved = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+            let edit = saved.edit.as_mut().unwrap();
+            let cycle = edit.view_end - edit.view_start;
+            let phase = cycle / 4 + if exhausted { 2 * cycle } else { 0 };
+            let placement = edit.placement.as_mut().unwrap();
+            placement.mode = AudioViewMode::Once;
+            placement.cycle_phase = phase;
+            let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+            let before = e.project().snapshot();
+            let clip = e.project().clip(id).unwrap();
+            let original = clip.audio_edit().unwrap().clone();
+            let target = if musical {
+                e.project().tempo_map().beat_to_frame(beat(10 * Q)).unwrap()
+            } else {
+                96_000
+            };
+            let plain = preview_view_resize(
+                clip,
+                e.project().tempo_map(),
+                AudioViewResizeOperation::OuterEnd {
+                    project_frame: target,
+                },
+            )
+            .unwrap();
+            assert_eq!(plain.placement.mode, AudioViewMode::Once);
+            assert_eq!(plain.placement.cycle_phase, phase);
+            let operation = AudioViewResizeOperation::RepeatOuterEnd {
+                project_frame: target,
+            };
+            let preview = preview_view_resize(clip, e.project().tempo_map(), operation).unwrap();
+            assert_eq!(preview.placement.mode, AudioViewMode::Repeat);
+            assert_eq!(preview.placement.cycle_phase, cycle / 4);
+            assert_eq!(
+                (preview.frame_start, preview.frame_end),
+                (clip.start(), target)
+            );
+            assert_eq!(e.project().snapshot(), before, "preview cannot mutate");
+            e.execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation,
+            })
+            .unwrap();
+            let clip = e.project().clip(id).unwrap();
+            let edit = clip.audio_edit().unwrap();
+            assert_eq!(edit.placement, Some(preview.placement));
+            assert_eq!(
+                (edit.view_start, edit.view_end),
+                (original.view_start, original.view_end)
+            );
+            assert!(std::sync::Arc::ptr_eq(&original.domain, &edit.domain));
+            let projection = AudioViewProjection::new(clip, e.project().tempo_map()).unwrap();
+            let start = original.musical_start.map_or(clip.start(), BeatTime::raw);
+            let first = start + cycle - cycle / 4;
+            let expected_boundary = if musical {
+                e.project().tempo_map().beat_to_frame(beat(first)).unwrap()
+            } else {
+                first
+            };
+            assert_eq!(
+                projection.logical_first_boundary(),
+                i128::from(expected_boundary)
+            );
+            assert!(projection.occurrence_count() > 1);
+            assert_eq!(
+                projection.occurrence(0).unwrap().destination_end,
+                expected_boundary
+            );
+            let after = e.project().snapshot();
+            assert_eq!(
+                Project::from_snapshot(after.clone()).unwrap().snapshot(),
+                after
+            );
+            e.execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation,
+            })
+            .unwrap();
+            assert_eq!(e.project().snapshot(), after, "reasserting is a no-op");
+            assert!(e.undo());
+            assert_eq!(e.project().snapshot(), before);
+            assert!(e.redo());
+            assert_eq!(e.project().snapshot(), after);
+            println!(
+                "repeat_outer musical={musical} exhausted={exhausted} phase={phase} normalized={} boundary={expected_boundary}",
+                cycle / 4
+            );
+        }
+    }
+}
+
+#[test]
+fn explicit_repeat_outer_recomputes_current_raw_loop_crop_and_preserves_processing() {
+    let (mut e, id) = base(false);
+    e.execute(Command::SetClipLooping {
+        clip: id,
+        looping: true,
+    })
+    .unwrap();
+    e.execute(Command::TrimClipEdge {
+        clip: id,
+        edge: TrimEdge::Left,
+        frame: 12_000,
+    })
+    .unwrap();
+    let operation = AudioViewResizeOperation::RepeatOuterEnd {
+        project_frame: 960_000,
+    };
+    let stale = preview_view_resize(
+        e.project().clip(id).unwrap(),
+        e.project().tempo_map(),
+        operation,
+    )
+    .unwrap();
+    e.execute(Command::TrimClipEdge {
+        clip: id,
+        edge: TrimEdge::Right,
+        frame: 240_000,
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    let original = e.project().clip(id).unwrap().audio_edit().unwrap().clone();
+    assert!(original.domain.looping);
+    assert!(original.placement.is_none());
+    e.execute(Command::ResizeAudioClipView {
+        clip: id,
+        operation,
+    })
+    .unwrap();
+    let clip = e.project().clip(id).unwrap();
+    let edit = clip.audio_edit().unwrap();
+    assert_ne!(edit.view_end, stale.view_end);
+    assert_eq!(
+        (edit.view_start, edit.view_end),
+        (original.view_start, original.view_end)
+    );
+    assert_eq!(edit.placement.unwrap().cycle_phase, 0);
+    assert_eq!(edit.placement.unwrap().mode, AudioViewMode::Repeat);
+    assert!(std::sync::Arc::ptr_eq(&original.domain, &edit.domain));
+    assert_eq!(
+        (clip.start(), clip.start() + clip.duration()),
+        (12_000, 960_000)
+    );
+    assert!(e.undo());
+    assert_eq!(e.project().snapshot(), before);
+}
+
+#[test]
+fn explicit_repeat_outer_overwrites_both_kinds_and_refusal_preserves_history() {
+    let (mut e, id) = frame_fixture(AudioViewMode::Once);
+    let track = e.project().tracks()[0].id();
+    let asset = e.project().clip(id).unwrap().asset();
+    let Created::Clip(audio) = e
+        .execute(Command::PlaceClip {
+            track,
+            asset,
+            start: 60_000,
+            duration: 40_000,
+            source_offset: 2_000,
+            source_length: 48_000,
+            looping: false,
+        })
+        .unwrap()
+    else {
+        panic!("audio")
+    };
+    let Created::Clip(midi) = e
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(2 * Q),
+            length: beat(Q / 2),
+        })
+        .unwrap()
+    else {
+        panic!("midi")
+    };
+    let before = e.project().snapshot();
+    let command = Command::ResizeAudioClipView {
+        clip: id,
+        operation: AudioViewResizeOperation::RepeatOuterEnd {
+            project_frame: 84_000,
+        },
+    };
+    let check = |candidate: &Project| {
+        assert_eq!(
+            candidate
+                .clip(id)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .placement
+                .unwrap()
+                .mode,
+            AudioViewMode::Repeat
+        );
+        assert!(candidate.midi_clip(midi).is_none());
+        let tail = candidate.clip(audio).unwrap();
+        assert_eq!(
+            (tail.start(), tail.duration(), tail.source_offset()),
+            (84_000, 16_000, 26_000)
+        );
+    };
+    e.execute_prepared(command.clone(), |candidate| {
+        check(candidate);
+        Ok::<_, hex_project::Invalid>(())
+    })
+    .unwrap();
+    let after = e.project().snapshot();
+    assert!(e.undo());
+    let undone = e.project().snapshot();
+    let mut expected = before;
+    expected.next_id = undone.next_id;
+    assert_eq!(undone, expected);
+    let mut prepares = 0;
+    assert!(
+        e.execute_prepared(command, |candidate| {
+            prepares += 1;
+            check(candidate);
+            Err::<(), _>(hex_project::Invalid("injected preparation refusal"))
+        })
+        .is_err()
+    );
+    assert_eq!(prepares, 1);
+    assert_eq!(e.project().snapshot(), undone);
+    assert!(
+        e.execute_prepared(
+            Command::ResizeAudioClipView {
+                clip: id,
+                operation: AudioViewResizeOperation::RepeatOuterEnd { project_frame: 0 },
+            },
+            |_| {
+                prepares += 1;
+                Ok::<_, hex_project::Invalid>(())
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(prepares, 1, "invalid bounds refuse before prepare");
+    assert_eq!(e.project().snapshot(), undone);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
