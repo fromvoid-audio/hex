@@ -456,14 +456,15 @@ fn actual_arrangement_and_session_sampler_preparation_retains_factory_and_refuse
     assert_eq!(compiled.instrument_runtime_latency, Some(0));
     let index = contexts.index_for_device(device).unwrap();
     let owner = contexts.owner(index).unwrap();
-    assert!(
-        compiled
-            .instrument
-            .as_ref()
-            .unwrap()
-            .bank
-            .context_matches(Some((index, owner)))
-    );
+    let instrument = compiled.instrument.as_ref().unwrap();
+    assert!(instrument.mutable);
+    // Mutable notes have no analytic samplers; the actual retained table is
+    // an independent owning field on InstrumentTrack, not bank metadata.
+    assert!(instrument.bank.context_matches(None));
+    assert!(Arc::ptr_eq(
+        instrument.shared_contexts.arc(),
+        contexts.arc()
+    ));
     assert!(Arc::ptr_eq(prepared.shared_contexts.arc(), contexts.arc()));
     let session = crate::PreparedSessionInventory::prepare_with_media_and_shared_contexts(
         editor.project(),
