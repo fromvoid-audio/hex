@@ -330,3 +330,113 @@ fn sampler_resource_revision_refuses_metadata_budget_and_preserves_accepted_revi
             .is_some()
     );
 }
+
+#[test]
+fn sampler_source_replacement_handoff_preserves_old_trigger_and_plays_new_session_source() {
+    for mono in [false, true] {
+        let Some((source, mut editor)) = source_fixture(mono) else {
+            return;
+        };
+        let track = editor.project().tracks()[0].id();
+        let session_clip = musical_clips(&mut editor, track);
+        let media = BTreeMap::<hex_project::AssetId, crate::Audio>::new();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let first = Arc::new(
+            PreparedRevision::prepare_with_audio_transforms_and_device_resources(
+                editor.project(),
+                &media,
+                crate::SharedSineTable::new_on_control(),
+                None,
+                &transforms,
+                DeviceResourcePreparation {
+                    bank: &source,
+                    max_scope_metadata_bytes: 65_536,
+                },
+            )
+            .unwrap(),
+        );
+        let device = editor.project().track(track).unwrap().instrument().unwrap();
+        let replacement = device
+            .state()
+            .clone()
+            .with_asset_references(
+                crate::native_device_resources::tests::state(
+                    crate::native_device_resources::tests::ids()[1],
+                )
+                .asset_references()
+                .to_vec(),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: device.id(),
+                state: replacement,
+            })
+            .unwrap();
+        // A genuinely independent bank prevents the new configuration from
+        // accidentally keeping the predecessor's original PCM alive itself.
+        let (replacement_source, replacement_editor) = source_fixture(mono).unwrap();
+        drop(replacement_editor);
+        let next = Arc::new(
+            PreparedRevision::prepare_with_audio_transforms_and_device_resources(
+                editor.project(),
+                &media,
+                crate::SharedSineTable::new_on_control(),
+                Some(first.session()),
+                &transforms,
+                DeviceResourcePreparation {
+                    bank: &replacement_source,
+                    max_scope_metadata_bytes: 65_536,
+                },
+            )
+            .unwrap(),
+        );
+        assert_ne!(pcm_address(&first, track), pcm_address(&next, track));
+        let mut old = playback(first);
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut prefix = [[0.0; 2]; 2];
+        old.render(&mut prefix).unwrap();
+        let original = crate::native_device_resources::tests::PCM;
+        let original = if mono {
+            original.map(|v| [v[0]; 2])
+        } else {
+            original
+        };
+        assert_eq!(prefix, original[..2]);
+        let mut current = playback(Arc::clone(&next));
+        let mut successor = playback(next);
+        current.try_inherit_state_from(&mut old).unwrap();
+        drop(old);
+        drop(editor);
+        drop(source);
+        drop(replacement_source);
+        current
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: session_clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        let mut output = [[0.0; 2]; 6];
+        current.render(&mut output[..1]).unwrap();
+        // Carry the still-sounding predecessor once more. Its old law/source
+        // must survive both real moves, not merely a single graph replacement.
+        successor.try_inherit_state_from(&mut current).unwrap();
+        drop(current);
+        successor.render(&mut output[1..]).unwrap();
+        let add_new = |frame: [f32; 2]| frame.map(|sample| sample + 0.5);
+        assert_eq!(
+            output,
+            [
+                add_new(original[2]),
+                add_new(original[3]),
+                [0.5; 2],
+                [0.5; 2],
+                [0.0; 2],
+                [0.0; 2]
+            ]
+        );
+        eprintln!(
+            "SUPPORTED actual Sampler replacement mono={mono}, old trigger PCM survives predecessor/bank retirement beside new Session source"
+        );
+    }
+}

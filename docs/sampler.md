@@ -704,3 +704,12 @@ A real mutable checkpoint captures the playing sample. Metadata-budget refusal
 keeps the prior prepared revision's actual source unchanged. The source API and
 headless tests do not imply a registered/published device, callback construction
 conservation, GUI panel, export acceptance or complete musical workflow.
+
+A subsequent replacement oracle starts the old One-Shot in Arrangement, prepares
+a different asset from an independently allocated original bank, hands off,
+launches the new Session source and carries the still-sounding old trigger
+through a second actual handoff. It drops both superseded hosts, canonical editor
+and both bank handles before finishing. Independent mixed PCM checks cover both
+Mono and Stereo old sources beside the new stereo sample. This exercises audible
+old-law/source continuity; it does not qualify native constructor lineage,
+callback allocation/final-drop, full graph peak or atomic Service publication.
