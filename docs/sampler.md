@@ -1238,3 +1238,13 @@ fresh backing cost. Six feed and twelve Return selector/filter/routing variants,
 and the existing combined restoration tests, exercise these distinct plans.
 These do not complete the combined pre-selector operation or qualify unvisited
 model, resource, compiler scratch, failure-parent or publication contracts.
+
+Prepared gain costs are now available to the private compiler quote from the
+same actual lane/tempo count used by project validation and construction.
+The cost includes tempo-expanded base knots and both touch backings. Construction
+checks its observed backing against that local cost without changing gain values,
+validation order, fallback, base/touch ownership or mix/history behavior. Four
+independent empty/base/touch/combined cases compare real capacities and values;
+existing dense-tempo, touch, partition and transport integration tests remain.
+This component does not charge the canonical input lane or other compiler work
+by itself and supplies no aggregate approval or runtime ownership authority.

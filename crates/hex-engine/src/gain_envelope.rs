@@ -2,6 +2,8 @@
 use crate::{Invalid, PreparedTrackMix};
 use hex_project::{GainInterpolation, GainLane, GainPoint, Project, TempoMap};
 
+#[cfg(test)]
+mod construction_tests;
 mod touch;
 use touch::PreparedTouch;
 
@@ -167,6 +169,12 @@ fn plan_counts(lane: &GainLane, tempo: &TempoMap) -> Result<(usize, usize), Inva
         .ok_or(Invalid("prepared gain plan byte count overflow"))?;
     Ok((units, bytes))
 }
+/// Constructor-local requested backing; not a union or admission token.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GainConstructionCost {
+    pub(crate) units: usize,
+    pub(crate) backing_bytes: usize,
+}
 pub(crate) fn validate_project(project: &Project) -> Result<(), Invalid> {
     let mut authored = 0_usize;
     let mut prepared = 0_usize;
@@ -175,7 +183,8 @@ pub(crate) fn validate_project(project: &Project) -> Result<(), Invalid> {
         authored = authored
             .checked_add(track.gain_lane().units().map_err(|e| Invalid(e.0))?)
             .ok_or(Invalid("gain point count overflow"))?;
-        let (count, size) = plan_counts(track.gain_lane(), project.tempo_map())?;
+        let cost = PreparedGainEnvelope::construction_cost(track.gain_lane(), project.tempo_map())?;
+        let (count, size) = (cost.units, cost.backing_bytes);
         prepared = prepared
             .checked_add(count)
             .ok_or(Invalid("prepared gain knot count overflow"))?;
@@ -271,13 +280,27 @@ impl PreparedGainEnvelope {
     pub(crate) fn mix_with_gain(&self, gain: f32) -> PreparedTrackMix {
         self.mix.with_absolute_gain(gain)
     }
+    /// Pure actual authored-lane/tempo sizing. Existing per-track/project
+    /// validation remains required; prepared touch arrays and tempo-expanded
+    /// base knots are both included without constructing either one.
+    pub(crate) fn construction_cost(
+        lane: &GainLane,
+        tempo: &TempoMap,
+    ) -> Result<GainConstructionCost, Invalid> {
+        let (units, backing_bytes) = plan_counts(lane, tempo)?;
+        Ok(GainConstructionCost {
+            units,
+            backing_bytes,
+        })
+    }
     pub(crate) fn prepare(
         lane: &GainLane,
         tempo: &TempoMap,
         mix: PreparedTrackMix,
         fallback: f32,
     ) -> Result<Option<Self>, Invalid> {
-        let (units, bytes) = plan_counts(lane, tempo)?;
+        let cost = Self::construction_cost(lane, tempo)?;
+        let (units, bytes) = (cost.units, cost.backing_bytes);
         if !fallback.is_finite() || !(0.0..=2.0).contains(&fallback) {
             return Err(Invalid("gain fallback must be finite and within 0..2"));
         }
@@ -297,14 +320,20 @@ impl PreparedGainEnvelope {
             return Err(Invalid("prepared gain knot allocation exceeds its bound"));
         }
         fill_knots(&mut knots, points, tempo, |_| Ok(()))?;
-        Ok(Some(Self {
+        let prepared = Self {
             knots,
             mix,
             authored_points: points.len(),
             authored_units: lane.units().map_err(|e| Invalid(e.0))?,
             touch: PreparedTouch::prepare(lane, tempo)?,
             fallback,
-        }))
+        };
+        if prepared.checked_backing_bytes()? > bytes {
+            return Err(Invalid(
+                "prepared gain constructor exceeded its backing bound",
+            ));
+        }
+        Ok(Some(prepared))
     }
     pub(crate) fn checked_backing_bytes(&self) -> Result<usize, Invalid> {
         let Self {
