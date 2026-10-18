@@ -37,6 +37,29 @@ fn algorithm_picker_dispatches_direct_choice_without_resetting_current_settings(
 }
 fn assert_mode_choice(cx: &mut TestAppContext, requested: usize) {
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    prepare_beats_fixture(&editor, clip, cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
+    for selector in CHOICES {
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("implemented algorithm choice");
+        assert!(bounds.origin.y >= sidebar.origin.y && bounds.bottom() <= sidebar.bottom());
+    }
+    // Re-selecting Beats preserves the user's decay instead of resetting defaults.
+    let bounds = visual.debug_bounds(CHOICES[requested]).unwrap();
+    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(&view.last_enqueued_edit,
+        Some(Command::SetAudioClipWarp{clip:id,settings:Some(settings)})
+        if *id == clip && if requested == 0 { matches!(settings.mode,WarpMode::Beats{decay:60,..}) }
+            else { settings.mode == modes()[requested] }))
+    });
+}
+
+fn prepare_beats_fixture(editor: &gpui::Entity<EditorView>, clip: ClipId, cx: &mut TestAppContext) {
     editor.update(cx, |view, cx| {
         let old = view.state.as_ref().unwrap();
         let mut model = hex_project::Editor::new((*old.project).clone(), 8).unwrap();
@@ -62,23 +85,48 @@ fn assert_mode_choice(cx: &mut TestAppContext, requested: usize) {
         }));
         cx.notify();
     });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
-    for selector in CHOICES {
-        let bounds = visual
-            .debug_bounds(selector)
-            .expect("implemented algorithm choice");
-        assert!(bounds.origin.y >= sidebar.origin.y && bounds.bottom() <= sidebar.bottom());
+}
+
+#[gpui::test]
+fn selected_clip_beats_controls_are_visible_and_dispatch_existing_loop_envelope_bindings(
+    cx: &mut TestAppContext,
+) {
+    for (selector, expected_tail, expected_decay) in [
+        ("audio-clip-beats-stop", BeatsTail::Off, 60),
+        ("audio-clip-beats-forward", BeatsTail::Forward, 60),
+        ("audio-clip-beats-alternating", BeatsTail::Alternating, 60),
+        ("audio-clip-beats-envelope-less", BeatsTail::Forward, 50),
+        ("audio-clip-beats-envelope-more", BeatsTail::Forward, 70),
+    ] {
+        let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+        prepare_beats_fixture(&editor, clip, cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let sidebar = visual.debug_bounds("arrangement-audio-controls").unwrap();
+        for name in [
+            "audio-clip-beats-preserve",
+            "audio-clip-beats-stop",
+            "audio-clip-beats-forward",
+            "audio-clip-beats-alternating",
+            "audio-clip-beats-envelope",
+        ] {
+            let bounds = visual.debug_bounds(name).expect("visible Beats binding");
+            assert!(
+                bounds.origin.y >= sidebar.origin.y && bounds.bottom() <= sidebar.bottom(),
+                "{name} must not be hidden below source fields"
+            );
+            assert!(
+                bounds.origin.x >= sidebar.origin.x && bounds.right() <= sidebar.right(),
+                "{name} must fit the sidebar"
+            );
+        }
+        let bounds = visual.debug_bounds(selector).unwrap();
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(matches!(&view.last_enqueued_edit,
+                Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) })
+                if *id == clip && matches!(settings.mode, WarpMode::Beats { tail, decay, .. } if tail == expected_tail && decay == expected_decay)));
+        });
     }
-    // Re-selecting Beats preserves the user's decay instead of resetting defaults.
-    let bounds = visual.debug_bounds(CHOICES[requested]).unwrap();
-    visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(&view.last_enqueued_edit,
-        Some(Command::SetAudioClipWarp{clip:id,settings:Some(settings)})
-        if *id == clip && if requested == 0 { matches!(settings.mode,WarpMode::Beats{decay:60,..}) }
-            else { settings.mode == modes()[requested] }))
-    });
 }
