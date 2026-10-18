@@ -687,17 +687,12 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
         };
         (clip.id(), cell.track())
     });
-    let position = visual.debug_bounds("show session").unwrap().center();
-    visual.simulate_click(position, Modifiers::default());
-    visual.run_until_parked();
-    // The label is in the real Session cell; its normal click selects its owning cell.
-    let position = visual
-        .debug_bounds(Box::leak(
-            format!("clip-name-{}", session_id.value()).into_boxed_str(),
-        ))
-        .unwrap()
-        .center();
-    visual.simulate_click(position, Modifiers::default());
+    // Use the same canonical selection entry point as a Session MIDI cell
+    // callback, with its real worker-created ID, then the actual mode toolbar.
+    editor.update(&mut visual, |v, cx| {
+        v.select_session_midi(track, scene, session_id);
+        cx.notify();
+    });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_clip, Some(session_id));
