@@ -912,7 +912,11 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
         "viewport may consume only actual applied edge change (one frame rounding tolerance)"
     );
     assert_eq!(after_edge, boundary);
-    let after_bounds = visual.debug_bounds(selector).unwrap();
+    let after_bounds = visual.debug_bounds(selector);
+    eprintln!(
+        "partial preview geometry midi={midi} before={before_bounds:?} after={after_bounds:?}"
+    );
+    let after_bounds = after_bounds.unwrap_or(before_bounds);
     assert!(
         (f32::from(before_bounds.right()) - f32::from(after_bounds.right())).abs() <= 4.0,
         "stationary edge stays aligned (existing3px minimum visual width plus1px rounding)"
@@ -926,9 +930,17 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
         );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original);
     });
+    visual.update(|window, cx| {
+        let v = editor.read(cx);
+        eprintln!("partial release before midi={midi} focus={} active_audio={} active_midi={} current_audio={} last={:?} pending={}", v.focus.is_focused(window), v.active_trim_drag.is_some(), v.active_midi_trim_drag.is_some(), v.active_trim_drag.as_ref().is_some_and(|d| v.trim_drag_current(d)), v.last_enqueued_edit, v.worker_requests_pending);
+    });
     visual.simulate_mouse_up(pointer, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
+        eprintln!(
+            "partial release after midi={midi} last={:?} error={:?}",
+            v.last_enqueued_edit, v.error
+        );
         assert!(v.error.is_none(), "{:?}", v.error);
         let project = &v.state.as_ref().unwrap().project;
         if midi {

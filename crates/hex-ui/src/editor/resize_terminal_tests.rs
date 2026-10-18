@@ -462,8 +462,9 @@ fn restart_offline_pending_work_blocks_actual_resize_capture_until_completion(
         assert_eq!(v.worker_requests_pending, 1);
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-    f.editor.update(&mut visual, |v, _| {
+    f.editor.update(&mut visual, |v, cx| {
         v.receive(restart);
+        cx.notify();
     });
     visual.run_until_parked();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
