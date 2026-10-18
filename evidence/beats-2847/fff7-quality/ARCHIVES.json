@@ -1,0 +1,87 @@
+[
+  {
+    "archive": "hex-beats-2847-c9f-groups.tar.gz",
+    "bytes": 4369041,
+    "sha256": "2f6ebe35375af9680d57d8c5f23164712bff68fd56ba53ef8e8c0ef8917a90e8",
+    "parts": [
+      {
+        "file": "hex-beats-2847-c9f-groups.tar.gz",
+        "bytes": 4369041,
+        "sha256": "2f6ebe35375af9680d57d8c5f23164712bff68fd56ba53ef8e8c0ef8917a90e8"
+      }
+    ]
+  },
+  {
+    "archive": "hex-beats-2847-v11-source.tar.gz",
+    "bytes": 11606079,
+    "sha256": "fc7219dad7963601e86c41a64a7ec355a0c2705f533876f440edd60f8a17b337",
+    "parts": [
+      {
+        "file": "hex-beats-2847-v11-source.tar.gz",
+        "bytes": 11606079,
+        "sha256": "fc7219dad7963601e86c41a64a7ec355a0c2705f533876f440edd60f8a17b337"
+      }
+    ]
+  },
+  {
+    "archive": "hex-beats-2847-v11-real-recordings.tar.gz",
+    "bytes": 65341485,
+    "sha256": "c31a60afcecf2008b13fb5df7cfa663850820693c974a7bdce0a7aa12c955b43",
+    "parts": [
+      {
+        "file": "hex-beats-2847-v11-real-recordings.tar.gz.part00",
+        "bytes": 24000000,
+        "sha256": "f8965b3a6f5d7a28fcd96a3e4018c432881dc029796b590cc6d3de90f6b1e43e"
+      },
+      {
+        "file": "hex-beats-2847-v11-real-recordings.tar.gz.part01",
+        "bytes": 24000000,
+        "sha256": "f082bdba6d15615f2120f79662a445a5fedb7221c073496d925fbfe701436a4c"
+      },
+      {
+        "file": "hex-beats-2847-v11-real-recordings.tar.gz.part02",
+        "bytes": 17341485,
+        "sha256": "68ecb638049269872195f8ef48080a49e52c3a4d888e27355a914cefee09ec77"
+      }
+    ]
+  },
+  {
+    "archive": "hex-beats-2847-v11-constructed-phrase.tar.gz",
+    "bytes": 72068613,
+    "sha256": "8f801fd748e7b18bbc11a8cc1fbc4ad9c6b3e0b5d08285debe146e5e696c93f8",
+    "parts": [
+      {
+        "file": "hex-beats-2847-v11-constructed-phrase.tar.gz.part00",
+        "bytes": 24000000,
+        "sha256": "57f524a30c28070c41a500ba9f49e531dd8cbc78c33a8810110ca17e5260566a"
+      },
+      {
+        "file": "hex-beats-2847-v11-constructed-phrase.tar.gz.part01",
+        "bytes": 24000000,
+        "sha256": "7aef81ef39ffff69757a78beb2afd63b8b261d6d167b5e57aa2ba79f3d926037"
+      },
+      {
+        "file": "hex-beats-2847-v11-constructed-phrase.tar.gz.part02",
+        "bytes": 24000000,
+        "sha256": "84803d922ae73bbac76dad23e1bddc762687807e2d2682943610e77c612c26dc"
+      },
+      {
+        "file": "hex-beats-2847-v11-constructed-phrase.tar.gz.part03",
+        "bytes": 68613,
+        "sha256": "6517230f515d3dd2bae32ba013ab84a4bb5f08b14a46314e728bddd07d38f604"
+      }
+    ]
+  },
+  {
+    "archive": "hex-beats-2847-v11-sub-bass.tar.gz",
+    "bytes": 153694,
+    "sha256": "801aadf0d082b2af0d16d19fe79fd0435177f5f15a0f29dd877bb92caf12d8d0",
+    "parts": [
+      {
+        "file": "hex-beats-2847-v11-sub-bass.tar.gz",
+        "bytes": 153694,
+        "sha256": "801aadf0d082b2af0d16d19fe79fd0435177f5f15a0f29dd877bb92caf12d8d0"
+      }
+    ]
+  }
+]
