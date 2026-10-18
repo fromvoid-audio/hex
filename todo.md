@@ -5106,6 +5106,28 @@ Dedicated merger owns final prospective full CI/integration/merge. Optimized nat
 availability/query and unchanged audition/drag acceptance remain coordinator-owned;
 no installed app or user files changed during this source work.
 
+### pulse2753 — bounded operator tab fixture
+
+The Operator Tab focus regression now uses private disposable browser/preferences/
+cache inputs before discovery starts, retaining its entire original traversal and
+project-state assertion body. Missing/saved-place variants pass at checkpoint
+ac4807f4; an unrelated disposable-root negative control fails both isolation
+assertions and is restored. See [fixture contract](docs/operator-tab-fixture.md)
+for original failed/green/control evidence and native limits. Canonical PR363;
+final focused checks and dedicated-merger prospective-tree full CI remain
+separate, with no production browser/Tab/audition or installed-app change.
+
+### inline-tree refresh of query-hidden expansions — pulse2728 / PR341
+
+Returned review PRRT_kwDOVB_C-s6trg4M reproduced on canonical29d97330: refresh during
+indexed search started zero folder requests; clearing the query restored a removed
+WAV despite a fresh sample index. Refresh now queues the bounded expanded-folder
+set parent-first, preserving cached rows, existing epochs/serials, one worker and
+all cache budgets. Actual disclosure/query/refresh/clear input has a red/green
+regression. Source patch is isolated against29; its historical full20 pass is
+preserved and does not qualify the new patch. Merger owns future prospective full
+CI/integration/merge; no native/app operations were performed.
+
 After integrating merged373/main in389, the3bank tests and2callback probes
 pass unchanged. Joint engine+audio all-target Clippy with allocation-probe
 exposed an inherited non-exhaustive Expression match in the feature-gated

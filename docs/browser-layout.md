@@ -197,3 +197,11 @@ items (folders plus files), while flat indexed query results report sample match
 Expanding a folder can change the item count without discovering another WAV. The
 label does not enumerate collapsed folders or imply a total sample count. Pulse2728
 counter follow-up; optimized native acceptance remains open.
+
+Tree refresh revalidates the existing bounded expanded-folder set even when an
+indexed query hides its rows. Parents refresh before descendants; removed branches
+retire their queued children through the existing cancellation checks. Cached rows
+remain until replacement, and clearing a query restores refreshed content. This
+does not open collapsed folders or change the folder/entry/path-byte budgets. The
+hidden-branch refresh regression uses actual disclosure input and a disposable WAV
+replacement, distinguishing fresh index data from stale cached hierarchy data.
