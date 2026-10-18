@@ -1,4 +1,5 @@
 //! Private actual Return buses + feed plan in the existing preparation root.
+use super::tracks::utility::UtilityCustody;
 use super::*;
 pub use crate::return_feed_plan::persistent::ReturnFeedCapacity;
 use crate::{ReturnBus, owned_shared::OwnedShared, return_feed_plan::persistent::FeedPlanCustody};
@@ -28,6 +29,7 @@ struct Row {
     gain: f32,
     muted: bool,
     chain: Option<OwnedShared<[crate::PreparedEffectInstance]>>,
+    utility: UtilityCustody,
     bare: Option<Arc<[crate::PreparedEffectInstance]>>,
     declaration: Option<SharedDeclaration>,
     handle: u64,
@@ -163,6 +165,23 @@ impl ReturnAssembly {
             ..Default::default()
         };
         for r in &self.rows {
+            let nested = if let Some(bus) = r.actual(root)? {
+                r.utility.bytes(&bus.device_chain)?
+            } else if let Some(chain) = &r.chain {
+                r.utility.bytes(chain.arc())?
+            } else if let Some(chain) = &r.bare {
+                r.utility.bytes(chain)?
+            } else {
+                r.utility.metadata_bytes()?
+            };
+            c.chain_payload_bytes = c
+                .chain_payload_bytes
+                .checked_add(nested)
+                .ok_or(AudioStorageError::Overflow)?;
+            c.reserved_handle_destinations = c
+                .reserved_handle_destinations
+                .checked_add(r.utility.handles())
+                .ok_or(AudioStorageError::Overflow)?;
             let parts = if let Some(bus) = r.actual(root)? {
                 if r.bare.is_some() || r.chain.is_some() {
                     return Err(AudioStorageError::UnknownStorage);
@@ -189,7 +208,7 @@ impl ReturnAssembly {
                     .ok_or(AudioStorageError::Overflow)?;
                 c.independent_handle_obligations = c
                     .independent_handle_obligations
-                    .checked_add(1)
+                    .checked_add(1 + r.utility.handles())
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
@@ -213,10 +232,12 @@ impl ReturnAssembly {
             return Err(AudioStorageError::Capacity);
         }
         if project.return_tracks().len() > hex_project::MAX_RETURN_TRACKS
-            || project
-                .return_tracks()
-                .iter()
-                .any(|b| !b.devices().is_empty())
+            || project.return_tracks().iter().any(|b| {
+                b.devices().iter().any(|device| {
+                    device.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                        || device.state().require_asset_free_processing().is_err()
+                })
+            })
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
@@ -261,8 +282,19 @@ impl ReturnAssembly {
         for r in &mut self.rows[..self.active] {
             r.handle = handle()?;
         }
-        for r in &mut self.rows[..self.active] {
-            r.chain = Some(OwnedShared::new_owned_empty_slice());
+        for (r, bus) in self.rows[..self.active]
+            .iter_mut()
+            .zip(project.return_tracks())
+        {
+            r.chain = Some(r.utility.prepare(
+                bus.devices(),
+                hex_lattice::ProcessorChainOwner::Return(bus.id().value()),
+                project.sample_rate(),
+            )?);
+            self.growth = self
+                .growth
+                .checked_add(r.utility.construction_overlap())
+                .ok_or(AudioStorageError::Overflow)?;
             r.chain
                 .as_ref()
                 .and_then(OwnedShared::parts)
@@ -284,10 +316,15 @@ impl ReturnAssembly {
                 || r.declaration.is_some()
                 || r.bus.is_some()
                 || r.disposal != Disposal::Unstarted
-                || r.chain.as_ref().is_some_and(|c| !c.is_empty())
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
+            r.utility.bytes(
+                r.chain
+                    .as_ref()
+                    .ok_or(AudioStorageError::UnknownStorage)?
+                    .arc(),
+            )?;
         }
         for r in &mut self.rows[..self.active] {
             if let Some(chain) = r.chain.take() {
@@ -349,12 +386,15 @@ impl ReturnAssembly {
                 || b.gain != r.gain
                 || b.muted != r.muted
                 || b.matrix.is_some()
-                || !b.device_chain.is_empty()
-                || r.declaration.is_none()
+                || r.declaration
+                    .as_ref()
+                    .and_then(|birth| birth.parts(&b.device_chain))
+                    .is_none()
                 || r.disposal != Disposal::Unstarted
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
+            r.utility.bytes(&b.device_chain)?;
             if let Some(ReturnBus {
                 id: _,
                 gain: _,
@@ -372,6 +412,7 @@ impl ReturnAssembly {
         r.disposal = Disposal::Pending;
         drop(r.chain.take());
         drop(r.bare.take());
+        r.utility.clear();
         #[cfg(test)]
         drop(self.probe.take());
         r.disposal = Disposal::Complete;
@@ -461,6 +502,13 @@ impl ReturnAssembly {
         external_feed: Option<&'a crate::return_feed_plan::ReturnFeedPlan>,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::Owner;
+        if self
+            .rows
+            .iter()
+            .any(|row| row.disposal == Disposal::Pending)
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         self.capacity_at(false, root, external_feed)?;
         let Self {
             rows,
@@ -486,6 +534,7 @@ impl ReturnAssembly {
                 gain: _,
                 muted: _,
                 chain,
+                utility,
                 bare,
                 declaration,
                 handle,
@@ -493,6 +542,7 @@ impl ReturnAssembly {
                 root_index: _,
                 disposal: _,
             } = r;
+            utility.visit_metadata(l)?;
             if let Some(bus) = r.actual(root)? {
                 let ReturnBus {
                     id: _,
@@ -501,9 +551,7 @@ impl ReturnAssembly {
                     matrix: _,
                     device_chain,
                 } = bus;
-                if !device_chain.is_empty() {
-                    return Err(AudioStorageError::UnknownStorage);
-                }
+                utility.visit(device_chain, l)?;
                 l.shared(
                     device_chain,
                     declaration.as_ref().and_then(|d| d.parts(device_chain)),
@@ -513,9 +561,7 @@ impl ReturnAssembly {
                 )?;
             } else {
                 if let Some(owner) = chain {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    utility.visit(owner.arc(), l)?;
                     l.shared(
                         owner.arc(),
                         owner.parts(),
@@ -525,9 +571,7 @@ impl ReturnAssembly {
                     )?;
                 }
                 if let Some(owner) = bare {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    utility.visit(owner, l)?;
                     l.shared(
                         owner,
                         declaration.as_ref().and_then(|d| d.parts(owner)),

@@ -405,3 +405,267 @@ fn actual_return_nested_spares_growth_reservations_and_clone_conservation() {
         "hex preparation evidence: arrangement_returns_capacity; supported-controls=completed; staging-clones={clones}"
     );
 }
+
+#[test]
+fn paired_return_utility_children_preserve_pcm_aliases_moves_and_pending_disposal() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    if !supported("paired_return_utility_children") {
+        return;
+    }
+    eprintln!("SUPPORTED actual paired Return Utility children lifecycle and legacy PCM");
+    for filtered in [false, true] {
+        for bypassed in [false, true] {
+            let (project, bank) = utility_return_fixture(filtered, bypassed);
+            assert_eq!(
+                crate::audio_preparation::validate_constructor_project(&project),
+                Err(AudioStorageError::UnsupportedGraph)
+            );
+            let mut media = std::collections::BTreeMap::new();
+            for (id, source) in &bank.sources {
+                let SourceKind::Resident(audio) = &source.kind else {
+                    panic!("resident");
+                };
+                media.insert(*id, audio.clone());
+            }
+            let reference = crate::compile::project(&project, &media).unwrap();
+            let mut assembly = ReturnAssembly::default();
+            assembly.reserve(&project).unwrap();
+            assembly.construct().unwrap();
+            let bus = assembly.rows[0].bus.as_ref().unwrap();
+            let expected = &reference.return_buses[0];
+            assert_eq!(
+                (bus.id, bus.gain, bus.muted),
+                (expected.id, expected.gain, expected.muted)
+            );
+            assert_eq!(bus.device_chain.len(), 1);
+            assert_eq!(
+                bus.device_chain[0].owner,
+                hex_lattice::ProcessorChainOwner::Return(bus.id.value())
+            );
+            assert_eq!(bus.device_chain[0].definition.is_some(), filtered);
+            assert_eq!(bus.device_chain[0].bypassed, bypassed);
+            let chain_pointer = bus.device_chain.as_ptr();
+            let state_pointer = Arc::as_ptr(bus.device_chain[0].configuration.as_ref().unwrap());
+            let meter_pointer = Arc::as_ptr(&bus.device_chain[0].meter);
+            let mut actual_runtime = crate::EffectRuntimeChain::new_prepared(
+                crate::effect_resources::clone_prepared_on_control(&bus.device_chain).unwrap(),
+            )
+            .unwrap();
+            let mut expected_runtime = crate::EffectRuntimeChain::new_prepared(
+                crate::effect_resources::clone_prepared_on_control(&expected.device_chain).unwrap(),
+            )
+            .unwrap();
+            let input = std::array::from_fn::<_, 257, _>(|i| {
+                [if i == 0 { 1.0 } else { 0.125 }, -(i as f32) / 512.0]
+            });
+            let mut actual = input;
+            let mut expected_pcm = input;
+            actual_runtime.begin_block();
+            expected_runtime.begin_block();
+            actual_runtime.process_block(&mut actual[..63]);
+            actual_runtime.process_block(&mut actual[63..]);
+            expected_runtime.process_block(&mut expected_pcm);
+            actual_runtime.commit_block();
+            expected_runtime.commit_block();
+            assert_eq!(actual, expected_pcm);
+            drop((actual_runtime, expected_runtime, reference, media));
+            let budget = AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 256,
+                root_rows: 32,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            };
+            let collect = |r: &ReturnAssembly,
+                           roots: &Vec<ReturnBus>,
+                           feed: Option<&crate::return_feed_plan::ReturnFeedPlan>,
+                           limits| {
+                let mut ledger = AudioRootStorageLedger::try_new_on_control(limits)?;
+                ledger.root(r, AudioStorageRole::Current)?;
+                ledger.vec(roots)?;
+                ledger.mutate(|ledger| r.visit_audio_storage(ledger, roots, feed))?;
+                let report = ledger.summary()?;
+                report.require_known_storage().unwrap();
+                ledger.validate_selected_shared_handles_on_control()?;
+                // Selected constructor/alias closure does not open the full
+                // retirement/publication gate.
+                assert_eq!(
+                    report.require_complete(),
+                    Err(crate::AudioStorageIncomplete::RetirementReceiptUnknown)
+                );
+                if report.unresolved_handles != 0 {
+                    // Raw visitors are called once inside a ledger transaction.
+                    // A duplicate physical handle visit refuses and invalidates
+                    // every partial total; it cannot add a synthetic owner or
+                    // turn repeated growth scratch into a publishable report.
+                    assert_eq!(
+                        ledger.mutate(|ledger| r.visit_audio_storage(ledger, roots, feed)),
+                        Err(AudioStorageError::SourceMismatch)
+                    );
+                    assert_eq!(ledger.summary(), Err(AudioStorageError::UnknownStorage));
+                }
+                Ok::<_, AudioStorageError>(report)
+            };
+            let mut roots = Vec::new();
+            let report = collect(&assembly, &roots, None, budget).unwrap();
+            let mut exact = budget;
+            exact.max_retained_bytes = report.retained_bytes;
+            exact.max_construction_peak_bytes = report.construction_peak_bytes;
+            assert_eq!(collect(&assembly, &roots, None, exact).unwrap(), report);
+            exact.max_retained_bytes -= 1;
+            assert_eq!(
+                collect(&assembly, &roots, None, exact),
+                Err(AudioStorageError::ReservationExceeded)
+            );
+            // A real extra outer owner is independently required even though
+            // its payload/config/processor allocations are the same bodies.
+            let exported = Arc::clone(&assembly.rows[0].bus.as_ref().unwrap().device_chain);
+            assert!(collect(&assembly, &roots, None, budget).is_err());
+            drop(exported);
+            roots.try_reserve_exact(1).unwrap();
+            let mut feed = crate::return_feed_plan::ReturnFeedPlan::default();
+            assembly.preflight_root_move().unwrap();
+            assembly.move_root_row(0, &mut roots);
+            assembly.move_root_feed(&mut feed);
+            assert_eq!(roots[0].device_chain.as_ptr(), chain_pointer);
+            collect(&assembly, &roots, Some(&feed), budget).unwrap();
+            assembly.preflight_root_restore(&roots, true).unwrap();
+            assembly.restore_root(&mut roots, &mut feed, true);
+            let bus = assembly.rows[0].bus.as_ref().unwrap();
+            assert_eq!(bus.device_chain.as_ptr(), chain_pointer);
+            assert_eq!(
+                Arc::as_ptr(bus.device_chain[0].configuration.as_ref().unwrap()),
+                state_pointer
+            );
+            assert_eq!(Arc::as_ptr(&bus.device_chain[0].meter), meter_pointer);
+            while assembly.has_next() {
+                assembly.dispose_next().unwrap();
+                collect(&assembly, &roots, None, budget).unwrap();
+            }
+            assembly.clear_disposed().unwrap();
+            assert!(assembly.rows[0].bus.is_none());
+            assert_eq!(assembly.rows[0].utility.handles(), 0);
+            // Same actual nonempty constructor, injected final control failure:
+            // parent catches once, pending tombstone forbids observe/retry.
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            custody.arrangement_clips.returns.reserve(&project).unwrap();
+            custody.arrangement_clips.returns.construct().unwrap();
+            custody.arrangement_clips.phase = Phase::Installed;
+            custody.arrangement_clips.returns.probe = Some(DropProbe(Some(Box::new(|| {
+                panic!("paired Return control disposal probe")
+            }))));
+            assert!(!custody.dispose_arrangement_clips_on_control());
+            assert_eq!(custody.phase, AudioPreparationPhase::FailedIncomplete);
+            assert!(custody.first_panic.is_some());
+            let failed = &mut custody.arrangement_clips.returns;
+            assert_eq!(failed.rows[0].disposal, Disposal::Pending);
+            assert_eq!(
+                failed.dispose_next(),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            assert!(matches!(
+                collect(failed, &roots, None, budget),
+                Err(AudioStorageError::UnknownStorage)
+            ));
+        }
+    }
+}
+
+fn utility_return_fixture(
+    filtered: bool,
+    bypassed: bool,
+) -> (hex_project::Project, OwnedAudioInputs) {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    let (project, bank, _) = fixture(1, false);
+    let mut snapshot = project.snapshot();
+    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+    let state = definition
+        .patch_parameter(
+            &definition.default_state().unwrap(),
+            hex_devices::utility::parameter::DC_REMOVE,
+            ParameterValue::Bool(filtered),
+        )
+        .unwrap()
+        .with_input_gain_millidb(-6000)
+        .unwrap()
+        .with_output_gain_millidb(3000)
+        .unwrap();
+    snapshot.return_tracks[0]
+        .devices
+        .push(hex_project::DeviceSnapshot {
+            id: snapshot.next_id,
+            bypassed,
+            state,
+        });
+    snapshot.next_id += 1;
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    (project, bank)
+}
+
+#[test]
+fn paired_return_utility_constructor_frontiers_keep_original_children_before_cleanup() {
+    if !supported("paired_return_utility_frontiers") {
+        return;
+    }
+    eprintln!("SUPPORTED actual nonempty paired Return constructor error/panic frontiers");
+    for panic in [false, true] {
+        let (project, _bank) = utility_return_fixture(true, false);
+        let mut assembly = ReturnAssembly::default();
+        assembly.reserve(&project).unwrap();
+        let original = assembly.rows[0].chain.as_ref().unwrap().as_ptr();
+        if panic {
+            assembly.panic_after = Some(0);
+        } else {
+            assembly.fail_after = Some(0);
+        }
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assembly.construct()));
+        if panic {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), Err(AudioStorageError::Allocation));
+        }
+        let bus = assembly.rows[0].bus.as_ref().unwrap();
+        assert_eq!(bus.device_chain.as_ptr(), original);
+        assert!(
+            assembly.rows[0]
+                .declaration
+                .as_ref()
+                .unwrap()
+                .parts(&bus.device_chain)
+                .is_some()
+        );
+        assert!(assembly.rows[0].chain.is_none());
+        assert!(assembly.rows[0].bare.is_none());
+        assert!(assembly.reserve(&project).is_err());
+        assert_eq!(assembly.construct(), Err(AudioStorageError::SourceMismatch));
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 128,
+            root_rows: 16,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        };
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+        ledger
+            .root(&assembly, crate::AudioStorageRole::FailedConstruction)
+            .unwrap();
+        ledger
+            .mutate(|ledger| assembly.visit_audio_storage(ledger, &[], None))
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert!(ledger.summary().unwrap().require_complete().is_err());
+        drop(ledger);
+        if !panic {
+            while assembly.has_next() {
+                assembly.dispose_next().unwrap();
+            }
+            assembly.clear_disposed().unwrap();
+        }
+        // The panic case is a selected raw constructor fixture, not an actual
+        // parent recovery permit. Keep its owner alive through all assertions;
+        // the production caller must retain panic/FailedIncomplete and charges.
+    }
+}

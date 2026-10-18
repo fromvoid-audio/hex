@@ -21,12 +21,12 @@ struct Entry {
     handles: [u64; 4],
 }
 #[derive(Default)]
-pub(super) struct UtilityCustody {
+pub(in crate::audio_preparation::arrangement_clips) struct UtilityCustody {
     entries: Vec<Entry>,
     construction_overlap: usize,
 }
 impl UtilityCustody {
-    pub(super) fn prepare(
+    pub(in crate::audio_preparation::arrangement_clips) fn prepare(
         &mut self,
         devices: &[hex_project::Device],
         owner: ProcessorChainOwner,
@@ -169,7 +169,7 @@ impl UtilityCustody {
         }
         Ok(())
     }
-    pub(super) fn bytes(
+    pub(in crate::audio_preparation::arrangement_clips) fn bytes(
         &self,
         chain: &[crate::PreparedEffectInstance],
     ) -> Result<usize, AudioStorageError> {
@@ -213,32 +213,34 @@ impl UtilityCustody {
         }
         Ok(bytes)
     }
-    pub(super) fn handles(&self) -> usize {
+    pub(in crate::audio_preparation::arrangement_clips) fn handles(&self) -> usize {
         self.entries
             .iter()
             .map(|e| 3 + usize::from(e.processor.is_some()))
             .sum()
     }
-    pub(super) fn visit_metadata<'a>(
+    pub(in crate::audio_preparation::arrangement_clips) fn visit_metadata<'a>(
         &'a self,
         l: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
         l.vec(&self.entries)
     }
-    pub(super) fn construction_overlap(&self) -> usize {
+    pub(in crate::audio_preparation::arrangement_clips) fn construction_overlap(&self) -> usize {
         self.construction_overlap
     }
-    pub(super) fn metadata_bytes(&self) -> Result<usize, AudioStorageError> {
+    pub(in crate::audio_preparation::arrangement_clips) fn metadata_bytes(
+        &self,
+    ) -> Result<usize, AudioStorageError> {
         self.entries
             .capacity()
             .checked_mul(std::mem::size_of::<Entry>())
             .ok_or(AudioStorageError::Overflow)
     }
-    pub(super) fn clear(&mut self) {
+    pub(in crate::audio_preparation::arrangement_clips) fn clear(&mut self) {
         self.entries.clear();
         self.construction_overlap = 0;
     }
-    pub(super) fn visit<'a>(
+    pub(in crate::audio_preparation::arrangement_clips) fn visit<'a>(
         &'a self,
         chain: &'a Arc<[crate::PreparedEffectInstance]>,
         l: &mut crate::AudioRootStorageLedger<'a>,

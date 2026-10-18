@@ -281,8 +281,31 @@ The existing concrete Utility custody constructor now accepts typed Track or
 Return ownership and retains that tag with each actual paired child declaration.
 Validation rejects a mismatched owner even if device ID/type and layout match.
 Empty, bypassed, memoryless and stateful constructor tests retain original
-configuration gains and whole-owner moves. This is constructor plumbing only:
-Return assembly still rejects nonempty chains, and the complete private compiler
-selection, nonempty Track/Return inventory/retirement, aggregate preconstruction
-quote and native admission remain unfinished. No public compiler output or raw
+configuration gains and whole-owner moves. This factor alone supplies no
+complete compiler selection or admission. The private Return continuation below
+adds its concrete inventory/retirement; nonempty Arrangement instrument rows,
+aggregate preconstruction quote and native admission remain unfinished. No public compiler output or raw
 Arc is adopted, and no second chain/configuration is created to qualify the first.
+
+Private Return assembly now retains its concrete Utility custody alongside the
+actual chain. The same paired constructors create each configuration, optional
+filter and meter once with the real Return owner ID; original declarations
+survive reserved, installed and moved-root locations. Capacity and ledger
+traversal include nested payload/header/metadata backing and handle obligations.
+Only actual asset-free Utility children are eligible at this internal seam.
+
+Restore returns the same chain/child fields to existing destinations. Control
+cleanup validates before extraction, marks disposal pending before destruction,
+and clears child birth records only after normal child retirement. Pending
+observation/retry refuses; the existing parent retains panic/failed custody.
+The selected tests compare the actual public compiler's effect-chain PCM and
+partitioned filter history, preserve gains/bypass/owner tags and physical child
+pointers, exercise omitted aliases/exact-minus-one and constructor error/panic,
+and keep complete-retirement certification explicitly refused. Low-level fixed
+handle visitors must run once inside the ledger transaction; a duplicate visit
+refuses and invalidates partial totals rather than declaring another owner.
+
+This does not open the public constructor: its nonempty Return refusal remains
+covered by the new test. The private complete compiler selection and aggregate
+before-first-owner allowance, nonempty Arrangement instrument rows, full native
+conservation/publication and the functional Sampler workflow still need work.

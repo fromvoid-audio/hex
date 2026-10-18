@@ -1,5 +1,5 @@
 //! Sealed control-owned Track targets; no Track/Arc/Clone escape.
-mod utility;
+pub(super) mod utility;
 use super::*;
 use crate::{
     CompiledSend, PreparedTrackMix, Track,
