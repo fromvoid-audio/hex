@@ -252,6 +252,7 @@ struct ReleaseEntry {
     order: u64,
     mix: crate::PreparedTrackMix,
     continuation: Option<SessionContinuation>,
+    inline_tuning_owned: bool,
     voice: MidiReleaseVoice,
 }
 
@@ -989,7 +990,7 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::Allocation)?;
             instances.extend(bus.device_chain.iter().cloned());
             return_chains.push(
-                hex_lattice::NativeRuntimeChain::new(instances)
+                hex_lattice::NativeRuntimeChain::new_prepared(instances)
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?,
             );
             return_scratch.push([[0.0; 2]; 256]);
@@ -1402,7 +1403,7 @@ mod stream_actions;
 mod stream_demand;
 pub use capture::{
     MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES, OutputCapture, OutputCaptureError,
-    OutputCaptureId, OutputCapturePlan,
+    OutputCaptureId, OutputCapturePlan, ProjectOutputTap, ProjectSignal, ProjectSignalObserver,
 };
 pub use stream_actions::PreparedStreamAction;
 mod return_effect_tails;

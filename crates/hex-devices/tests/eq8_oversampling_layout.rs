@@ -15,7 +15,14 @@ struct ProposedEqTwin {
 fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() {
     let state = EQ8_DEFINITION.default_state().unwrap();
     let prepared = EQ8_DEFINITION
-        .prepare_processor(&state, 48000)
+        .prepare_processor(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 48000,
+                tuning: &hex_lattice::TuningTable::default(),
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            },
+        )
         .unwrap()
         .unwrap();
     assert_eq!(prepared.declared_runtime_bytes(), size_of::<Eq8Runtime>());

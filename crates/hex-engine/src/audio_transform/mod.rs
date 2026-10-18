@@ -573,8 +573,7 @@ impl AudioTransformPreparation {
             && domain.pitch_cents == 0
             && !domain.warp_enabled
             && domain.source_gain.is_empty()
-            && domain.fade.fade_in() == 0
-            && domain.fade.fade_out() == 0;
+            && domain.fade.is_neutral();
         if direct && matches!(source, PreparedAudioSourceRef::Streamed(_)) {
             if !domain.looping && view_start >= domain.source_length {
                 return Ok(None);
@@ -620,7 +619,7 @@ impl AudioTransformPreparation {
         }
         let PreparedAudioSourceRef::Resident(source) = source else {
             return Err(Invalid(
-                "audio events, pitch, warp and source-envelope preparation currently requires resident audio; streamed source changes were not committed",
+                "audio events, pitch, warp, source-envelope and fade preparation currently require resident audio; streamed source changes were not committed",
             ));
         };
         let audio = self.prepare_audio(project, edit, asset, source)?;

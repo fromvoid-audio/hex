@@ -14,6 +14,10 @@ from normalized points without assigning device-specific meaning to them.
 axes. Callers supply normalized samples and display their own axis ranges;
 the widget has no DSP, device state or telemetry dependency.
 
+`layered_spectrum_plot` validates and paints up to 257 independently colored
+normalized curves. The product owns signal identities, units and selection;
+the widget never combines layers or owns audio analysis.
+
 Utility is the current visual testbed for the shared Lattice device interface.
 Frames, knobs, sliders, value fields, switches, selectors and popup behavior are
 library controls, not Utility-specific implementations. Device panels compose
@@ -51,6 +55,18 @@ values. The caller retains the RGB value as canonical state and may synchronize
 it back while preserving a preferred hue for gray or black. `device_frame`
 accepts a title, style, header actions and body element; it does not impose
 device-specific layout or parameter semantics.
+
+`ResponseGraph` blank-press creation is owner-opted-in. Owners may separately
+enable creation dragging: the widget retains pointer capture and emits its
+normal begin/change/commit/release/cancel sequence with node ID zero throughout.
+The owner maps that stream to its own provisional identity and transaction;
+asynchronous model publication cannot attach a released press to a new node.
+Click-only creation owners retain their existing behavior.
+
+`ResponseGraphModel` accepts separate normalized input and output analyzer
+curves. Both are bounded, validated and painted behind response curves/nodes;
+the owner controls visibility and injects semantic colors through
+`ResponseGraphAnalyzerStyle`. The widget owns no audio capture or FFT state.
 
 ### shared device composition
 
@@ -200,3 +216,13 @@ numeric gesture and double-click reset lifecycle.
 Windowed generic bodies retain the shared surface and rounded corners while
 placing the standard inset inside their scroll content. The editor owns row
 visibility, offsets and gesture pins; the widget owns chrome and that inset.
+
+`WideMicroDial` retains shared micro-dial editing and height with a 74-pixel
+width for full frequency values and units. It does not change numeric codecs.
+
+ResponseGraph owners can opt into `set_backspace_removal`; install
+`bind_response_graph_keys` with application bindings. Its graph-scoped action
+consumes focused Backspace before editor actions and emits Remove for an idle
+selected node. Its scoped Escape action cancels a held pointer before ancestor
+application actions; idle Escape propagates. Owners retain canonical identity
+and removal/history semantics.

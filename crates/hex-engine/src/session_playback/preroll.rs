@@ -381,7 +381,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for bus in return_buses {
         checked_add(
             &mut total,
-            hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_instances(
+            hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
                 &bus.device_chain,
             )?,
         )?;

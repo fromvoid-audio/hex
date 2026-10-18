@@ -39,7 +39,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     if view.mode != super::EditorMode::Arrangement {
         return None;
     }
-    let state = view.state.as_ref()?;
+    let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
         view.selected_clip_data()?;
     let clip = state.project.clip(clip_id)?;
@@ -98,6 +98,9 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .child(theme::text(title)),
     );
+    controls = controls.child(super::musical_audio_controls::warp_header(
+        view, clip_id, cx,
+    ));
     controls = controls
         .child(field_row(
             cx,

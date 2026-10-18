@@ -1314,7 +1314,19 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     let project_path = directory.path().join("Converted.hex");
     let samples: Vec<i16> = (0..480).map(|i| ((i % 80) as i16 - 40) * 400).collect();
     fs::write(&source_path, wav_at_rate(48_000, &samples)).expect("source");
-    let service = Service::new(44_100, 16, 441).expect("service");
+    // The old derivative-only budget must refuse rather than hide the480-frame
+    // original. The successful fixture reserves exactly both retained buffers.
+    let derivative_only = Service::new(44_100, 16, 441).expect("small service");
+    let initial = next_event(&derivative_only);
+    derivative_only
+        .submit(Request::Import(source_path.clone()))
+        .unwrap();
+    let refused = next_event(&derivative_only);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, initial.state.project);
+    assert_eq!(refused.state.unsaved, initial.state.unsaved);
+    drop(derivative_only);
+    let service = Service::new(44_100, 16, 480 + 441).expect("source plus derivative budget");
     let _ = next_event(&service);
     service
         .submit(Request::Import(source_path.clone()))
@@ -1339,7 +1351,7 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
-    assert_eq!(document["version"], 28);
+    assert_eq!(document["version"], 31);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     service

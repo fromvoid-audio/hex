@@ -106,8 +106,9 @@ of these substitutes for the others.
 | Crate | Owns | Depends on |
 | --- | --- | --- |
 | hex-lattice-contract | Neutral device identifiers, descriptors and versioned opaque state | std |
-| hex-lattice | Native processing registry and validated memoryless stereo matrix DSP | hex-lattice-contract, std |
-| hex-devices | Registered original sine/envelope and linear Utility DSP | hex-lattice, hex-lattice-contract, std |
+| hex-dsp | Host-independent stereo kernels and validated amplitude/decibel units | std |
+| hex-lattice | Native processing registry, prepared/runtime lifecycle and compatibility reexports of stereo kernels | hex-lattice-contract, hex-dsp, std |
+| hex-devices | Registered original device algorithms and their state codecs | hex-lattice, hex-lattice-contract, hex-dsp, std |
 | hex-project | Canonical editable arrangement, stable IDs, transactional edits, history | hex-lattice-contract, std |
 | hex-media | Bounded control-side WAV decode and cached waveform peaks | hex-engine, std |
 | hex-session | Canonical editor controller, retained decoded assets, import preparation, compilation and bounded export coordination | hex-project, hex-media, hex-engine, hex-storage, hex-export, hex-lattice-contract, std |
@@ -116,7 +117,7 @@ of these substitutes for the others.
 | hex-warp | Pure bounded control-side stereo transformation; no project/I/O/UI/thread ownership | std |
 | hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering and transform preparation/cache | hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, std |
 | hex-audio | Device stream lifetime, command delivery, callback boundary | hex-engine, CPAL, rtrb |
-| hex-library | Bounded nonrecursive folder/WAV/project listings with original paths | std |
+| hex-library | Bounded folder/WAV/project listings, recursive WAV catalog and atomic derived cache with original paths | std |
 | hex-widgets | Reusable native control rendering, focus and local edit gestures with caller-supplied style/text | GPUI, std |
 | hex-ui | GPUI views, interaction/display state, required typography and browser navigation | hex-engine, hex-audio, hex-session, hex-project, hex-library, hex-preferences, GPUI |
 | hex-desktop | Startup and composition; constructs backend and injects it | hex-ui, hex-audio, GPUI lifecycle |

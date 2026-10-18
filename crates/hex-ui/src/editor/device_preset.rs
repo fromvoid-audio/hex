@@ -17,8 +17,8 @@ pub(super) fn actions(
 ) -> Div {
     let mut actions = div().flex().items_center().gap(px(2.0));
     for (save, icon, label) in [
-        (true, "↓", "save device preset"),
-        (false, "↑", "load device preset (.hex-device-preset.json)"),
+        (false, "↓", "load device preset (.hex-device-preset.json)"),
+        (true, "↑", "save device preset"),
     ] {
         actions = actions.child(
             super::device_panel::action_button(
