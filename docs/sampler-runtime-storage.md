@@ -178,9 +178,17 @@ still moves the same owned inventory, without cloning its children.
 The selected retirement regression runs both direct and routed Sampler paths
 with the original resource bank retained. It checks actual current/Undo/Redo
 aliases, independent backing capacities, every pending destination and omitted
-pending-field refusal through each cleanup step. Its meter uses the existing
-copy-custody transfer; it does not certify teardown of an unrelated fresh
-compiler meter. The tempo return, fresh complete-compiler owner installation,
+pending-field refusal through each cleanup step. A further regression keeps the
+actual fresh complete-compiler meter and tempo maps, or uses the existing real
+copy-custody transfers, across both direct and routed paths. Cleanup returns
+transferred tempo ownership to its existing destination; fresh owned concrete
+maps retire on control without inventing a copy transfer. Meter and timing
+pending markers precede destruction and refuse retry after abnormal exit; the
+parent retains the panic and failed custody. Concrete maps contain scalar Vec
+elements. Copy-custody phase chooses the cleanup destination, not allocation
+provenance. Project map pointers and independent musical-time conversions remain
+unchanged. This covers those selected map cleanup paths, not a fresh compiler
+constructor or preconstruction quote. Fresh complete-compiler owner installation,
 aggregate preconstruction reservation, full native union and publication remain
 required. Public constructor validation still refuses MIDI graphs; this selected
 retirement capability does not enable the usable Sampler host.

@@ -1177,11 +1177,20 @@ impl AudioPreparationCustody {
                 }
             }
         }
-        if self.assembly.return_timing(&mut self.tempo).is_err() {
-            self.phase = AudioPreparationPhase::FailedIncomplete;
-            return false;
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.assembly.return_timing(&mut self.tempo)
+        })) {
+            Ok(Ok(())) => true,
+            Ok(Err(_)) => {
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                false
+            }
+            Err(payload) => {
+                self.first_panic = Some(payload);
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                false
+            }
         }
-        true
     }
     fn dispose_session_on_control(&mut self) -> bool {
         while self.session.has_next_disposal() {

@@ -2,6 +2,23 @@
 use super::*;
 
 impl PreparedTempoMap {
+    /// Retire an actual owned concrete map on control. This authenticates no
+    /// constructor route or allocation declaration; the caller retains its
+    /// pending marker and original graph/resource custody throughout the drop.
+    pub(crate) fn drop_owned_on_control(source: &mut Option<Self>) {
+        fn scalar<T: Copy>(_: T) {}
+        fn copy_element<T: Copy>() {}
+        copy_element::<hex_project::TempoPoint>();
+        if let Some(Self {
+            canonical,
+            max_micro_bpm,
+        }) = source.take()
+        {
+            scalar(max_micro_bpm);
+            drop(canonical);
+        }
+    }
+
     /// Control-only persistent installation. Every predicate is borrowed before
     /// take; scalar refusal leaves both original destinations unchanged. The
     /// normal commit only moves a canonical map and scalar validation metadata.

@@ -203,6 +203,8 @@ pub(crate) struct SessionAssembly {
     pending_pair: Option<usize>,
     sine_disposal: Step,
     context_disposal: Step,
+    meter_disposal: Step,
+    timing_disposal: Step,
     #[cfg(test)]
     pub(crate) fail_after_move: Option<usize>,
     #[cfg(test)]
@@ -271,6 +273,8 @@ impl SessionAssembly {
             && self.track_cursor == 0
             && self.sine_disposal == Step::Unstarted
             && self.context_disposal == Step::Unstarted
+            && self.meter_disposal == Step::Unstarted
+            && self.timing_disposal == Step::Unstarted
     }
     pub(crate) fn transfer_revision(&mut self, target: &mut Option<PreparedSessionInventory>) {
         *target = self.inventory.take();
@@ -343,7 +347,11 @@ impl SessionAssembly {
                 return Err(AudioStorageError::UnknownStorage);
             }
         }
-        if self.midi_drop_pending || self.mutable_drop_pending {
+        if self.midi_drop_pending
+            || self.mutable_drop_pending
+            || self.meter_disposal == Step::Pending
+            || self.timing_disposal == Step::Pending
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
         let copy_meter = self.meter_copy.capacity();
@@ -923,6 +931,8 @@ impl SessionAssembly {
             pending_pair: _,
             sine_disposal: _,
             context_disposal: _,
+            meter_disposal: _,
+            timing_disposal: _,
             #[cfg(test)]
                 fail_after_move: _,
             #[cfg(test)]

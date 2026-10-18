@@ -31,6 +31,8 @@ impl SessionAssembly {
             || self.pending_mutable.is_some()
             || self.midi_drop_pending
             || self.mutable_drop_pending
+            || self.meter_disposal != Step::Unstarted
+            || self.timing_disposal != Step::Unstarted
         {
             return Err(AudioStorageError::Capacity);
         }
@@ -92,7 +94,11 @@ impl SessionAssembly {
     pub(crate) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         self.unpack_on_control()?;
         self.phase = AssemblyPhase::Cleaning;
-        if self.midi_drop_pending || self.mutable_drop_pending {
+        if self.midi_drop_pending
+            || self.mutable_drop_pending
+            || self.meter_disposal == Step::Pending
+            || self.timing_disposal == Step::Pending
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
         if self.pending_midi.is_some() {
@@ -216,9 +222,28 @@ impl SessionAssembly {
             return Ok(());
         }
         if self.meter.is_some() {
-            self.meter_copy
-                .clean_transferred_on_control(&mut self.meter)
-                .map_err(meter_error)?;
+            use hex_project::MeterMapCopyPhase;
+            if matches!(
+                self.meter_copy.phase(),
+                MeterMapCopyPhase::Preparing | MeterMapCopyPhase::Incomplete
+            ) || self.meter_disposal != Step::Unstarted
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            self.meter_disposal = Step::Pending;
+            if self.meter_copy.phase() == MeterMapCopyPhase::Transferred {
+                self.meter_copy
+                    .clean_transferred_on_control(&mut self.meter)
+                    .map_err(meter_error)?;
+            } else {
+                // The concrete owned map has only scalar Vec elements. Copy
+                // custody state selects its cleanup destination, not provenance.
+                fn copy_element<T: Copy>() {}
+                copy_element::<hex_project::MeterPoint>();
+                drop(self.meter.take());
+                self.meter_copy.clean_on_control().map_err(meter_error)?;
+            }
+            self.meter_disposal = Step::Complete;
         } else {
             self.meter_copy.clean_on_control().map_err(meter_error)?;
         }
@@ -230,7 +255,18 @@ impl SessionAssembly {
         tempo: &mut SessionTempoConstruction,
     ) -> Result<(), AudioStorageError> {
         if self.timing.is_some() {
-            tempo.restore_inventory_map(&mut self.timing)?;
+            if self.timing_disposal != Step::Unstarted || tempo.incomplete() {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            self.timing_disposal = Step::Pending;
+            if tempo.inventory_map_is_outstanding() {
+                tempo.restore_inventory_map(&mut self.timing)?;
+            } else {
+                PreparedTempoMap::drop_owned_on_control(&mut self.timing);
+            }
+            self.timing_disposal = Step::Complete;
+        } else if self.timing_disposal == Step::Pending {
+            return Err(AudioStorageError::UnknownStorage);
         }
         Ok(())
     }
@@ -253,6 +289,8 @@ impl SessionAssembly {
             || self.pending_mutable.is_some()
             || self.midi_drop_pending
             || self.mutable_drop_pending
+            || self.meter_disposal == Step::Pending
+            || self.timing_disposal == Step::Pending
             || self.name_pending
             || self.scenes.iter().any(|s| s.name.capacity() != 0)
             || self.tracks.iter().any(|t| t.name.capacity() != 0)
@@ -289,6 +327,8 @@ impl SessionAssembly {
         self.track_cursor = 0;
         self.sine_disposal = Step::Unstarted;
         self.context_disposal = Step::Unstarted;
+        self.meter_disposal = Step::Unstarted;
+        self.timing_disposal = Step::Unstarted;
         self.phase = AssemblyPhase::Vacant;
         Ok(())
     }
