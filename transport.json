@@ -1,0 +1,13 @@
+{
+  "source": {
+    "commit": "6e9bac414da3ef52e4c1a12b6ccc17b6b4f8bfca",
+    "dirty": false,
+    "dirty_files": [],
+    "content_sha256": "99547df73c17fa8ca0a9b4b43efc6c62459be7dcc3df19a965fe476c63912049"
+  },
+  "archive": "project-one-open-6e9bac41-v2.tar.gz",
+  "bytes": 126849,
+  "sha256": "aed6795887dfd75191f43d07fb08c289b11ac7c12e919433f97fa65d4712a017",
+  "payloads": 32,
+  "evidence_only": true
+}
