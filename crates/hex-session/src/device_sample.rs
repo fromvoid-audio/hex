@@ -23,7 +23,11 @@ pub struct PreparedDeviceSample {
     path: PathBuf,
     source: OriginalAudio,
     source_frames: u64,
+    native_waveform: Option<hex_media::waveform::SharedWaveform>,
+    native_waveform_attempted: bool,
+    native_waveform_failure: Option<Box<dyn std::any::Any + Send>>,
 }
+mod native_waveform;
 /// Explicit bounds for worker-only summary scanning and its retained source
 /// handle. Whole graph metadata/peak accounting is still required by the host.
 #[derive(Clone, Copy, Debug)]
@@ -149,6 +153,9 @@ impl PreparedDeviceSample {
             path,
             source,
             source_frames,
+            native_waveform: None,
+            native_waveform_attempted: false,
+            native_waveform_failure: None,
         })
     }
     pub fn path(&self) -> &Path {
@@ -204,17 +211,31 @@ impl PreparedDeviceSample {
             path,
             source: _,
             source_frames,
+            native_waveform,
+            native_waveform_attempted,
+            native_waveform_failure,
         } = self;
+        if native_waveform_failure.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         let hex_engine::SamplerSampleAssignment { state, slot } = assignment;
-        let _: (&DeviceId, &hex_lattice_contract::DeviceAssetSlot, &u64) =
-            (device, slot, source_frames);
+        let _: (
+            &DeviceId,
+            &hex_lattice_contract::DeviceAssetSlot,
+            &u64,
+            &bool,
+        ) = (device, slot, source_frames, native_waveform_attempted);
         ledger.borrow_canonical_native_state_on_control(expected_state)?;
         ledger.borrow_canonical_native_state_on_control(state)?;
         ledger.borrow_metadata_path_backing_on_control(path)?;
         match &self.source {
             OriginalAudio::Stereo(audio) => ledger.borrow_embedded_native_audio_on_control(audio),
             OriginalAudio::Mono(source) => ledger.borrow_embedded_native_source_on_control(source),
+        }?;
+        if let Some(waveform) = native_waveform {
+            hex_media::waveform::borrow_shared_storage_on_control(waveform, ledger)?;
         }
+        Ok(())
     }
     /// PCM fields only; outer staging/path/state metadata and complete graph
     /// custody/peak/publication/retirement are separate mandatory obligations.
@@ -285,9 +306,39 @@ impl PreparedDeviceSample {
         crate::resource_plan::producer::ResolvedOriginalResources<'scope>,
         ResourcePreparationError,
     > {
+        let asset = self.bound_candidate_asset_on_control(source, candidate)?;
+        crate::resource_plan::validate_candidate_assets(
+            candidate,
+            assets,
+            reservation
+                .max_preparation_metadata_bytes
+                .min(reservation.max_construction_peak_bytes),
+            cancel,
+        )?;
+        sources.resolve(
+            assets,
+            Some((asset, &self.source)),
+            reservation.max_preparation_metadata_bytes,
+            cancel,
+        )
+    }
+    fn bound_candidate_asset_on_control<'candidate>(
+        &self,
+        source: &Project,
+        candidate: &'candidate Project,
+    ) -> Result<&'candidate hex_project::Asset, ResourcePreparationError> {
+        if self.native_waveform_failure.is_some() {
+            return Err(AudioStorageError::UnknownStorage.into());
+        }
         self.validate_target_on_control(source)
             .map_err(|_| ResourcePreparationError::InvalidSource)?;
-        if candidate.sample_rate() != source.sample_rate() {
+        if candidate.sample_rate() != source.sample_rate()
+            || !candidate.tracks().iter().any(|track| {
+                track
+                    .instrument()
+                    .is_some_and(|device| device.id() == self.device)
+            })
+        {
             return Err(ResourcePreparationError::InvalidSource);
         }
         let state = candidate
@@ -308,27 +359,18 @@ impl PreparedDeviceSample {
         if reference.slot != self.assignment.slot {
             return Err(ResourcePreparationError::InvalidSource);
         }
-        let asset = candidate
-            .assets()
-            .find(|asset| asset.id().value() == reference.asset.value())
-            .ok_or(ResourcePreparationError::InvalidSource)?;
-        if asset.path() != self.path {
+        let assets = candidate.asset_entries_on_control().as_slice();
+        let index = assets
+            .binary_search_by_key(&reference.asset.value(), |(id, _)| id.value())
+            .map_err(|_| ResourcePreparationError::InvalidSource)?;
+        let asset = &assets[index].1;
+        if asset.path() != self.path
+            || asset.source_sample_rate() != self.source.sample_rate()
+            || asset.source_frames() != self.source_frames
+        {
             return Err(ResourcePreparationError::InvalidSource);
         }
-        crate::resource_plan::validate_candidate_assets(
-            candidate,
-            assets,
-            reservation
-                .max_preparation_metadata_bytes
-                .min(reservation.max_construction_peak_bytes),
-            cancel,
-        )?;
-        sources.resolve(
-            assets,
-            Some((asset, &self.source)),
-            reservation.max_preparation_metadata_bytes,
-            cancel,
-        )
+        Ok(asset)
     }
 }
 

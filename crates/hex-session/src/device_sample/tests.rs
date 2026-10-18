@@ -879,3 +879,350 @@ fn resolved_pending_plan_installs_into_actual_preparation_custody_beside_editor_
         }
     }
 }
+
+struct PendingWaveformInterrupt {
+    calls: std::sync::atomic::AtomicUsize,
+    panic: bool,
+}
+impl hex_engine::CancellationQuery for PendingWaveformInterrupt {
+    fn is_cancelled(&self) -> bool {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        if call == 4 {
+            assert!(!self.panic, "injected pending waveform query panic");
+            return true;
+        }
+        false
+    }
+}
+fn native_waveform_limits(frames: usize) -> hex_media::waveform::NativeOriginalWaveformLimits {
+    hex_media::waveform::NativeOriginalWaveformLimits {
+        bins: 3,
+        scan_frames: frames,
+        metadata_bytes: hex_media::waveform::native_original_metadata_bytes(frames, 3).unwrap(),
+    }
+}
+fn pending_native(stereo: bool, frames: usize) -> (Session, PreparedDeviceSample) {
+    let (session, device) = fixture();
+    let source = if stereo {
+        OwnedAudioSource::try_resident(24_000, vec![[0.25, -0.5]; frames])
+            .ok()
+            .unwrap()
+    } else {
+        OwnedAudioSource::try_resident_mono(24_000, vec![0.25; frames])
+            .ok()
+            .unwrap()
+    };
+    let pending = PreparedDeviceSample::from_native_on_control(
+        device,
+        session.project().device(device).unwrap().state(),
+        "pending.wav".into(),
+        source,
+    )
+    .unwrap();
+    (session, pending)
+}
+#[test]
+fn pending_native_waveform_installs_then_retains_completed_or_cancelled_state_beside_atomic_editor_refusal()
+ {
+    if !hex_engine::audio_storage_constructor_layout_supported()
+        || !hex_engine::canonical_native_state_storage_layout_supported()
+    {
+        eprintln!("unsupported pending native waveform custody");
+        return;
+    }
+    for stereo in [false, true] {
+        for cancel_scan in [false, true] {
+            eprintln!("SUPPORTED pending native waveform stereo={stereo} cancel={cancel_scan}");
+            let (mut session, mut pending) = pending_native(stereo, 1025);
+            let before = session.project().clone();
+            let undo = session.editor.undo_storage_on_control().clone();
+            let redo = session.editor.redo_storage_on_control().clone();
+            let mut resource_limits = limits();
+            resource_limits.catalog.hash_frames = 1025;
+            let mut outer = resource_limits.inputs;
+            outer.allocation_items = 256;
+            outer.handle_obligations = 128;
+            outer.max_prepared_data_bytes = 16 * 1024 * 1024;
+            outer.max_construction_data_bytes = 16 * 1024 * 1024;
+            let mut cell =
+                hex_engine::AudioCandidatePreparation::try_new_on_control(0, outer).unwrap();
+            let sources =
+                crate::resource_plan::producer::ResidentResourceSources::new(&session.media);
+            let result: Result<(Created, ()), SessionError> =
+                session.editor.execute_prepared_transition(
+                    pending.assignment_command_on_control(),
+                    |source, candidate| {
+                        let reference = candidate
+                            .device(pending.device)
+                            .unwrap()
+                            .state()
+                            .asset_references()[0];
+                        let asset = candidate
+                            .assets()
+                            .find(|asset| asset.id().value() == reference.asset.value())
+                            .unwrap();
+                        {
+                            let resolved = pending
+                                .resolve_resource_plan_with_sources_on_control(
+                                    source,
+                                    candidate,
+                                    &sources,
+                                    &[asset.id()],
+                                    resource_limits,
+                                    &AtomicBool::new(false),
+                                )
+                                .unwrap();
+                            cell.operations_on_control()
+                                .install_original_resources_on_control(
+                                    &resolved.as_engine_plan(),
+                                    resource_limits,
+                                    &AtomicBool::new(false),
+                                )
+                                .unwrap();
+                        }
+                        let interrupt = PendingWaveformInterrupt {
+                            calls: std::sync::atomic::AtomicUsize::new(0),
+                            panic: false,
+                        };
+                        let result = if cancel_scan {
+                            pending.prepare_native_waveform_for_candidate_on_worker(
+                                source,
+                                candidate,
+                                native_waveform_limits(1025),
+                                &interrupt,
+                            )
+                        } else {
+                            pending.prepare_native_waveform_for_candidate_on_worker(
+                                source,
+                                candidate,
+                                native_waveform_limits(1025),
+                                &AtomicBool::new(false),
+                            )
+                        };
+                        if cancel_scan {
+                            assert!(matches!(
+                                result,
+                                Err(hex_media::DeviceSourceImportError::Media(
+                                    hex_media::ImportError::Cancelled
+                                ))
+                            ));
+                            assert_eq!(interrupt.calls.load(Ordering::Relaxed), 4);
+                            assert!(pending.native_waveform_read_on_control().unwrap().is_none());
+                        } else {
+                            result.unwrap();
+                            let read = pending.native_waveform_read_on_control().unwrap().unwrap();
+                            assert_eq!(read.source_frames(), 1025);
+                            let expected = if stereo { -0.5 } else { 0.25 };
+                            assert_eq!(read.peaks_for_frames(700, 701).unwrap()[1].min, expected);
+                        }
+                        assert!(pending.native_waveform_attempted);
+                        assert!(pending.native_waveform_failure.is_none());
+                        assert!(
+                            pending
+                                .prepare_native_waveform_for_candidate_on_worker(
+                                    source,
+                                    candidate,
+                                    native_waveform_limits(1025),
+                                    &interrupt
+                                )
+                                .is_err()
+                        );
+                        Err(SessionError::Invalid("later host preparation refused"))
+                    },
+                );
+            assert!(result.is_err());
+            assert_eq!(session.project(), &before);
+            assert_eq!(session.editor.undo_storage_on_control(), &undo);
+            assert_eq!(session.editor.redo_storage_on_control(), &redo);
+            assert!(session.media.is_empty());
+            drop(before);
+            drop(undo);
+            drop(redo);
+            let export = pending.native_waveform.as_ref().cloned();
+            let collect = || {
+                let mut ledger = AudioRootStorageLedger::try_new_on_control(
+                    hex_engine::AudioStorageLedgerReservation {
+                        data_rows: 256,
+                        handle_rows: 128,
+                        root_rows: 16,
+                        max_retained_bytes: 2_000_000,
+                        max_construction_peak_bytes: 2_000_000,
+                    },
+                )
+                .unwrap();
+                pending
+                    .visit_selected_storage_on_control(&mut ledger)
+                    .unwrap();
+                ledger
+                    .borrow_editor_native_states_on_control(&session.editor)
+                    .unwrap();
+                if let Some(export) = &export {
+                    hex_media::waveform::borrow_shared_storage_on_control(export, &mut ledger)
+                        .unwrap();
+                }
+                ledger.validate_selected_shared_handles_on_control()
+            };
+            assert!(collect().is_err(), "actual installed bank remains omitted");
+            cell.cleanup_on_control().unwrap();
+            collect().unwrap();
+            pending.retire_native_waveform_on_control().unwrap();
+            pending.retire_native_waveform_on_control().unwrap();
+            assert!(pending.native_waveform_read_on_control().unwrap().is_none());
+            drop(pending);
+            drop(session);
+            if let Some(export) = export {
+                assert_eq!(export.read().source_frames(), 1025);
+                assert_eq!(
+                    export.read().peaks_for_frames(700, 701).unwrap()[0].max,
+                    0.25
+                );
+            }
+        }
+    }
+}
+#[test]
+fn pending_native_waveform_binding_and_prequote_refusal_precede_attempt() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!("SUPPORTED pending native waveform actual binding refusals");
+    let (session, mut pending) = pending_native(false, 1025);
+    let mut candidate = Editor::new(session.project().clone(), 1).unwrap();
+    candidate
+        .execute(pending.assignment_command_on_control())
+        .unwrap();
+    let query = PendingWaveformInterrupt {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        panic: true,
+    };
+    let mut too_small = native_waveform_limits(1025);
+    too_small.metadata_bytes -= 1;
+    assert!(
+        pending
+            .prepare_native_waveform_for_candidate_on_worker(
+                session.project(),
+                candidate.project(),
+                too_small,
+                &query
+            )
+            .is_err()
+    );
+    assert!(!pending.native_waveform_attempted);
+    assert_eq!(query.calls.load(Ordering::Relaxed), 0);
+    let mut wrong = candidate.project().snapshot();
+    wrong.assets[0].path = "different.wav".into();
+    let wrong = Project::from_snapshot(wrong).unwrap();
+    assert!(
+        pending
+            .prepare_native_waveform_for_candidate_on_worker(
+                session.project(),
+                &wrong,
+                native_waveform_limits(1025),
+                &query
+            )
+            .is_err()
+    );
+    assert!(!pending.native_waveform_attempted);
+    assert_eq!(query.calls.load(Ordering::Relaxed), 0);
+    // Same DeviceId/state/asset in a different model role is not the captured
+    // candidate instrument, even though the neutral model can retain it.
+    let mut wrong_role = candidate.project().snapshot();
+    let instrument = wrong_role.tracks[0].instrument.take().unwrap();
+    wrong_role.tracks[0].instrument_position = None;
+    wrong_role.tracks[0].devices.push(instrument);
+    let wrong_role = Project::from_snapshot(wrong_role).unwrap();
+    assert!(
+        pending
+            .prepare_native_waveform_for_candidate_on_worker(
+                session.project(),
+                &wrong_role,
+                native_waveform_limits(1025),
+                &query
+            )
+            .is_err()
+    );
+    assert!(!pending.native_waveform_attempted);
+    assert_eq!(query.calls.load(Ordering::Relaxed), 0);
+    pending
+        .prepare_native_waveform_for_candidate_on_worker(
+            session.project(),
+            candidate.project(),
+            native_waveform_limits(1025),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(pending.native_waveform_read_on_control().unwrap().is_some());
+    pending.retire_native_waveform_on_control().unwrap();
+}
+#[test]
+fn pending_native_waveform_caught_panic_retains_first_payload_and_refuses_retry_inspection_cleanup()
+{
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!("SUPPORTED pending native waveform first panic retained");
+    let (session, mut pending) = pending_native(false, 1025);
+    let mut candidate = Editor::new(session.project().clone(), 1).unwrap();
+    candidate
+        .execute(pending.assignment_command_on_control())
+        .unwrap();
+    let query = PendingWaveformInterrupt {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        panic: true,
+    };
+    assert!(
+        pending
+            .prepare_native_waveform_for_candidate_on_worker(
+                session.project(),
+                candidate.project(),
+                native_waveform_limits(1025),
+                &query
+            )
+            .is_err()
+    );
+    assert_eq!(query.calls.load(Ordering::Relaxed), 4);
+    assert!(pending.native_waveform.is_none());
+    assert_eq!(
+        pending
+            .native_waveform_failure
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<&str>(),
+        Some(&"injected pending waveform query panic")
+    );
+    assert_eq!(
+        pending.native_waveform_read_on_control().err(),
+        Some(AudioStorageError::UnknownStorage)
+    );
+    assert_eq!(
+        pending.retire_native_waveform_on_control(),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    assert!(
+        pending
+            .prepare_native_waveform_for_candidate_on_worker(
+                session.project(),
+                candidate.project(),
+                native_waveform_limits(1025),
+                &query
+            )
+            .is_err()
+    );
+    assert_eq!(query.calls.load(Ordering::Relaxed), 4);
+    let mut ledger =
+        AudioRootStorageLedger::try_new_on_control(hex_engine::AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 32,
+            root_rows: 16,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        })
+        .unwrap();
+    assert_eq!(
+        pending.visit_selected_storage_on_control(&mut ledger),
+        Err(AudioStorageError::UnknownStorage)
+    );
+    assert_eq!(pending.source_frames(), 1025);
+    // Fixture teardown on this control test thread is not successful production
+    // retirement or a permit to clear/retry the retained failed parent slot.
+}

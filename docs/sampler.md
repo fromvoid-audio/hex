@@ -885,3 +885,25 @@ constructors return one paired result for immediate pending placement; the calle
 must retain the destination, complete old/new/source/installed-bank coexistence
 and construction reservation, and failed/cancelled control retirement. This
 representation proof does not establish that complete production route.
+
+PreparedDeviceSample now has a private completed native-waveform destination.
+The same source/candidate assignment check used by the borrowed resource plan
+also checks actual candidate instrument role, slot, path, original rate and frame
+extent. A nonextracting worker method quotes the summary before consuming its
+one construction attempt, then moves success straight into that field. Scoped
+queries expose no owner. Selected pending inventory includes the actual paired
+waveform and its source field; a first caught construction panic stays attached
+to the pending object and refuses observation, retry and successful cleanup.
+Ordinary cancellation retains the decoded original and any already installed
+bank in their separate actual custody. Completed summary retirement is control
+only and limited to this private fixed NativeOriginal/scalar-Vec constructor;
+no generic waveform replacement or opaque destructor is certified.
+
+Tests perform actual editor prepared transitions with Mono/Stereo bank installs
+and successful/cancelled summary scans, then later refusal. Model/Undo/Redo/media
+remain unchanged. Omitted installed-bank aliases refuse closure until its control
+cleanup, after which actual pending/editor/export fields close; an old exported
+summary survives pending, bank and model destruction. These are local custody
+and binding proofs. No actual Service load request, registered failed-parent
+retirement, complete aggregate reservation, compiler admission or final native
+publication has been established by them.
