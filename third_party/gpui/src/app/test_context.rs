@@ -741,6 +741,30 @@ impl VisualTestContext {
         })
     }
 
+    /// Completed quad fragments for a debug element, including cache replay
+    /// masks. The caller can check coverage and ordering across all fragments.
+    /// This is scene evidence, not native framebuffer/pixel readback.
+    pub fn rendered_quad_paint_layers(
+        &mut self,
+        selector: &'static str,
+        border: bool,
+    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
+        self.update(|window, _| {
+            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
+                return Vec::new();
+            };
+            let scaled = bounds.scale(window.scale_factor());
+            window.rendered_frame.scene.quads.iter().enumerate()
+                .filter(|(_, quad)| quad.bounds == scaled && if border {
+                    quad.border_widths != crate::Edges::default()
+                } else {
+                    !quad.background.is_transparent()
+                })
+                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
+                .collect()
+        })
+    }
+
     /// Rounded geometry and ancestor mask of the last filled scene quad matching
     /// an element's debug bounds, in scaled pixels. This is scene evidence, not
     /// GPU framebuffer or native display readback.

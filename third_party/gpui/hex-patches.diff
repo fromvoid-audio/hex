@@ -244,6 +244,140 @@
 +    /// Typed payload, revalidated against current semantics.
 +    pub action: AccessibilityAction,
 +}
+--- a/src/app/test_context.rs
++++ b/src/app/test_context.rs
+@@ -120,6 +120,18 @@
+ }
+
+ impl TestAppContext {
++    /// Verify private cached-scene replay against the retained legacy painter.
++    /// Test support only; no window, native graphics or public scene API.
++    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
++        crate::scene::verify_bulk_replay()
++    }
++
++    /// Cursor last delivered to the test platform, independent of hit testing.
++    /// This is not evidence of physical native cursor appearance.
++    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
++        self.test_platform.cursor_style()
++    }
++
+     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
+     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
+         let arc_dispatcher = Arc::new(dispatcher.clone());
+@@ -305,6 +317,16 @@
+         self.test_platform.simulate_new_path_selection(select_path);
+     }
+
++    /// Whether the test platform has an outstanding Open picker request.
++    pub fn did_prompt_for_paths(&self) -> bool {
++        self.test_platform.did_prompt_for_paths()
++    }
++
++    /// Complete the test platform Open picker; this does not show a native picker.
++    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
++        self.test_platform.simulate_paths_selection(paths);
++    }
++
+     /// Simulates clicking a button in an platform-level alert dialog.
+     #[track_caller]
+     pub fn simulate_prompt_answer(&self, button: &str) {
+@@ -675,6 +697,95 @@
+ }
+
+ impl VisualTestContext {
++    /// Returns the cursor request selected by the current rendered hitbox.
++    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
++    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
++        self.update(|window, _| window.rendered_frame.cursor_style(window))
++    }
++
++    /// Background of the last filled quad exactly matching a debug element's bounds.
++    /// Border-only quads have transparent fills and do not replace the surface.
++    /// Reads the completed scene without drawing or injecting pointer events.
++    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
++                .map(|quad| quad.background)
++        })
++    }
++
++    /// Border color, widths and ancestor mask of the last matching scene quad.
++    /// Reads completed paint under test support without changing layout or input.
++    pub fn rendered_border(
++        &mut self,
++        selector: &'static str,
++    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
++                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
++        })
++    }
++
++    /// Completed quad fragments for a debug element, including cache replay
++    /// masks. The caller can check coverage and ordering across all fragments.
++    /// This is scene evidence, not native framebuffer/pixel readback.
++    pub fn rendered_quad_paint_layers(
++        &mut self,
++        selector: &'static str,
++        border: bool,
++    ) -> Vec<((u32, usize), Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let Some(bounds) = window.rendered_frame.debug_bounds.get(selector) else {
++                return Vec::new();
++            };
++            let scaled = bounds.scale(window.scale_factor());
++            window.rendered_frame.scene.quads.iter().enumerate()
++                .filter(|(_, quad)| quad.bounds == scaled && if border {
++                    quad.border_widths != crate::Edges::default()
++                } else {
++                    !quad.background.is_transparent()
++                })
++                .map(|(index, quad)| ((quad.order, index), quad.content_mask.bounds))
++                .collect()
++        })
++    }
++
++    /// Rounded geometry and ancestor mask of the last filled scene quad matching
++    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
++    /// GPU framebuffer or native display readback.
++    pub fn rendered_surface_geometry(
++        &mut self,
++        selector: &'static str,
++    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
++        self.update(|window, _| {
++            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
++            let scaled = bounds.scale(window.scale_factor());
++            window
++                .rendered_frame
++                .scene
++                .quads
++                .iter()
++                .rev()
++                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
++                .map(|quad| (quad.corner_radii, quad.content_mask.bounds))
++        })
++    }
++
+     /// Provides a `Window` and `App` for the duration of the closure.
+     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+         self.cx
 --- a/src/bounds_tree.rs
 +++ b/src/bounds_tree.rs
 @@ -35,0 +36,15 @@
@@ -1992,6 +2126,58 @@
 +        native_accessibility::detach(this);
 @@ -2058,0 +2167 @@
 +    native_accessibility::revoke_object(this);
+--- a/src/platform/test/platform.rs
++++ b/src/platform/test/platform.rs
+@@ -88,9 +88,14 @@
+ pub(crate) struct TestPrompts {
+     multiple_choice: VecDeque<TestPrompt>,
+     new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
++    paths: VecDeque<oneshot::Sender<Result<Option<Vec<PathBuf>>>>>,
+ }
+
+ impl TestPlatform {
++    pub(crate) fn cursor_style(&self) -> CursorStyle {
++        *self.active_cursor.lock()
++    }
++
+     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
+         #[cfg(target_os = "windows")]
+         let bitmap_factory = unsafe {
+@@ -153,6 +158,21 @@
+             )
+         };
+         prompt.tx.send(ix).ok();
++    }
++
++    pub(crate) fn did_prompt_for_paths(&self) -> bool {
++        !self.prompts.borrow().paths.is_empty()
++    }
++
++    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
++        let tx = self
++            .prompts
++            .borrow_mut()
++            .paths
++            .pop_front()
++            .expect("no pending open paths prompt");
++        self.background_executor().set_waiting_hint(None);
++        tx.send(Ok(paths)).ok();
+     }
+
+     pub(crate) fn has_pending_prompt(&self) -> bool {
+@@ -335,7 +355,11 @@
+         &self,
+         _options: crate::PathPromptOptions,
+     ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
+-        unimplemented!()
++        let (tx, rx) = oneshot::channel();
++        self.background_executor()
++            .set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
++        self.prompts.borrow_mut().paths.push_back(tx);
++        rx
+     }
+
+     fn prompt_for_new_path(
 --- a/src/platform/windows/events.rs
 +++ b/src/platform/windows/events.rs
 @@ -555,0 +556 @@
@@ -2981,165 +3167,3 @@
 +    /// private propagation metadata or generating operating-system input events.
 +    pub fn dispatch_input(&mut self, event: PlatformInput, cx: &mut App) {
 +        self.dispatch_event(event, cx);
---- a/src/app/test_context.rs
-+++ b/src/app/test_context.rs
-@@ -120,6 +120,18 @@
- }
-
- impl TestAppContext {
-+    /// Verify private cached-scene replay against the retained legacy painter.
-+    /// Test support only; no window, native graphics or public scene API.
-+    pub fn verify_cached_scene_replay(&self) -> std::result::Result<(), String> {
-+        crate::scene::verify_bulk_replay()
-+    }
-+
-+    /// Cursor last delivered to the test platform, independent of hit testing.
-+    /// This is not evidence of physical native cursor appearance.
-+    pub fn platform_cursor_style(&self) -> crate::CursorStyle {
-+        self.test_platform.cursor_style()
-+    }
-+
-     /// Creates a new `TestAppContext`. Usually you can rely on `#[gpui::test]` to do this for you.
-     pub fn build(dispatcher: TestDispatcher, fn_name: Option<&'static str>) -> Self {
-         let arc_dispatcher = Arc::new(dispatcher.clone());
-@@ -305,6 +317,16 @@
-         self.test_platform.simulate_new_path_selection(select_path);
-     }
-
-+    /// Whether the test platform has an outstanding Open picker request.
-+    pub fn did_prompt_for_paths(&self) -> bool {
-+        self.test_platform.did_prompt_for_paths()
-+    }
-+
-+    /// Complete the test platform Open picker; this does not show a native picker.
-+    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
-+        self.test_platform.simulate_paths_selection(paths);
-+    }
-+
-     /// Simulates clicking a button in an platform-level alert dialog.
-     #[track_caller]
-     pub fn simulate_prompt_answer(&self, button: &str) {
-@@ -675,6 +697,71 @@
- }
-
- impl VisualTestContext {
-+    /// Returns the cursor request selected by the current rendered hitbox.
-+    /// This checks GPUI hover routing; it does not claim native OS cursor delivery.
-+    pub fn rendered_cursor_style(&mut self) -> Option<crate::CursorStyle> {
-+        self.update(|window, _| window.rendered_frame.cursor_style(window))
-+    }
-+
-+    /// Background of the last filled quad exactly matching a debug element's bounds.
-+    /// Border-only quads have transparent fills and do not replace the surface.
-+    /// Reads the completed scene without drawing or injecting pointer events.
-+    pub fn rendered_background(&mut self, selector: &'static str) -> Option<crate::Background> {
-+        self.update(|window, _| {
-+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
-+            let scaled = bounds.scale(window.scale_factor());
-+            window
-+                .rendered_frame
-+                .scene
-+                .quads
-+                .iter()
-+                .rev()
-+                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
-+                .map(|quad| quad.background)
-+        })
-+    }
-+
-+    /// Border color, widths and ancestor mask of the last matching scene quad.
-+    /// Reads completed paint under test support without changing layout or input.
-+    pub fn rendered_border(
-+        &mut self,
-+        selector: &'static str,
-+    ) -> Option<(crate::Hsla, crate::Edges<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
-+        self.update(|window, _| {
-+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
-+            let scaled = bounds.scale(window.scale_factor());
-+            window
-+                .rendered_frame
-+                .scene
-+                .quads
-+                .iter()
-+                .rev()
-+                .find(|quad| quad.bounds == scaled && quad.border_widths != crate::Edges::default())
-+                .map(|quad| (quad.border_color, quad.border_widths, quad.content_mask.bounds))
-+        })
-+    }
-+
-+    /// Rounded geometry and ancestor mask of the last filled scene quad matching
-+    /// an element's debug bounds, in scaled pixels. This is scene evidence, not
-+    /// GPU framebuffer or native display readback.
-+    pub fn rendered_surface_geometry(
-+        &mut self,
-+        selector: &'static str,
-+    ) -> Option<(crate::Corners<crate::ScaledPixels>, Bounds<crate::ScaledPixels>)> {
-+        self.update(|window, _| {
-+            let bounds = window.rendered_frame.debug_bounds.get(selector)?;
-+            let scaled = bounds.scale(window.scale_factor());
-+            window
-+                .rendered_frame
-+                .scene
-+                .quads
-+                .iter()
-+                .rev()
-+                .find(|quad| quad.bounds == scaled && !quad.background.is_transparent())
-+                .map(|quad| (quad.corner_radii, quad.content_mask.bounds))
-+        })
-+    }
-+
-     /// Provides a `Window` and `App` for the duration of the closure.
-     pub fn update<R>(&mut self, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
-         self.cx
---- a/src/platform/test/platform.rs
-+++ b/src/platform/test/platform.rs
-@@ -88,9 +88,14 @@
- pub(crate) struct TestPrompts {
-     multiple_choice: VecDeque<TestPrompt>,
-     new_path: VecDeque<(PathBuf, oneshot::Sender<Result<Option<PathBuf>>>)>,
-+    paths: VecDeque<oneshot::Sender<Result<Option<Vec<PathBuf>>>>>,
- }
-
- impl TestPlatform {
-+    pub(crate) fn cursor_style(&self) -> CursorStyle {
-+        *self.active_cursor.lock()
-+    }
-+
-     pub fn new(executor: BackgroundExecutor, foreground_executor: ForegroundExecutor) -> Rc<Self> {
-         #[cfg(target_os = "windows")]
-         let bitmap_factory = unsafe {
-@@ -153,6 +158,21 @@
-             )
-         };
-         prompt.tx.send(ix).ok();
-+    }
-+
-+    pub(crate) fn did_prompt_for_paths(&self) -> bool {
-+        !self.prompts.borrow().paths.is_empty()
-+    }
-+
-+    pub(crate) fn simulate_paths_selection(&self, paths: Option<Vec<PathBuf>>) {
-+        let tx = self
-+            .prompts
-+            .borrow_mut()
-+            .paths
-+            .pop_front()
-+            .expect("no pending open paths prompt");
-+        self.background_executor().set_waiting_hint(None);
-+        tx.send(Ok(paths)).ok();
-     }
-
-     pub(crate) fn has_pending_prompt(&self) -> bool {
-@@ -335,7 +355,11 @@
-         &self,
-         _options: crate::PathPromptOptions,
-     ) -> oneshot::Receiver<Result<Option<Vec<std::path::PathBuf>>>> {
--        unimplemented!()
-+        let (tx, rx) = oneshot::channel();
-+        self.background_executor()
-+            .set_waiting_hint(Some("PROMPT FOR OPEN PATHS".into()));
-+        self.prompts.borrow_mut().paths.push_back(tx);
-+        rx
-     }
-
-     fn prompt_for_new_path(

@@ -168,3 +168,11 @@ unimplemented test-platform leaf; production native picker APIs and behavior are
 unchanged. Actual window dispatch, unsaved Save/Don’t Save/Cancel and canonical
 save/open events can be tested without touching a user document. Injected picker
 results are not evidence of native macOS picker presentation or physical input.
+
+18 October clip-bottom-border test support: `rendered_quad_paint_layers` reads the
+completed scene's quad draw order, stable position and masks for all matching
+fragments of a debug element, including retained cache replay.
+Combined with existing painted border widths, ancestor mask and real separator
+bounds, this detects an occluding later row separator. It adds no production
+paint/layout/input behavior or native framebuffer claim. Original archive and
+source hashes remain verified; the cumulative patch is regenerated.
