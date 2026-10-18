@@ -18,8 +18,17 @@ pub(crate) mod inline_fixture;
 pub(crate) mod resource_storage;
 #[cfg(test)]
 mod resource_tests;
+mod sampler_construction;
 #[cfg(test)]
 pub(crate) mod sampler_tests;
+
+/// New metadata limits supplied by the closed compiler's aggregate quote.
+/// These numbers are not an observed peak, owner declaration or admission permit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SamplerContextConstructionLimits {
+    pub(crate) retained_bytes: usize,
+    pub(crate) construction_peak_bytes: usize,
+}
 
 pub(crate) const MAX_SHARED_CONTEXTS_PER_REVISION: usize = hex_project::MAX_TRACKS;
 pub(crate) const MAX_SHARED_CONTEXT_BYTES_PER_REVISION: usize = 2 * 1024 * 1024;
@@ -544,6 +553,39 @@ impl SharedAnalyticContextTable {
         previous: Option<&Self>,
         resource_preparation: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
     ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        Self::prepare_with_sampler_construction_limits(
+            project,
+            registry,
+            previous,
+            resource_preparation,
+            None,
+        )
+    }
+
+    /// Conservative NEW metadata only. The closed caller must join all existing
+    /// roots and other new compiler/scratch costs before its first owner birth.
+    pub(crate) fn sampler_construction_allowance(
+        project: &Project,
+        resources: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
+    ) -> Result<SamplerContextConstructionLimits, Invalid> {
+        Ok(sampler_construction::quote(project, resources)?.limits())
+    }
+
+    pub(crate) fn prepare_with_sampler_construction_limits(
+        project: &Project,
+        registry: &NativeInstrumentRegistry<'_>,
+        previous: Option<&Self>,
+        resource_preparation: Option<crate::native_device_resources::DeviceResourcePreparation<'_>>,
+        limits: Option<SamplerContextConstructionLimits>,
+    ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        if let Some(limits) = limits {
+            let required = Self::sampler_construction_allowance(project, resource_preparation)?;
+            if required.retained_bytes > limits.retained_bytes
+                || required.construction_peak_bytes > limits.construction_peak_bytes
+            {
+                return Err(Invalid("sampler context construction allowance exceeded"));
+            }
+        }
         let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
         let tuning_identity = if tuning.is_neutral() {
             TuningIdentity::default()
@@ -560,11 +602,25 @@ impl SharedAnalyticContextTable {
         owners
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| Invalid("could not reserve shared instrument context owners"))?;
+        let mut ids = Vec::new();
+        if limits.is_some() {
+            ids.try_reserve_exact(project.tracks().len())
+                .map_err(|_| Invalid("could not reserve shared instrument context index"))?;
+        }
         let mut payload_bytes = 0_usize;
         let mut mutable_continuations = Vec::new();
         mutable_continuations
             .try_reserve_exact(project.tracks().len())
             .map_err(|_| Invalid("could not reserve instrument continuation identities"))?;
+        if limits.is_some()
+            && (owners.capacity() != project.tracks().len()
+                || ids.capacity() != project.tracks().len()
+                || mutable_continuations.capacity() != project.tracks().len())
+        {
+            return Err(Invalid(
+                "sampler context backing exceeds its preconstruction quote",
+            ));
+        }
 
         for track in project.tracks() {
             // A bypassed concrete Sampler still needs its validated source and
@@ -795,8 +851,7 @@ impl SharedAnalyticContextTable {
             ));
         }
         owners.sort_unstable_by_key(|owner| owner.identity.device);
-        let mut ids = Vec::new();
-        ids.try_reserve_exact(owners.len())
+        ids.try_reserve_exact(owners.len().saturating_sub(ids.len()))
             .map_err(|_| Invalid("could not reserve shared instrument context index"))?;
         for (index, owner) in owners.iter().enumerate() {
             ids.push((

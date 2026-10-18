@@ -1555,15 +1555,22 @@ fn selected_track_children_loaded_sampler_uses_actual_context_and_survives_resto
         }
         let instruments = hex_devices::native_instrument_registry().unwrap();
         let effects = hex_devices::native_registry().unwrap();
+        let resources = Some(crate::native_device_resources::DeviceResourcePreparation {
+            bank: &bank,
+            max_scope_metadata_bytes: 65_536,
+        });
+        let allowance =
+            SharedAnalyticContextTable::sampler_construction_allowance(editor.project(), resources)
+                .unwrap();
+        // Selected new-context cost only; this fixture does not claim the
+        // enclosing before-first-owner aggregate old/new compiler quote.
         let mut contexts = Some(
-            SharedAnalyticContextTable::prepare(
+            SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
                 editor.project(),
                 &instruments,
                 None,
-                Some(crate::native_device_resources::DeviceResourcePreparation {
-                    bank: &bank,
-                    max_scope_metadata_bytes: 65_536,
-                }),
+                resources,
+                Some(allowance),
             )
             .unwrap(),
         );

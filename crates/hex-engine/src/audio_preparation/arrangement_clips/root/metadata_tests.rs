@@ -355,6 +355,16 @@ fn fresh_feed_metadata_remains_charged_and_refuses_retry_after_disposal_panic() 
     root.visit_audio_storage(&mut ledger, None).unwrap();
     assert_eq!(ledger.summary().unwrap(), after);
     drop(ledger);
+    assert_eq!(root.reserve(&project), Err(AudioStorageError::Capacity));
+    assert_eq!(root.feed.backing_bytes().unwrap(), bytes);
+    let mut clean = ArrangementRootAssembly {
+        feed: ReturnFeedPlan::prepare(&project).unwrap(),
+        ..Default::default()
+    };
+    assert_eq!(clean.reserve(&project), Err(AudioStorageError::Capacity));
+    clean.dispose_metadata_on_control().unwrap();
+    assert!(!clean.has_metadata_disposal());
+    clean.reserve(&project).unwrap();
     root.panic_after_metadata_take = true;
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(

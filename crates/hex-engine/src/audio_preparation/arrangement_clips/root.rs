@@ -108,6 +108,9 @@ impl ArrangementRootAssembly {
             || !self.returns.is_empty()
             || self.contexts.is_some()
             || self.has_feed
+            // A fresh compiler feed remains here after root restoration; it
+            // must finish guarded metadata retirement before this slot reopens.
+            || !self.feed.has_no_owned_storage()
             || self.tempo_map.is_some()
             || self.topology.is_some()
             || self.midi_routing.capacity() != 0

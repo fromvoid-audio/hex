@@ -1140,3 +1140,27 @@ The aggregate quote before any new owner, complete compiler products/failure
 custody, Service current/pending binding and guarded native publication remain
 required before registration. The full playable UI/loading/music workflow
 remains open.
+
+The same shared-context constructor has an opt-in closed Sampler metadata budget.
+It reads the actual canonical active states and existing resource-scope ceilings
+before the first table backing or child acquisition. Its conservative new-data
+allowance includes the table body/header, all three table-vector destinations,
+every possible fresh concrete owner/factory/configuration/state, and one extra
+scope plus the existing marker-scratch ceiling for construction overlap. It
+reserves and checks all actual table capacities before cloning or preparing the
+first context. The normal legacy provider route keeps its existing behavior.
+
+This allowance excludes the already-owned original bank, previous contexts and
+all other compiler products. The closed caller must join those actual roots and
+all other new costs under the same retained/peak ceilings before construction;
+the allowance is neither observed allocator peak nor native admission. Tests
+check retained/peak minus-one refusal before paired constructor/clone calls,
+actual new metadata versus the allowance, empty/loaded constructors, original
+owner reuse, overflow/class refusal, and loaded direct/routed Track preparation.
+Constructor-call counters count only that route, not every allocation.
+
+Fresh Return feed metadata also prevents reopening its root slot until normal
+guarded retirement completes. A regression first demonstrated that reservation
+incorrectly succeeded while the fresh plan was still retained; the preflight now
+refuses without touching that plan. Successful retirement permits reservation
+again; a caught retirement panic retains the plan and refuses retry.
