@@ -1,0 +1,42 @@
+{
+  "encoding": "interleaved stereo IEEE754 little-endian f32",
+  "rate": 16000,
+  "source_frames": 8000,
+  "source": "synthetic27.5Hz/phase0.4/amplitude0.5/right=-0.7left",
+  "mode": "Transients/Forward100/pitch0/nonlooping/no fade",
+  "duration_ratio": 0.5,
+  "before_source": "c9f4b8864189d968a8a19abcc525c9725755e43f",
+  "after_source": "fff77efcdbe22c67e574e2e6d16bf3f2454d943e",
+  "fit": "least squares left x[i]=C+A*sin(2*pi*27.5*i/16000)+B*cos(...); centered sums, free phase and constant; residual=sqrt(max(0,Sxx-A*Sxs-B*Sxc)/n); RMS=sqrt(Sxx/n)",
+  "files": [
+    {
+      "file": "source.f32",
+      "bytes": 64000,
+      "sha256": "9b1f4f5b074bcbd620d31ba7981722030e3bbac8ddc3e62cba9b6a52fc99b2ff"
+    },
+    {
+      "file": "before-c9f.f32",
+      "bytes": 32000,
+      "sha256": "f98eb8609155278ea436267f4667c9b37ee61d29d488e23fcf69533cd8604f80",
+      "frames": 4000,
+      "measured_frames": 3340,
+      "slice_start": 500,
+      "slice_end_exclusive": 3840,
+      "residual_rms": 0.27902720027807687,
+      "dc_removed_signal_rms": 0.3343521313970514,
+      "residual_over_signal": 0.8345309453006753
+    },
+    {
+      "file": "after-fff.f32",
+      "bytes": 32000,
+      "sha256": "0176c09f8148d71d202502de47ff90ea5180683f8c460ada3a10de11c1417e30",
+      "frames": 4000,
+      "measured_frames": 3340,
+      "slice_start": 500,
+      "slice_end_exclusive": 3840,
+      "residual_rms": 0.00014780187872284555,
+      "dc_removed_signal_rms": 0.3487701937278495,
+      "residual_over_signal": 0.0004237801319632764
+    }
+  ]
+}
