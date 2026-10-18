@@ -421,3 +421,24 @@ fixture. Public construction still refuses nonempty resource custody. No bank
 setter, extractor, owning install parameter, producer callback or snapshot bank
 was exposed. The sealed producer/install operation, before-first-owner aggregate
 allowance, actual pending request binding and atomic publication remain open.
+
+The existing Session original producer's concrete kernel now lives in Engine.
+Session still privately selects actual retained/pending originals and validates
+candidate metadata; it translates those borrows to opaque OriginalResourceInput
+rows. OriginalResourceBankPlan borrows the actual Vec/capacity and derives rate,
+frame count and Mono/Stereo layout from the source itself. Raw or derived Audio
+still refuses at the unchanged native alias constructor. There is no owner clone,
+source getter, Arc adoption, provider callback or current-model authority in the
+input view. Its legacy bank-returning method is the former Session producer's
+algorithm, not an owning native install API.
+
+The extra borrowed input-row backing and Vec header are checked before aliases,
+including reserved empty capacity. Local producer metadata and conservative
+construction overlap include that temporary backing; the final bank constructor
+receives the remaining local peak allowance while the caller's input Vec is
+still live. These local bounds remain separate from the required aggregate
+before-first-owner reservation and do not certify instantaneous whole-root peak.
+Tests cover original mixed-rate Mono/Stereo pointers and lifetime, raw-input
+refusal, exact/minus-one temporary metadata, empty reserved backing, cancellation
+and compile-time privacy/lifetime/mutation restrictions. The existing Session
+producer and actual pending editor-transition tests use this same kernel.

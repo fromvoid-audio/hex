@@ -36,6 +36,10 @@ impl DeviceResourcePreparation<'_> {
             .map(Some)
     }
 }
+mod producer;
+pub use producer::{
+    OriginalResourceBankPlan, OriginalResourceInput, OriginalResourcePlanReservation,
+};
 mod ingress;
 pub use ingress::ResidentAudioIngressRefusal;
 

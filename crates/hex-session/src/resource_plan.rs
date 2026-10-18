@@ -2,27 +2,17 @@
 //! No second source cache, publication authority or callback preparation.
 use crate::{OriginalAudio, Session, service::AudioClipWaveform};
 use hex_engine::{
-    AudioRootStorageLedger, AudioStorageError, AudioStorageReservation, AudioStorageRole,
-    native_device_resources::{
-        DeviceResourceBank, ResourceCatalogReservation, ResourcePreparationError,
-    },
+    AudioRootStorageLedger, AudioStorageError, AudioStorageRole,
+    native_device_resources::{DeviceResourceBank, ResourcePreparationError},
 };
 use hex_project::{AssetId, ClipId, SortedEntries};
-use std::mem::size_of;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) mod producer;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Copy, Debug)]
-pub struct ResidentResourcePlanReservation {
-    pub inputs: AudioStorageReservation,
-    pub catalog: ResourceCatalogReservation,
-    pub max_preparation_metadata_bytes: usize,
-    pub max_retained_data_bytes: usize,
-    pub max_construction_peak_bytes: usize,
-}
+pub use hex_engine::native_device_resources::OriginalResourcePlanReservation as ResidentResourcePlanReservation;
 
 /// Holds the actual immutable media and waveform borrow while the ledger reads
 /// their fields. It owns no PCM; no RefCell guard escapes into a callback.
