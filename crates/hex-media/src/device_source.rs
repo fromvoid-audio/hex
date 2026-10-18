@@ -1,11 +1,7 @@
 //! Worker-only decode into existing sealed native source custody, before Audio sharing.
 use crate::{ImportError, Limits, adpcm, wav};
 use hex_engine::{AudioStorageError, Frame, OwnedAudioSource};
-use std::{
-    fmt,
-    io::Cursor,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{fmt, io::Cursor};
 
 /// Existing import ceilings plus explicit RIFF work and temporary buffer bounds.
 /// Working bytes include encoded input length, actual decoded Vec capacity and
@@ -54,8 +50,8 @@ impl std::error::Error for DeviceSourceImportError {
         }
     }
 }
-fn check(cancel: &AtomicBool) -> Result<(), ImportError> {
-    if cancel.load(Ordering::Relaxed) {
+fn check(cancel: &dyn hex_engine::CancellationQuery) -> Result<(), ImportError> {
+    if cancel.is_cancelled() {
         Err(ImportError::Cancelled)
     } else {
         Ok(())
@@ -114,7 +110,7 @@ impl Output {
 pub fn decode_device_source(
     bytes: &[u8],
     limits: DeviceSourceDecodeLimits,
-    cancel: &AtomicBool,
+    cancel: &dyn hex_engine::CancellationQuery,
 ) -> Result<OwnedAudioSource, DeviceSourceImportError> {
     check(cancel)?;
     if bytes.len() > limits.media.max_file_bytes {

@@ -129,7 +129,7 @@ pub(super) fn open_source_with_mode(
             Some(reservation),
         )
         .map_err(|e| e.to_string())?
-        .with_shutdown(Arc::clone(&current.shutdown));
+        .with_shutdown(current.shutdown.clone());
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in project.assets() {
             let path = if asset.path().is_absolute() {
@@ -209,7 +209,7 @@ pub(super) fn open_source_with_mode(
     )
     .map_err(|error| error.to_string().to_lowercase())?;
     Ok((
-        session.with_shutdown(Arc::clone(&current.shutdown)),
+        session.with_shutdown(current.shutdown.clone()),
         project_dir,
         document,
         dirty,

@@ -861,3 +861,63 @@ fn actual_processed_clip_cache_joins_original_and_candidate_pcm_without_source_r
         })
         .unwrap();
 }
+
+#[test]
+fn retained_cancellation_direct_session_constructor_visits_actual_session_and_transform_fields() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!(
+        "SUPPORTED direct retained Session cancellation construction and actual transform field"
+    );
+    let signal = hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let job = hex_engine::RetainedControlJob::try_from_owned_on_control(
+        &mut Some(0_u8),
+        usize::MAX,
+        |_: &mut u8| Ok::<_, ()>(hex_engine::RetainedControlJobProgress::Pending),
+    )
+    .unwrap();
+    let route = job.route();
+    let session = Session::new_with_retained_cancellation_on_control(
+        48_000,
+        8,
+        1024,
+        signal.bind_worker_on_control(route),
+    )
+    .unwrap();
+    assert_eq!(session.project().sample_rate(), 48_000);
+    let collect = |limits| -> Result<_, AudioStorageError> {
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(limits)?;
+        session.visit_cancellation_storage_on_control(&mut ledger)?;
+        assert!(
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .is_err()
+        );
+        signal.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        assert_eq!(ledger.selected_shared_counts_on_control(), (1, 3));
+        let measured = ledger.summary()?;
+        assert_eq!(measured.data_allocations, 1);
+        session.visit_cancellation_storage_on_control(&mut ledger)?;
+        assert_eq!(ledger.summary()?, measured);
+        Ok(measured)
+    };
+    let summary = collect(ledger_limits()).unwrap();
+    let mut exact = ledger_limits();
+    exact.max_retained_bytes = summary.retained_bytes;
+    exact.max_construction_peak_bytes = summary.construction_peak_bytes;
+    assert_eq!(collect(exact).unwrap(), summary);
+    exact.max_retained_bytes -= 1;
+    assert!(collect(exact).is_err());
+    use hex_engine::CancellationQuery;
+    assert!(!session.shutdown.is_cancelled());
+    signal.cancel(route);
+    assert!(session.shutdown.is_cancelled());
+    let raw = Session::new(48_000, 8, 1024).unwrap();
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap();
+    assert_eq!(
+        raw.visit_cancellation_storage_on_control(&mut ledger),
+        Err(AudioStorageError::UnknownStorage)
+    );
+}

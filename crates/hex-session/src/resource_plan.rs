@@ -10,10 +10,9 @@ use hex_engine::{
     },
 };
 use hex_project::{AssetId, ClipId, SortedEntries};
-use std::{
-    mem::size_of,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::mem::size_of;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 mod tests;
 
@@ -133,8 +132,8 @@ fn visit_waveform<'a>(
         Err(AudioStorageError::UnknownStorage)
     }
 }
-fn check(cancel: &AtomicBool) -> Result<(), ResourcePreparationError> {
-    if cancel.load(Ordering::Relaxed) {
+fn check(cancel: &dyn hex_engine::CancellationQuery) -> Result<(), ResourcePreparationError> {
+    if cancel.is_cancelled() {
         Err(ResourcePreparationError::Cancelled)
     } else {
         Ok(())
@@ -180,7 +179,7 @@ impl Session {
         &self,
         assets: &[AssetId],
         reservation: ResidentResourcePlanReservation,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
         self.prepare_resident_resource_bank_with_pending_on_control(
             assets,
@@ -198,7 +197,7 @@ impl Session {
         assets: &[AssetId],
         pending: Option<(&hex_project::Asset, &OriginalAudio)>,
         reservation: ResidentResourcePlanReservation,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
         check(cancel)?;
         if assets.len() > hex_project::MAX_ASSETS
@@ -326,5 +325,19 @@ impl Session {
             cancel,
         )
         .map_err(|refused| refused.reason)
+    }
+}
+
+impl Session {
+    /// Actual Session and transform owning cancellation fields, not all Session
+    /// metadata or startup peak. The enclosing table/other worker aliases join
+    /// separately; raw input refuses rather than gaining a paired declaration.
+    pub fn visit_cancellation_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.shutdown.visit(ledger)?;
+        self.audio_transforms
+            .visit_cancellation_storage_on_control(ledger)
     }
 }

@@ -8,6 +8,7 @@ use hex_lattice_contract::{
 };
 use hex_project::AssetId;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) mod retained;
@@ -103,8 +104,8 @@ fn quoted_bytes<T>(capacity: usize, header: usize) -> Result<usize, ResourcePrep
         .and_then(|n| n.checked_add(header))
         .ok_or(ResourcePreparationError::MetadataCapacity)
 }
-fn cancellation(cancel: &AtomicBool) -> Result<(), ResourcePreparationError> {
-    if cancel.load(Ordering::Relaxed) {
+fn cancellation(cancel: &dyn crate::CancellationQuery) -> Result<(), ResourcePreparationError> {
+    if cancel.is_cancelled() {
         Err(ResourcePreparationError::Cancelled)
     } else {
         Ok(())
@@ -122,7 +123,7 @@ impl DeviceResourceCatalog {
         bank: &AudioInputStorageAndObligations,
         expected: &[OriginalResourceSource],
         reservation: ResourceCatalogReservation,
-        cancel: &AtomicBool,
+        cancel: &dyn crate::CancellationQuery,
     ) -> Result<Self, ResourcePreparationError> {
         cancellation(cancel)?;
         if expected.len() > hex_project::MAX_ASSETS

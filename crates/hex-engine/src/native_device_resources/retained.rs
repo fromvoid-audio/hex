@@ -82,7 +82,7 @@ impl DeviceResourceBank {
         catalog: DeviceResourceCatalog,
         max_retained_data_bytes: usize,
         max_construction_peak_bytes: usize,
-        cancel: &AtomicBool,
+        cancel: &dyn crate::CancellationQuery,
     ) -> Result<Self, Box<DeviceResourceBankRefusal>> {
         let result = (|| {
             cancellation(cancel)?;

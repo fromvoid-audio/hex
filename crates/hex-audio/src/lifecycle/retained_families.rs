@@ -787,7 +787,7 @@ pub fn acknowledge_retained_family<T: Send + Sync + 'static>(
 ) -> Result<(), RetainedFamilyError> {
     persistent_table(&TABLE)?.acknowledge(id, acknowledge)
 }
-/// Actual service Vec backing only. Enclosing/static storage and every live job
+/// Actual service Vec backing AND all fixed slot signal owners. Enclosing/static storage and every live job
 /// body/payload/panic owner need their separate typed traversal. This produces
 /// no storage-completeness witness and never infers bytes from a caller quote.
 pub fn visit_retained_family_table_backing_on_control<'a>(

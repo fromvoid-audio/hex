@@ -139,7 +139,7 @@ impl RetainedFamilyInventory {
                 slot,
             })
     }
-    /// Actual static-table and outer-list Vec backing only. Inline headers and
+    /// Actual static-table/outer-list Vec backings and all fixed slot signals. Inline headers and
     /// concrete jobs/inner lists/children/other roots remain separately charged.
     pub fn visit_backings_on_control<'a>(
         &'a self,
@@ -262,7 +262,14 @@ mod tests {
             let backing = table.slots.capacity() * std::mem::size_of::<SlotCell>()
                 + inventory.guards.capacity()
                     * std::mem::size_of::<RwLockReadGuard<'static, Slot>>();
-            assert_eq!(ledger.summary().unwrap().data_bytes, backing);
+            let fixed_signals = table.slots.len()
+                * hex_engine::RetainedControlCancellationSignal::allocation_quote_on_control()
+                    .unwrap();
+            assert_eq!(table.slots.len(), 4); // includes the actual VACANT cell
+            assert_eq!(
+                ledger.summary().unwrap().data_bytes,
+                backing + fixed_signals
+            );
             let mut boxes = 0;
             for slot in inventory.slots() {
                 if let Some(job) = slot.job() {
@@ -271,8 +278,8 @@ mod tests {
                 }
             }
             let observed = ledger.summary().unwrap();
-            assert_eq!(observed.data_bytes, backing + boxes);
-            assert_eq!(observed.data_allocations, 5);
+            assert_eq!(observed.data_bytes, backing + fixed_signals + boxes);
+            assert_eq!(observed.data_allocations, 9); // two Vecs + four signals + three Boxes
             inventory.visit_backings_on_control(&mut ledger).unwrap();
             assert_eq!(ledger.summary().unwrap(), observed);
             assert!(observed.require_complete().is_err());

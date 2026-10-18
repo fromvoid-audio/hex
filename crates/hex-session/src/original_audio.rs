@@ -2,10 +2,7 @@
 use crate::{PreparedImport, SessionError};
 use hex_engine::{Audio, OwnedAudioSource};
 use hex_media::{Limits, ResampleLimits, waveform};
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::path::{Path, PathBuf};
 
 /// Single worker-owned original. No infallible owning Clone or extra PCM cache.
 pub struct DecodedOriginal {
@@ -16,9 +13,9 @@ impl DecodedOriginal {
     pub fn decode_file(
         path: impl AsRef<Path>,
         limits: Limits,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<Self, SessionError> {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(hex_media::ImportError::Cancelled.into());
         }
         let source = if hex_engine::audio_storage_constructor_layout_supported() {
@@ -26,7 +23,7 @@ impl DecodedOriginal {
         } else {
             OriginalAudio::Stereo(hex_media::decode_wav_file(&path, limits)?.into_audio())
         };
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(hex_media::ImportError::Cancelled.into());
         }
         Ok(Self {

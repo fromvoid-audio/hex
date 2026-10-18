@@ -121,7 +121,7 @@ impl Session {
     ) -> Result<VerifiedAudioFile, SessionError> {
         let limits = self.remaining_source_reservation(path.capacity(), pending)?;
         VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
-            self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
+            hex_engine::CancellationQuery::is_cancelled(&self.shutdown) || canceled()
         })
     }
     pub(crate) fn import_verified_revision(

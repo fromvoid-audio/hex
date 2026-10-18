@@ -136,9 +136,9 @@ impl From<io::Error> for ImportError {
 pub fn decode_device_source_file(
     path: impl AsRef<Path>,
     limits: Limits,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &dyn hex_engine::CancellationQuery,
 ) -> Result<hex_engine::OwnedAudioSource, ImportError> {
-    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+    if cancel.is_cancelled() {
         return Err(ImportError::Cancelled);
     }
     let mut file = File::open(path)?;
@@ -149,7 +149,7 @@ pub fn decode_device_source_file(
 fn decode_original_bytes(
     bytes: &[u8],
     limits: Limits,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &dyn hex_engine::CancellationQuery,
 ) -> Result<hex_engine::OwnedAudioSource, ImportError> {
     let working = limits
         .max_file_bytes

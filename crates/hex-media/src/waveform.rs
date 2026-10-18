@@ -2,7 +2,6 @@
 use crate::{DeviceSourceImportError, ImportError};
 use hex_engine::Audio;
 use hex_engine::native_device_resources::OriginalSourceLease;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const MAX_BINS: usize = 65_536;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -281,10 +280,10 @@ pub fn summarize_original(
     requested_bins: usize,
     max_scan_frames: usize,
     max_source_metadata_bytes: usize,
-    cancel: &AtomicBool,
+    cancel: &dyn hex_engine::CancellationQuery,
 ) -> Result<Waveform, DeviceSourceImportError> {
     let check = || {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             Err(ImportError::Cancelled)
         } else {
             Ok(())

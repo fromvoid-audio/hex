@@ -143,7 +143,12 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
     let before = session.project().clone();
     let can_undo = session.can_undo();
     let can_redo = session.can_redo();
-    session.shutdown.store(true, Ordering::Release);
+    match &session.shutdown {
+        SessionCancellation::Unqualified(flag) => flag.store(true, Ordering::Release),
+        SessionCancellation::Retained(_) => {
+            panic!("fixture requires its original raw cancellation input")
+        }
+    }
     assert!(
         session
             .command_prepared_revision(

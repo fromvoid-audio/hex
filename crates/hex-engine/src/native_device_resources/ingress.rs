@@ -15,7 +15,7 @@ impl crate::OwnedAudioSource {
     pub fn try_from_decoded_audio_on_control(
         audio: Audio,
         max_scan_frames: u64,
-        cancel: &AtomicBool,
+        cancel: &dyn crate::CancellationQuery,
     ) -> Result<Self, ResidentAudioIngressRefusal> {
         let checked = (|| {
             cancellation(cancel)?;

@@ -9,10 +9,9 @@ use hex_engine::{
 };
 use hex_lattice_contract::NativeDeviceState;
 use hex_project::{AssetId, Command, DeviceId, Project};
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One worker-owned decoded original and bounded current assignment metadata.
 /// It is not Clone and exposes no owning PCM/Arc. The completed graph must
@@ -45,9 +44,9 @@ impl Session {
         expected_state: &NativeDeviceState,
         path: impl AsRef<Path>,
         limits: hex_media::Limits,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<PreparedDeviceSample, SessionError> {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(hex_media::ImportError::Cancelled.into());
         }
         let target = self
@@ -80,7 +79,7 @@ impl PreparedDeviceSample {
         assets: &[AssetId],
         reservation: ResidentResourcePlanReservation,
         limits: DeviceSampleWaveformLimits,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<
         (DeviceResourceBank, hex_media::waveform::Waveform),
         hex_media::DeviceSourceImportError,
@@ -116,10 +115,10 @@ impl PreparedDeviceSample {
         current: &NativeDeviceState,
         path: impl AsRef<Path>,
         limits: hex_media::Limits,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<Self, SessionError> {
         let decoded = DecodedOriginal::decode_file(path, limits, cancel)?;
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(hex_media::ImportError::Cancelled.into());
         }
         Self::from_decoded_on_control(device, current, decoded)
@@ -237,7 +236,7 @@ impl PreparedDeviceSample {
         candidate: &Project,
         assets: &[AssetId],
         reservation: ResidentResourcePlanReservation,
-        cancel: &AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
         self.validate_target_on_control(session.project())
             .map_err(|_| ResourcePreparationError::InvalidSource)?;

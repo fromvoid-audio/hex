@@ -10,7 +10,7 @@ use crate::tuning_gesture::{
     TuningLibraryOperation, TuningLibraryResult,
 };
 use crate::verified_import::VerifiedImportDestination;
-use crate::{DocumentAudioMode, Session, SessionError, SourcePlanReservation};
+use crate::{DocumentAudioMode, Session, SessionCancellation, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
@@ -728,7 +728,7 @@ impl Service {
             Some(
                 Session::new(sample_rate, history_capacity, max_resident_frames)
                     .map_err(ServiceError::Session)?
-                    .with_shutdown(Arc::clone(&shutdown)),
+                    .with_shutdown(SessionCancellation::Unqualified(Arc::clone(&shutdown))),
             )
         } else {
             None
@@ -764,7 +764,7 @@ impl Service {
                         if let Some(error) = error {
                             events.startup_failed(error);
                         }
-                        session.with_shutdown(worker_shutdown)
+                        session.with_shutdown(SessionCancellation::Unqualified(worker_shutdown))
                     }
                 };
                 run_worker(
@@ -1925,7 +1925,7 @@ fn run_worker(
                         mode,
                         reservation,
                     )
-                    .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
+                    .map(|candidate| candidate.with_shutdown(session.shutdown.clone()))
                     .map_err(|reason| reason.to_string());
                     match candidate.and_then(|candidate| {
                         compile(&candidate, None).map(|prepared| (candidate, prepared))

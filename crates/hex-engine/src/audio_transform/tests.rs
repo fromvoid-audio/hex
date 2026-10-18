@@ -3,7 +3,7 @@ use hex_project::{
     BeatTime, Command, Created, Editor, Project, SourceGainPoint, Tempo, WarpMode,
     default_audio_warp,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 fn fixture(
     looping: bool,
@@ -287,7 +287,12 @@ fn failed_preparation_transaction_does_not_cache_candidate_and_gain_reuses_pcm()
     for (a, b) in a.iter().zip(b) {
         assert_eq!(b, a.map(|x| x * gain));
     }
-    context.shutdown.store(true, Ordering::Release);
+    match &context.shutdown {
+        TransformCancellation::Unqualified(flag) => flag.store(true, Ordering::Release),
+        TransformCancellation::Retained(_) => {
+            panic!("fixture must use its original raw shutdown input")
+        }
+    }
     assert!(
         crate::PreparedRevision::prepare_with_audio_transforms(
             editor.project(),
@@ -1314,4 +1319,137 @@ fn sample_bpm_and_edge_stretch_keep_pcm_pitch_and_partition_seek_consistency() {
             );
         }
     }
+}
+
+fn retained_cancel_fixture() -> (
+    crate::RetainedControlCancellationSignal,
+    crate::RetainedControlJobRoute,
+    crate::RetainedControlCancellation,
+) {
+    let signal = crate::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let job = crate::RetainedControlJob::try_from_owned_on_control(
+        &mut Some(0_u8),
+        usize::MAX,
+        |_: &mut u8| Ok::<_, ()>(crate::RetainedControlJobProgress::Pending),
+    )
+    .unwrap();
+    let route = job.route();
+    let worker = signal.bind_worker_on_control(route);
+    (signal, route, worker)
+}
+#[test]
+fn retained_transform_owns_actual_worker_field_and_cancellation_preserves_accepted_pcm() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!("SUPPORTED actual transform worker field and cancellation preserving accepted PCM");
+    let (signal, route, worker) = retained_cancel_fixture();
+    let context = AudioTransformPreparation {
+        budget: budget::BudgetOwner::local(256_000),
+        cache_limit: 256_000,
+        entry_limit: 2,
+        ..AudioTransformPreparation::with_retained_cancellation_on_control(worker.clone())
+    };
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 32,
+            root_rows: 8,
+            max_retained_bytes: 65_536,
+            max_construction_peak_bytes: 65_536,
+        })
+        .unwrap();
+    signal.visit_storage_on_control(&mut ledger).unwrap();
+    worker.visit_storage_on_control(&mut ledger).unwrap();
+    assert!(
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .is_err()
+    );
+    context
+        .visit_cancellation_storage_on_control(&mut ledger)
+        .unwrap();
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap().data_allocations, 1);
+    drop(ledger);
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let accepted = prepare(&editor, &media, &context);
+    let pcm = render(&accepted, 0, 8000, 97);
+    assert!(pcm.iter().flatten().any(|x| x.abs() > 0.01));
+    assert!(pcm.iter().flatten().all(|x| x.is_finite()));
+    let bytes = context.retained_pcm_bytes();
+    signal.cancel(route);
+    assert!(
+        crate::PreparedRevision::prepare_with_audio_transforms(
+            editor.project(),
+            &media,
+            crate::SharedSineTable::new_on_control(),
+            None,
+            &context
+        )
+        .is_err()
+    );
+    assert_eq!(context.retained_pcm_bytes(), bytes);
+    assert_eq!(render(&accepted, 0, 8000, 53), pcm);
+    assert!(!AudioTransformPreparation::default().cancelled());
+    let raw = AudioTransformPreparation::default();
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 32,
+            root_rows: 8,
+            max_retained_bytes: 65_536,
+            max_construction_peak_bytes: 65_536,
+        })
+        .unwrap();
+    assert_eq!(
+        raw.visit_cancellation_storage_on_control(&mut ledger),
+        Err(crate::AudioStorageError::UnknownStorage)
+    );
+}
+#[test]
+fn retained_transform_long_fade_scan_observes_direct_query_without_lookup_guard() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!("SUPPORTED direct bound worker query during actual long fade scan");
+    let (signal, route, worker) = retained_cancel_fixture();
+    struct CancelDuringScan<'a> {
+        signal: &'a crate::RetainedControlCancellationSignal,
+        route: crate::RetainedControlJobRoute,
+        worker: &'a crate::RetainedControlCancellation,
+        polls: Cell<usize>,
+    }
+    impl crate::CancellationQuery for CancelDuringScan<'_> {
+        fn is_cancelled(&self) -> bool {
+            let polls = self.polls.get() + 1;
+            self.polls.set(polls);
+            if polls == 4 {
+                self.signal.cancel(self.route);
+            }
+            self.worker.is_cancelled()
+        }
+    }
+    let query = CancelDuringScan {
+        signal: &signal,
+        route,
+        worker: &worker,
+        polls: Cell::new(0),
+    };
+    let (editor, clip, _) = fixture(false);
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let mut frames = vec![[1.0, 1.0]; 8000];
+    assert_eq!(
+        mapping::apply_fade(&mut frames, edit, editor.project().tempo_map(), &query),
+        Err(Invalid("audio preparation cancelled"))
+    );
+    assert_eq!(query.polls.get(), 4);
+    assert_eq!(frames[0], [0.0, 0.0]);
+    assert!(frames[3072..].iter().all(|frame| *frame == [1.0, 1.0]));
+    assert!(worker.is_cancelled());
 }

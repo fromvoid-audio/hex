@@ -650,3 +650,16 @@ long-transform cancellation and all-worker completion must still be integrated
 and tested. The actual entire old/new/input/temporary startup peak and frozen
 atomic publication remain separate. Neither these component tests nor a paired
 worker handle permits referenced processing or completes the Sampler workflow.
+
+The next source slice constructs transform preparation and Session directly from
+an actual prebound paired worker query. The Session constructor never creates a
+throwaway default shutdown Arc on that path. Its private owning enum and the
+transform's private owning enum preserve raw inputs as Unknown rather than
+reattaching a receipt. Selected visitors inspect the real Session and transform
+worker fields independently; the fixed slot and all other live worker fields
+still join separately. Decode, waveform preparation and resource preparation now
+borrow the same nonallocating query interface, without an escaping atomic borrow
+or family guard around long work. Production Service currently still calls its
+explicit raw branch; changing that startup path and completing all owners remain
+required. These constructors do not qualify the transform cache, channels,
+worker body or complete startup construction peak.

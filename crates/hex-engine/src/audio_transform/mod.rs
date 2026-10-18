@@ -2,7 +2,7 @@
 mod budget;
 mod events;
 mod mapping;
-use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
+use crate::{Audio, CancellationQuery, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
 mod pcm_inventory;
 pub use pcm_inventory::AudioTransformPcmInventory;
@@ -14,10 +14,7 @@ use hex_project::{
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_CACHED_TRANSFORMS: usize = 256;
@@ -65,7 +62,7 @@ pub struct AudioTransformPreparation {
     cache: RefCell<Cache>,
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: TransformCancellation,
     budget: budget::BudgetOwner,
     cache_limit: usize,
     source_limit: usize,
@@ -74,6 +71,20 @@ pub struct AudioTransformPreparation {
     #[cfg(test)]
     cancel_after_polls: Cell<Option<usize>>,
 }
+// Existing raw callers are preserved but NEVER upgraded by content/counts.
+// The retained branch holds the actual paired worker field, not a cached query.
+enum TransformCancellation {
+    Unqualified(Arc<AtomicBool>),
+    Retained(crate::RetainedControlCancellation),
+}
+impl CancellationQuery for TransformCancellation {
+    fn is_cancelled(&self) -> bool {
+        match self {
+            Self::Unqualified(flag) => flag.is_cancelled(),
+            Self::Retained(worker) => worker.is_cancelled(),
+        }
+    }
+}
 impl Default for AudioTransformPreparation {
     fn default() -> Self {
         Self::new(Arc::new(AtomicBool::new(false)))
@@ -81,6 +92,26 @@ impl Default for AudioTransformPreparation {
 }
 impl AudioTransformPreparation {
     pub fn new(shutdown: Arc<AtomicBool>) -> Self {
+        Self::from_cancellation(TransformCancellation::Unqualified(shutdown))
+    }
+    /// Direct construction from the actual prebound worker handle. No temporary
+    /// default flag or family guard is created/held during a scan.
+    pub fn with_retained_cancellation_on_control(
+        worker: crate::RetainedControlCancellation,
+    ) -> Self {
+        Self::from_cancellation(TransformCancellation::Retained(worker))
+    }
+    /// Actual owning cancellation field only, not cache/PCM/whole transform proof.
+    pub fn visit_cancellation_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        match &self.shutdown {
+            TransformCancellation::Retained(worker) => worker.visit_storage_on_control(ledger),
+            TransformCancellation::Unqualified(_) => Err(crate::AudioStorageError::UnknownStorage),
+        }
+    }
+    fn from_cancellation(shutdown: TransformCancellation) -> Self {
         Self {
             cache: RefCell::new(Cache {
                 entries: VecDeque::new(),
@@ -107,7 +138,7 @@ impl AudioTransformPreparation {
             }
             self.cancel_after_polls.set(Some(remaining - 1));
         }
-        self.shutdown.load(Ordering::Acquire)
+        self.shutdown.is_cancelled()
     }
     pub fn retained_pcm_bytes(&self) -> usize {
         self.budget.used()
@@ -437,8 +468,7 @@ impl AudioTransformPreparation {
         } else {
             None
         };
-        let (map, attacks) =
-            mapping::prepare_map(edit, project.tempo_map(), self.shutdown.as_ref())?;
+        let (map, attacks) = mapping::prepare_map(edit, project.tempo_map(), &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -507,19 +537,15 @@ impl AudioTransformPreparation {
         let mut rendered =
             hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
         if edit.domain.events.is_some() {
-            rendered.frames = events::compose(
-                &rendered.frames,
-                edit,
-                project.tempo_map(),
-                self.shutdown.as_ref(),
-            )?;
+            rendered.frames =
+                events::compose(&rendered.frames, edit, project.tempo_map(), &self.shutdown)?;
         }
         drop(scratch_reservation);
         mapping::apply_fade(
             &mut rendered.frames,
             edit,
             project.tempo_map(),
-            self.shutdown.as_ref(),
+            &self.shutdown,
         )?;
         let audio =
             Audio::from_prepared_derived(source.sample_rate(), rendered.frames, reservation)?;

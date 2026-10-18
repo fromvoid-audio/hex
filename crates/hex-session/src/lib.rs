@@ -5,6 +5,7 @@ mod shared_project;
 pub use shared_project::{SharedProject, visit_shared_project_selected_storage_on_control};
 
 use hex_engine::{Audio, Project as PlaybackProject};
+mod session_cancellation;
 use hex_media::{
     DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample,
     waveform::{self, Waveform},
@@ -13,6 +14,7 @@ use hex_project::{
     AssetId, Command, Created, Editor, Invalid as ProjectInvalid, MAX_ASSETS, Project,
     SortedEntries,
 };
+use session_cancellation::SessionCancellation;
 use std::{error::Error, fmt, mem, path::PathBuf, sync::Arc};
 
 pub mod arrangement_seek;
@@ -112,11 +114,11 @@ impl PreparedImport {
         project_rate: u32,
         media_limits: hex_media::Limits,
         conversion_limits: ResampleLimits,
-        cancel: &std::sync::atomic::AtomicBool,
+        cancel: &dyn hex_engine::CancellationQuery,
     ) -> Result<Self, SessionError> {
         let decoded = DecodedOriginal::decode_file(path, media_limits, cancel)?;
         let prepared = decoded.at_rate(project_rate, conversion_limits)?;
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(MediaInvalid::Cancelled.into());
         }
         Ok(prepared)
@@ -200,7 +202,7 @@ pub struct Session {
     audio_transforms: hex_engine::audio_transform::AudioTransformPreparation,
     audio_clip_waveforms:
         std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
-    shutdown: Arc<std::sync::atomic::AtomicBool>,
+    shutdown: SessionCancellation,
     sine_table: hex_engine::SharedSineTable,
     media: SortedEntries<AssetId, ResidentAsset>,
     verified_sources: SortedEntries<AssetId, VerifiedAudioFile>,
@@ -219,11 +221,36 @@ impl Session {
         history_capacity: usize,
         max_resident_frames: u64,
     ) -> Result<Self, SessionError> {
-        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Self::new_with_cancellation(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            SessionCancellation::Unqualified(Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        )
+    }
+    /// The supported worker supplies its ACTUAL prebound handle before Session
+    /// construction. This constructor is not whole-root admission or UI escape.
+    pub fn new_with_retained_cancellation_on_control(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        worker: hex_engine::RetainedControlCancellation,
+    ) -> Result<Self, SessionError> {
+        Self::new_with_cancellation(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            SessionCancellation::Retained(worker),
+        )
+    }
+    fn new_with_cancellation(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        shutdown: SessionCancellation,
+    ) -> Result<Self, SessionError> {
         Ok(Self {
-            audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
-                Arc::clone(&shutdown),
-            ),
+            audio_transforms: shutdown.transform(),
             audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
@@ -397,11 +424,10 @@ impl Session {
                 return Err(SessionError::Invalid("duplicate decoded project asset"));
             }
         }
-        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown =
+            SessionCancellation::Unqualified(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         Ok(Self {
-            audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
-                Arc::clone(&shutdown),
-            ),
+            audio_transforms: shutdown.transform(),
             audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor,
@@ -418,9 +444,8 @@ impl Session {
         })
     }
 
-    fn with_shutdown(mut self, shutdown: Arc<std::sync::atomic::AtomicBool>) -> Self {
-        self.audio_transforms =
-            hex_engine::audio_transform::AudioTransformPreparation::new(Arc::clone(&shutdown));
+    fn with_shutdown(mut self, shutdown: SessionCancellation) -> Self {
+        self.audio_transforms = shutdown.transform();
         self.shutdown = shutdown;
         self
     }
