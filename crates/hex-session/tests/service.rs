@@ -1314,7 +1314,19 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     let project_path = directory.path().join("Converted.hex");
     let samples: Vec<i16> = (0..480).map(|i| ((i % 80) as i16 - 40) * 400).collect();
     fs::write(&source_path, wav_at_rate(48_000, &samples)).expect("source");
-    let service = Service::new(44_100, 16, 441).expect("service");
+    // The old derivative-only budget must refuse rather than hide the480-frame
+    // original. The successful fixture reserves exactly both retained buffers.
+    let derivative_only = Service::new(44_100, 16, 441).expect("small service");
+    let initial = next_event(&derivative_only);
+    derivative_only
+        .submit(Request::Import(source_path.clone()))
+        .unwrap();
+    let refused = next_event(&derivative_only);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, initial.state.project);
+    assert_eq!(refused.state.unsaved, initial.state.unsaved);
+    drop(derivative_only);
+    let service = Service::new(44_100, 16, 480 + 441).expect("source plus derivative budget");
     let _ = next_event(&service);
     service
         .submit(Request::Import(source_path.clone()))
@@ -1339,7 +1351,7 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
-    assert_eq!(document["version"], 25);
+    assert_eq!(document["version"], 31);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     service
@@ -2155,4 +2167,58 @@ fn arrangement_catalog_atomic_command_preserves_project_on_compile_and_capacity_
     );
     assert_eq!(session.project(), &baseline);
     assert!(!session.can_undo());
+}
+
+#[test]
+fn clip_conversion_worker_rejects_stale_selection_and_publishes_editable_midi() {
+    let service = Service::new(48_000, 16, 1024).unwrap();
+    next_event(&service);
+    let path = std::env::temp_dir().join(format!(
+        "hex-convert-service-{}-{}.wav",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(&path, wav_mono_pcm16(&[4000; 512])).unwrap();
+    service.submit(Request::Import(path.clone())).unwrap();
+    let imported = next_event(&service);
+    let track = &imported.state.project.tracks()[0];
+    let clip = track.clips()[0].id();
+    let revision = imported.state.revision;
+    let request = |project_generation, revision| Request::ConvertClip {
+        project_generation,
+        revision,
+        clip,
+        to_audio: false,
+    };
+    for stale in [request(1, revision), request(0, revision - 1)] {
+        service.submit(stale).unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.as_ref().unwrap().contains("project changed"));
+        assert!(refused.playback.is_none());
+        assert_eq!(refused.state.project, imported.state.project);
+        assert_eq!(refused.state.revision, revision);
+    }
+    service.submit(request(0, revision)).unwrap();
+    let converted = next_event(&service);
+    assert!(converted.error.is_none());
+    assert!(converted.playback.is_some());
+    assert_eq!(converted.created, Some(Created::Clip(clip)));
+    assert!(converted.state.project.clip(clip).is_none());
+    assert!(
+        converted
+            .state
+            .project
+            .midi_clip(clip)
+            .unwrap()
+            .notes()
+            .is_empty()
+    );
+    assert_eq!(converted.state.project.tracks()[0].id(), track.id());
+    assert_eq!(converted.state.revision, revision + 1);
+    service.submit(Request::Undo).unwrap();
+    assert!(next_event(&service).state.project.clip(clip).is_some());
+    fs::remove_file(path).unwrap();
 }

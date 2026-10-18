@@ -26,7 +26,7 @@ impl EditorView {
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
         self.device_panel_active = false;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -38,7 +38,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = None;
         self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
     }
@@ -58,7 +58,7 @@ impl EditorView {
         cancel_eq8_audition(self);
         self.focused_return = Some(return_track);
         self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) {
+        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -74,7 +74,30 @@ impl EditorView {
         self.focus_clip_details(window, cx)
     }
 
-    pub(super) fn clip_detail_view(&mut self, cx: &mut Context<Self>) -> Div {
+    fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
+        let project = &self.state.as_ref()?.project;
+        if self.mode == EditorMode::Session {
+            let (track, scene) = self.selected_cell?;
+            match project.session_cell(track, scene)? {
+                hex_project::SessionCellContent::Midi(clip) => Some((clip.id(), true)),
+                hex_project::SessionCellContent::Audio(clip) => Some((clip.id(), false)),
+                hex_project::SessionCellContent::Stop => None,
+            }
+        } else {
+            let clip = self.selected_clip?;
+            if project.midi_clip(clip).is_some() {
+                Some((clip, true))
+            } else {
+                project.clip(clip).map(|_| (clip, false))
+            }
+        }
+    }
+
+    pub(super) fn clip_detail_view(
+        &mut self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.selected_clip
@@ -91,7 +114,10 @@ impl EditorView {
             });
         let detail = if open {
             if self.device_panel_active {
-                Some(super::device_panel::view(self, cx).map(|element| div().child(element)))
+                Some(
+                    super::device_panel::view(self, Some(window), cx)
+                        .map(|element| div().child(element)),
+                )
             } else if has_session_audio {
                 super::session_audio_panel::view(self, cx).map(|element| div().child(element))
             } else if selected_midi {
@@ -111,6 +137,13 @@ impl EditorView {
                 CLIP_DETAIL_BODY_HEIGHT
             };
         }
+        self.project_spectrum.detail_height = detail.as_ref().map(|_| {
+            if self.device_panel_active {
+                super::device_panel::DEVICE_PANEL_HEIGHT
+            } else {
+                self.clip_detail_body_height
+            }
+        });
         let label = if self.device_panel_active {
             "devices"
         } else if !open {
@@ -167,9 +200,12 @@ impl EditorView {
                     }
                     view.clip_view_open = !view.clip_view_open;
                     if !view.clip_view_open {
+                        view.audio_event_editor.gesture = None;
                         view.cancel_midi_note_gesture();
                         cancel_eq8_audition(view);
-                        if view.midi_focus.is_focused(window) {
+                        if view.midi_focus.is_focused(window)
+                            || view.audio_event_focus.is_focused(window)
+                        {
                             view.focus.focus(window);
                         }
                     }
@@ -181,6 +217,68 @@ impl EditorView {
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(label)),
         );
+        if !self.device_panel_active
+            && let Some((clip, to_audio)) = self.conversion_selection()
+        {
+            let enabled = !self.edit_pending();
+            let generation = self.project_generation;
+            let revision = self.state.as_ref().map_or(0, |state| state.revision);
+            row = row.child(
+                div()
+                    .id("convert-clip")
+                    .debug_selector(|| "convert-clip".into())
+                    .h(px(18.0))
+                    .px(px(5.0))
+                    .flex()
+                    .items_center()
+                    .text_color(rgb(theme::color(if enabled {
+                        theme::PaletteRole::SecondaryText
+                    } else {
+                        theme::PaletteRole::Muted
+                    })))
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Raised))))
+                    .child(theme::text(if to_audio { "→ audio" } else { "→ midi" }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            description: if to_audio {
+                                "bounce clip to audio in place"
+                            } else {
+                                "convert to empty editable midi clip"
+                            }
+                            .into(),
+                        })
+                        .into()
+                    })
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        if !enabled
+                            || view.edit_pending()
+                            || view.project_generation != generation
+                            || view.conversion_selection() != Some((clip, to_audio))
+                        {
+                            return;
+                        }
+                        if !view.focus_clip_details(window, cx) {
+                            return;
+                        }
+                        view.cancel_time_selection_gesture();
+                        view.clip_view_open = true;
+                        if view.enqueue(hex_session::service::Request::ConvertClip {
+                            project_generation: generation,
+                            revision,
+                            clip,
+                            to_audio,
+                        }) {
+                            view.status = if to_audio {
+                                "bouncing clip to audio"
+                            } else {
+                                "converting clip to midi"
+                            }
+                            .into();
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
         row = row.child(
             div()
                 .id("clip-detail-tab")
@@ -238,11 +336,32 @@ impl EditorView {
             .debug_selector(|| "clip-view".into());
         if open {
             if let Some(detail) = detail {
-                panel = panel.child(detail);
+                let preferred = if self.device_panel_active {
+                    super::device_panel::DEVICE_PANEL_HEIGHT
+                } else {
+                    self.clip_detail_body_height
+                };
+                let height = self.project_spectrum_detail_height(window, preferred);
+                if height < preferred {
+                    panel = panel.child(
+                        div()
+                            .id("clip-detail-viewport")
+                            .debug_selector(|| "clip-detail-viewport".into())
+                            .h(px(height))
+                            .flex_shrink_0()
+                            .overflow_y_scroll()
+                            .child(detail),
+                    );
+                } else {
+                    panel = panel.child(detail);
+                }
             } else {
                 panel = panel.child(
                     div()
-                        .h(px(self.clip_detail_body_height))
+                        .h(px(self.project_spectrum_detail_height(
+                            window,
+                            self.clip_detail_body_height,
+                        )))
                         .flex_shrink_0()
                         .px(px(6.0))
                         .flex()

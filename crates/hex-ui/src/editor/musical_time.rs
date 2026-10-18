@@ -1,9 +1,13 @@
 //! UI-only snap selection and bounded musical timeline helpers.
 
+#[path = "adaptive_grid_density.rs"]
+mod density;
+pub(super) use density::AdaptiveGridDensity;
+
 use super::viewport::Viewport;
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
-use hex_project::{BeatTime, Command, Meter, MeterPosition, Project, Tempo};
+use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
 use hex_session::service::Request;
 
 const MAX_RULER_TICKS: usize = 64;
@@ -11,14 +15,15 @@ const MAX_METER_MAP_POINTS: usize = 1_024;
 const MAX_GRID_LINES: usize = 256;
 const MAX_GRID_BANDS: usize = 256;
 const RULER_LABEL_SPACING_PX: f32 = 48.0;
-const GRID_LINE_SPACING_PX: f32 = 18.0;
-
-fn adaptive_grid_spacing(pixel_width: f32) -> f32 {
-    GRID_LINE_SPACING_PX.max(pixel_width / (MAX_GRID_LINES.saturating_sub(1) as f32))
+fn adaptive_grid_spacing(pixel_width: f32, density: AdaptiveGridDensity) -> f32 {
+    density
+        .minimum_spacing()
+        .max(pixel_width / (MAX_GRID_LINES.saturating_sub(1) as f32))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RulerTick {
+    beat: BeatTime,
     pub(super) frame: u64,
     pub(super) label: String,
     pub(super) meter_marker: bool,
@@ -28,6 +33,7 @@ pub(super) struct RulerTick {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct GridLine {
+    beat: BeatTime,
     pub(super) frame: u64,
     pub(super) bar_start: bool,
     pub(super) meter_marker: bool,
@@ -43,10 +49,20 @@ pub(super) struct GridBand {
 /// Build alternating background bands spanning four adaptive grid units.
 /// Band indices are anchored to each meter segment's musical origin, so panning
 /// changes the visible subset without moving the pattern.
+#[cfg(test)]
 pub(super) fn adaptive_grid_bands(
     project: &Project,
     viewport: Viewport,
     pixel_width: f32,
+) -> Vec<GridBand> {
+    adaptive_grid_bands_for_grid(project, viewport, pixel_width, SnapGrid::Adaptive)
+}
+
+pub(super) fn adaptive_grid_bands_for_grid(
+    project: &Project,
+    viewport: Viewport,
+    pixel_width: f32,
+    grid: SnapGrid,
 ) -> Vec<GridBand> {
     if viewport.length == 0 || !pixel_width.is_finite() || pixel_width <= 0.0 {
         return Vec::new();
@@ -87,7 +103,7 @@ pub(super) fn adaptive_grid_bands(
             point.beat(),
             beat_length,
             pixel_width,
-            adaptive_grid_spacing(pixel_width),
+            adaptive_grid_spacing(pixel_width, grid.density()),
         );
         let Some(band_span) = step.checked_mul(4).filter(|span| *span > 0) else {
             continue;
@@ -149,7 +165,7 @@ pub(super) fn grid_lines(
     pixel_width: f32,
     grid: SnapGrid,
 ) -> Vec<GridLine> {
-    if grid == SnapGrid::Off {
+    if grid.is_off() {
         return Vec::new();
     }
     if viewport.length == 0 || !pixel_width.is_finite() || pixel_width <= 0.0 {
@@ -196,6 +212,7 @@ pub(super) fn grid_lines(
         .step_by(stride)
         .take(MAX_GRID_LINES)
         .map(|tick| GridLine {
+            beat: tick.beat,
             frame: tick.frame,
             bar_start: tick.bar_start,
             meter_marker: tick.meter_marker,
@@ -305,6 +322,7 @@ struct RulerCandidates {
 enum LandmarkDensity {
     Meter,
     Adaptive(f32, f32),
+    #[cfg(test)]
     Fixed(u64),
 }
 
@@ -343,6 +361,7 @@ fn ruler_candidates(
                         pixel_width,
                         spacing,
                     ),
+                    #[cfg(test)]
                     LandmarkDensity::Fixed(step) => step,
                     LandmarkDensity::Meter => meter_beat_length,
                 };
@@ -379,6 +398,7 @@ fn ruler_candidates(
                     before.fragmentary() && before.bar_end() == Some(point.beat())
                 });
             ticks.push(RulerTick {
+                beat: point.beat(),
                 frame,
                 label: meter_label(position),
                 meter_marker: true,
@@ -441,6 +461,7 @@ fn ruler_candidates(
                     && (viewport.start..viewport_end).contains(&frame)
                 {
                     ticks.push(RulerTick {
+                        beat,
                         frame,
                         label: meter_label(position),
                         meter_marker: false,
@@ -495,6 +516,56 @@ fn adaptive_grid_step(
         pixels *= 2.0;
         multiplier *= 2;
     }
+    // Coarsen the SAME step for drawing and snapping before any paint quota
+    // could sample away regular landmarks. Use exact visible beat spans, which
+    // also cover tempo changes within this meter section.
+    let tempo_map = project.tempo_map();
+    if let (Ok(first), Some(last)) = (
+        tempo_map.frame_to_beat(viewport.start),
+        viewport.end().map(|end| {
+            tempo_map
+                .frame_to_beat(end.saturating_sub(1))
+                .unwrap_or_else(|_| BeatTime::from_raw(u64::MAX))
+        }),
+    ) {
+        let points = project.meter_map().points();
+        let first_section = points
+            .partition_point(|point| point.beat() <= first)
+            .saturating_sub(1);
+        let last_section = points.partition_point(|point| point.beat() <= last);
+        let sections = last_section.saturating_sub(first_section).max(1);
+        // Reserve one marker per section. Larger-than-paint-budget meter maps
+        // additionally share the final bounded landmark set below.
+        let quota = MAX_GRID_LINES
+            .saturating_sub(sections)
+            .checked_div(sections)
+            .unwrap_or(1)
+            .max(1) as u64;
+        let section = points
+            .partition_point(|point| point.beat() <= beat)
+            .saturating_sub(1);
+        let start = first.raw().max(beat.raw());
+        let end = points
+            .get(section + 1)
+            .and_then(|point| point.beat().raw().checked_sub(1))
+            .unwrap_or(last.raw())
+            .min(last.raw());
+        if start <= end {
+            loop {
+                let first_index = start.saturating_sub(beat.raw()).div_ceil(step.max(1));
+                let last_index = end.saturating_sub(beat.raw()) / step.max(1);
+                let count = if first_index > last_index {
+                    0
+                } else {
+                    u128::from(last_index - first_index) + 1
+                };
+                if count <= u128::from(quota) || step == u64::MAX {
+                    break;
+                }
+                step = step.saturating_mul(2);
+            }
+        }
+    }
     step.max(1)
 }
 
@@ -505,7 +576,7 @@ fn snap_to_meter_landmark(
     pixel_width: f32,
     grid: SnapGrid,
 ) -> Option<BeatTime> {
-    if grid == SnapGrid::Off {
+    if grid.is_off() {
         return Some(beat);
     }
     let points = project.meter_map().points();
@@ -526,15 +597,16 @@ fn snap_to_meter_landmark(
         let meter_beat_length =
             (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
         let step = match grid {
-            SnapGrid::Adaptive => adaptive_grid_step(
+            SnapGrid::Adaptive | SnapGrid::AdaptiveDensity(_) => adaptive_grid_step(
                 project,
                 viewport,
                 point.beat(),
                 meter_beat_length,
                 pixel_width,
-                adaptive_grid_spacing(pixel_width),
+                adaptive_grid_spacing(pixel_width, grid.density()),
             ),
-            SnapGrid::Off => return Some(beat),
+            SnapGrid::Off | SnapGrid::OffDensity(_) => return Some(beat),
+            #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
         .max(1);
@@ -568,7 +640,7 @@ fn adjacent_landmark(
     grid: SnapGrid,
     right: bool,
 ) -> Option<BeatTime> {
-    if grid == SnapGrid::Off || !width.is_finite() || width <= 0.0 || viewport.length == 0 {
+    if grid.is_off() || !width.is_finite() || width <= 0.0 || viewport.length == 0 {
         return None;
     }
     let mut best: Option<(u64, BeatTime)> = None;
@@ -577,14 +649,16 @@ fn adjacent_landmark(
         let origin = point.beat().raw();
         let end = points.get(index + 1).map(|point| point.beat().raw());
         let step = match grid {
-            SnapGrid::Adaptive => adaptive_grid_step(
+            SnapGrid::Adaptive | SnapGrid::AdaptiveDensity(_) => adaptive_grid_step(
                 project,
                 viewport,
                 point.beat(),
                 4 * BeatTime::ONE.raw() / u64::from(point.meter().denominator()),
                 width,
-                adaptive_grid_spacing(width),
+                adaptive_grid_spacing(width, grid.density()),
             ),
+            SnapGrid::Off | SnapGrid::OffDensity(_) => return None,
+            #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
         .max(1);
@@ -629,7 +703,33 @@ fn adjacent_landmark(
             }
         }
     }
-    best.map(|(_, beat)| beat)
+    let candidate = best.map(|(_, beat)| beat)?;
+    if grid.is_adaptive() && project.meter_map().points().len() > MAX_GRID_LINES / 2 {
+        let candidate_frame = project.tempo_map().beat_to_frame(candidate).ok()?;
+        if viewport
+            .end()
+            .is_some_and(|end| (viewport.start..end).contains(&candidate_frame))
+        {
+            let lines = grid_lines(project, viewport, width, grid);
+            return lines
+                .into_iter()
+                .filter(|line| {
+                    let value = frame.map_or(line.beat.raw(), |_| line.frame);
+                    let reference = frame.unwrap_or(beat.raw());
+                    if right {
+                        value > reference
+                    } else {
+                        value < reference
+                    }
+                })
+                .min_by_key(|line| {
+                    let value = frame.map_or(line.beat.raw(), |_| line.frame);
+                    if right { value } else { u64::MAX - value }
+                })
+                .map(|line| line.beat);
+        }
+    }
+    Some(candidate)
 }
 
 fn meter_label(position: MeterPosition) -> String {
@@ -647,39 +747,71 @@ pub(super) enum SnapGrid {
     Off,
     #[default]
     Adaptive,
+    AdaptiveDensity(AdaptiveGridDensity),
+    OffDensity(AdaptiveGridDensity),
+    // Fixed resolutions are retained only as musical-time regression fixtures.
+    #[cfg(test)]
     Quarter,
+    #[cfg(test)]
     Eighth,
+    #[cfg(test)]
     Sixteenth,
 }
 
 impl SnapGrid {
-    pub(super) const fn next(self) -> Self {
+    const fn is_adaptive(self) -> bool {
+        matches!(self, Self::Adaptive | Self::AdaptiveDensity(_))
+    }
+
+    pub(super) const fn density(self) -> AdaptiveGridDensity {
         match self {
-            Self::Adaptive => Self::Quarter,
-            Self::Quarter => Self::Eighth,
-            Self::Eighth => Self::Sixteenth,
-            Self::Sixteenth => Self::Off,
-            Self::Off => Self::Adaptive,
+            Self::AdaptiveDensity(density) | Self::OffDensity(density) => density,
+            _ => AdaptiveGridDensity::Medium,
+        }
+    }
+
+    pub(super) const fn is_off(self) -> bool {
+        matches!(self, Self::Off | Self::OffDensity(_))
+    }
+
+    pub(super) const fn with_density(self, density: AdaptiveGridDensity) -> Self {
+        match (self.is_off(), density) {
+            (true, AdaptiveGridDensity::Medium) => Self::Off,
+            (false, AdaptiveGridDensity::Medium) => Self::Adaptive,
+            (true, density) => Self::OffDensity(density),
+            (false, density) => Self::AdaptiveDensity(density),
+        }
+    }
+
+    pub(super) const fn toggled(self) -> Self {
+        let density = self.density();
+        if self.is_off() {
+            Self::Adaptive.with_density(density)
+        } else {
+            Self::Off.with_density(density)
         }
     }
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::Off => "off",
-            Self::Adaptive => "adaptive",
+            Self::Off | Self::OffDensity(_) => "off",
+            Self::Adaptive | Self::AdaptiveDensity(_) => "adaptive",
+            #[cfg(test)]
             Self::Quarter => "1/4",
+            #[cfg(test)]
             Self::Eighth => "1/8",
+            #[cfg(test)]
             Self::Sixteenth => "1/16",
         }
     }
 
     /// Q32.32 quarter-note interval; the canonical project map performs all
     /// frame conversion and nearest-grid tie handling.
+    #[cfg(test)]
     pub(super) const fn step_raw(self) -> Option<u64> {
         const QUARTER: u64 = 1_u64 << 32;
         match self {
-            Self::Off => None,
-            Self::Adaptive => None,
+            Self::Off | Self::OffDensity(_) | Self::Adaptive | Self::AdaptiveDensity(_) => None,
             Self::Quarter => Some(QUARTER),
             Self::Eighth => Some(QUARTER / 2),
             Self::Sixteenth => Some(QUARTER / 4),
@@ -688,22 +820,18 @@ impl SnapGrid {
 
     fn landmark_density(self, pixel_width: f32) -> LandmarkDensity {
         match self {
-            Self::Off => LandmarkDensity::Meter,
-            Self::Adaptive => {
-                LandmarkDensity::Adaptive(pixel_width, adaptive_grid_spacing(pixel_width))
-            }
+            Self::Off | Self::OffDensity(_) => LandmarkDensity::Meter,
+            Self::Adaptive | Self::AdaptiveDensity(_) => LandmarkDensity::Adaptive(
+                pixel_width,
+                adaptive_grid_spacing(pixel_width, self.density()),
+            ),
+            #[cfg(test)]
             fixed => LandmarkDensity::Fixed(fixed.step_raw().unwrap_or(1)),
         }
     }
 
     pub(super) const fn with_platform_modifier(self, held: bool) -> Self {
-        if !held {
-            return self;
-        }
-        match self {
-            Self::Off => Self::Adaptive,
-            Self::Adaptive | Self::Quarter | Self::Eighth | Self::Sixteenth => Self::Off,
-        }
+        if held { self.toggled() } else { self }
     }
 
     pub(super) fn adjacent_beat(
@@ -736,7 +864,7 @@ impl SnapGrid {
         viewport: Viewport,
         pixel_width: f32,
     ) -> Option<u64> {
-        if self == Self::Off {
+        if self.is_off() {
             return Some(candidate_frame);
         }
         let beat = project.tempo_map().frame_to_beat(candidate_frame).ok()?;
@@ -751,20 +879,38 @@ impl SnapGrid {
         viewport: Viewport,
         pixel_width: f32,
     ) -> Option<BeatTime> {
-        if self == Self::Off {
+        if self.is_off() {
             return Some(beat);
         }
-        snap_to_meter_landmark(project, beat, viewport, pixel_width, self)
+        let candidate = snap_to_meter_landmark(project, beat, viewport, pixel_width, self)?;
+        if self.is_adaptive() && project.meter_map().points().len() > MAX_GRID_LINES / 2 {
+            let frame = project.tempo_map().beat_to_frame(candidate).ok()?;
+            if viewport
+                .end()
+                .is_some_and(|end| (viewport.start..end).contains(&frame))
+            {
+                return grid_lines(project, viewport, pixel_width, self)
+                    .into_iter()
+                    .min_by_key(|line| {
+                        (
+                            line.beat.raw().abs_diff(beat.raw()),
+                            u64::MAX - line.beat.raw(),
+                        )
+                    })
+                    .map(|line| line.beat);
+            }
+        }
+        Some(candidate)
     }
 }
 
 impl super::EditorView {
-    pub(super) fn cycle_snap_grid(&mut self) {
-        self.snap_grid = self.snap_grid.next();
-        self.status = format!("clip move · snap {}", self.snap_grid.label());
+    pub(super) fn toggle_snap_grid(&mut self) {
+        self.snap_grid = self.snap_grid.toggled();
+        self.status = format!("arranger · snap {}", self.snap_grid.label());
     }
 
-    fn cursor_beat(&self) -> Option<BeatTime> {
+    pub(super) fn cursor_beat(&self) -> Option<BeatTime> {
         let state = self.state.as_ref()?;
         let beat = state
             .project
@@ -779,31 +925,6 @@ impl super::EditorView {
             && !self.close_prompt_open
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
-    }
-
-    pub(super) fn adjust_tempo(&mut self, direction: i32) {
-        if !self.time_edit_admitted() {
-            self.error = Some("tempo edit waits for pending project work".into());
-            return;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(beat) = self.cursor_beat() else {
-            self.error = Some("tempo point unavailable at this cursor position".into());
-            return;
-        };
-        let current = state.project.tempo_map().tempo_at(beat);
-        let adjusted = i64::from(current.micro_bpm()) + i64::from(direction) * 1_000_000;
-        let Ok(micro_bpm) = u32::try_from(adjusted) else {
-            self.error = Some("tempo must stay within 1–1000 bpm".into());
-            return;
-        };
-        let Ok(tempo) = Tempo::new(micro_bpm) else {
-            self.error = Some("tempo must stay within 1–1000 bpm".into());
-            return;
-        };
-        self.enqueue(Request::Edit(Command::SetTempoPoint { beat, tempo }));
     }
 
     pub(super) fn cycle_meter(&mut self) {
@@ -834,19 +955,9 @@ impl super::EditorView {
 
     pub(super) fn time_controls(&self, cx: &mut Context<Self>) -> Div {
         let Some(state) = self.state.as_ref() else {
-            return div()
-                .w(px(super::tracks::TRACK_HEADER_WIDTH))
-                .flex_shrink_0();
+            return div().w(px(self.track_header_width())).flex_shrink_0();
         };
         let beat = self.cursor_beat();
-        let tempo_label = beat.map_or_else(
-            || "—".into(),
-            |beat| {
-                let micro = state.project.tempo_map().tempo_at(beat).micro_bpm();
-                let tenths = (micro + 50_000) / 100_000;
-                format!("{}.{:01}", tenths / 10, tenths % 10)
-            },
-        );
         let meter_label = beat.map_or_else(
             || "—".into(),
             |beat| {
@@ -856,37 +967,13 @@ impl super::EditorView {
         );
         let enabled = self.time_edit_admitted() && beat.is_some();
         div()
-            .w(px(super::tracks::TRACK_HEADER_WIDTH))
+            .w(px(self.track_header_width()))
             .h_full()
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
             .gap(px(2.0))
-            .children([
-                self.time_button(
-                    "−",
-                    "decrease tempo at cursor quarter by 1 bpm",
-                    enabled,
-                    |view, _, _| view.adjust_tempo(-1),
-                    cx,
-                ),
-                self.time_readout(tempo_label, "tempo at cursor snapped quarter · bpm"),
-                self.time_button(
-                    "+",
-                    "increase tempo at cursor quarter by 1 bpm",
-                    enabled,
-                    |view, _, _| view.adjust_tempo(1),
-                    cx,
-                ),
-            ])
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(14.0))
-                    .mx_1()
-                    .bg(rgb(theme::color(theme::PaletteRole::Border))),
-            )
             .children([self.time_button(
                 &meter_label,
                 "cycle meter at cursor snapped quarter · 4/4, 3/4, 6/8, 5/4",
@@ -894,26 +981,6 @@ impl super::EditorView {
                 |view, _, _| view.cycle_meter(),
                 cx,
             )])
-    }
-
-    fn time_readout(&self, label: String, description: &'static str) -> gpui::Stateful<Div> {
-        div()
-            .id(description)
-            .w(px(38.0))
-            .h(px(19.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .tooltip(move |_, cx| {
-                cx.new(|_| super::transport::MiniTooltip {
-                    description: description.into(),
-                })
-                .into()
-            })
-            .child(theme::text(label))
     }
 
     fn time_button(
@@ -1052,13 +1119,10 @@ mod tests {
     }
 
     #[test]
-    fn snap_choice_is_local_opt_in_and_cycles_back_to_off() {
+    fn arranger_snap_toggles_between_adaptive_and_off() {
         assert_eq!(SnapGrid::default(), SnapGrid::Adaptive);
-        assert_eq!(SnapGrid::Adaptive.next(), SnapGrid::Quarter);
-        assert_eq!(SnapGrid::Quarter.next(), SnapGrid::Eighth);
-        assert_eq!(SnapGrid::Eighth.next(), SnapGrid::Sixteenth);
-        assert_eq!(SnapGrid::Sixteenth.next(), SnapGrid::Off);
-        assert_eq!(SnapGrid::Off.next(), SnapGrid::Adaptive);
+        assert_eq!(SnapGrid::Adaptive.toggled(), SnapGrid::Off);
+        assert_eq!(SnapGrid::Off.toggled(), SnapGrid::Adaptive);
         assert_eq!(SnapGrid::Off.step_raw(), None);
         assert_eq!(SnapGrid::Adaptive.step_raw(), None);
         assert_eq!(SnapGrid::Quarter.step_raw(), Some(1_u64 << 32));
@@ -1631,3 +1695,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "adaptive_grid_density_tests.rs"]
+mod density_tests;

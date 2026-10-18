@@ -26,6 +26,12 @@ nondefault audio feature), strict workspace and feature-specific Clippy, and a l
 desktop build. A failed or unavailable command stops the run. Later steps are
 recorded as `not_run`; their status is never reported as passed.
 
+An interactive terminal animates a short stage spinner while a child check writes
+to its numbered log. The spinner clears and its worker joins before status or
+error output resumes, including interruption. Redirected stdout or stderr uses
+only the existing plain stage lines. Build and test output remains in the same
+logs; the indicator does not change subprocess handling, exit codes or checks.
+
 Each run writes deterministic numbered step logs and `summary.json` under a unique
 `artifacts/local-ci/<run-id>/` directory. The summary records actual argument
 vectors, UTC start/end times, exit codes, the starting and ending Git commit and
@@ -170,6 +176,9 @@ preparation therefore checks full locked metadata for workspace/external package
 name collisions and refuses those cases. A previous recorded workspace with
 removed, renamed or version-changed packages also refuses, even with adoption:
 use a fresh target rather than guessing deletion paths or broadening cleanup.
+Pure workspace additions are allowed when every recorded package retains its
+name/version. The current workspace then owns cleanup of both retained and added
+members; external-name collision, source, ownership and artifact checks still run.
 The real-Cargo test preserves this limitation explicitly.
 
 `scripts/hex-test-build.py` exposes `optimized_artifact(runner, package=...,
@@ -185,7 +194,9 @@ The release fixture uses real Cargo in isolated temporary worktrees/targets:
 incompatible numeric/string APIs and executable outputs A→B→A, a dev-only
 negative control which leaves the release artifact intact, unchanged external
 release dependencies and dev hashes, retained binaries, same-source reuse and
-removed/renamed refusal. The original dev-only real-Cargo regression remains
+removed/renamed/version-change refusal. The same fixture compiles a newly added
+workspace dependency and checks its output, complete workspace cleanup and
+preserved external release/dev hashes. The original dev-only real-Cargo regression remains
 unchanged. Contention, malformed/recreated target ownership, failed/interrupted
 cleanup, changed source/artifact and failed staging consumption have focused
 refusal tests. These checks do not substitute for the required exact-source
@@ -257,3 +268,24 @@ After the shared exact-source local checks and authorized merge, deliver the
 optimized app at the configured stable location using [test-builds.md](test-builds.md).
 Packaging consumes the full runner evidence; it does not introduce another CI
 pipeline or infer user approval from merge/disk activation.
+
+## supersession fixture command readiness — pulse2774 / PR381
+
+The headless desktop fixture observes callback installation and worker command
+readiness separately. Eligible publication commits its queue slot before the
+publisher records `submitted_revision`; callback-applied source status alone
+is not a command-admission acknowledgment. The rapid eight-generation import
+test now waits for the matching applied context and a positive revision observed
+on the actual worker endpoint before its single `Play` call. The existing
+five-second deadline, successful-command assertion, decoded PCM oracle and
+zero allocation/deallocation assertions remain unchanged. No production
+publication, callback, client or native application behavior changes.
+
+Integrated source `5f42b747` twice failed the old direct-Play assumption in the
+complete desktop suite, while the individual test passed. Temporary refusal
+logging did not reproduce the rejection guard and was removed. Those failed
+runs remain evidence; they do not establish a native runtime or resident-PCM
+regression. The source ordering establishes why the fixture must synchronize
+both boundaries. Focused full-bin results and final exact-source CI are retained
+with the PR and Pulse task. This fixture uses the real worker/publication path
+with a headless output factory; no Mac execution or device acceptance is implied.

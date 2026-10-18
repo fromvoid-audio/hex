@@ -124,15 +124,20 @@ def require_calls(stream: list[Token], calls: tuple[str, ...], label: str) -> li
 
 ENTRY_POINTS = {
     UI / "editor/device_panel.rs": {
-        "render_effect": ("device_frame", "theme::device_frame_style", "device_composition::wrapped_body", "device_composition::unsupported_body"),
-        "render_instrument": ("device_frame", "theme::device_frame_style", "device_composition::wrapped_body", "device_composition::unsupported_body"),
+        "render_effect": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
+        "render_instrument": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
         "action_button": ("hex_widgets::device_action", "theme::device_header_action_style"),
         "control_style": ("theme::device_style",),
         "device_layout_style": ("theme::device_style",),
+    },
+    PANEL / "bindings.rs": {
         "parameter_style": ("theme::device_style",),
     },
+    PANEL / "parameter_rows.rs": {
+        "body": ("device_composition::windowed_body", "parameter_control"),
+    },
     PANEL / "return_view.rs": {
-        "render_return_effect": ("device_frame", "theme::device_frame_style", "device_composition::wrapped_body", "device_composition::unsupported_body"),
+        "render_return_effect": ("device_frame", "theme::device_frame_style", "parameter_rows::body", "device_composition::unsupported_body"),
     },
 }
 

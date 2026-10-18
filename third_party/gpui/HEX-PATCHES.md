@@ -16,6 +16,7 @@ AppKit access stays inside GPUI's existing native boundary.
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
+explicit grid-literal and bounded accessibility decisions.
 view-cache epoch, scene replay and explicit grid-literal decisions.
 See docs/native-input.md and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
@@ -106,6 +107,30 @@ draws another frame nor injects pointer input, so tests can distinguish actual
 paint from focus state that has not reached the screen. Test-support only; no
 production rendering or native graphics behavior changes.
 
+14 October accessibility extension (ticket29/PR188): safe bounded semantic
+snapshots/actions and cached prepaint integration. The first native AppKit
+candidate is quarantined for an off-UI final-owner hazard; no native AX backend
+is enabled at this checkpoint. The reviewed file list and added accessibility.rs are explicitly hashed;
+all original baseline hashes, license and prior input/cursor deltas remain.
+See docs/native-accessibility.md in the Hex repository for owner/revision,
+revocation, asynchronous dispatch, offscreen refusal and native acceptance limits.
+The unified diff uses zero context; apply only against the verified archive with
+`git apply --unidiff-zero`. Hash verification remains mandatory.
+
+14 October replacement AppKit accessibility boundary: data-only immutable snapshots,
+revocable bounded mailbox and UI-only generational native registry in explicitly
+listed added platform files. PlatformWindow revokes before core removal; accepted
+native close and Drop/dealloc revoke before callbacks/resources. Main-queue wake
+contains checked IDs only. No weak/strong MacWindowState is reachable from AX
+objects. Scalar queries are snapshot-only; off-UI parent/children return unavailable.
+The original unsafe-lifetime candidate remains quarantined. This native source
+requires exact Mac compilation/AX teardown/veto/VoiceOver checks; Linux tests do
+not establish OS exposure. All baseline identity/hashes and prior patches remain.
+
+14 October native teardown repair: clear semanticBridge/semanticState through the
+Objective-C runtime before reclaiming their owning Box. The private helper and
+real-ivar reentrant-drop/uncleared-pointer negative control stay inside the existing
+Mac accessibility patch. Native execution remains a separate required Mac check.
 16 October rounded-layout test support: `rendered_background` skips transparent
 border-only quad fills, which `Style::paint` emits after the filled surface.
 `rendered_surface_geometry` exposes the last filled matching quad's corner radii
@@ -120,3 +145,18 @@ forwards to the existing `dispatch_event` and discards its private metadata.
 The result type stays private. No native handler, FFI, scheduling, OS-event
 injection or default behavior changes. This primary-approved adapter lets the
 explicit native timing window exercise the regular mouse dispatch path.
+
+17 October AppKit getter repair: register the SDK's isAccessibilityHidden,
+isAccessibilityEnabled and isAccessibilityFocused selectors. A Mac-only real
+semantic-object regression verifies enabled/focused snapshot changes and revoked
+hidden/unavailable state; the old selectors fail it. All four native fixtures
+pass with Hex's macos-blade features. Inspector/VoiceOver acceptance remains open;
+see docs/native-accessibility.md. Original archive identity remains unchanged.
+
+17 October clip-border test support: `rendered_border` reads the last matching
+completed scene quad with nonzero border widths and returns its color, widths
+and ancestor mask. It is confined to the existing test-support context and
+changes no production rendering, native behavior, layout or input. Clip selection
+regressions use it to verify the actual painted outline and viewport clipping.
+Original baseline hashes remain unchanged; the cumulative patch is regenerated
+against the hash-verified original test_context.rs.

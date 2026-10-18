@@ -262,6 +262,34 @@ impl EditorView {
         {
             return;
         }
+        if fade.has_shape() {
+            let Ok(local) = fade.reanchor(duration) else {
+                return;
+            };
+            let Ok(next) = ClipFade::new(
+                duration,
+                0,
+                fade_in.min(duration - local.in_start()),
+                fade_out.min(duration - local.out_end_offset()),
+            )
+            .and_then(|next| {
+                next.with_shape(
+                    local.in_start(),
+                    local.out_end_offset(),
+                    local.in_curve(),
+                    local.out_curve(),
+                )
+            }) else {
+                return;
+            };
+            if next != fade {
+                self.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+                    clip: clip_id,
+                    fade: next,
+                }));
+            }
+            return;
+        }
         self.enqueue(Request::Edit(Command::SetClipFades {
             clip: clip_id,
             fade_in,
@@ -291,6 +319,7 @@ impl EditorView {
                 && fade.offset() == 0
                 && fade.fade_in() == 0
                 && fade.fade_out() == 0
+                && !fade.has_shape()
         }) {
             return;
         }

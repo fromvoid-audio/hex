@@ -5,6 +5,7 @@ use std::{cell::RefCell, rc::Rc};
 
 pub(super) fn render_chain(
     view: &mut EditorView,
+    window: Option<&Window>,
     cx: &mut Context<EditorView>,
     owner: hex_project::ReturnId,
     devices: &[hex_project::Device],
@@ -12,8 +13,21 @@ pub(super) fn render_chain(
     let visible_bounds = Rc::new(RefCell::new(None));
     let receiver_bounds = visible_bounds.clone();
     let entity = cx.entity();
-    let mut chain = div()
+    let geometry: Vec<_> = devices
+        .iter()
+        .map(|device| {
+            (
+                device.id(),
+                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+            )
+        })
+        .collect();
+    super::navigation::sync_rail_scroll(view);
+    view.device_panel.chain_window.prepare(&geometry);
+    let mut chain = chain_window::rail(view, cx)
         .id("device-chain-scroll")
+        .track_scroll(&view.device_panel.chain_window.scroll)
+        .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
         .debug_selector(|| "device-chain-scroll".into())
         .flex_1()
         .min_h_0()
@@ -33,17 +47,28 @@ pub(super) fn render_chain(
             }
         });
     for (index, device) in devices.iter().enumerate() {
-        let rendered =
-            super::return_view::render_return_effect(view, cx, owner, devices, index, device);
-        chain = chain.child(render_return_drop_target(
-            view,
-            cx,
-            owner,
-            Some(device.id()),
-            devices.get(index + 1).map(|next| next.id()),
-            visible_bounds.clone(),
-            rendered,
-        ));
+        if chain_window::must_mount(view, device.id(), window, cx) {
+            let focus = view.device_panel.chain_window.focus(device.id(), cx);
+            let rendered =
+                super::return_view::render_return_effect(view, window, cx, owner, device)
+                    .track_focus(&focus);
+            chain = chain.child(render_return_drop_target(
+                view,
+                cx,
+                owner,
+                Some(device.id()),
+                devices.get(index + 1).map(|next| next.id()),
+                visible_bounds.clone(),
+                rendered,
+            ));
+        } else {
+            let card = chain_window::spacer(
+                device.id(),
+                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+            )
+            .mr(px(DEVICE_CHAIN_PADDING));
+            chain = chain.child(card);
+        }
     }
     chain.child(render_return_drop_target(
         view,

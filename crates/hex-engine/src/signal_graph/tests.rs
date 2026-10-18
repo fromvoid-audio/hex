@@ -14,8 +14,11 @@ use hex_lattice_contract::{
 use hex_project::{Command, Created, Editor};
 use std::any::Any;
 
+#[path = "tests/eq_automation.rs"]
+mod eq_automation;
+
 const TYPE: DeviceTypeId = DeviceTypeId::from_static("test.compensation.delay");
-struct Definition;
+pub(crate) struct Definition;
 impl NativeDeviceMetadata for Definition {
     fn type_id(&self) -> DeviceTypeId {
         TYPE
@@ -54,7 +57,7 @@ impl NativeDeviceMetadata for Definition {
         Err(DeviceContractError::UnknownParameter)
     }
 }
-fn state(delay: u32) -> Result<NativeDeviceState, DeviceContractError> {
+pub(crate) fn state(delay: u32) -> Result<NativeDeviceState, DeviceContractError> {
     NativeDeviceState::new(TYPE, 1, delay.to_le_bytes().to_vec())
 }
 impl NativeDeviceDefinition for Definition {
@@ -68,7 +71,7 @@ impl NativeDeviceDefinition for Definition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         let delay = u32::from_le_bytes(
@@ -110,7 +113,11 @@ struct Runtime {
     cursor: usize,
 }
 impl NativeProcessorRuntime for Runtime {
-    fn process_block(&mut self, frames: &mut [Frame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [Frame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             if !self.ring.is_empty() {
                 std::mem::swap(frame, &mut self.ring[self.cursor]);
@@ -430,7 +437,7 @@ impl hex_lattice::NativeInstrumentDefinition for InstrumentDefinition {
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
-        _: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, DeviceContractError> {
         self.migrate_state(state)?;
         Ok(Box::new(Instrument))
@@ -448,7 +455,7 @@ impl hex_lattice::PreparedNativeInstrument for Instrument {
         Ok(hex_lattice::PreparedAnalyticNote::new(
             [0; hex_lattice::ANALYTIC_NOTE_PAYLOAD_WORDS],
             5,
-            |_, age, _, _| if age == 5 { [0.25, -0.5] } else { [0.0; 2] },
+            |_, age, _, _, _| if age == 5 { [0.25, -0.5] } else { [0.0; 2] },
         ))
     }
 }
@@ -472,6 +479,8 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     owner.content = hex_project::TrackContentSnapshot::Hybrid {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
+            name: "clip".into(),
+            flavor: hex_project::ClipFlavor::default(),
             id: next + 1,
             start_raw: 0,
             length_raw: hex_project::BeatTime::ONE.raw(),
@@ -855,14 +864,23 @@ fn delayed_origin_clock_reports_source_performance_and_transport_without_guesses
         arrangement_frame: 12,
         loop_pass: 7,
         performance_beat_raw: 5 << 32,
+        arrangement_beat_raw: Some(1 << 32),
     };
     let clock = OriginClock(Some(source));
     assert_eq!(clock.performance_frame_at_offset(0), Some(900));
     assert_eq!(clock.arrangement_frame_at_offset(0), Some(12));
     assert_eq!(clock.loop_pass_at_offset(0), Some(7));
     assert_eq!(clock.beat_at_offset(0), Some(5 << 32));
+    assert_eq!(clock.arrangement_beat_at_offset(0), Some(1 << 32));
     assert_eq!(clock.transport_is_running(), Some(true));
     assert_eq!(clock.performance_frame_at_offset(1), None);
+    let unavailable_beat = OriginClock(Some(TransportStamp {
+        arrangement_beat_raw: None,
+        ..source
+    }));
+    assert_eq!(unavailable_beat.arrangement_beat_at_offset(0), None);
+    assert_eq!(unavailable_beat.arrangement_frame_at_offset(0), Some(12));
+    assert_eq!(unavailable_beat.beat_at_offset(0), Some(5 << 32));
     let stopped = OriginClock(Some(TransportStamp {
         transport_is_running: false,
         ..source

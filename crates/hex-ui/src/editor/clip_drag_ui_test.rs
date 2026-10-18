@@ -478,6 +478,103 @@ fn drag_source_to_inserted_track(
 }
 
 #[gpui::test]
+fn rendered_clip_drop_highlights_only_occupied_audio_and_midi_spans(cx: &mut TestAppContext) {
+    let (project, _, target, clip) = audio_project();
+    let mut model = Editor::new(project, 8).expect("model");
+    model
+        .execute(Command::CopyClipTo {
+            clip,
+            track: target,
+            start: 0,
+        })
+        .expect("audio victim");
+    model
+        .execute(Command::PlaceMidiClip {
+            track: target,
+            start: BeatTime::from_quarters(5).unwrap(),
+            length: BeatTime::ONE,
+        })
+        .expect("midi victim");
+    let project = model.project().clone();
+    let media = BTreeMap::from([(
+        project.clip(clip).unwrap().asset(),
+        hex_engine::Audio::new(48_000, vec![[0.0; 2]; 96_000]).unwrap(),
+    )]);
+    let (_, midi) =
+        hex_engine::compile::project_with_midi_preview(&project, &media).expect("compile previews");
+    let (handle, editor) = editor_window(cx, project, Arc::new(midi));
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", target.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let delta = f32::from(lane.size.width) * 48_000.0 / TIMELINE_FRAMES as f32;
+    let (_, release) = drag_source_to_target(cx, &mut visual, &editor, clip, 1, delta);
+    let (start, end) = editor.read_with(cx, |view, _| {
+        let preview = view
+            .active_clip_drag
+            .as_ref()
+            .unwrap()
+            .preview
+            .get()
+            .unwrap();
+        (preview.start_frame, preview.end_frame)
+    });
+    for (index, (victim_start, victim_end)) in [(0_u64, 96_000_u64), (120_000, 144_000)]
+        .into_iter()
+        .enumerate()
+    {
+        let overlap = visual
+            .debug_bounds(Box::leak(
+                format!("clip-drop-overlap-{index}").into_boxed_str(),
+            ))
+            .unwrap_or_else(|| {
+                panic!("occupied span {index} highlighted for landing {start}..{end}")
+            });
+        let expected_left = lane.origin.x
+            + lane.size.width * (start.max(victim_start) as f32 / TIMELINE_FRAMES as f32);
+        let expected_width = lane.size.width
+            * ((end.min(victim_end) - start.max(victim_start)) as f32 / TIMELINE_FRAMES as f32);
+        assert!((overlap.origin.x - expected_left).abs() <= px(1.0));
+        assert!((overlap.size.width - expected_width).abs() <= px(1.0));
+    }
+    assert!(visual.debug_bounds("clip-drop-overlap-2").is_none());
+    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("clip-drop-overlap-0").is_none(),
+        "release clears highlights"
+    );
+}
+
+#[gpui::test]
+fn rendered_clip_drop_excludes_moved_source_but_highlights_copied_source(cx: &mut TestAppContext) {
+    let (project, _, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (_, release) = drag_source_to_target(cx, &mut visual, &editor, clip, 0, 0.0);
+    assert!(visual.debug_bounds("clip-drop-overlap-0").is_none());
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_modifiers_change(option);
+    visual.run_until_parked();
+    let overlap = visual
+        .debug_bounds("clip-drop-overlap-0")
+        .expect("copy intersects original");
+    let preview = visual.debug_bounds("clip-drop-preview").unwrap();
+    assert!((overlap.origin.x - preview.origin.x).abs() <= px(1.0));
+    assert!((overlap.size.width - preview.size.width).abs() <= px(1.0));
+    visual.simulate_modifiers_change(Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("clip-drop-overlap-0").is_none());
+    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
 fn rendered_audio_clip_drag_starts_previews_and_commits_a_move(cx: &mut TestAppContext) {
     let (project, source, target, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -665,7 +762,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
         ))
         .expect("central move target");
-    assert_eq!(move_bounds.size.height, original_bounds.size.height);
+    assert!(
+        (f32::from(move_bounds.size.height) - f32::from(original_bounds.size.height) / 3.0).abs()
+            < 1.0
+    );
     assert!(move_bounds.origin.x + move_bounds.size.width <= handle_bounds.origin.x);
 
     let lane = visual
@@ -1748,15 +1848,15 @@ fn vertical_drag_scroll_invalidates_old_rows_before_fast_release(cx: &mut TestAp
         view.state.as_ref().expect("project state").revision
     });
     editor.update(cx, |view, cx| {
-        let before_offset = view.track_scroll.0.borrow().base_handle.offset().y;
+        let before_offset = view.track_scroll.offset().y;
         let generation = view.drag_layout_generation;
         let now = Instant::now();
         let _ = view.tick_clip_gesture_autoscroll(now, cx);
-        if view.track_scroll.0.borrow().base_handle.offset().y == before_offset {
+        if view.track_scroll.offset().y == before_offset {
             assert!(view.tick_clip_gesture_autoscroll(now + Duration::from_millis(50), cx));
         }
         assert!(
-            view.track_scroll.0.borrow().base_handle.offset().y < before_offset,
+            view.track_scroll.offset().y < before_offset,
             "bottom edge scrolls the actual UniformList"
         );
         assert!(view.drag_layout_generation > generation);
@@ -1845,12 +1945,12 @@ fn vertical_drag_scroll_retargets_stationary_clip_before_release(cx: &mut TestAp
         (old_track, Instant::now())
     });
     editor.update(cx, |view, cx| {
-        let offset = view.track_scroll.0.borrow().base_handle.offset().y;
+        let offset = view.track_scroll.offset().y;
         let mut moved = false;
         for tick in 0..4 {
             let now = scroll_tick + Duration::from_millis(tick * 50);
             let _ = view.tick_clip_gesture_autoscroll(now, cx);
-            if view.track_scroll.0.borrow().base_handle.offset().y != offset {
+            if view.track_scroll.offset().y != offset {
                 moved = true;
                 break;
             }
@@ -1897,4 +1997,171 @@ fn vertical_drag_scroll_retargets_stationary_clip_before_release(cx: &mut TestAp
     history.execute(command).expect("apply released edit");
     assert!(history.undo(), "one undo reverses the single released edit");
     assert_eq!(history.project(), &original);
+}
+
+#[gpui::test]
+fn shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit(
+    cx: &mut TestAppContext,
+) {
+    check_shift_edge(cx, hex_project::TrimEdge::Right);
+    check_shift_edge(cx, hex_project::TrimEdge::Left);
+}
+fn check_shift_edge(cx: &mut TestAppContext, edge: hex_project::TrimEdge) {
+    let direction = if edge == hex_project::TrimEdge::Right {
+        -1.0
+    } else {
+        1.0
+    };
+    let name = if edge == hex_project::TrimEdge::Right {
+        "right"
+    } else {
+        "left"
+    };
+    let (project, _, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("clip-trim-{name}-{}", clip.value()).into_boxed_str());
+    let down = visual.debug_bounds(selector).unwrap().center();
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(down, MouseButton::Left, shift);
+    visual.simulate_mouse_move(
+        point(down.x + px(12.0 * direction), down.y),
+        MouseButton::Left,
+        shift,
+    );
+    visual.run_until_parked();
+    let target = point(down.x + px(42.0 * direction), down.y);
+    visual.simulate_mouse_move(target, MouseButton::Left, shift);
+    visual.run_until_parked();
+    let stretched = editor.read_with(cx, |view, _| {
+        let drag = view.active_trim_drag.as_ref().expect("active edge stretch");
+        assert!(drag.stretch_modifier.get());
+        let preview = drag.preview.borrow();
+        let preview = &preview.as_ref().unwrap().clip;
+        assert!(preview.audio_edit().unwrap().domain.warp_enabled);
+        assert_eq!(preview.source_length(), 96_000);
+        assert!(preview.duration() < 96_000);
+        assert!(view.last_enqueued_edit.is_none());
+        preview.clone()
+    });
+    let first_bounds = visual.debug_bounds("trim-live-preview").unwrap();
+    visual.simulate_mouse_move(
+        point(target.x + px(20.0 * direction), target.y),
+        MouseButton::Left,
+        shift,
+    );
+    visual.run_until_parked();
+    assert_ne!(
+        visual.debug_bounds("trim-live-preview").unwrap().size.width,
+        first_bounds.size.width
+    );
+    visual.simulate_mouse_move(target, MouseButton::Left, shift);
+    visual.run_until_parked();
+    visual.simulate_modifiers_change(Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        let preview = view.active_trim_drag.as_ref().unwrap().preview.borrow();
+        assert!(
+            preview.as_ref().unwrap().clip.audio_edit().is_none(),
+            "releasing Shift restores ordinary trim at same pointer"
+        );
+    });
+    visual.simulate_modifiers_change(shift);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.active_trim_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .clip,
+            stretched
+        )
+    });
+    visual.simulate_mouse_up(target, MouseButton::Left, shift);
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(view.last_enqueued_edit, Some(Command::StretchAudioClipEdge { clip: id, edge: requested_edge, frame }) if id == clip && requested_edge == edge && frame == if edge == hex_project::TrimEdge::Right { stretched.start() + stretched.duration() } else { stretched.start() }));
+        assert!(view.active_trim_drag.is_none());
+        assert_eq!(view.state.as_ref().unwrap().project.clip(clip).unwrap().duration(), 96_000, "UI preview has not changed canonical state");
+    });
+}
+
+#[gpui::test]
+fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    for cancel in [0, 1, 2] {
+        let (project, _, _, clip) = audio_project();
+        let (handle, editor) = editor_window(cx, project, Arc::default());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let selector = Box::leak(format!("clip-trim-right-{}", clip.value()).into_boxed_str());
+        let down = visual.debug_bounds(selector).unwrap().center();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(down, MouseButton::Left, shift);
+        let target = point(down.x - px(42.0), down.y);
+        visual.simulate_mouse_move(point(down.x - px(12.0), down.y), MouseButton::Left, shift);
+        visual.simulate_mouse_move(target, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| assert!(view.active_trim_drag.is_some()));
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.focus.is_focused(window),
+                    "root focus before cancellation {cancel}"
+                )
+            })
+        });
+        if cancel == 1 {
+            visual.update(|window, cx| {
+                editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
+            });
+        } else if cancel == 2 {
+            visual.deactivate_window();
+        } else {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.active_trim_drag.is_none(),
+                "Escape/focus loss clears metadata preview: lose_focus={cancel}"
+            )
+        });
+        // Inactive windows retain their last painted frame. Reactivate and
+        // return focus before inspecting the repainted overlay and re-entry.
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read_with(cx, |view, _| view.focus.focus(window));
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("trim-live-preview").is_none(),
+            "repaint after cancel {cancel}"
+        );
+        visual.simulate_mouse_move(
+            point(target.x - px(10.0), target.y),
+            MouseButton::Left,
+            shift,
+        );
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.active_trim_drag.is_none(),
+                "canceled payload cannot re-enter"
+            )
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, shift);
+        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    }
 }

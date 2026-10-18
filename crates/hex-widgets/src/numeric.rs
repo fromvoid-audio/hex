@@ -39,6 +39,7 @@ pub struct NumericSpec {
     unit: Option<Arc<str>>,
     formatter: Option<NumericFormatter>,
     parser: Option<NumericParser>,
+    keyboard_steps: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,7 @@ impl NumericSpec {
             unit: unit.map(Into::into),
             formatter: None,
             parser: None,
+            keyboard_steps: None,
         })
     }
 
@@ -123,6 +125,11 @@ impl NumericSpec {
     pub const fn max(&self) -> f64 {
         self.max
     }
+    /// Finite inclusive canonical domain, shared with accessibility.
+    pub const fn bounds(&self) -> (f64, f64) {
+        (self.min, self.max)
+    }
+
     pub const fn default(&self) -> f64 {
         self.default
     }
@@ -188,6 +195,19 @@ impl NumericSpec {
         self.from_normalized(position.clamp(0.0, 1.0))
     }
 
+    /// Choose explicit coarse/fine keyboard steps in the displayed unit.
+    /// Existing controls retain their normalized adjustment law by default.
+    pub fn with_keyboard_steps(mut self, coarse: f64, fine: f64) -> Result<Self, NumericError> {
+        if self.scale == NumericScale::LinearAmplitudeDecibels {
+            return Err(NumericError::InvalidScale);
+        }
+        if !coarse.is_finite() || !fine.is_finite() || fine <= 0.0 || coarse < fine {
+            return Err(NumericError::InvalidRange);
+        }
+        self.keyboard_steps = Some((coarse, fine));
+        Ok(self)
+    }
+
     /// Apply keyboard increments in the parameter's displayed unit.
     pub fn step(&self, value: f64, direction: f64, fine: bool) -> Result<f64, NumericError> {
         if !direction.is_finite() {
@@ -196,6 +216,10 @@ impl NumericSpec {
         let value = self.validate(value)?;
         if direction == 0.0 {
             return Ok(value);
+        }
+        if let Some((coarse, small)) = self.keyboard_steps {
+            let step = if fine { small } else { coarse };
+            return self.validate((value + step * direction).clamp(self.min, self.max));
         }
         if self.scale != NumericScale::LinearAmplitudeDecibels {
             return self.adjust(value, (if fine { 0.001 } else { 0.01 }) * direction);
@@ -644,5 +668,33 @@ mod tests {
         assert!(
             (positive_range.step(1.0, 1.0, false).unwrap() - amplitude_at_db(1.0)).abs() < 1.0e-12
         );
+    }
+}
+
+#[cfg(test)]
+mod keyboard_step_tests {
+    use super::*;
+    #[test]
+    fn explicit_steps_keep_integer_counts_and_fine_pitch_edits_in_their_domains() {
+        let count = NumericSpec::new(3.0, 48.0, 7.0, NumericScale::Linear, 0, None::<Arc<str>>)
+            .unwrap()
+            .with_keyboard_steps(1.0, 1.0)
+            .unwrap();
+        assert_eq!(count.step(7.0, 1.0, false).unwrap(), 8.0);
+        assert_eq!(count.step(7.0, -1.0, true).unwrap(), 6.0);
+        assert_eq!(count.step(48.0, 1.0, false).unwrap(), 48.0);
+        let hz = NumericSpec::new(
+            10.0,
+            20000.0,
+            220.0,
+            NumericScale::Logarithmic,
+            2,
+            None::<Arc<str>>,
+        )
+        .unwrap()
+        .with_keyboard_steps(1.0, 0.01)
+        .unwrap();
+        assert_eq!(hz.step(220.0, 1.0, true).unwrap(), 220.01);
+        assert!(hz.with_keyboard_steps(f64::NAN, 0.01).is_err());
     }
 }

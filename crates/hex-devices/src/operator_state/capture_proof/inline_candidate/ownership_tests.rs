@@ -33,7 +33,14 @@ fn legacy_pcm(store: &Store, record: Record) -> Vec<u32> {
             .unwrap();
         pcm.extend(
             provider
-                .sample_with_parameters(root.key.id(), &frame, &note, 517 + offset, u64::MAX)
+                .sample_with_parameters(
+                    root.key.id(),
+                    &frame,
+                    &note,
+                    517 + offset,
+                    u64::MAX,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
                 .unwrap()
                 .map(f32::to_bits),
         );
@@ -228,11 +235,12 @@ fn actual_recipe_byte_boundary_staging_map_and_reference_overflows_are_independe
     let (roots, record, _) = fixture();
     let mut store = Store::new(7, 1142, roots);
     let charge = size_of::<Slot>() + context_bytes();
-    for n in 0..413 {
+    let recipes = 2 * 1024 * 1024 / charge;
+    for n in 0..recipes {
         let h = store
             .stage(
                 Record {
-                    recipe: n + 1,
+                    recipe: u64::try_from(n + 1).unwrap(),
                     ..record
                 },
                 record.receipt,
@@ -242,12 +250,12 @@ fn actual_recipe_byte_boundary_staging_map_and_reference_overflows_are_independe
         store.publish(h, 0, record.receipt, true).unwrap();
         store.retain_detached(h).unwrap();
     }
-    assert_eq!(store.pool.retained_bytes, 413 * charge);
+    assert_eq!(store.pool.retained_bytes, recipes * charge);
     let full = store.fingerprint();
     assert_eq!(
         store.stage(
             Record {
-                recipe: 414,
+                recipe: u64::try_from(recipes + 1).unwrap(),
                 ..record
             },
             record.receipt,
@@ -317,8 +325,14 @@ impl PreparedSharedAnalyticContext for Watched {
     ) -> Result<PreparedSharedAnalyticNote, DeviceContractError> {
         self.inner.prepare_note(pitch, velocity)
     }
-    fn sample(&self, note: &PreparedSharedAnalyticNote, age: u64, gate: u64) -> StereoFrame {
-        self.inner.sample(note, age, gate)
+    fn sample(
+        &self,
+        note: &PreparedSharedAnalyticNote,
+        age: u64,
+        gate: u64,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> StereoFrame {
+        self.inner.sample(note, age, gate, _resources)
     }
 }
 

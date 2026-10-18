@@ -43,6 +43,14 @@ pub(crate) fn wrapped_body(controls: impl IntoIterator<Item = Div>) -> Div {
         }))
 }
 
+/// Shared windowed generic body; the widget owns its surface/corner inset.
+pub(crate) fn windowed_body(content: impl IntoElement) -> Div {
+    hex_widgets::device_windowed_body(theme::device_style(DeviceStyleRole::Layout), content)
+        .w_full()
+        .h(px(BODY_HEIGHT))
+        .min_h_0()
+}
+
 /// One unsupported-state presentation for instruments, Track and Return effects.
 /// The outer caller supplies its device ID; the nested scroll ID is scoped by it.
 pub(crate) fn unsupported_body(message: SharedString) -> Div {

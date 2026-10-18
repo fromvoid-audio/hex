@@ -317,7 +317,11 @@ impl EditorView {
     pub(super) fn controller_input_is_open(&self) -> bool {
         self.controller_input.menu_focus.is_some()
     }
-    fn close_controller_input_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_controller_input_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.controller_input.menu_focus = None;
         window.focus(
             self.controller_input
@@ -559,7 +563,7 @@ fn controller_input_menu_preserves_viewport_and_dismisses_without_editor_actions
     let message = visual.debug_bounds("editor-status-message").unwrap();
     assert!(message.size.width >= px(50.0), "message={message:?}");
     let revision = visual.debug_bounds("editor-revision-status").unwrap();
-    assert_eq!(revision.size.width, px(176.0));
+    assert!(revision.size.width >= px(64.0) && revision.size.width <= px(176.0));
     assert!(revision.origin.x + revision.size.width <= status.origin.x + status.size.width);
     assert!(visual.debug_bounds("controller-input-panel").is_none());
     let previous_focus = visual.update(|window, cx| window.focused(cx));
@@ -572,6 +576,14 @@ fn controller_input_menu_preserves_viewport_and_dismisses_without_editor_actions
     };
     open(&mut visual);
     let panel = visual.debug_bounds("controller-input-panel").unwrap();
+    assert_eq!(
+        visual.debug_bounds("editor-status-message").unwrap(),
+        message
+    );
+    assert_eq!(
+        visual.debug_bounds("editor-revision-status").unwrap(),
+        revision
+    );
     assert!(panel.origin.y + panel.size.height <= status.origin.y);
     for id in [
         "controller-input-refresh",

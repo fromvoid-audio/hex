@@ -56,7 +56,9 @@ include the runtime object and all owned heap storage, including reserved buffer
 capacities and nested allocations; `size_of` alone suffices only for inline
 runtimes. Immutable shared prepared configuration remains separate. Current EQ8
 still declares its unchanged 3,792-byte inline runtime; the larger bound is a
-prerequisite for future devices, not admission or implementation of a new EQ.
+prerequisite for larger devices. The sparse [eq](eq.md) declares its inline
+runtime plus its complete immutable configuration allocation/capacities in each
+twin budget; the independent aggregate cap continues to limit project density.
 The per-twin bound applies to effects. Mutable instruments instead declare their
 own object/buffer requirements and draw from the unchanged 2 MiB aggregate
 active-pair pool and separate 2 MiB retained-tail pool; see

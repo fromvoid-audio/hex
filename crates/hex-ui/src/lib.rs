@@ -1,4 +1,6 @@
 //! GPUI UI service; device output is supplied by the desktop composition root.
+mod mts;
+pub use mts::install_mts_publisher;
 mod app;
 mod build_info;
 mod context_menu;
@@ -11,6 +13,7 @@ mod editor;
 mod editor_backend;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
+pub mod output_meter;
 mod theme;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 use hex_audio::AudioOutput;

@@ -47,6 +47,7 @@ fn fixture(
         let track = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            color: hex_project::ElementColor::default(),
             gain_envelope: Vec::new(),
             gain_touch_spans: Vec::new(),
             gain_touch_epoch: 0,
@@ -67,6 +68,7 @@ fn fixture(
                 let id = next_id;
                 next_id += 1;
                 SessionCellContentSnapshot::Audio(SessionAudioClipSnapshot {
+                    flavor: hex_project::ClipFlavor::default(),
                     gain: hex_project::ClipGain::UNITY,
                     id,
                     name: format!("source {index}"),
@@ -85,6 +87,7 @@ fn fixture(
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

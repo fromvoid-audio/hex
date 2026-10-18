@@ -12,8 +12,8 @@ impl SessionPlayback {
         output: &mut [Frame],
         mut pages: Option<&mut P>,
         frame_offset: usize,
-        observer: &mut Option<&mut crate::PostNodeObserver<'_>>,
-        capture: &mut Option<&mut OutputCapture<'_, '_>>,
+        observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: &mut Option<&mut dyn CaptureSink>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -32,6 +32,13 @@ impl SessionPlayback {
                 arrangement_frame,
                 loop_pass,
                 performance_beat_raw: beat.raw(),
+                arrangement_beat_raw: self
+                    .revision
+                    .session()
+                    .timing()
+                    .frame_to_beat(arrangement_frame)
+                    .ok()
+                    .map(|beat| beat.raw()),
             })
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         for scratch in &mut self.return_scratch {

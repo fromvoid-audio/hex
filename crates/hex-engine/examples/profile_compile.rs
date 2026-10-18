@@ -46,6 +46,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         }
                     };
                     Ok(ClipSnapshot {
+                        name: "clip".into(),
+                        flavor: hex_project::ClipFlavor::default(),
                         edit: None,
                         gain: hex_project::ClipGain::UNITY,
                         id: clip_id,
@@ -61,6 +63,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
+                color: hex_project::ElementColor::default(),
                 gain_envelope: Vec::new(),
                 gain_touch_spans: Vec::new(),
                 gain_touch_epoch: 0,
@@ -79,6 +82,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, hex_project::Invalid>>()?;
     let snapshot = Snapshot {
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

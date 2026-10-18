@@ -72,6 +72,8 @@ impl MidiSource {
 /// A MIDI Arrangement clip has finite timeline placement and an independent source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
+    pub(crate) name: String,
+    pub(crate) flavor: crate::ClipFlavor,
     pub(crate) id: ClipId,
     pub(crate) start: BeatTime,
     pub(crate) length: BeatTime,
@@ -97,6 +99,12 @@ impl MidiClipTrim {
 }
 
 impl MidiClip {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn flavor(&self) -> crate::ClipFlavor {
+        self.flavor
+    }
     /// Preview an edge edit in O(1) metadata work without copying authored notes.
     /// Right extension may expose silence for a one-shot. Left edits preserve the
     /// exclusive end and advance/rewind the source marker; loop-phase rewinds
@@ -347,6 +355,44 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let id = crate::edit::insert_track_before(project, name, None)?;
             Ok(Created::Track(id))
         }
+        Command::PlaceMidiClipWithOverwrite {
+            track,
+            start,
+            length,
+        } => {
+            validate_clip(start, length)?;
+            let end = BeatTime::from_raw(
+                start
+                    .raw()
+                    .checked_add(length.raw())
+                    .ok_or(Invalid("midi clip timeline end overflow"))?,
+            );
+            project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?;
+            // Fully covered MIDI victims only free capacity. Retire them on
+            // this private paint candidate before audio splitting so each
+            // existing helper's admission is bounded by the final hybrid count.
+            // Editor still rolls back the complete candidate on any refusal.
+            project.track_mut(track)?.content.midi_clips.retain(|clip| {
+                !(clip.start >= start
+                    && clip
+                        .start
+                        .raw()
+                        .checked_add(clip.length.raw())
+                        .is_some_and(|clip_end| clip_end <= end.raw()))
+            });
+            crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
+            overwrite_midi_interval(project, track, start, end, ClipId(0))?;
+            apply(
+                project,
+                Command::PlaceMidiClip {
+                    track,
+                    start,
+                    length,
+                },
+            )
+        }
         Command::PlaceMidiClip {
             track,
             start,
@@ -362,6 +408,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let id = ClipId(project.allocate_id()?);
             let clips = &mut project.track_mut(track)?.content.midi_clips;
             clips.push(MidiClip {
+                name: "clip".into(),
+                flavor: crate::ClipFlavor::default(),
                 id,
                 start,
                 length,
@@ -518,6 +566,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
+                name: left.name.clone(),
+                flavor: left.flavor,
                 id: right_id,
                 start: beat,
                 length: right_length,
@@ -797,6 +847,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             }
             let clips = &mut project.track_mut(track)?.content.midi_clips;
             clips.push(MidiClip {
+                name: source.name.clone(),
+                flavor: source.flavor,
                 id,
                 start,
                 length: source.length,
@@ -1117,6 +1169,8 @@ pub(crate) fn overwrite_midi_interval(
                 .ok_or(Invalid("midi note count overflow"))?;
             let length = BeatTime::from_raw(right_end - right_start);
             Some(MidiClip {
+                name: original.name.clone(),
+                flavor: original.flavor,
                 id: if right_id_is_new {
                     ClipId(0)
                 } else {

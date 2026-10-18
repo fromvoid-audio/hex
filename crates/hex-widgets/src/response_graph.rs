@@ -8,8 +8,18 @@ use gpui::{
     div, point, prelude::*, px, rgb,
 };
 
+gpui::actions!(hex_response_graph, [RemoveNode, CancelPointer]);
+
+/// Install opt-in graph Backspace and held-pointer Escape bindings.
+pub fn bind_response_graph_keys(cx: &mut App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("backspace", RemoveNode, Some("hex_response_graph_remove")),
+        gpui::KeyBinding::new("escape", CancelPointer, Some("hex_response_graph_remove")),
+    ]);
+}
+
 const MAX_CURVE_POINTS: usize = 256;
-const MAX_NODES: usize = 32;
+const MAX_NODES: usize = 64;
 const PLOT_INSET: f32 = 7.0;
 const NODE_RADIUS: f32 = 8.0;
 
@@ -23,7 +33,12 @@ pub struct ResponseGraphNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseGraphPhase {
+    /// Owner-opted-in blank plot press; subsequent double-click presses do not create again.
+    /// With creation dragging enabled, its pointer stream keeps node_id zero.
+    Create,
     Select,
+    /// Owner-opted-in Backspace on an idle, focused selected node.
+    Remove,
     /// Physical pointer press on a node; does not start a parameter edit.
     Press,
     Begin,
@@ -52,6 +67,8 @@ pub struct ResponseGraphModel {
     pub secondary: Vec<[f32; 2]>,
     /// Optional non-editable analyzer trace, painted behind the device response.
     pub analyzer: Option<Vec<[f32; 2]>>,
+    /// Optional aligned input spectrum, independently hidden by its owner.
+    pub input_analyzer: Option<Vec<[f32; 2]>>,
     pub nodes: Vec<ResponseGraphNode>,
 }
 
@@ -61,6 +78,9 @@ impl ResponseGraphModel {
             || self.primary.len() > MAX_CURVE_POINTS
             || self.secondary.len() != self.primary.len()
             || self.analyzer.as_ref().is_some_and(|curve| {
+                curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
+            })
+            || self.input_analyzer.as_ref().is_some_and(|curve| {
                 curve.len() < 2 || curve.len() > MAX_CURVE_POINTS || !valid_curve(curve)
             })
             || self.nodes.len() > MAX_NODES
@@ -90,17 +110,28 @@ fn valid_curve(points: &[[f32; 2]]) -> bool {
     }) && points.windows(2).all(|pair| pair[0][0] <= pair[1][0])
 }
 
+/// Product-resolved spectrum colors, separate from response and control colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResponseGraphAnalyzerStyle {
+    pub input: u32,
+    pub output: u32,
+}
+
 /// Compact DSP-independent graph. The owner maps normalized graph points to
 /// domain values and sends the emitted drag phases through its normal edit API.
 pub struct ResponseGraph {
     id: SharedString,
     model: ResponseGraphModel,
     style: ControlStyle,
+    analyzer_style: Option<ResponseGraphAnalyzerStyle>,
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
     editable: bool,
+    creation_enabled: bool,
+    creation_drag_enabled: bool,
     tab_navigation: bool,
+    backspace_removal: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
 }
@@ -127,20 +158,48 @@ impl ResponseGraph {
             primary: vec![[0.0, 0.5], [1.0, 0.5]],
             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
             analyzer: None,
+            input_analyzer: None,
             nodes: Vec::new(),
         };
         Self {
             id: id.into(),
             model,
             style,
+            analyzer_style: None,
             bounds: None,
             drag: None,
             press: None,
             editable: false,
+            creation_enabled: false,
+            creation_drag_enabled: false,
             tab_navigation: false,
+            backspace_removal: false,
             focus: cx.focus_handle(),
             focus_blur: None,
         }
+    }
+
+    /// Allow blank plot presses to create one owner-defined point. Node hits
+    /// keep select/drag semantics; double-click's second press is suppressed.
+    pub fn set_creation_enabled(&mut self, enabled: bool) {
+        self.creation_enabled = enabled;
+    }
+
+    /// Continue a blank press as Begin/Change/Commit/Release (or Cancel), using
+    /// node_id zero throughout. The owner previews and commits its own stable
+    /// identity; publication cannot redirect an already released pointer.
+    /// Disabled by default so existing click-only owners retain their behavior.
+    pub fn set_creation_drag_enabled(&mut self, enabled: bool) {
+        self.creation_drag_enabled = enabled;
+    }
+
+    /// Capture Backspace only while this graph owns focus. Owners decide how
+    /// an emitted stable node identity maps to their canonical removal command.
+    /// Empty, disabled or held-pointer graphs consume the key without removal.
+    /// Its scoped Escape binding preserves held-pointer cancellation before
+    /// ancestor application actions can handle the key.
+    pub fn set_backspace_removal(&mut self, enabled: bool) {
+        self.backspace_removal = enabled;
     }
 
     /// Opt into rendered-order Tab traversal; unavailable controls are skipped.
@@ -165,11 +224,28 @@ impl ResponseGraph {
         if self.model.primary != model.primary
             || self.model.secondary != model.secondary
             || self.model.analyzer != model.analyzer
+            || self.model.input_analyzer != model.input_analyzer
             || self.model.nodes != model.nodes
             || self.style != style
         {
             self.model = model;
             self.style = style;
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    /// Inject semantic analyzer colors without changing response appearance.
+    pub fn set_analyzer_style(
+        &mut self,
+        style: ResponseGraphAnalyzerStyle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if style.input > 0xffffff || style.output > 0xffffff {
+            return Err("invalid analyzer style");
+        }
+        if self.analyzer_style != Some(style) {
+            self.analyzer_style = Some(style);
             cx.notify();
         }
         Ok(())
@@ -265,6 +341,25 @@ impl ResponseGraph {
             })
             .min_by(|left, right| left.0.total_cmp(&right.0));
         let Some((_, node_id)) = hit else {
+            if self.creation_enabled && event.click_count == 1 {
+                if self.creation_drag_enabled {
+                    self.press = Some(Press {
+                        node_id: 0,
+                        pointer_origin: position,
+                        node_origin: position,
+                        modifiers: event.modifiers,
+                    });
+                    self.focus.focus(window);
+                }
+                cx.emit(ResponseGraphEvent {
+                    phase: ResponseGraphPhase::Create,
+                    node_id: 0,
+                    position,
+                    modifiers: event.modifiers,
+                });
+                cx.stop_propagation();
+                cx.notify();
+            }
             return;
         };
         let node_origin = self
@@ -296,7 +391,28 @@ impl ResponseGraph {
         cx.notify();
     }
 
-    fn pointer_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+    fn cancel_unfocused_creation(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let creating = self.creation_drag_enabled
+            && (self.press.is_some_and(|press| press.node_id == 0)
+                || self.drag.is_some_and(|drag| drag.node_id == 0));
+        if creating && !self.focus.is_focused(window) {
+            // Focus callbacks compare painted focus paths. A press followed by
+            // blur before the next focused paint can coalesce that callback.
+            self.cancel(cx);
+            return true;
+        }
+        false
+    }
+
+    fn pointer_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.cancel_unfocused_creation(window, cx) {
+            return true;
+        }
         let Some(position) = self.normalized_position(event.position) else {
             return false;
         };
@@ -350,9 +466,17 @@ impl ResponseGraph {
         true
     }
 
-    fn pointer_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) -> bool {
+    fn pointer_up(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if event.button != MouseButton::Left {
             return false;
+        }
+        if self.cancel_unfocused_creation(window, cx) {
+            return true;
         }
         let Some(drag) = self.drag.take() else {
             let Some(press) = self.press.take() else {
@@ -399,7 +523,57 @@ impl ResponseGraph {
         true
     }
 
-    fn key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn cancel_pointer(&mut self, _: &CancelPointer, window: &mut Window, cx: &mut Context<Self>) {
+        if self.backspace_removal
+            && self.focus.is_focused(window)
+            && (self.drag.is_some() || self.press.is_some())
+        {
+            cx.stop_propagation();
+            self.cancel(cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn remove_selected(&mut self, _: &RemoveNode, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.backspace_removal || !self.focus.is_focused(window) {
+            return;
+        }
+        cx.stop_propagation();
+        if self.editable
+            && self.drag.is_none()
+            && self.press.is_none()
+            && let Some(node) = self.model.nodes.iter().find(|node| node.selected)
+        {
+            cx.emit(ResponseGraphEvent {
+                phase: ResponseGraphPhase::Remove,
+                node_id: node.id,
+                position: node.position,
+                modifiers: Modifiers::default(),
+            });
+            cx.notify();
+        }
+    }
+
+    fn key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.backspace_removal
+            && self.focus.is_focused(window)
+            && event.keystroke.key == "backspace"
+        {
+            // A focused empty/pending graph must not forward deletion to its
+            // editor's track/clip action. Numeric/text siblings own their keys.
+            cx.stop_propagation();
+            let modifiers = event.keystroke.modifiers;
+            if !modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.shift {
+                self.remove_selected(&RemoveNode, window, cx);
+            }
+            return;
+        }
         if event.keystroke.key == "escape" && (self.drag.is_some() || self.press.is_some()) {
             cx.stop_propagation();
             self.cancel(cx);
@@ -548,9 +722,15 @@ impl Focusable for ResponseGraph {
 
 impl gpui::Render for ResponseGraph {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.cancel_unfocused_creation(window, cx);
         let primary = self.model.primary.clone();
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
+        let input_analyzer = self.model.input_analyzer.clone();
+        let analyzer_style = self.analyzer_style.unwrap_or(ResponseGraphAnalyzerStyle {
+            input: self.style.muted,
+            output: self.style.muted,
+        });
         let nodes = self.model.nodes.clone();
         let style = self.style;
         let bounds_entity = cx.entity();
@@ -565,6 +745,12 @@ impl gpui::Render for ResponseGraph {
             .w_full()
             .h_full()
             .track_focus(&self.focus)
+            .when(self.backspace_removal, |graph| {
+                graph
+                    .key_context("hex_response_graph_remove")
+                    .on_action(cx.listener(Self::remove_selected))
+                    .on_action(cx.listener(Self::cancel_pointer))
+            })
             .on_key_down(cx.listener(Self::key_down))
             .cursor(if self.drag.is_some() {
                 CursorStyle::ResizeColumn
@@ -582,6 +768,8 @@ impl gpui::Render for ResponseGraph {
                             &primary,
                             &secondary,
                             analyzer.as_deref(),
+                            input_analyzer.as_deref(),
+                            analyzer_style,
                             &nodes,
                             style,
                             window,
@@ -602,11 +790,14 @@ impl gpui::Render for ResponseGraph {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_graph(
     bounds: Bounds<Pixels>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
     analyzer: Option<&[[f32; 2]]>,
+    input_analyzer: Option<&[[f32; 2]]>,
+    analyzer_style: ResponseGraphAnalyzerStyle,
     nodes: &[ResponseGraphNode],
     style: ControlStyle,
     window: &mut Window,
@@ -632,14 +823,25 @@ fn paint_graph(
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
     }
+    if let Some(input) = input_analyzer {
+        paint_curve(
+            origin,
+            width,
+            height,
+            input,
+            px(0.7),
+            analyzer_style.input,
+            window,
+        );
+    }
     if let Some(analyzer) = analyzer {
         paint_curve(
             origin,
             width,
             height,
             analyzer,
-            px(0.8),
-            style.muted,
+            px(0.9),
+            analyzer_style.output,
             window,
         );
     }
@@ -767,7 +969,7 @@ impl Element for ResponseGraphCaptureElement {
             if !phase.capture() {
                 return;
             }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, cx));
+            let handled = entity.update(cx, |graph, cx| graph.pointer_move(event, window, cx));
             if handled {
                 cx.stop_propagation();
                 window.refresh();
@@ -778,7 +980,7 @@ impl Element for ResponseGraphCaptureElement {
             if !phase.capture() {
                 return;
             }
-            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, cx));
+            let handled = entity.update(cx, |graph, cx| graph.pointer_up(event, window, cx));
             if handled {
                 cx.stop_propagation();
                 window.refresh();
@@ -796,6 +998,7 @@ mod tests {
             primary: vec![[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]],
             secondary: vec![[0.0, 0.1], [0.5, 0.5], [1.0, 0.1]],
             analyzer: None,
+            input_analyzer: None,
             nodes: vec![ResponseGraphNode {
                 id: 3,
                 position: [0.5, 0.5],
@@ -813,6 +1016,11 @@ mod tests {
         assert!(with_analyzer.validate().is_ok());
         with_analyzer.analyzer.as_mut().unwrap()[1][1] = f32::NAN;
         assert!(with_analyzer.validate().is_err());
+        let mut with_input = model();
+        with_input.input_analyzer = Some(vec![[0.0, 0.3], [1.0, 0.7]]);
+        assert!(with_input.validate().is_ok());
+        with_input.input_analyzer.as_mut().unwrap()[0][1] = f32::INFINITY;
+        assert!(with_input.validate().is_err());
         let mut invalid = model();
         invalid.nodes[0].position[0] = f32::NAN;
         assert!(invalid.validate().is_err());

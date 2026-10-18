@@ -101,6 +101,11 @@ fn every_mode_split_recombines_exactly_with_root_pitch_phase_envelope_fades_and_
             tail: BeatsTail::Alternating,
             decay: 75,
         }),
+        Some(WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        }),
         Some(WarpMode::Tones { grain_ms: 40 }),
         Some(WarpMode::Texture {
             grain_ms: 40,
@@ -506,6 +511,15 @@ fn neutral_faded_streamed_commands_move_and_trim_match_resident_and_transform_fa
     );
     assert!(failure.is_err());
     assert_eq!(editor.project(), &before);
+    let failure = editor.execute_prepared(
+        Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 2000 },
+        },
+        |candidate| crate::compile::project_with_prepared_audio_sources(candidate, &sources, 1),
+    );
+    assert!(failure.is_err());
+    assert_eq!(editor.project(), &before);
 }
 #[test]
 fn resident_beat_anchor_without_warp_has_exact_audible_waveform_root() {
@@ -751,4 +765,553 @@ fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
     assert_eq!(budget.used(), 64);
     drop(source);
     assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn nested_audio_events_are_exact_through_splits_overwrite_silence_seek_and_blocks() {
+    use hex_project::AudioEventEdit;
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 2000 },
+        })
+        .unwrap();
+    let split = prepare(&editor, &media, &context);
+    assert_eq!(render(&split, 0, 8000, 1), baseline);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Move {
+                event: 1,
+                start: 4000,
+            },
+        })
+        .unwrap();
+    let revision = prepare(&editor, &media, &context);
+    let actual = render(&revision, 0, 8000, 257);
+    let mut expected = vec![[0.0; 2]; 8000];
+    expected[2000..4000].copy_from_slice(&baseline[2000..4000]);
+    expected[4000..6000].copy_from_slice(&baseline[0..2000]);
+    expected[6000..8000].copy_from_slice(&baseline[6000..8000]);
+    assert_eq!(actual, expected);
+    assert_eq!(render(&revision, 3993, 2100, 17), expected[3993..6093]);
+    editor
+        .execute(Command::SplitClip { clip, frame: 5100 })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 127),
+        expected
+    );
+}
+
+#[test]
+fn musical_event_split_preserves_every_sample_in_all_existing_warp_modes() {
+    for mode in [
+        None,
+        Some(WarpMode::RePitch),
+        Some(WarpMode::Tones { grain_ms: 32 }),
+        Some(WarpMode::Complex),
+    ] {
+        let (mut editor, clip, media) = fixture(true);
+        editor
+            .execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        if let Some(mode) = mode {
+            let settings = default_audio_warp(
+                editor.project().clip(clip).unwrap(),
+                editor.project().tempo_map(),
+                mode,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        }
+        let context = AudioTransformPreparation::default();
+        let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 173);
+        let root = editor.project().clip(clip).unwrap().audio_event_root();
+        let at = (root.view_start + root.view_end) / 2;
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::Split { at },
+            })
+            .unwrap();
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 8000, 257),
+            baseline
+        );
+    }
+}
+
+#[test]
+fn editing_the_visible_event_after_an_outer_cut_preserves_its_sibling_and_hidden_source() {
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 2000 },
+        })
+        .unwrap();
+    let Created::Clip(right) = editor
+        .execute(Command::SplitClip { clip, frame: 4000 })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let events = editor
+        .project()
+        .clip(right)
+        .unwrap()
+        .editable_audio_events()
+        .unwrap();
+    let visible = events.events.iter().find(|e| e.start == 4000).unwrap();
+    assert_eq!(visible.end, 8000);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip: right,
+            operation: hex_project::AudioEventEdit::Trim {
+                event: visible.id,
+                start: 4500,
+                end: 7500,
+            },
+        })
+        .unwrap();
+    let mut expected = baseline.clone();
+    expected[4000..4500].fill([0.0; 2]);
+    expected[7500..8000].fill([0.0; 2]);
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 193),
+        expected
+    );
+    assert_eq!(
+        editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_events()
+            .events
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn event_scratch_reclaims_unused_committed_and_pending_cache() {
+    for pending in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        // Each root is 64000 bytes: old cached + output fits, scratch needs eviction.
+        let context = isolated(128_000, 256_000, 8);
+        let check = || {
+            drop(prepare(&editor, &media, &context));
+            let mut next = Editor::new(editor.project().clone(), 8).unwrap();
+            next.execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::Delete {
+                    start: 2000,
+                    end: 4000,
+                },
+            })
+            .unwrap();
+            let accepted = crate::PreparedRevision::prepare_with_audio_transforms(
+                next.project(),
+                &media,
+                Arc::new(crate::SineTable::new()),
+                None,
+                &context,
+            )
+            .expect("scratch can reclaim an inaudible old transform");
+            assert_eq!(context.retained_pcm_bytes(), 64_000);
+            assert!(
+                render(&accepted, 2000, 2000, 127)
+                    .iter()
+                    .all(|x| *x == [0.0, 0.0])
+            );
+            Ok(())
+        };
+        if pending {
+            context.transaction(check).unwrap();
+        } else {
+            check().unwrap();
+        }
+    }
+}
+
+#[test]
+fn shaped_outer_fades_follow_moved_event_output_coordinates_and_recursive_splits() {
+    use hex_project::{AudioEventEdit, ClipFade};
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 2000 },
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Move {
+                event: 1,
+                start: 4000,
+            },
+        })
+        .unwrap();
+    let fade = ClipFade::new(8000, 0, 2300, 2900)
+        .unwrap()
+        .with_shape(100, 200, 600, -500)
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope { clip, fade })
+        .unwrap();
+    let mut expected = vec![[0.0; 2]; 8000];
+    expected[2000..4000].copy_from_slice(&baseline[2000..4000]);
+    expected[4000..6000].copy_from_slice(&baseline[0..2000]);
+    expected[6000..8000].copy_from_slice(&baseline[6000..8000]);
+    for (index, frame) in expected.iter_mut().enumerate() {
+        let gain = fade.gain_at(index as u64);
+        frame[0] *= gain;
+        frame[1] *= gain;
+    }
+    let prepared = prepare(&editor, &media, &context);
+    assert_eq!(render(&prepared, 0, 8000, 257), expected);
+    assert_eq!(render(&prepared, 3993, 2100, 17), expected[3993..6093]);
+    let Created::Clip(right) = editor
+        .execute(Command::SplitClip { clip, frame: 5100 })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    editor
+        .execute(Command::SplitClip {
+            clip: right,
+            frame: 6500,
+        })
+        .unwrap();
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 127),
+        expected
+    );
+    assert!(editor.undo());
+    assert!(editor.undo());
+    assert!(editor.redo());
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 1),
+        expected
+    );
+}
+
+#[test]
+fn endpoint_only_fades_prepare_and_play_in_output_coordinates() {
+    for (start, end) in [(100, 0), (0, 200), (100, 200)] {
+        let (mut editor, clip, media) = fixture(false);
+        let asset = editor.project().clip(clip).unwrap().asset();
+        let fade = hex_project::ClipFade::new(8000, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 500, -500)
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        assert!(editor.project().clip(clip).unwrap().audio_edit().is_none());
+        let mut expected = media[&asset].frames().to_vec();
+        expected[..start as usize].fill([0.0; 2]);
+        expected[8000 - end as usize..].fill([0.0; 2]);
+        let prepared = prepare(&editor, &media, &AudioTransformPreparation::default());
+        assert_eq!(render(&prepared, 0, 8000, 127), expected);
+        assert_eq!(render(&prepared, 91, 500, 1), expected[91..591]);
+    }
+}
+
+#[test]
+fn endpoint_only_fades_on_edited_streams_refuse_before_commit_and_preserve_history() {
+    for (start, end) in [(100, 0), (0, 200), (100, 200)] {
+        let (mut editor, clip, _) = fixture(false);
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 1 })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 0 })
+            .unwrap();
+        assert!(editor.project().clip(clip).unwrap().audio_edit().is_some());
+        let asset = editor.project().clip(clip).unwrap().asset();
+        let metadata = Arc::new(
+            crate::StreamedSourceMetadata::new(
+                crate::StreamSourceKey::new(1, asset),
+                16_000,
+                16_000,
+                8000,
+                8000,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let sources = BTreeMap::from([(
+            asset,
+            crate::compile::PreparedAudioSource::Streamed(metadata),
+        )]);
+        crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1).unwrap();
+        let before = editor.project().clone();
+        // Leave a real redo branch; refusal must preserve both history stacks.
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track: before.tracks()[0].id(),
+                start: 300,
+            })
+            .unwrap();
+        let moved = editor.project().clone();
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        let fade = hex_project::ClipFade::new(8000, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 600, -500)
+            .unwrap();
+        let failure = editor
+            .execute_prepared(Command::SetClipFadeEnvelope { clip, fade }, |candidate| {
+                crate::compile::project_with_prepared_audio_sources(candidate, &sources, 1)
+            });
+        let Err(error) = failure else {
+            panic!("edited streamed fade must refuse before commit")
+        };
+        assert!(error.0.contains("resident audio"), "{error}");
+        assert!(error.0.contains("fade"), "{error}");
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &moved);
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.undo());
+        assert_eq!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            1
+        );
+    }
+}
+
+#[test]
+fn endpoint_only_fades_on_unedited_streams_preserve_silence_splits_and_seeks() {
+    struct Pages<'a> {
+        key: crate::StreamSourceKey,
+        frames: &'a [crate::Frame],
+    }
+    impl crate::MediaPages for Pages<'_> {
+        fn page(
+            &mut self,
+            key: crate::StreamSourceKey,
+            index: u64,
+        ) -> Option<crate::BorrowedMediaPage<'_>> {
+            if key != self.key {
+                return None;
+            }
+            let start = usize::try_from(index)
+                .ok()?
+                .checked_mul(crate::STREAM_PAGE_FRAMES)?;
+            let end = start
+                .checked_add(crate::STREAM_PAGE_FRAMES)?
+                .min(self.frames.len());
+            Some(crate::BorrowedMediaPage {
+                page_index: index,
+                frames: self.frames.get(start..end)?,
+            })
+        }
+        fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {
+            panic!("every fixture page is resident")
+        }
+    }
+    for (start, end) in [(1000, 0), (0, 1200), (1000, 1200)] {
+        let (mut editor, clip, mut media) = fixture(false);
+        let asset = editor.project().clip(clip).unwrap().asset();
+        media.insert(asset, Audio::new(16_000, vec![[0.25, -0.5]; 8000]).unwrap());
+        let fade = hex_project::ClipFade::new(8000, 0, 0, 0)
+            .unwrap()
+            .with_shape(start, end, 600, -500)
+            .unwrap();
+        editor
+            .execute(Command::SetClipFadeEnvelope { clip, fade })
+            .unwrap();
+        assert!(editor.project().clip(clip).unwrap().audio_edit().is_none());
+        let key = crate::StreamSourceKey::new(1, asset);
+        let metadata = Arc::new(
+            crate::StreamedSourceMetadata::new(
+                key,
+                16_000,
+                16_000,
+                8000,
+                8000,
+                hex_project::IDENTITY_CONVERSION,
+                [7; 32],
+            )
+            .unwrap(),
+        );
+        let sources = BTreeMap::from([(
+            asset,
+            crate::compile::PreparedAudioSource::Streamed(metadata),
+        )]);
+        let mut expected = vec![[0.25, -0.5]; 8000];
+        expected[..start as usize].fill([0.0; 2]);
+        expected[8000 - end as usize..].fill([0.0; 2]);
+        let mut pages = Pages {
+            key,
+            frames: media[&asset].frames(),
+        };
+        for split in [false, true] {
+            if split {
+                editor
+                    .execute(Command::SplitClip { clip, frame: 2000 })
+                    .unwrap();
+            }
+            let streamed =
+                crate::compile::project_with_prepared_audio_sources(editor.project(), &sources, 1)
+                    .unwrap();
+            for block in [1, 127] {
+                let mut renderer = crate::Renderer::new(&streamed);
+                renderer.play();
+                let mut actual = vec![[0.0; 2]; 8000];
+                for chunk in actual.chunks_mut(block) {
+                    renderer.render_with_pages(chunk, &mut pages).unwrap();
+                }
+                assert_eq!(
+                    actual, expected,
+                    "endpoints={start}/{end}, split={split}, block={block}"
+                );
+                renderer.seek(800);
+                let mut seek = vec![[0.0; 2]; 3000];
+                renderer.render_with_pages(&mut seek, &mut pages).unwrap();
+                assert_eq!(seek, expected[800..3800]);
+            }
+        }
+    }
+}
+
+#[test]
+fn sample_bpm_and_edge_stretch_keep_pcm_pitch_and_partition_seek_consistency() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(
+            16_000,
+            (0..8_000)
+                .map(|i| {
+                    let phase = i as f64 / 16_000.0 * std::f64::consts::TAU;
+                    [
+                        (phase * 400.0).sin() as f32 * 0.4,
+                        (phase * 800.0).sin() as f32 * 0.3,
+                    ]
+                })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let warp = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(warp),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipSampleBpm {
+            clip,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(editor.project().clip(clip).unwrap().duration(), 4_000);
+    for length in [4_000, 6_000] {
+        if length == 6_000 {
+            editor
+                .execute(Command::StretchAudioClipEdge {
+                    clip,
+                    edge: hex_project::TrimEdge::Right,
+                    frame: length,
+                })
+                .unwrap();
+        }
+        let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+        let revision = prepare(&editor, &media, &context);
+        let pcm = render(&revision, 0, length as usize, 127);
+        assert_eq!(pcm, render(&revision, 0, length as usize, 1));
+        assert_eq!(&pcm[719..], render(&revision, 719, pcm.len() - 719, 257));
+        let signal = &pcm[500..pcm.len() - 500];
+        for (channel, hz) in [(0, 400.0), (1, 800.0)] {
+            let crossings = signal
+                .windows(2)
+                .filter(|pair| pair[0][channel] <= 0.0 && pair[1][channel] > 0.0)
+                .count();
+            let measured = crossings as f64 * 16_000.0 / signal.len() as f64;
+            assert!(
+                (measured - hz).abs() < hz * 0.04,
+                "duration{length} channel{channel} measured{measured}"
+            );
+        }
+    }
 }

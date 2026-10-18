@@ -300,7 +300,11 @@ impl MutableInstrumentTrackRuntime {
         self.pair.max_events_per_block() >= MAX_MUTABLE_EVENTS_PER_QUERY
             && self
                 .pair
-                .preflight_event_batch(&crate::live_expression::Snapshot::default().events(), 1)
+                .preflight_event_batch(
+                    &crate::live_expression::Snapshot::default().events(),
+                    1,
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                )
                 .is_ok()
     }
 
@@ -732,7 +736,7 @@ impl MutableInstrumentTrackRuntime {
             (offset, is_on, occurrence_id)
         });
         self.pair
-            .process_block_with_clock(events, frames, clock)
+            .process_block_with_clock(events, frames, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
             .map_err(map_runtime_error)
     }
 
@@ -964,8 +968,7 @@ pub(crate) fn validate_prepared_graph_budget(
             effect_bytes = effect_bytes
                 .checked_add(
                     definition
-                        .declared_runtime_bytes()
-                        .checked_mul(2)
+                        .declared_pair_bytes()
                         .ok_or(MutableInstrumentRuntimeError::Budget)?,
                 )
                 .ok_or(MutableInstrumentRuntimeError::Budget)?;
