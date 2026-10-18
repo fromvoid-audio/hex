@@ -932,3 +932,14 @@ zero total/net allocations and frees, then independently verify selected-slice
 PCM and end silence. This is preparation work, not an expanded callback or
 publication certificate. Schema6, prepared/runtime layouts, actual binding
 refusals and the public registry gate remain unchanged.
+
+The complete compiler now finishes fallible Track gain-curve preparation in the
+existing mix preflight before final shared chain/meter assembly. The same field
+assembler moves the prepared envelope, including its original knot backing,
+with no new shared child birth or owning clone. Gain preparation still allocates
+its real knot/touch Vecs; those locals and their old/new overlap must remain in
+the aggregate reservation and immediate-custody work. The legacy compiler still
+constructs its unqualified shared children. This change does not select paired
+births, establish complete compiler failure custody or open native admission.
+Independent gain automation/tempo/partition/hybrid/send/tail tests and the actual
+Mono/Stereo Sampler revision host regression cover the changed compiler order.

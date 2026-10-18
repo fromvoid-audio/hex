@@ -1,6 +1,6 @@
 //! Control-side compilation of a canonical edit snapshot into offline playback.
 //! This allocates and retains PCM references; it must never run in a callback.
-use crate::{Audio, Invalid, Project, StreamedSourceMetadata, Track};
+use crate::{Audio, Invalid, Project, StreamedSourceMetadata};
 use hex_project::{Asset, AssetId};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -614,32 +614,40 @@ fn compile_project_inner<'a>(
                 gain: send.gain(),
             });
         }
+        // All scalar/curve refusal happens before final shared child births.
+        // The closed compiler can supply its original paired chain/meter to
+        // this same allocation-free assembly, without replacing legacy births.
+        let track_plan = crate::track_output::CompiledTrackMix::prepare(
+            track.gain(),
+            muted,
+            track.balance(),
+            track.instrument_position().unwrap_or(0),
+            effect_plan.fused,
+            effect_plan.prefix,
+            effect_plan.suffix,
+            !device_chain.is_empty(),
+        )?
+        .prepare_gain_envelope(
+            track.gain_lane(),
+            snapshot.tempo_map(),
+            track.balance(),
+            track.gain(),
+        )?;
         tracks.push(
-            Track::with_audio_instrument_and_effects(
-                clips,
-                track.gain(),
-                muted,
-                track.balance(),
-                instrument,
-                track.instrument_position().unwrap_or(0),
-                effect_plan.fused,
-                effect_plan.prefix,
-                effect_plan.suffix,
-                device_chain,
-            )?
-            .with_track_id(track.id())
-            .with_midi_source_index((source_index != track_index).then_some(source_index))
-            .with_instrument_config(track.instrument())
-            .with_tuning_identity(shared_contexts.tuning_identity())
-            .with_instrument_latency(instrument_latency, instrument_runtime_latency)
-            .with_mutable_instrument(mutable_instrument, mutable_looping_source)
-            .with_sends(sends)
-            .with_gain_envelope(
-                track.gain_lane(),
-                snapshot.tempo_map(),
-                track.balance(),
-                track.gain(),
-            )?,
+            track_plan
+                .assemble(
+                    clips,
+                    instrument,
+                    Arc::from(device_chain),
+                    Default::default(),
+                )
+                .with_track_id(track.id())
+                .with_midi_source_index((source_index != track_index).then_some(source_index))
+                .with_instrument_config(track.instrument())
+                .with_tuning_identity(shared_contexts.tuning_identity())
+                .with_instrument_latency(instrument_latency, instrument_runtime_latency)
+                .with_mutable_instrument(mutable_instrument, mutable_looping_source)
+                .with_sends(sends),
         );
     }
     let mut return_buses = Vec::new();

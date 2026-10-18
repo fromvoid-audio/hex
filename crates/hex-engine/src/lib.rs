@@ -1061,37 +1061,6 @@ impl Track {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn with_audio_instrument_and_effects(
-        clips: Vec<Clip>,
-        gain: f32,
-        muted: bool,
-        balance: f32,
-        instrument: Option<InstrumentTrack>,
-        instrument_position: usize,
-        effects: Option<hex_lattice::StereoMatrix>,
-        ordered_prefix: Option<hex_lattice::StereoMatrix>,
-        ordered_suffix: Option<hex_lattice::StereoMatrix>,
-        device_chain: Vec<crate::PreparedEffectInstance>,
-    ) -> Result<Self, Invalid> {
-        let plan = track_output::CompiledTrackMix::prepare(
-            gain,
-            muted,
-            balance,
-            instrument_position,
-            effects,
-            ordered_prefix,
-            ordered_suffix,
-            !device_chain.is_empty(),
-        )?;
-        Ok(plan.assemble(
-            clips,
-            instrument,
-            std::sync::Arc::from(device_chain),
-            Default::default(),
-        ))
-    }
-
     pub(crate) fn with_instrument_config(
         mut self,
         instrument: Option<&hex_project::Device>,
@@ -1278,22 +1247,6 @@ impl Track {
         }
     }
 
-    pub(crate) fn with_gain_envelope(
-        mut self,
-        lane: &hex_project::GainLane,
-        tempo: &hex_project::TempoMap,
-        balance: f32,
-        fallback: f32,
-    ) -> Result<Self, Invalid> {
-        let neutral =
-            PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
-        self.gain_envelope =
-            gain_envelope::PreparedGainEnvelope::prepare(lane, tempo, neutral, fallback)?;
-        if self.gain_envelope.is_some() {
-            self.source_mix = PreparedTrackMix::identity();
-        }
-        Ok(self)
-    }
     /// Read-only prepared curve metadata. Empty means static fallback; this is not an applied-value acknowledgment.
     pub fn gain_envelope_knots(&self) -> &[GainEnvelopeKnot] {
         self.gain_envelope

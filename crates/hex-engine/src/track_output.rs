@@ -1,4 +1,4 @@
-//! Shared scalar preflight and allocation-free Track field assembly.
+//! Shared mix/curve preflight and allocation-free Track field assembly.
 //!
 //! This carries no constructor provenance or storage permit. The closed native
 //! caller must retain original paired child declarations in actual custody;
@@ -13,6 +13,7 @@ pub(crate) struct CompiledTrackMix {
     instrument_position: usize,
     ordered_prefix: Option<StereoMatrix>,
     ordered_suffix: Option<StereoMatrix>,
+    gain_envelope: Option<crate::gain_envelope::PreparedGainEnvelope>,
 }
 impl CompiledTrackMix {
     #[allow(clippy::too_many_arguments)]
@@ -42,7 +43,28 @@ impl CompiledTrackMix {
             instrument_position,
             ordered_prefix,
             ordered_suffix,
+            gain_envelope: None,
         })
+    }
+    /// Finish fallible curve preparation before final Track child ownership
+    /// moves. Gain Vec backings are real construction allocations, retained by
+    /// this plan until assembly. No shared meter/chain birth, owning clone,
+    /// provider callback or publication authority is introduced here.
+    pub(crate) fn prepare_gain_envelope(
+        mut self,
+        lane: &hex_project::GainLane,
+        tempo: &hex_project::TempoMap,
+        balance: f32,
+        fallback: f32,
+    ) -> Result<Self, Invalid> {
+        let neutral =
+            PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
+        self.gain_envelope =
+            crate::gain_envelope::PreparedGainEnvelope::prepare(lane, tempo, neutral, fallback)?;
+        if self.gain_envelope.is_some() {
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        Ok(self)
     }
     /// Move the actual supplied children once. No allocation, cloning, provider
     /// call, qualification, refusal or replacement of a just-created child.
@@ -59,13 +81,14 @@ impl CompiledTrackMix {
             instrument_position,
             ordered_prefix,
             ordered_suffix,
+            gain_envelope,
         } = self;
         Track {
             track_id: None,
             clips,
             mix,
             source_mix,
-            gain_envelope: None,
+            gain_envelope,
             instrument,
             instrument_position,
             ordered_prefix,
@@ -92,6 +115,64 @@ impl CompiledTrackMix {
 mod tests {
     use super::*;
     use crate::owned_shared::OwnedShared;
+    #[test]
+    fn preflighted_track_gain_moves_prepared_backing_without_shared_birth_or_clone() {
+        use hex_project::{BeatTime, Command, Created, Editor, GainInterpolation, GainPoint};
+        let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(id) = editor
+            .execute(Command::AddMidiTrack {
+                name: "gain".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track: id,
+                points: vec![GainPoint {
+                    beat: BeatTime::ZERO,
+                    gain: 0.75,
+                    outgoing: GainInterpolation::Step,
+                }],
+            })
+            .unwrap();
+        let source = editor.project().track(id).unwrap();
+        let chain = OwnedShared::<[PreparedEffectInstance]>::new_owned_empty_slice();
+        let meter = OwnedShared::new_owned(DeviceMeter::default());
+        let (chain, chain_birth) = chain.into_paired_parts_on_control();
+        let (meter, meter_birth) = meter.into_paired_parts_on_control();
+        crate::owned_shared::reset_birth_count();
+        crate::owned_shared::reset_clone_count();
+        let plan = CompiledTrackMix::prepare(0.4, false, 0.25, 0, None, None, None, false)
+            .unwrap()
+            .prepare_gain_envelope(source.gain_lane(), editor.project().tempo_map(), 0.25, 0.4)
+            .unwrap();
+        let knots = plan.gain_envelope.as_ref().unwrap().knots().as_ptr();
+        let track = plan.assemble(Vec::new(), None, chain, meter);
+        assert_eq!(track.gain_envelope_knots().as_ptr(), knots);
+        assert_eq!(track.prepared_gain_at(0), Some(0.75));
+        assert_eq!(track.source_mix.apply_frame([1.0, -1.0]), [1.0, -1.0]);
+        assert!(chain_birth.parts(&track.device_chain).is_some());
+        assert!(meter_birth.parts(&track.instrument_meter).is_some());
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        assert!(
+            CompiledTrackMix::prepare(0.4, false, 0.25, 0, None, None, None, false)
+                .unwrap()
+                .prepare_gain_envelope(
+                    source.gain_lane(),
+                    editor.project().tempo_map(),
+                    0.25,
+                    f32::NAN
+                )
+                .is_err()
+        );
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        eprintln!(
+            "SUPPORTED preflighted gain actual backing/paired chain+meter move and invalid fallback refusal"
+        );
+    }
     #[test]
     fn preflighted_track_assembly_moves_actual_paired_children_without_replacement() {
         if !crate::audio_storage_constructor_layout_supported() {
