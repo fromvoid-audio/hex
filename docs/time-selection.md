@@ -284,3 +284,18 @@ review build `hex-time-gesture-20261009.app` and authorized PR #17 to merge.
 It is merged as `a250f83`; exact source `25b797e` passed all 14 local CI steps.
 Pulse ticket 38 records this completion. This establishes the reviewed interaction
 acceptance, not physical input/paint timing measurements.
+
+Command-D in the focused Arrangement duplicates a positive time selection at its
+exclusive end, using the same atomic `CopyTimeRangeTo` edit as Option-drag time
+copy. This is normal overwrite paste, not ripple insertion: destination contents
+inside the copied rectangle are replaced, while copied gaps and partial source
+windows follow the existing time-chunk rules. Source rows are the existing
+contiguous time-selection rectangle; the main-track proxy scopes all Arrangement
+tracks. Audio and MIDI fragments are supported; unsupported automation transforms
+refuse through the canonical edit. The clipboard is unchanged.
+
+After successful acknowledgement the selected rectangle advances to the copy,
+so another press repeats it. Pending edits must finish before another duplicate;
+overflow and invalid ranges make no partial edit. MIDI/detail/session and text or
+numeric focus retain their own commands. Without an active Arrangement range,
+the existing clip/scene duplication behavior remains.
