@@ -28,5 +28,6 @@ name = "playback_stack"
 required-features = ["instrument-test-support"]
 
 [dev-dependencies]
+allocation-counter = "=0.8.1"
 hex-tuning = { path = "../hex-tuning" }
 hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

@@ -11,7 +11,7 @@ pub(crate) fn visit<'a>(
     ledger: &mut AudioRootStorageLedger<'a>,
     role: AudioStorageRole,
 ) -> Result<(), AudioStorageError> {
-    if ledger.contains_root(bank) {
+    if ledger.skip_observed_root(bank) {
         return Ok(());
     }
     ledger.root(bank, role)?;
@@ -21,14 +21,8 @@ pub(crate) fn visit_contents<'a>(
     bank: &'a OwnedShared<PreparedMidiNoteBank>,
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
-    let visited = ledger.contains_shared_storage(bank.arc());
-    ledger.shared(
-        bank.arc(),
-        bank.parts(),
-        Owner::exclusive(bank),
-        crate::audio_only_inputs::handle()?,
-        None,
-    )?;
+    let visited = ledger.skip_observed_shared_contents(bank.arc());
+    ledger.observe_shared(bank.arc(), bank.parts(), Owner::exclusive(bank))?;
     if visited {
         return Ok(());
     }

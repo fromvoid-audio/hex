@@ -295,7 +295,7 @@ impl PreviewCustody {
         if let Some(owner) = owner {
             // Re-visiting this actual physical field is not another owning
             // alias. Keep shared()'s standalone duplicate-root refusal intact.
-            if !l.contains_shared_field(owner) {
+            if !l.skip_observed_shared_field(owner) {
                 l.shared(
                     owner.arc(),
                     owner.parts(),

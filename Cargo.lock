@@ -2639,6 +2639,7 @@ version = "0.1.0"
 name = "hex-engine"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "hex-devices",
  "hex-lattice",
  "hex-lattice-contract",

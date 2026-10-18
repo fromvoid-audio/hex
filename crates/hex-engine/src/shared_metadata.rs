@@ -148,16 +148,10 @@ impl<'a> crate::AudioRootStorageLedger<'a> {
         use crate::audio_storage::Owner;
         self.mutate(|ledger| {
             let field = Owner::exclusive(value);
-            if ledger.contains_shared_field(value) {
+            if ledger.skip_observed_shared_field(value) {
                 return Ok(());
             }
-            ledger.shared(
-                value.owner.arc(),
-                value.owner.parts(),
-                field,
-                crate::audio_only_inputs::handle()?,
-                None,
-            )
+            ledger.observe_shared(value.owner.arc(), value.owner.parts(), field)
         })
     }
     /// Actual requested backing for a borrowed Vec field. Its inline header

@@ -31,13 +31,7 @@ impl PreparedTrackRuntimeFactory {
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }
-                ledger.shared(
-                    factory.arc(),
-                    factory.parts(),
-                    Owner::exclusive(factory),
-                    crate::audio_only_inputs::handle()?,
-                    None,
-                )
+                ledger.observe_shared(factory.arc(), factory.parts(), Owner::exclusive(factory))
             }
         }
     }

@@ -12,18 +12,12 @@ fn visit_owned<'a, T: 'static>(
     role: AudioStorageRole,
     contents: impl FnOnce(&'a T, &mut AudioRootStorageLedger<'a>) -> Result<(), AudioStorageError>,
 ) -> Result<(), AudioStorageError> {
-    if ledger.contains_root(owner) {
+    if ledger.skip_observed_root(owner) {
         return Ok(());
     }
     ledger.root(owner, role)?;
-    let visited = ledger.contains_shared_storage(owner.arc());
-    ledger.shared(
-        owner.arc(),
-        owner.parts(),
-        Owner::exclusive(owner),
-        crate::audio_only_inputs::handle()?,
-        None,
-    )?;
+    let visited = ledger.skip_observed_shared_contents(owner.arc());
+    ledger.observe_shared(owner.arc(), owner.parts(), Owner::exclusive(owner))?;
     if !visited {
         contents(owner.as_ref(), ledger)?;
     }
@@ -92,7 +86,7 @@ pub(crate) fn visit_arrangement_instrument<'a>(
     ledger: &mut AudioRootStorageLedger<'a>,
     role: AudioStorageRole,
 ) -> Result<(), AudioStorageError> {
-    if ledger.contains_root(instrument) {
+    if ledger.skip_observed_root(instrument) {
         return Ok(());
     }
     ledger.root(instrument, role)?;

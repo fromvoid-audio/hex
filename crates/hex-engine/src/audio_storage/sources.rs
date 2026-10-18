@@ -14,7 +14,7 @@ impl<'a> AudioRootStorageLedger<'a> {
                 .native_handle
                 .map(|h| h.get())
                 .ok_or(AudioStorageError::UnknownStorage)?;
-            if ledger.contains_shared_field(audio) {
+            if ledger.skip_observed_shared_field(audio) {
                 return Ok(());
             }
             ledger.resident(audio, Owner::exclusive(audio), handle)
@@ -30,7 +30,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| {
             crate::audio_input_storage::parts(source)?;
-            if ledger.contains_shared_field(source) {
+            if ledger.skip_observed_shared_field(source) {
                 return Ok(());
             }
             ledger.source(source)

@@ -312,7 +312,7 @@ impl UtilityCustody {
                     .checked_add(pair.payload.1)
                     .ok_or(AudioStorageError::Overflow)?,
             )?;
-            if !l.has_canonical_state_field(state, 0) {
+            if !l.skip_observed_canonical_state_field(state, 0) {
                 l.handle_at(
                     Owner::device_payload(state),
                     Owner::exclusive(state.as_ref()),

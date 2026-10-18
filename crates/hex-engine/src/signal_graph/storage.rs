@@ -7,17 +7,11 @@ pub(crate) fn visit<'a>(
     graph: &'a OwnedShared<SignalGraph>,
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
-    if ledger.contains_shared_field(graph) {
+    if ledger.skip_observed_shared_field(graph) {
         return Ok(());
     }
-    let visited = ledger.contains_shared_storage(graph.arc());
-    ledger.shared(
-        graph.arc(),
-        graph.parts(),
-        StorageOwner::exclusive(graph),
-        crate::audio_only_inputs::handle()?,
-        None,
-    )?;
+    let visited = ledger.skip_observed_shared_contents(graph.arc());
+    ledger.observe_shared(graph.arc(), graph.parts(), StorageOwner::exclusive(graph))?;
     if visited {
         return Ok(());
     }

@@ -5066,3 +5066,13 @@ strict Clippy pass; no native publication/sampler registration is newly admitted
 The original Session refusal fixture had an old caller alias; rebuilding a valid
 mono bank fixed that test setup. Media source-plan loading, complete all-role
 union and remaining host wiring/retirement still continue in canonical389.
+
+- 2026-10-18 — Pulse2789/PR395 partial private arithmetic ledger checkpoint:
+  allocation-free unpruned traversal, observation-ID routing and bounded borrowed
+  DATA replay; actual bank/history/context guard-release and original-ledger
+  accounting oracles. Storage-focused tests67 positive, strict Engine Clippy
+  passed; known architecture guard refuses the proposed Engine dev-only pinned
+  allocator counter. Separate policy proposal remains unapplied. Closed
+  aggregate pre-selector construction/custody and usable Sampler remain open;
+  no full CI/native/registration claim. Original negatives and910 graph evidence
+  retained; no Compressor/Beats/model/native writes.

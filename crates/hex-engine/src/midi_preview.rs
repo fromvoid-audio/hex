@@ -53,13 +53,11 @@ pub fn visit_shared_midi_preview_storage_on_control<'a>(
     ledger.borrow_shared_metadata_body_on_control(owner)?;
     ledger.mutate(|ledger| {
         let MidiArrangementPreview { clips } = owner.as_ref();
-        if !ledger.contains_shared_field(clips) {
-            ledger.shared(
+        if !ledger.skip_observed_shared_field(clips) {
+            ledger.observe_shared(
                 clips.arc(),
                 clips.parts(),
                 crate::audio_storage::Owner::exclusive(clips),
-                crate::audio_only_inputs::handle()?,
-                None,
             )?;
         }
         for MidiClipPreview {

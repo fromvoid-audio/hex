@@ -57,7 +57,7 @@ impl DeviceResourceBank {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        if ledger.contains_shared_field(self) {
+        if ledger.skip_observed_shared_field(self) {
             return Ok(());
         }
         visit(
@@ -197,7 +197,7 @@ fn visit<'a>(
     handle: u64,
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
-    let visited = ledger.contains_shared_storage(root.arc());
+    let visited = ledger.skip_observed_shared_contents(root.arc());
     ledger.shared(root.arc(), root.parts(), field, handle, None)?;
     if !visited {
         let ResourceRoot { bank, catalog } = root.as_ref();
@@ -216,7 +216,7 @@ impl<'a> AudioRootStorageLedger<'a> {
         lease: &'a OriginalSourceLease,
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| {
-            if ledger.contains_shared_field(lease) {
+            if ledger.skip_observed_shared_field(lease) {
                 return Ok(());
             }
             visit(
@@ -461,7 +461,7 @@ impl DeviceResourceConfiguration {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        let visited = ledger.contains_shared_storage(self.lease.arc());
+        let visited = ledger.skip_observed_shared_contents(self.lease.arc());
         ledger.shared(
             self.lease.arc(),
             self.lease.parts(),

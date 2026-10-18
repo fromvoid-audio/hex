@@ -1261,3 +1261,39 @@ The ordinary unsupported-target legacy compiler remains unqualified and keeps
 its behavior; the future private aggregate operation must call the fallible
 cost helper directly and refuse unsupported construction layouts. No selected
 input union, guarded bootstrap or native admission follows from this local cost.
+
+The next private ledger checkpoint implements an explicit arithmetic traversal
+mode in the existing opaque inventory. It does not produce a public summary,
+closed-handle result, permit or admission. Observation-only handles are counted
+without minting global IDs; existing constructor identities remain validated.
+All audited root/field/contents skip policies retain descendants during
+arithmetic traversal. The same actual leaf validators run in both modes.
+The empty-Sampler eligibility check uses borrowed current-state decoding.
+
+A cheap unpruned bound can precede a normal ledger allocation. When alias bytes
+prevent fitting, or an existing-shared declaration requires origin inspection,
+allocation-free replay keeps one borrowed observation key and replays earlier
+DATA declarations. Equal-sized distinct owners stay distinct. Replay refuses
+missing earlier origins, conflicting declarations, overflow or more than
+16,777,216 observation visits. This is a finite work bound, not a measured
+physical deadline. The configured normal DATA/handle/root reservation is never
+enlarged for repeated visits. Its later real inventory still must validate row
+sufficiency, declarations and actual handle closure before compiler construction.
+The cheap arithmetic bound alone does not prove those normal-pass facts.
+
+Finite tests cover a 4 MiB physical PCM allocation with 100 control aliases,
+canonical state aliases, actual retained bank/history/previous-context and
+guarded cancellation inputs, an injected visitor panic and subsequent mutable
+transaction. The original ledger's real inline body/backings and physical DATA
+union have a separate borrowed visitor. Neither that visitor nor arithmetic
+copies, clears or lifetime-converts the original ledger. The normal ledger's
+requested metadata calculation includes its increased inline size.
+
+These are partial ledger primitives. The closed aggregate compiler operation,
+all constructor costs in one retained/peak check, refusal before normal backing
+allocation and both selector preparations, complete failure/cancel restoration,
+Service incarnation/publication and usable registered Sampler remain open.
+The test-only pinned allocator probe currently needs a narrow Engine exception
+to the architecture allowlist; that policy proposal is recorded in Pulse2789,
+not silently applied. The existing guard's negative result is retained and this
+checkpoint is not source-ready, full-CI-qualified or native accepted.

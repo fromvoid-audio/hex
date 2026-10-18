@@ -122,9 +122,12 @@ impl<'a> AudioRootStorageLedger<'a> {
         actual_field: &'a dyn Any,
     ) -> Result<(), AudioStorageError> {
         let candidate = field(actual_field);
-        if self.handles.iter().any(|handle| {
-            handle.field.same(candidate) && handle.location == Location("canonical-midi-field", 0)
-        }) {
+        if self.arithmetic.is_none()
+            && self.handles.iter().any(|handle| {
+                handle.field.same(candidate)
+                    && handle.location == Location("canonical-midi-field", 0)
+            })
+        {
             return Ok(());
         }
         self.model_source(actual_field)
@@ -156,11 +159,10 @@ impl<'a> AudioRootStorageLedger<'a> {
             view.note_element_layout().size(),
         )?;
         // Inline Arc handle belongs to its enclosing model/compiled object.
-        self.handle_at(
+        self.observe_handle_at(
             owner,
             field(actual_field),
             Location("canonical-midi-field", 0),
-            crate::audio_only_inputs::handle()?,
         )
     }
     /// Selected actual source body/backing/owning field. Enclosing object and

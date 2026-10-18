@@ -5,10 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // Identity allocator only: no owner registry or pointer/content-based identity.
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+thread_local! {
+    // Successful real global ID issues by this test thread, never a reset or
+    // replacement allocator. Avoids races with unrelated parallel test issuers.
+    pub(crate) static ISSUED_HANDLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+pub(crate) fn next_handle_observation() -> u64 {
+    NEXT_HANDLE.load(Ordering::Relaxed)
+}
 pub(crate) fn handle() -> Result<u64, AudioStorageError> {
-    NEXT_HANDLE
+    let id = NEXT_HANDLE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .map_err(|_| AudioStorageError::HandleExhausted)
+        .map_err(|_| AudioStorageError::HandleExhausted)?;
+    #[cfg(test)]
+    ISSUED_HANDLES.with(|count| count.set(count.get() + 1));
+    Ok(id)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStorageError {

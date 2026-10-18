@@ -96,11 +96,14 @@ impl<'a> AudioRootStorageLedger<'a> {
             Ok(())
         })
     }
-    pub(crate) fn has_canonical_state_field(
+    pub(crate) fn skip_observed_canonical_state_field(
         &self,
         state: &'a NativeDeviceState,
         index: usize,
     ) -> bool {
+        if self.arithmetic.is_some() {
+            return false; // state payload/references remain mandatory observations
+        }
         let field = Owner::exclusive(state);
         self.handles.iter().any(|row| {
             row.field.same(field) && row.location == Location("inline-state-field", index)
@@ -136,10 +139,10 @@ impl<'a> AudioRootStorageLedger<'a> {
             ),
             requested(&view)?,
         )?;
-        if self.has_canonical_state_field(state, index) {
+        if self.skip_observed_canonical_state_field(state, index) {
             return Ok(());
         }
-        self.handle_at(owner, field, location, crate::audio_only_inputs::handle()?)
+        self.observe_handle_at(owner, field, location)
     }
 }
 #[cfg(test)]

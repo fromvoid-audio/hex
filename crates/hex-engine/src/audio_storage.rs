@@ -2,6 +2,7 @@
 //! No owner is cloned or transferred; this is never publication/lifetime authority.
 use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, StreamedSourceMetadata};
 use std::{any::Any, sync::Arc};
+mod arithmetic;
 mod canonical_state;
 pub use canonical_state::canonical_native_state_storage_layout_supported;
 mod model_buffers;
@@ -222,6 +223,7 @@ pub struct AudioRootStorageLedger<'a> {
     growth: usize,
     unknown: usize,
     valid: bool,
+    arithmetic: Option<arithmetic::Arithmetic<'a>>,
 }
 impl<'a> AudioRootStorageLedger<'a> {
     pub fn try_new_on_control(
@@ -245,6 +247,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             growth: 0,
             unknown: 0,
             valid: false,
+            arithmetic: None,
         };
         #[cfg(test)]
         BACKING_RESERVATIONS.with(|count| count.set(count.get() + 1));
@@ -310,7 +313,12 @@ impl<'a> AudioRootStorageLedger<'a> {
         self.valid = false;
         f(self)?;
         self.valid = true;
-        if let Err(error) = self.summary() {
+        let completion = if self.arithmetic.is_some() {
+            self.arithmetic_completion()
+        } else {
+            self.summary().map(|_| ())
+        };
+        if let Err(error) = completion {
             self.valid = false;
             return Err(error);
         }
@@ -355,7 +363,7 @@ impl<'a> AudioRootStorageLedger<'a> {
     /// inventory has no usable totals. This is neither allocator/RSS nor a
     /// lifetime proof, and excludes unselected external application objects.
     pub fn summary(&self) -> Result<AudioRootStorageSummary, AudioStorageError> {
-        if !self.valid {
+        if !self.valid || self.arithmetic.is_some() {
             return Err(AudioStorageError::UnknownStorage);
         }
         for handle in &self.handles {
@@ -464,7 +472,12 @@ impl<'a> AudioRootStorageLedger<'a> {
     }
     /// Selected actual field identity, used when immutable source templates are
     /// shared across revisions. This cannot declare an unseen allocation.
-    pub(crate) fn contains_root<T: 'static>(&self, value: &'a T) -> bool {
+    pub(crate) fn skip_observed_root<T: 'static>(&self, value: &'a T) -> bool {
+        // Arithmetic traversals must inspect descendants on EVERY visit. This
+        // is a traversal policy, never a negative membership/provenance fact.
+        if self.arithmetic.is_some() {
+            return false;
+        }
         let owner = Owner::exclusive(value);
         self.roots.iter().any(|row| row.owner.same(owner))
     }
@@ -474,6 +487,10 @@ impl<'a> AudioRootStorageLedger<'a> {
         role: AudioStorageRole,
     ) -> Result<(), AudioStorageError> {
         let owner = Owner::exclusive(value);
+        if let Some(arithmetic) = &mut self.arithmetic {
+            arithmetic.root()?;
+            return self.bytes(owner, Location("root-inline", 0), size_of::<T>());
+        }
         if self.roots.iter().any(|row| row.owner.same(owner)) {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -490,6 +507,9 @@ impl<'a> AudioRootStorageLedger<'a> {
         declaration: Declaration,
         streamed: Option<&'a StreamedSourceMetadata>,
     ) -> Result<(), AudioStorageError> {
+        if let Some(arithmetic) = &mut self.arithmetic {
+            return arithmetic.data(owner, location, declaration);
+        }
         if let Some(old) = self
             .data
             .iter()
@@ -614,11 +634,20 @@ impl<'a> AudioRootStorageLedger<'a> {
         )?;
         self.handle(anchor, field, handle)
     }
-    pub(crate) fn contains_shared_storage<T: 'static + ?Sized>(&self, owner: &Arc<T>) -> bool {
+    pub(crate) fn skip_observed_shared_contents<T: 'static + ?Sized>(
+        &self,
+        owner: &Arc<T>,
+    ) -> bool {
+        if self.arithmetic.is_some() {
+            return false; // never prune shared descendants in arithmetic mode
+        }
         let owner = Owner::shared(owner);
         self.data.iter().any(|row| row.owner.same(owner))
     }
-    pub(crate) fn contains_shared_field<T: 'static>(&self, value: &'a T) -> bool {
+    pub(crate) fn skip_observed_shared_field<T: 'static>(&self, value: &'a T) -> bool {
+        if self.arithmetic.is_some() {
+            return false; // visit and validate embedded fields on every pass
+        }
         let field = Owner::exclusive(value);
         self.handles
             .iter()
@@ -633,10 +662,12 @@ impl<'a> AudioRootStorageLedger<'a> {
         location: Location,
     ) -> Result<(), AudioStorageError> {
         let owner = Owner::shared(owner);
-        if !self.data.iter().any(|row| row.owner.same(owner)) {
+        if let Some(arithmetic) = &mut self.arithmetic {
+            arithmetic.existing(owner)?;
+        } else if !self.data.iter().any(|row| row.owner.same(owner)) {
             return Err(AudioStorageError::SourceMismatch);
         }
-        self.handle_at(owner, field, location, crate::audio_only_inputs::handle()?)
+        self.observe_handle_at(owner, field, location)
     }
     /// Count observation detects excess caller handles only. It cannot create
     /// a declaration, prove provenance or grant retirement/publication rights.
@@ -699,6 +730,14 @@ impl<'a> AudioRootStorageLedger<'a> {
         location: Location,
         id: u64,
     ) -> Result<(), AudioStorageError> {
+        if let Some(arithmetic) = &mut self.arithmetic {
+            // This is an existing constructor-paired identity, not a minted
+            // observation. Preserve its nonzero provenance check in bootstrap.
+            if id == 0 {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            return arithmetic.handle();
+        }
         if id == 0
             || self
                 .handles
@@ -717,6 +756,43 @@ impl<'a> AudioRootStorageLedger<'a> {
             id,
         });
         Ok(())
+    }
+    pub(crate) fn observe_handle_at(
+        &mut self,
+        owner: Owner<'a>,
+        field: Owner<'a>,
+        location: Location,
+    ) -> Result<(), AudioStorageError> {
+        if let Some(arithmetic) = &mut self.arithmetic {
+            return arithmetic.handle();
+        }
+        self.handle_at(owner, field, location, crate::audio_only_inputs::handle()?)
+    }
+    pub(crate) fn observe_shared<T: 'static + ?Sized>(
+        &mut self,
+        owner: &'a Arc<T>,
+        parts: Option<(usize, usize)>,
+        field: Owner<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let (payload, overhead) = parts.ok_or(AudioStorageError::UnknownStorage)?;
+        if Arc::weak_count(owner) != 0 {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let anchor = Owner::shared(owner);
+        self.data(
+            anchor,
+            Location("shared-owner", 0),
+            Declaration {
+                bytes: payload
+                    .checked_add(overhead)
+                    .ok_or(AudioStorageError::Overflow)?,
+                capacity: 1,
+                element_bytes: payload,
+                overhead,
+            },
+            None,
+        )?;
+        self.observe_handle_at(anchor, field, Location("handle-field", 0))
     }
     pub(crate) fn growth(&mut self, bytes: usize) -> Result<(), AudioStorageError> {
         self.growth = self

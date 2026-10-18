@@ -114,7 +114,7 @@ fn visit_state<'a>(
             .checked_add(storage.payload.1)
             .ok_or(AudioStorageError::Overflow)?,
     )?;
-    if !ledger.has_canonical_state_field(state, 0) {
+    if !ledger.skip_observed_canonical_state_field(state, 0) {
         ledger.handle_at(
             Owner::device_payload(state),
             Owner::exclusive(state),
@@ -130,7 +130,7 @@ fn visit_state<'a>(
                 .checked_add(overhead)
                 .ok_or(AudioStorageError::Overflow)?,
         )?;
-        if !ledger.has_canonical_state_field(state, 1) {
+        if !ledger.skip_observed_canonical_state_field(state, 1) {
             ledger.handle_at(
                 Owner::device_asset_references(state),
                 Owner::exclusive(state),
@@ -194,20 +194,14 @@ pub(crate) fn visit_owner_contents<'a>(
         && resources.is_none()
         && state_storage.is_none()
         && matches!(
-            hex_devices::sampler::state::DeviceState::from_native(state),
-            Ok(hex_devices::sampler::state::DeviceState::Empty)
+            hex_devices::sampler::state::DeviceStateRead::from_native(state),
+            Ok(hex_devices::sampler::state::DeviceStateRead::Empty)
         );
     if !empty_sampler && (state_storage.is_none() || resources.is_none()) {
         return Err(AudioStorageError::UnknownStorage);
     }
-    let visited = ledger.contains_shared_storage(owner.arc());
-    ledger.shared(
-        owner.arc(),
-        owner.parts(),
-        Owner::exclusive(owner),
-        crate::audio_only_inputs::handle()?,
-        None,
-    )?;
+    let visited = ledger.skip_observed_shared_contents(owner.arc());
+    ledger.observe_shared(owner.arc(), owner.parts(), Owner::exclusive(owner))?;
     if !visited {
         if empty_sampler {
             // Actual cloned canonical empty-state field, not a fresh receipt,
@@ -285,14 +279,8 @@ pub(crate) fn visit_table_contents<'a>(
     table: &'a OwnedShared<SharedAnalyticContextTable>,
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
-    let visited = ledger.contains_shared_storage(table.arc());
-    ledger.shared(
-        table.arc(),
-        table.parts(),
-        Owner::exclusive(table),
-        crate::audio_only_inputs::handle()?,
-        None,
-    )?;
+    let visited = ledger.skip_observed_shared_contents(table.arc());
+    ledger.observe_shared(table.arc(), table.parts(), Owner::exclusive(table))?;
     if visited {
         return Ok(());
     }
@@ -329,7 +317,7 @@ pub(crate) fn visit_table<'a>(
     // One cached template can be held by multiple real revisions. Its one
     // physical table field is counted once, while distinct table aliases still
     // require distinct headers/handles even when their allocation is shared.
-    if ledger.contains_root(table) {
+    if ledger.skip_observed_root(table) {
         return Ok(());
     }
     ledger.root(table, role)?;
@@ -361,3 +349,6 @@ impl<'a> AudioRootStorageLedger<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod arithmetic_tests;
